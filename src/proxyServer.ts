@@ -10,6 +10,7 @@ import {
   installResponseBodyRewrite,
   resolveMockResponse,
   sendMockResponse,
+  sendMockSimulate,
   type MockResponse,
 } from './rules/actions';
 import type { RuleEngine } from './rules/ruleEngine';
@@ -191,10 +192,13 @@ export async function startProxyServer(
 
     if (rule?.action.type === 'mock') {
       const mockAction = rule.action;
+      const simulate = mockAction.simulate;
       let mockError: string | undefined;
-      const mock = tryResolveMock(rule, ruleEngine!.basePath, (message) => {
-        mockError = message;
-      });
+      const mock = simulate
+        ? undefined
+        : tryResolveMock(rule, ruleEngine!.basePath, (message) => {
+            mockError = message;
+          });
 
       // A mock never forwards to upstream (callback() is never called
       // below), so the usual onRequestData/onRequestEnd hooks — which only
@@ -215,12 +219,34 @@ export async function startProxyServer(
 
       const respond = () => {
         requestCapture.applyTo(exchange, 'request');
-        sendMockResponse(ctx, mock);
-        exchange.statusCode = mock.status;
-        exchange.statusMessage = mock.statusMessage;
-        exchange.responseHeaders = mock.headers;
-        exchange.responseBodySize = mock.body.length;
-        BodyCapture.of(mock.body).applyTo(exchange, 'response');
+
+        if (simulate) {
+          sendMockSimulate(ctx, simulate);
+          eventBus.emit('request', exchange);
+          if (simulate === 'close') {
+            // Unlike 'timeout' (which just leaves the client hanging, with
+            // nothing further to report), a closed connection is a
+            // definite, reportable outcome — flag it on the exchange the
+            // same way a real connection reset would show up, rather than
+            // only as a separate proxy-level 'error' event.
+            exchange.error = `rule "${rule.name}": simulated connection close (no response sent)`;
+            exchange.finishedAt = Date.now();
+            exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+            eventBus.emit('response', exchange);
+          }
+          // 'timeout' deliberately never emits 'response': the exchange
+          // stays "pending" in the dashboard for as long as the connection
+          // stays open, same as a real server that stopped responding.
+          inFlight.delete(ctx.uuid);
+          return;
+        }
+
+        sendMockResponse(ctx, mock as MockResponse);
+        exchange.statusCode = (mock as MockResponse).status;
+        exchange.statusMessage = (mock as MockResponse).statusMessage;
+        exchange.responseHeaders = (mock as MockResponse).headers;
+        exchange.responseBodySize = (mock as MockResponse).body.length;
+        BodyCapture.of((mock as MockResponse).body).applyTo(exchange, 'response');
         exchange.finishedAt = Date.now();
         exchange.durationMs = exchange.finishedAt - exchange.startedAt;
         exchange.error = mockError;

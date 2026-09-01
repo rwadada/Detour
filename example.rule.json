@@ -30,6 +30,29 @@
       }
     },
     {
+      "name": "mock-simulate-timeout",
+      "enabled": false,
+      "match": {
+        "url": "https://api.example.com/slow-endpoint"
+      },
+      "action": {
+        "type": "mock",
+        "simulate": "timeout"
+      }
+    },
+    {
+      "name": "mock-simulate-close",
+      "enabled": false,
+      "match": {
+        "url": "https://api.example.com/flaky-endpoint"
+      },
+      "action": {
+        "type": "mock",
+        "simulate": "close",
+        "delayMs": 200
+      }
+    },
+    {
       "name": "route-to-staging",
       "enabled": false,
       "match": {
