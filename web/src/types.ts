@@ -80,11 +80,19 @@ export type BreakpointResumeCommand =
   | { id: string; phase: 'response'; action: 'resume'; edits?: BreakpointResponseEdits }
   | { id: string; phase: 'response'; action: 'abort' };
 
+/** Whether the proxy is actively intercepting traffic — see `src/types.ts`'s `InterceptState`. */
+export interface InterceptState {
+  enabled: boolean;
+}
+
 export type DashboardServerMessage =
   | { type: 'backlog'; items: CapturedExchange[] }
   | { type: 'request'; exchange: CapturedExchange }
   | { type: 'response'; exchange: CapturedExchange }
   | { type: 'error'; event: ProxyErrorEvent }
-  | { type: 'breakpoint'; exchange: CapturedExchange; payload: BreakpointPayload };
+  | { type: 'breakpoint'; exchange: CapturedExchange; payload: BreakpointPayload }
+  | { type: 'intercept'; state: InterceptState };
 
-export type DashboardClientMessage = { type: 'breakpointResume'; command: BreakpointResumeCommand };
+export type DashboardClientMessage =
+  | { type: 'breakpointResume'; command: BreakpointResumeCommand }
+  | { type: 'setIntercept'; enabled: boolean };

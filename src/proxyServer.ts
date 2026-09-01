@@ -1,3 +1,6 @@
+import type { IncomingMessage } from 'node:http';
+import net from 'node:net';
+import type { Duplex } from 'node:stream';
 import { Proxy } from 'http-mitm-proxy';
 import type { ErrorCallback, IContext } from 'http-mitm-proxy';
 import { resolveCertDir } from './certStore';
@@ -21,6 +24,17 @@ import type {
   BreakpointResumeCommand,
   CapturedExchange,
 } from './types';
+
+/**
+ * Builds the origin-only URL a route rule is matched against for a CONNECT
+ * tunnel while intercept is off. There's no path to match on — the tunnel is
+ * never decrypted — so this mirrors `resolveUrl`'s hostname formatting
+ * (default port omitted) applied to just the host.
+ */
+function connectMatchUrl(host: string, port: number): string {
+  const hostname = port !== 443 ? `${host}:${port}` : host;
+  return `https://${hostname}`;
+}
 
 /**
  * Upper bound (in bytes, pre-base64) on how much of a request/response body
@@ -167,6 +181,19 @@ export async function startProxyServer(
   // onRequest, since it's the same for both.
   const ruleContexts = new Map<string, Rule>();
 
+  // Master on/off switch, toggled at runtime from the dashboard (see
+  // `setIntercept`/`interceptChanged` in eventBus.ts). While disabled: HTTPS
+  // is a raw TLS passthrough (handled entirely by the `proxy.onConnect` hook
+  // below, which bypasses MITM decryption altogether) and mock/rewrite/
+  // breakpoint rules are skipped for plain HTTP — a `route` rule keeps
+  // applying either way.
+  let interceptEnabled = true;
+  const handleSetIntercept = (enabled: boolean): void => {
+    interceptEnabled = enabled;
+    eventBus.emit('interceptChanged', { enabled });
+  };
+  eventBus.on('setIntercept', handleSetIntercept);
+
   // A `breakpoint` rule pauses an exchange by awaiting a promise resolved
   // from here, keyed by `${ctx.uuid}:${phase}`. Resolved either by a
   // matching `breakpointResume` from the dashboard, or synthetically (as an
@@ -197,6 +224,63 @@ export async function startProxyServer(
   }
 
   eventBus.on('breakpointResume', resolveBreakpoint);
+
+  /**
+   * While intercept is off, a CONNECT tunnel is relayed byte-for-byte
+   * between the client and the real upstream server instead of being
+   * terminated by our local per-host cert — true TLS passthrough, since we
+   * never touch (or can see) the encrypted bytes flowing through. A `route`
+   * rule still redirects the tunnel's destination (matched on host/port
+   * only — there's no path/method to go on without decrypting), but nothing
+   * else about the connection is observable or editable.
+   */
+  function handleInterceptOffConnect(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+    const target = Proxy.parseHostAndPort(req, 443);
+    if (!target?.host) {
+      socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+      return;
+    }
+    const originalPort = target.port ?? 443;
+    const rule = ruleEngine?.match({ method: 'CONNECT', url: connectMatchUrl(target.host, originalPort) });
+    const route = rule?.action.type === 'route' ? rule.action : undefined;
+    const destHost = route?.host ?? target.host;
+    const destPort = route?.port ?? originalPort;
+
+    // Once the tunnel is established, `socket` carries raw (opaque, possibly
+    // mid-TLS-handshake) bytes end-to-end — an error past that point must
+    // just tear the connection down, never write an HTTP status line into
+    // what the client now treats as a byte stream.
+    let established = false;
+    const upstream = net.connect({ host: destHost, port: destPort }, () => {
+      established = true;
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head.length > 0) upstream.write(head);
+      socket.pipe(upstream);
+      upstream.pipe(socket);
+    });
+    const teardown = () => {
+      socket.destroy();
+      upstream.destroy();
+    };
+    upstream.on('error', (err) => {
+      eventBus.emit('error', {
+        errorKind: 'INTERCEPT_OFF_TUNNEL_ERROR',
+        message: `passthrough tunnel to ${destHost}:${destPort} failed: ${err.message}`,
+      });
+      if (!established && !socket.destroyed) socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+    });
+    socket.on('error', teardown);
+    socket.once('close', teardown);
+    upstream.once('close', teardown);
+  }
+
+  proxy.onConnect((req, socket, head, callback) => {
+    if (interceptEnabled) {
+      callback();
+      return;
+    }
+    handleInterceptOffConnect(req, socket, head as Buffer);
+  });
 
   proxy.onError((ctx, err, errorKind) => {
     if (ctx) {
@@ -422,7 +506,12 @@ export async function startProxyServer(
   proxy.onRequest((ctx, callback) => {
     const { url, host: reqHost } = resolveUrl(ctx);
     const method = ctx.clientToProxyRequest.method ?? 'GET';
-    const rule = ruleEngine?.match({ method, url });
+    const matched = ruleEngine?.match({ method, url });
+    // While intercept is off, only a `route` rule keeps applying (see
+    // `interceptEnabled`'s doc comment above) — mock/rewrite/breakpoint
+    // rules are treated as if nothing matched, so the request flows through
+    // untouched.
+    const rule = interceptEnabled || matched?.action.type === 'route' ? matched : undefined;
 
     const exchange: CapturedExchange = {
       id: ctx.uuid,
@@ -624,6 +713,7 @@ export async function startProxyServer(
           stop: () =>
             new Promise<void>((res) => {
               eventBus.off('breakpointResume', resolveBreakpoint);
+              eventBus.off('setIntercept', handleSetIntercept);
               ruleEngine?.close();
               proxy.close();
               res();

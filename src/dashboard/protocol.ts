@@ -1,4 +1,10 @@
-import type { BreakpointPayload, BreakpointResumeCommand, CapturedExchange, ProxyErrorEvent } from '../types';
+import type {
+  BreakpointPayload,
+  BreakpointResumeCommand,
+  CapturedExchange,
+  InterceptState,
+  ProxyErrorEvent,
+} from '../types';
 
 /**
  * Messages sent from the dashboard server to a connected browser client over
@@ -21,7 +27,13 @@ export type DashboardServerMessage =
    * table/row display; `payload` carries the full editable request/response
    * content for the breakpoint editor.
    */
-  | { type: 'breakpoint'; exchange: CapturedExchange; payload: BreakpointPayload };
+  | { type: 'breakpoint'; exchange: CapturedExchange; payload: BreakpointPayload }
+  /**
+   * The current intercept on/off state — sent once right after connecting
+   * (alongside `backlog`) so a (re)connecting client starts in sync, and
+   * again on every change so all connected tabs stay in sync with each other.
+   */
+  | { type: 'intercept'; state: InterceptState };
 
 /**
  * Messages sent from a connected browser client to the dashboard server over
@@ -30,4 +42,6 @@ export type DashboardServerMessage =
  */
 export type DashboardClientMessage =
   /** Resumes (optionally with edits) or aborts an exchange paused by a `breakpoint` rule. */
-  { type: 'breakpointResume'; command: BreakpointResumeCommand };
+  | { type: 'breakpointResume'; command: BreakpointResumeCommand }
+  /** Turns interception on/off (see `InterceptState`). */
+  | { type: 'setIntercept'; enabled: boolean };
