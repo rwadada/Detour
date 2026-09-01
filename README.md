@@ -21,6 +21,19 @@ Once started, point an HTTP/HTTPS client at the `--port` you chose (e.g. `curl -
 
 During development, run `npm run dev` to watch and run the TypeScript sources directly.
 
+### Checks
+
+- `npm run format:check` / `npm run format`: Biome — check or auto-fix formatting across `src/` and `web/src/`
+- `npm run typecheck`: type-checks both the CLI and the dashboard
+- `npm run lint`: ESLint (`typescript-eslint` + `eslint-plugin-sonarjs`, plus `@vitest/eslint-plugin` on test files — catches an assertion-free test or a `.skip`/`.only` left in) across `src/` and `web/src/`
+- `npm run dep-cruise`: dependency-cruiser — fails on circular imports (each package's own module graph, since they don't import across the `src`/`web` boundary)
+- `npm run dup-check`: jscpd — fails if duplicated code exceeds the configured threshold (see `.jscpd.json` for what's already accounted for, e.g. `ringBuffer.ts`'s intentional backend/frontend mirror)
+- `npm test` / `npm run test:coverage`: the CLI package's unit tests (Vitest, `src/**/*.test.ts` — pure rule-engine logic: matching, schema validation, mock/route/rewrite helpers). `test:coverage` additionally enforces branch (C1) coverage ≥85% on that same pure-logic surface (see `vitest.config.ts`'s `coverage.include`)
+- `npm run test:e2e`: spawns the real CLI (`tsx src/cli.ts start`, no build needed) against a real HTTP server and a real socket — catches the class of bug unit tests structurally can't (see `vitest.e2e.config.ts`)
+- `npm run knip`: finds unused files/exports/dependencies. Not part of `verify` — it's repo-wide and can surface pre-existing issues unrelated to the current change, so it's a periodic/manual check rather than a per-turn gate
+- `npm run test:mutation`: Stryker Mutator — checks whether the unit suite actually *catches* bugs (mutates a condition/operator/literal, expects a test to fail) rather than just executing lines. Also not part of `verify`: it re-runs the suite once per mutant, so it's minutes rather than seconds — run it periodically or in CI
+- `npm run verify`: format:check + typecheck + lint + dep-cruise + dup-check + test:coverage + test:e2e, in order — this is what `.claude/hooks/verify-stop.sh` runs automatically after every Claude Code turn (see `.claude/settings.json`)
+
 ## Web dashboard
 
 `detour start` serves a real-time dashboard at `http://localhost:4040` (or whatever `--dashboard-port` is set to) for browsing captured traffic without leaving the browser.

@@ -5,15 +5,7 @@ import { capturedByteLength, decodeCapturedBody, formatBytes, tryPrettyJson } fr
 
 const readOnlyView = EditorView.editable.of(false);
 
-export function BodyViewer({
-  body,
-  bodySize,
-  truncated,
-}: {
-  body?: string;
-  bodySize: number;
-  truncated?: boolean;
-}) {
+export function BodyViewer({ body, bodySize, truncated }: { body?: string; bodySize: number; truncated?: boolean }) {
   const dark = useTheme() === 'dark';
 
   if (bodySize === 0) {

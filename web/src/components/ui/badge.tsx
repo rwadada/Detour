@@ -13,10 +13,7 @@ export function Badge({
   return (
     <span
       style={style}
-      className={cn(
-        'inline-flex items-center rounded px-1.5 py-0.5 text-xs font-semibold font-mono-ui',
-        className,
-      )}
+      className={cn('inline-flex items-center rounded px-1.5 py-0.5 text-xs font-semibold font-mono-ui', className)}
     >
       {children}
     </span>

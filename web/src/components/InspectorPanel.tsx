@@ -58,7 +58,9 @@ export function InspectorPanel() {
       <Tabs defaultValue="headers" className="flex flex-1 flex-col overflow-hidden">
         <TabsList className="px-3">
           <TabsTrigger value="headers">Headers</TabsTrigger>
-          <TabsTrigger value="query">Query Params{queryParams.length > 0 ? ` (${queryParams.length})` : ''}</TabsTrigger>
+          <TabsTrigger value="query">
+            Query Params{queryParams.length > 0 ? ` (${queryParams.length})` : ''}
+          </TabsTrigger>
           <TabsTrigger value="body">Body</TabsTrigger>
         </TabsList>
 
@@ -109,7 +111,9 @@ function BodyTab(props: {
             onClick={() => setWhich(tab)}
             className={cn(
               'rounded px-2 py-0.5 text-xs font-medium capitalize',
-              which === tab ? 'bg-[var(--accent)] text-[var(--accent-foreground)]' : 'text-[var(--muted)] hover:bg-[var(--row-hover)]',
+              which === tab
+                ? 'bg-[var(--accent)] text-[var(--accent-foreground)]'
+                : 'text-[var(--muted)] hover:bg-[var(--row-hover)]',
             )}
           >
             {tab}
@@ -119,9 +123,17 @@ function BodyTab(props: {
       <div className="flex-1 overflow-hidden">
         <Suspense fallback={<div className="p-3 text-xs text-[var(--muted)]">Loading…</div>}>
           {which === 'request' ? (
-            <BodyViewer body={props.requestBody} bodySize={props.requestBodySize} truncated={props.requestBodyTruncated} />
+            <BodyViewer
+              body={props.requestBody}
+              bodySize={props.requestBodySize}
+              truncated={props.requestBodyTruncated}
+            />
           ) : (
-            <BodyViewer body={props.responseBody} bodySize={props.responseBodySize} truncated={props.responseBodyTruncated} />
+            <BodyViewer
+              body={props.responseBody}
+              bodySize={props.responseBodySize}
+              truncated={props.responseBodyTruncated}
+            />
           )}
         </Suspense>
       </div>
@@ -133,11 +145,7 @@ function HeaderSection({ title, rows }: { title: string; rows: [string, string][
   return (
     <div className="mb-4">
       <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">{title}</h3>
-      {rows.length === 0 ? (
-        <p className="text-xs text-[var(--muted)]">None.</p>
-      ) : (
-        <KeyValueTable rows={rows} />
-      )}
+      {rows.length === 0 ? <p className="text-xs text-[var(--muted)]">None.</p> : <KeyValueTable rows={rows} />}
     </div>
   );
 }

@@ -16,11 +16,17 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.+^${}()|[\]\\]/g, '\\$&');
 }
 
+function globTokenToRegExpSource(token: string): string {
+  if (token === '*') return '.*';
+  if (token === '?') return '.';
+  return escapeRegExp(token);
+}
+
 /** Compiles a `*`/`?` wildcard pattern into a RegExp anchored to the whole string. */
 export function compileGlob(pattern: string): RegExp {
   const source = pattern
     .split(/([*?])/)
-    .map((part) => (part === '*' ? '.*' : part === '?' ? '.' : escapeRegExp(part)))
+    .map(globTokenToRegExpSource)
     .join('');
   return new RegExp(`^${source}$`);
 }

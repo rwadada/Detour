@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/verify-stop.sh\"",
+            "timeout": 120,
+            "statusMessage": "Running typecheck, lint, and tests (npm run verify)…"
+          }
+        ]
+      }
+    ]
+  }
+}

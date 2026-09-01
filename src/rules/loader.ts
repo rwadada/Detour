@@ -14,14 +14,14 @@ export function loadRulesFile(filePath: string): RulesFile {
   try {
     raw = fs.readFileSync(filePath, 'utf8');
   } catch (err) {
-    throw new Error(`Could not read rules file: ${filePath}\n  ${describeError(err)}`);
+    throw new Error(`Could not read rules file: ${filePath}\n  ${describeError(err)}`, { cause: err });
   }
 
   let data: unknown;
   try {
     data = JSON.parse(raw);
   } catch (err) {
-    throw new Error(`Rules file contains invalid JSON: ${filePath}\n  ${describeError(err)}`);
+    throw new Error(`Rules file contains invalid JSON: ${filePath}\n  ${describeError(err)}`, { cause: err });
   }
 
   const result = validateRulesData(data);

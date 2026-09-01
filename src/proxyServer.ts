@@ -358,11 +358,12 @@ export async function startProxyServer(
         resolve({
           port: proxy.httpPort,
           caCertPath: proxy.ca.getCACertPath(),
-          stop: () => new Promise<void>((res) => {
-            ruleEngine?.close();
-            proxy.close();
-            res();
-          }),
+          stop: () =>
+            new Promise<void>((res) => {
+              ruleEngine?.close();
+              proxy.close();
+              res();
+            }),
         });
       });
     } catch (err) {
