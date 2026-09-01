@@ -74,7 +74,11 @@
             "replace": [
               { "find": "\"status\":\"pending\"", "replacement": "\"status\":\"confirmed\"" },
               { "find": "internal-[0-9]+", "replacement": "REDACTED", "regex": true, "flags": "g" }
-            ]
+            ],
+            "merge": {
+              "flags": { "newCheckout": true },
+              "internalNotes": null
+            }
           }
         }
       }
