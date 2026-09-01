@@ -38,6 +38,9 @@ const bodyRewriteSchema = {
         },
       },
     },
+    // Merge patches only make sense as an object (RFC 7396) — a bare
+    // scalar/array would just be a confusing spelling of `set`.
+    merge: { type: 'object' },
   },
 };
 

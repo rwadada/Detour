@@ -111,6 +111,24 @@ function applyQueryRewrite(opts: { path?: string }, rewrite?: QueryRewrite): voi
   opts.path = search ? `${pathname}?${search}` : pathname;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** JSON Merge Patch (RFC 7396): recursively applies `patch` onto `target`, `null` deleting a key. */
+function jsonMergePatch(target: unknown, patch: unknown): unknown {
+  if (!isPlainObject(patch)) return patch;
+  const result: Record<string, unknown> = isPlainObject(target) ? { ...target } : {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) {
+      delete result[key];
+    } else {
+      result[key] = jsonMergePatch(result[key], value);
+    }
+  }
+  return result;
+}
+
 function applyBodyRewrite(original: Buffer, rewrite: BodyRewrite): Buffer {
   if (rewrite.set !== undefined) {
     return typeof rewrite.set === 'string'
@@ -122,6 +140,17 @@ function applyBodyRewrite(original: Buffer, rewrite: BodyRewrite): Buffer {
     text = step.regex
       ? text.replace(new RegExp(step.find, step.flags ?? 'g'), step.replacement)
       : text.split(step.find).join(step.replacement);
+  }
+  if (rewrite.merge !== undefined) {
+    // A body that isn't valid JSON (or is empty) merges onto an empty
+    // object rather than throwing — see the `merge` doc comment on BodyRewrite.
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = undefined;
+    }
+    text = JSON.stringify(jsonMergePatch(parsed, rewrite.merge));
   }
   return Buffer.from(text, 'utf8');
 }

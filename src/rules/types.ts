@@ -49,12 +49,24 @@ export interface BodyReplace {
   flags?: string;
 }
 
-/** Rewrites a request/response body. `set` wins over `replace` when both are present. */
+/**
+ * Rewrites a request/response body. Steps combine as: `set` (if present) replaces
+ * the body outright and skips the rest; otherwise `replace` runs first, then
+ * `merge` is applied to the result.
+ */
 export interface BodyRewrite {
-  /** Replaces the whole body. Objects/arrays are JSON-serialized; strings are sent verbatim. */
+  /** Replaces the whole body. Objects/arrays are JSON-serialized; strings are sent verbatim. Wins over `replace`/`merge`. */
   set?: unknown;
   /** Sequential find/replace passes applied to the body as text. */
   replace?: BodyReplace[];
+  /**
+   * JSON Merge Patch (RFC 7396) applied to the body parsed as JSON: each key
+   * in `merge` overwrites (recursively, for nested objects) the same key in
+   * the body, and a `null` value deletes that key. Arrays are replaced
+   * wholesale, not merged element-by-element. If the body isn't valid JSON,
+   * it's treated as an empty object before merging.
+   */
+  merge?: unknown;
 }
 
 export interface MockAction {
