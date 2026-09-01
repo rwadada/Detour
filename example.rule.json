@@ -1,0 +1,79 @@
+{
+  "rules": [
+    {
+      "name": "mock-inline-body",
+      "enabled": false,
+      "match": {
+        "method": ["GET", "HEAD"],
+        "url": "https://api.example.com/users/*"
+      },
+      "action": {
+        "type": "mock",
+        "status": 200,
+        "statusMessage": "OK",
+        "headers": { "X-Mock-Source": "detour" },
+        "body": { "id": 1, "name": "Detour Mock User" },
+        "delayMs": 200
+      }
+    },
+    {
+      "name": "mock-from-file",
+      "enabled": false,
+      "match": {
+        "urlRegex": "^https://api\\.example\\.com/products/\\d+$",
+        "urlRegexFlags": "i"
+      },
+      "action": {
+        "type": "mock",
+        "status": 200,
+        "bodyFile": "example.mock-body.json"
+      }
+    },
+    {
+      "name": "route-to-staging",
+      "enabled": false,
+      "match": {
+        "url": "https://api.example.com/*"
+      },
+      "action": {
+        "type": "route",
+        "host": "staging.example.com",
+        "port": 443,
+        "preserveHostHeader": false
+      }
+    },
+    {
+      "name": "rewrite-request-and-response",
+      "enabled": false,
+      "match": {
+        "method": "POST",
+        "url": "https://api.example.com/orders"
+      },
+      "action": {
+        "type": "rewrite",
+        "request": {
+          "headers": {
+            "set": { "X-Detour": "1" },
+            "remove": ["Authorization"]
+          },
+          "body": {
+            "set": { "forcedField": "overridden-by-detour" }
+          }
+        },
+        "response": {
+          "status": 201,
+          "headers": {
+            "set": { "X-Detour-Rewritten": "1" },
+            "remove": ["Cache-Control"]
+          },
+          "body": {
+            "replace": [
+              { "find": "\"status\":\"pending\"", "replacement": "\"status\":\"confirmed\"" },
+              { "find": "internal-[0-9]+", "replacement": "REDACTED", "regex": true, "flags": "g" }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
