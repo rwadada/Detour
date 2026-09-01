@@ -1,0 +1,34 @@
+{
+  "name": "detour",
+  "version": "0.1.0",
+  "description": "A terminal-first, lightweight HTTP debugging proxy for mobile and web. A modern CLI alternative to Charles Proxy with real-time web dashboard.",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "detour": "./bin/detour.js"
+  },
+  "files": [
+    "bin",
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/cli.ts",
+    "start": "node bin/detour.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "postinstall": "patch-package"
+  },
+  "dependencies": {
+    "commander": "^15.0.0",
+    "http-mitm-proxy": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "patch-package": "^8.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
