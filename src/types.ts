@@ -117,6 +117,18 @@ export type BreakpointResumeCommand =
   | { id: string; phase: 'response'; action: 'resume'; edits?: BreakpointResponseEdits }
   | { id: string; phase: 'response'; action: 'abort' };
 
+/**
+ * Whether the proxy is actively intercepting traffic. `enabled: false` means:
+ * HTTPS is a raw TLS passthrough (no MITM decryption — the client sees the
+ * real upstream certificate, and no exchange is observable), and mock/
+ * rewrite/breakpoint rules are skipped for plain HTTP. A `route` rule keeps
+ * applying either way, for both HTTP and (host-only, since the tunnel is
+ * never decrypted) HTTPS.
+ */
+export interface InterceptState {
+  enabled: boolean;
+}
+
 /** Events published on the in-memory event bus. */
 export interface DetourEvents {
   /** Fired once the client finished sending the request (headers + body). */
@@ -136,4 +148,8 @@ export interface DetourEvents {
   breakpointHit: (event: { exchange: Readonly<CapturedExchange>; payload: BreakpointPayload }) => void;
   /** The dashboard resumed or aborted a paused exchange. */
   breakpointResume: (command: BreakpointResumeCommand) => void;
+  /** The dashboard toggled interception on/off (see `InterceptState`). */
+  setIntercept: (enabled: boolean) => void;
+  /** The proxy applied an intercept on/off change; broadcast to dashboards so every connected tab (and newly-connecting ones) reflect the current state. */
+  interceptChanged: (state: InterceptState) => void;
 }

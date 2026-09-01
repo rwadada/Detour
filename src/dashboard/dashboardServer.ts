@@ -4,7 +4,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { DetourEventBus } from '../eventBus';
 import { assertPortAvailable } from '../portCheck';
 import { RingBuffer } from '../ringBuffer';
-import type { CapturedExchange, DetourEvents } from '../types';
+import type { CapturedExchange, DetourEvents, InterceptState } from '../types';
 import type { DashboardClientMessage, DashboardServerMessage } from './protocol';
 import { serveStatic } from './staticServer';
 
@@ -49,6 +49,11 @@ export async function startDashboardServer(
   await assertPortAvailable(options.port, host);
 
   const backlog = new RingBuffer<CapturedExchange>(options.backlogSize ?? DEFAULT_BACKLOG_SIZE, (item) => item.id);
+  // Mirrors the proxy server's own `interceptEnabled` (which is the source
+  // of truth) so a newly-connecting client can be told the current state
+  // without a round trip — kept in sync via the `interceptChanged` event,
+  // the same way `backlog` mirrors traffic.
+  let interceptState: InterceptState = { enabled: true };
 
   const httpServer = http.createServer((req, res) => serveStatic(WEB_DIST_DIR, req, res));
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
@@ -74,18 +79,26 @@ export async function startDashboardServer(
   // focused.
   const onBreakpointHit: DetourEvents['breakpointHit'] = ({ exchange, payload }) =>
     broadcast({ type: 'breakpoint', exchange, payload });
+  const onInterceptChanged: DetourEvents['interceptChanged'] = (state) => {
+    interceptState = state;
+    broadcast({ type: 'intercept', state });
+  };
 
   wss.on('connection', (socket: WebSocket) => {
-    const message: DashboardServerMessage = { type: 'backlog', items: backlog.toArray() };
-    socket.send(JSON.stringify(message));
+    const backlogMessage: DashboardServerMessage = { type: 'backlog', items: backlog.toArray() };
+    socket.send(JSON.stringify(backlogMessage));
+    const interceptMessage: DashboardServerMessage = { type: 'intercept', state: interceptState };
+    socket.send(JSON.stringify(interceptMessage));
 
     // The only browser → server traffic on this socket: resuming/aborting a
-    // paused breakpoint. Relayed onto the event bus, where the proxy server
-    // is waiting on it (see proxyServer.ts's `waitForBreakpoint`).
+    // paused breakpoint, and toggling intercept on/off. Both are relayed
+    // onto the event bus, where the proxy server is waiting on them (see
+    // proxyServer.ts's `waitForBreakpoint`/`handleSetIntercept`).
     socket.on('message', (raw) => {
       try {
         const message = JSON.parse(raw.toString()) as DashboardClientMessage;
         if (message.type === 'breakpointResume') eventBus.emit('breakpointResume', message.command);
+        else if (message.type === 'setIntercept') eventBus.emit('setIntercept', message.enabled);
       } catch {
         // Ignore malformed frames rather than crashing the dashboard.
       }
@@ -102,6 +115,7 @@ export async function startDashboardServer(
       eventBus.on('response', onResponse);
       eventBus.on('error', onError);
       eventBus.on('breakpointHit', onBreakpointHit);
+      eventBus.on('interceptChanged', onInterceptChanged);
 
       const address = httpServer.address();
       const boundPort = typeof address === 'object' && address ? address.port : options.port;
@@ -113,6 +127,7 @@ export async function startDashboardServer(
             eventBus.off('response', onResponse);
             eventBus.off('error', onError);
             eventBus.off('breakpointHit', onBreakpointHit);
+            eventBus.off('interceptChanged', onInterceptChanged);
             for (const client of wss.clients) client.close();
             wss.close(() => httpServer.close(() => res()));
           }),

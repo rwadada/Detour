@@ -32,6 +32,8 @@ interface LogStoreState {
   errors: ProxyErrorEvent[];
   /** Exchanges currently paused by a `breakpoint` rule, keyed by exchange id — awaiting resume/abort from this (or any other connected) dashboard tab. */
   pausedBreakpoints: Record<string, BreakpointPayload>;
+  /** Whether the proxy is actively intercepting traffic (see `src/types.ts`'s `InterceptState`). Defaults to `true` until the server's own `intercept` message arrives. */
+  interceptEnabled: boolean;
 
   select: (id: string | null) => void;
   setFilters: (patch: Partial<Filters>) => void;
@@ -42,6 +44,8 @@ interface LogStoreState {
   resumeBreakpointResponse: (id: string, edits?: BreakpointResponseEdits) => void;
   /** Aborts a paused exchange instead of letting it continue. */
   abortBreakpoint: (id: string, phase: 'request' | 'response') => void;
+  /** Turns interception on/off. */
+  setIntercept: (enabled: boolean) => void;
 }
 
 const buffer = new RingBuffer<CapturedExchange>(MAX_EXCHANGES, (item) => item.id);
@@ -101,6 +105,9 @@ export const useLogStore = create<LogStoreState>((set) => {
             pausedBreakpoints: { ...state.pausedBreakpoints, [message.payload.id]: message.payload },
           }));
           return;
+        case 'intercept':
+          set({ interceptEnabled: message.state.enabled });
+          return;
       }
     },
   });
@@ -112,6 +119,7 @@ export const useLogStore = create<LogStoreState>((set) => {
     filters: DEFAULT_FILTERS,
     errors: [],
     pausedBreakpoints: {},
+    interceptEnabled: true,
 
     select: (id) => set({ selectedId: id }),
     setFilters: (patch) => set((state) => ({ filters: { ...state.filters, ...patch } })),
@@ -128,6 +136,7 @@ export const useLogStore = create<LogStoreState>((set) => {
     resumeBreakpointResponse: (id, edits) =>
       socket.send({ type: 'breakpointResume', command: { id, phase: 'response', action: 'resume', edits } }),
     abortBreakpoint: (id, phase) => socket.send({ type: 'breakpointResume', command: { id, phase, action: 'abort' } }),
+    setIntercept: (enabled) => socket.send({ type: 'setIntercept', enabled }),
   };
 });
 
