@@ -33,6 +33,12 @@ export interface HeaderRewrite {
   remove?: string[];
 }
 
+/** Adds/removes URL query string parameters. `set` is applied after `remove`. */
+export interface QueryRewrite {
+  set?: Record<string, string>;
+  remove?: string[];
+}
+
 /** A single textual find/replace applied to a body. */
 export interface BodyReplace {
   find: string;
@@ -81,6 +87,8 @@ export interface RouteAction {
 export interface RewriteAction {
   type: 'rewrite';
   request?: {
+    /** Rewrites the request URL's query string. Response has no URL, so this only applies to requests. */
+    query?: QueryRewrite;
     headers?: HeaderRewrite;
     body?: BodyRewrite;
   };
