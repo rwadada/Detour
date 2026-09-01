@@ -13,7 +13,7 @@ npm start -- start --port 8080 --dashboard-port 4040
 
 - `--port <number>`: プロキシがリッスンするポート（デフォルト: `8080`）
 - `--dashboard-port <number>`: Webダッシュボード用に予約するポート（デフォルト: `4040`。ダッシュボード自体は未実装で、今後の issue で追加予定）
-- `--rules <path>`: `rules.json` のパス。指定するとルールに一致したリクエストへ mock/route/rewrite を適用します（後述）。ファイルの変更は自動検知して再読み込みします
+- `--rules <path>`: `rules.json` のパス。指定するとルールに一致したリクエストへ mock/route/rewrite を適用します（後述）。ファイルの変更は自動検知して再読み込みします。省略時もカレントディレクトリに `rules.json` があれば自動的に読み込みます
 
 初回起動時にローカルCAのルート証明書が `~/.detour/certs/certs/ca.pem` に自動生成されます。HTTPSトラフィックを復号するには、対象のブラウザ/OS/端末にこの証明書を信頼済みルート証明書としてインストールしてください。
 
@@ -51,6 +51,8 @@ detour start --rules rules.json   # ルールを適用してプロキシ起動
 - `action.type: "rewrite"`: `request`/`response`それぞれで、ヘッダーの追加・削除（`headers.set`/`headers.remove`）とBodyの書き換え（`body.set`で全置換、`body.replace`で文字列/正規表現の置換）ができます
 
 起動中に `rules.json` を編集すると自動的に再読み込みされます（検証に失敗した場合は直前の内容のまま動作を継続し、エラーをコンソールに表示します）。
+
+リポジトリ直下の [`rules.json`](./rules.json) には mock/route/rewrite それぞれのサンプルルールを `enabled: false` の状態で用意しています。すべて無効なので `detour start`（`--rules` 未指定）で実行してもデフォルトでは何も横取りせず、素のパススルー プロキシとして動作します。動作を試すには該当ルールを `enabled: true` にするか、`detour rules init` で別のルールファイルを作成してください。
 
 ### 既知の注意点
 - `http-mitm-proxy@1.1.0` にはmacOS/BSD環境でHTTPS(CONNECT)トンネルが `ECONNREFUSED` になるバグがあり（内部で接続先ホストを `0.0.0.0` に決め打ちしているため）、`patches/http-mitm-proxy+1.1.0.patch`（`patch-package` 経由、`npm install` 時に自動適用）で修正しています。

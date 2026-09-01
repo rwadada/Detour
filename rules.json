@@ -1,0 +1,46 @@
+{
+  "rules": [
+    {
+      "name": "example-mock",
+      "enabled": false,
+      "match": {
+        "method": "GET",
+        "url": "https://api.example.com/users/*"
+      },
+      "action": {
+        "type": "mock",
+        "status": 200,
+        "body": {
+          "id": 1,
+          "name": "Detour Mock User"
+        }
+      }
+    },
+    {
+      "name": "example-route",
+      "enabled": false,
+      "match": {
+        "url": "https://api.example.com/*"
+      },
+      "action": {
+        "type": "route",
+        "host": "staging.example.com"
+      }
+    },
+    {
+      "name": "example-rewrite",
+      "enabled": false,
+      "match": {
+        "url": "https://api.example.com/*"
+      },
+      "action": {
+        "type": "rewrite",
+        "request": {
+          "headers": {
+            "set": { "X-Detour": "1" }
+          }
+        }
+      }
+    }
+  ]
+}

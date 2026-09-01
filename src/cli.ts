@@ -10,6 +10,9 @@ import { SAMPLE_RULES_FILE } from './rules/sample';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkg = require('../package.json') as { version: string; description: string };
 
+/** Auto-loaded when `--rules` isn't given and this file exists in the current directory. */
+const DEFAULT_RULES_FILENAME = 'rules.json';
+
 function parsePort(value: string, flag: string): number {
   const port = Number(value);
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
@@ -36,11 +39,14 @@ async function runStart(options: StartOptions): Promise<void> {
   });
 
   let ruleEngine: RuleEngine | undefined;
-  if (options.rules) {
+  const autoDetected = !options.rules && fs.existsSync(path.resolve(process.cwd(), DEFAULT_RULES_FILENAME));
+  const rulesPath = options.rules ?? (autoDetected ? DEFAULT_RULES_FILENAME : undefined);
+  if (rulesPath) {
+    if (autoDetected) console.log(`ℹ ${DEFAULT_RULES_FILENAME} を検出したため、ルールとして読み込みます（--rules で明示的に指定も可能）`);
     // Load eagerly so a broken rules.json fails CLI startup with a clear
     // error, rather than the proxy silently starting without any rules.
     ruleEngine = RuleEngine.load({
-      filePath: options.rules,
+      filePath: rulesPath,
       onReload: (info) => eventBus.emit('rulesReloaded', { filePath: ruleEngine!.filePath, ruleCount: info.ruleCount }),
       onReloadError: (message) =>
         eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
@@ -79,7 +85,10 @@ export function createCli(): Command {
     .description('MITMプロキシを起動し、HTTP/HTTPSトラフィックのキャプチャを開始します')
     .option('-p, --port <port>', 'プロキシがリッスンするポート', '8080')
     .option('--dashboard-port <port>', 'Webダッシュボード用に予約するポート（ダッシュボードは未実装）', '4040')
-    .option('--rules <path>', 'rules.json のパス。指定するとmock/route/rewriteルールを適用し、変更を監視して自動反映します')
+    .option(
+      '--rules <path>',
+      `rules.json のパス。指定するとmock/route/rewriteルールを適用し、変更を監視して自動反映します（省略時もカレントディレクトリに ${DEFAULT_RULES_FILENAME} があれば自動的に読み込みます）`,
+    )
     .action(async (options: StartOptions) => {
       try {
         await runStart(options);
