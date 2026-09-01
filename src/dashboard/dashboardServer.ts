@@ -5,7 +5,7 @@ import type { DetourEventBus } from '../eventBus';
 import { assertPortAvailable } from '../portCheck';
 import { RingBuffer } from '../ringBuffer';
 import type { CapturedExchange, DetourEvents } from '../types';
-import type { DashboardServerMessage } from './protocol';
+import type { DashboardClientMessage, DashboardServerMessage } from './protocol';
 import { serveStatic } from './staticServer';
 
 /**
@@ -69,10 +69,27 @@ export async function startDashboardServer(
     broadcast({ type: 'response', exchange });
   };
   const onError: DetourEvents['error'] = (event) => broadcast({ type: 'error', event });
+  // A `breakpoint` rule paused an exchange — broadcast it to every connected
+  // tab so all of them can show/edit it, not just the one that happens to be
+  // focused.
+  const onBreakpointHit: DetourEvents['breakpointHit'] = ({ exchange, payload }) =>
+    broadcast({ type: 'breakpoint', exchange, payload });
 
   wss.on('connection', (socket: WebSocket) => {
     const message: DashboardServerMessage = { type: 'backlog', items: backlog.toArray() };
     socket.send(JSON.stringify(message));
+
+    // The only browser → server traffic on this socket: resuming/aborting a
+    // paused breakpoint. Relayed onto the event bus, where the proxy server
+    // is waiting on it (see proxyServer.ts's `waitForBreakpoint`).
+    socket.on('message', (raw) => {
+      try {
+        const message = JSON.parse(raw.toString()) as DashboardClientMessage;
+        if (message.type === 'breakpointResume') eventBus.emit('breakpointResume', message.command);
+      } catch {
+        // Ignore malformed frames rather than crashing the dashboard.
+      }
+    });
   });
 
   return new Promise((resolve, reject) => {
@@ -84,6 +101,7 @@ export async function startDashboardServer(
       eventBus.on('request', onRequest);
       eventBus.on('response', onResponse);
       eventBus.on('error', onError);
+      eventBus.on('breakpointHit', onBreakpointHit);
 
       const address = httpServer.address();
       const boundPort = typeof address === 'object' && address ? address.port : options.port;
@@ -94,6 +112,7 @@ export async function startDashboardServer(
             eventBus.off('request', onRequest);
             eventBus.off('response', onResponse);
             eventBus.off('error', onError);
+            eventBus.off('breakpointHit', onBreakpointHit);
             for (const client of wss.clients) client.close();
             wss.close(() => httpServer.close(() => res()));
           }),

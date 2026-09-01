@@ -58,6 +58,16 @@ export const SAMPLE_RULES_FILE = `{
           }
         }
       }
+    },
+    {
+      "name": "breakpoint-example",
+      "enabled": false,
+      "match": {
+        "url": "https://api.example.com/*"
+      },
+      "action": {
+        "type": "breakpoint"
+      }
     }
   ]
 }
