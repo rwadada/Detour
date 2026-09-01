@@ -61,6 +61,23 @@ export function sendMockResponse(ctx: IContext, mock: MockResponse): void {
   ctx.proxyToClientResponse.end(mock.body);
 }
 
+/**
+ * Ends a mocked exchange without ever sending a response, per a `mock`
+ * action's `simulate`. `'close'` destroys the client socket immediately,
+ * so the client sees a connection reset; `'timeout'` deliberately does
+ * nothing, leaving the connection open so the client hangs until it hits
+ * its own read timeout. Same calling convention as `sendMockResponse`:
+ * callers must not call the `onRequest` callback afterwards.
+ */
+export function sendMockSimulate(ctx: IContext, simulate: 'timeout' | 'close'): void {
+  // Drain (and discard) any request body still in flight, same as sendMockResponse.
+  ctx.clientToProxyRequest.resume();
+  if (simulate === 'close') {
+    ctx.proxyToClientResponse.destroy();
+  }
+  // 'timeout': no-op — the connection is intentionally left hanging.
+}
+
 /** Redirects the outbound connection to a different host/port than the one the client addressed. */
 export function applyRouteAction(ctx: IContext, action: RouteAction): void {
   const opts = ctx.proxyToServerRequestOptions;

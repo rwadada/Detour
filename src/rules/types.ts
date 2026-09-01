@@ -78,8 +78,21 @@ export interface MockAction {
   body?: unknown;
   /** Path to a file (relative to rules.json) whose contents become the response body. Wins over `body`. */
   bodyFile?: string;
-  /** Artificial delay before responding, in milliseconds. */
+  /** Artificial delay before responding, in milliseconds. Also delays `simulate`, if set. */
   delayMs?: number;
+  /**
+   * Simulates a broken connection instead of ever sending a response —
+   * useful for testing a client's own error handling (Charles' "Map Local"
+   * has the same pair of options). Wins over `status`/`statusMessage`/
+   * `headers`/`body`/`bodyFile`, which are ignored when set.
+   *
+   * `'close'`: drops the connection immediately, no response at all — the
+   * client sees it the same as a server that crashed mid-request.
+   *
+   * `'timeout'`: does nothing at all. The connection is left open and the
+   * client hangs until it hits its own read/request timeout.
+   */
+  simulate?: 'timeout' | 'close';
 }
 
 export interface RouteAction {

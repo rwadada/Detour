@@ -97,6 +97,7 @@ export const RULES_JSON_SCHEMA = {
         body: {},
         bodyFile: { type: 'string', minLength: 1 },
         delayMs: { type: 'integer', minimum: 0 },
+        simulate: { enum: ['timeout', 'close'] },
       },
     },
     routeAction: {
@@ -157,6 +158,13 @@ function validateSemantics(data: RulesFile): string[] {
     }
     if (rule.action?.type === 'mock' && rule.action.body !== undefined && rule.action.bodyFile !== undefined) {
       errors.push(`rules[${index}] (${label}): action.body and action.bodyFile cannot both be set`);
+    }
+    if (
+      rule.action?.type === 'mock' &&
+      rule.action.simulate !== undefined &&
+      (rule.action.body !== undefined || rule.action.bodyFile !== undefined)
+    ) {
+      errors.push(`rules[${index}] (${label}): action.simulate cannot be combined with action.body/action.bodyFile`);
     }
   }
   return errors;
