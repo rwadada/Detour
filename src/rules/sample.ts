@@ -42,6 +42,22 @@ export const SAMPLE_RULES_FILE = `{
           }
         }
       }
+    },
+    {
+      "name": "rewrite-example-query",
+      "enabled": false,
+      "match": {
+        "url": "https://api.example.com/*"
+      },
+      "action": {
+        "type": "rewrite",
+        "request": {
+          "query": {
+            "set": { "debug": "1" },
+            "remove": ["token"]
+          }
+        }
+      }
     }
   ]
 }

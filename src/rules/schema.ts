@@ -10,6 +10,15 @@ const headerRewriteSchema = {
   },
 };
 
+const queryRewriteSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    set: { type: 'object', additionalProperties: { type: 'string' } },
+    remove: { type: 'array', items: { type: 'string' } },
+  },
+};
+
 const bodyRewriteSchema = {
   type: 'object',
   additionalProperties: false,
@@ -107,7 +116,7 @@ export const RULES_JSON_SCHEMA = {
         request: {
           type: 'object',
           additionalProperties: false,
-          properties: { headers: headerRewriteSchema, body: bodyRewriteSchema },
+          properties: { query: queryRewriteSchema, headers: headerRewriteSchema, body: bodyRewriteSchema },
         },
         response: {
           type: 'object',

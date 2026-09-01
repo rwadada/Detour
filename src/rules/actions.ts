@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { IContext } from 'http-mitm-proxy';
-import type { BodyRewrite, HeaderRewrite, MockAction, RewriteAction, RouteAction } from './types';
+import type { BodyRewrite, HeaderRewrite, MockAction, QueryRewrite, RewriteAction, RouteAction } from './types';
 
 export interface MockResponse {
   status: number;
@@ -89,6 +89,28 @@ function applyHeaderRewrite(headers: Record<string, string | string[] | undefine
   }
 }
 
+/**
+ * Rewrites a request's outgoing query string in place, on `opts.path`
+ * (which http-mitm-proxy populates with the path *and* query together,
+ * e.g. `/users/1?x=2`). `remove` runs before `set`, matching
+ * `applyHeaderRewrite`'s ordering.
+ */
+function applyQueryRewrite(opts: { path?: string }, rewrite?: QueryRewrite): void {
+  if (!rewrite) return;
+  const path = opts.path ?? '/';
+  const queryIndex = path.indexOf('?');
+  const pathname = queryIndex === -1 ? path : path.slice(0, queryIndex);
+  const params = new URLSearchParams(queryIndex === -1 ? '' : path.slice(queryIndex + 1));
+  for (const name of rewrite.remove ?? []) {
+    params.delete(name);
+  }
+  for (const [name, value] of Object.entries(rewrite.set ?? {})) {
+    params.set(name, value);
+  }
+  const search = params.toString();
+  opts.path = search ? `${pathname}?${search}` : pathname;
+}
+
 function applyBodyRewrite(original: Buffer, rewrite: BodyRewrite): Buffer {
   if (rewrite.set !== undefined) {
     return typeof rewrite.set === 'string'
@@ -146,10 +168,11 @@ export function installResponseBodyRewrite(
   });
 }
 
-/** Applies a rewrite rule's request-header changes, and sets up body rewriting if requested. */
+/** Applies a rewrite rule's query-string/header changes, and sets up body rewriting if requested. */
 export function applyRequestRewrite(ctx: IContext, rewrite: NonNullable<RewriteAction['request']>): void {
   const opts = ctx.proxyToServerRequestOptions;
   if (!opts) return;
+  applyQueryRewrite(opts, rewrite.query);
   applyHeaderRewrite(opts.headers, rewrite.headers);
   if (rewrite.body) {
     // The rewritten body's length is unknown up front; send chunked instead.

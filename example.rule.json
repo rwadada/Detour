@@ -52,6 +52,10 @@
       "action": {
         "type": "rewrite",
         "request": {
+          "query": {
+            "set": { "debug": "1" },
+            "remove": ["signature"]
+          },
           "headers": {
             "set": { "X-Detour": "1" },
             "remove": ["Authorization"]
