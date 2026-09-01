@@ -8,7 +8,7 @@ import { startProxyServer } from './proxyServer';
 import { loadRulesFile } from './rules/loader';
 import { RuleEngine } from './rules/ruleEngine';
 import { SAMPLE_RULES_FILE } from './rules/sample';
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- reads package.json at runtime; a static `import` would need resolveJsonModule wired through the CJS build.
 const pkg = require('../package.json') as { version: string; description: string };
 
 /** Auto-loaded when `--rules` isn't given and this file exists in the current directory. */
@@ -43,14 +43,14 @@ async function runStart(options: StartOptions): Promise<void> {
   const autoDetected = !options.rules && fs.existsSync(path.resolve(process.cwd(), DEFAULT_RULES_FILENAME));
   const rulesPath = options.rules ?? (autoDetected ? DEFAULT_RULES_FILENAME : undefined);
   if (rulesPath) {
-    if (autoDetected) console.log(`ℹ Found ${DEFAULT_RULES_FILENAME}, loading it as rules (pass --rules to use a different file)`);
+    if (autoDetected)
+      console.log(`ℹ Found ${DEFAULT_RULES_FILENAME}, loading it as rules (pass --rules to use a different file)`);
     // Load eagerly so a broken rules.json fails CLI startup with a clear
     // error, rather than the proxy silently starting without any rules.
     ruleEngine = RuleEngine.load({
       filePath: rulesPath,
       onReload: (info) => eventBus.emit('rulesReloaded', { filePath: ruleEngine!.filePath, ruleCount: info.ruleCount }),
-      onReloadError: (message) =>
-        eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
+      onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
     });
   }
 
@@ -77,7 +77,9 @@ async function runStart(options: StartOptions): Promise<void> {
     );
   }
   if (ruleEngine) {
-    console.log(`Rules file: ${ruleEngine.filePath} (loaded ${ruleEngine.getRules().length} rule(s), watching for changes)`);
+    console.log(
+      `Rules file: ${ruleEngine.filePath} (loaded ${ruleEngine.getRules().length} rule(s), watching for changes)`,
+    );
   }
   console.log('Press Ctrl+C to stop.');
 
@@ -117,7 +119,7 @@ export function createCli(): Command {
 
   rules
     .command('validate <path>')
-    .description('Validates a rules file against the schema and Detour\'s semantic rules')
+    .description("Validates a rules file against the schema and Detour's semantic rules")
     .action((rulesPath: string) => {
       try {
         const { rules: loaded } = loadRulesFile(path.resolve(rulesPath));
@@ -143,4 +145,13 @@ export function createCli(): Command {
     });
 
   return program;
+}
+
+// Runs the CLI when this file is executed directly (`tsx src/cli.ts ...`,
+// `npm run dev`) — but stays a pure module (no side effect) when merely
+// imported, e.g. by `bin/detour.js` (which requires the *built* `dist/cli.js`
+// and calls `.parse()` itself) or by tests importing `createCli` without
+// wanting it to run.
+if (require.main === module) {
+  createCli().parse(process.argv);
 }

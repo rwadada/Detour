@@ -178,7 +178,9 @@ function validateSemantics(data: RulesFile): string[] {
       errors.push(`rules[${index}] (${label}): action.simulate cannot be combined with action.body/action.bodyFile`);
     }
     if (rule.action?.type === 'breakpoint' && rule.action.request === false && rule.action.response === false) {
-      errors.push(`rules[${index}] (${label}): action.request and action.response cannot both be false — this breakpoint would never pause anything`);
+      errors.push(
+        `rules[${index}] (${label}): action.request and action.response cannot both be false — this breakpoint would never pause anything`,
+      );
     }
   }
   return errors;

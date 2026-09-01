@@ -1,6 +1,11 @@
 node_modules/
 dist/
 web-dist/
+coverage/
+reports/
+.stryker-tmp/
 *.tsbuildinfo
 *.log
 .claude-job-tmp-*
+__*
+**/__*

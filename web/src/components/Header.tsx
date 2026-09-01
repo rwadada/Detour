@@ -41,9 +41,7 @@ export function Header() {
           </button>
         )}
         <div className="flex items-center gap-1.5 text-xs text-[var(--muted)]">
-          <span
-            className={cn('h-1.5 w-1.5 rounded-full', STATUS_DOT[status], status === 'open' && 'animate-pulse')}
-          />
+          <span className={cn('h-1.5 w-1.5 rounded-full', STATUS_DOT[status], status === 'open' && 'animate-pulse')} />
           {STATUS_LABEL[status]}
         </div>
         <Button

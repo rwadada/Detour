@@ -94,9 +94,7 @@ export function parseEditableHeaders(text: string): Record<string, string> {
 }
 
 /** Flattens a headers record (values may be a string or string[]) into displayable rows. */
-export function headerRows(
-  headers: Record<string, string | string[] | undefined> | undefined,
-): [string, string][] {
+export function headerRows(headers: Record<string, string | string[] | undefined> | undefined): [string, string][] {
   if (!headers) return [];
   const rows: [string, string][] = [];
   for (const [key, value] of Object.entries(headers)) {

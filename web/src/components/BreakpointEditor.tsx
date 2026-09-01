@@ -33,7 +33,12 @@ export function BreakpointEditor({ payload }: { payload: BreakpointPayload }) {
     const headers = parseEditableHeaders(headersText);
     const body = bodyEditable ? encodeBodyToBase64(bodyText) : undefined;
     if (payload.phase === 'request') {
-      resumeBreakpointRequest(payload.id, { method: method.trim() || undefined, path: path.trim() || undefined, headers, body });
+      resumeBreakpointRequest(payload.id, {
+        method: method.trim() || undefined,
+        path: path.trim() || undefined,
+        headers,
+        body,
+      });
     } else {
       const parsedStatus = Number.parseInt(status, 10);
       resumeBreakpointResponse(payload.id, {
@@ -67,12 +72,27 @@ export function BreakpointEditor({ payload }: { payload: BreakpointPayload }) {
       <div className="flex flex-1 flex-col gap-3 overflow-auto p-3">
         {payload.phase === 'request' ? (
           <div className="flex gap-2">
-            <Input value={method} onChange={(e) => setMethod(e.target.value)} className="w-24 font-mono-ui text-xs" placeholder="Method" />
-            <Input value={path} onChange={(e) => setPath(e.target.value)} className="flex-1 font-mono-ui text-xs" placeholder="/path?query" />
+            <Input
+              value={method}
+              onChange={(e) => setMethod(e.target.value)}
+              className="w-24 font-mono-ui text-xs"
+              placeholder="Method"
+            />
+            <Input
+              value={path}
+              onChange={(e) => setPath(e.target.value)}
+              className="flex-1 font-mono-ui text-xs"
+              placeholder="/path?query"
+            />
           </div>
         ) : (
           <div className="flex gap-2">
-            <Input value={status} onChange={(e) => setStatus(e.target.value)} className="w-20 font-mono-ui text-xs" placeholder="Status" />
+            <Input
+              value={status}
+              onChange={(e) => setStatus(e.target.value)}
+              className="w-20 font-mono-ui text-xs"
+              placeholder="Status"
+            />
             <Input
               value={statusMessage}
               onChange={(e) => setStatusMessage(e.target.value)}

@@ -174,8 +174,14 @@ export async function startProxyServer(
   // pause hanging forever.
   const pendingBreakpoints = new Map<string, (command: BreakpointResumeCommand) => void>();
 
-  function waitForBreakpoint(id: string, phase: 'request'): Promise<Extract<BreakpointResumeCommand, { phase: 'request' }>>;
-  function waitForBreakpoint(id: string, phase: 'response'): Promise<Extract<BreakpointResumeCommand, { phase: 'response' }>>;
+  function waitForBreakpoint(
+    id: string,
+    phase: 'request',
+  ): Promise<Extract<BreakpointResumeCommand, { phase: 'request' }>>;
+  function waitForBreakpoint(
+    id: string,
+    phase: 'response',
+  ): Promise<Extract<BreakpointResumeCommand, { phase: 'response' }>>;
   function waitForBreakpoint(id: string, phase: 'request' | 'response'): Promise<BreakpointResumeCommand> {
     return new Promise((resolve) => {
       pendingBreakpoints.set(`${id}:${phase}`, resolve);
@@ -615,12 +621,13 @@ export async function startProxyServer(
         resolve({
           port: proxy.httpPort,
           caCertPath: proxy.ca.getCACertPath(),
-          stop: () => new Promise<void>((res) => {
-            eventBus.off('breakpointResume', resolveBreakpoint);
-            ruleEngine?.close();
-            proxy.close();
-            res();
-          }),
+          stop: () =>
+            new Promise<void>((res) => {
+              eventBus.off('breakpointResume', resolveBreakpoint);
+              ruleEngine?.close();
+              proxy.close();
+              res();
+            }),
         });
       });
     } catch (err) {

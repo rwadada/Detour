@@ -9,9 +9,15 @@ function statusColorVar(status?: number): string {
   return 'var(--status-2xx)';
 }
 
+function statusLabel(status?: number, error?: string): string {
+  if (error) return 'ERR';
+  if (status !== undefined) return String(status);
+  return '···';
+}
+
 export function StatusBadge({ status, error }: { status?: number; error?: string }) {
   const color = statusColorVar(status);
-  const label = error ? 'ERR' : status !== undefined ? String(status) : '···';
+  const label = statusLabel(status, error);
   return (
     <Badge
       className={cn('min-w-[3.25rem] justify-center border')}
