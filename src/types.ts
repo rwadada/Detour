@@ -25,6 +25,8 @@ export interface CapturedExchange {
   durationMs?: number;
 
   error?: string;
+  /** Name of the rules.json rule that handled this exchange, if any. */
+  ruleName?: string;
 }
 
 export interface ProxyErrorEvent {
@@ -33,12 +35,19 @@ export interface ProxyErrorEvent {
   message: string;
 }
 
+export interface RulesReloadEvent {
+  filePath: string;
+  ruleCount: number;
+}
+
 /** Events published on the in-memory event bus. */
 export interface DetourEvents {
   /** Fired once the client finished sending the request (headers + body). */
   request: (exchange: Readonly<CapturedExchange>) => void;
   /** Fired once the upstream response finished streaming back to the client. */
   response: (exchange: Readonly<CapturedExchange>) => void;
-  /** Fired on proxy-level errors (connection resets, TLS failures, etc). */
+  /** Fired on proxy-level errors (connection resets, TLS failures, etc), and when a rules.json reload fails. */
   error: (event: ProxyErrorEvent) => void;
+  /** Fired whenever rules.json is (re)loaded successfully. */
+  rulesReloaded: (event: RulesReloadEvent) => void;
 }

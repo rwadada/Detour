@@ -33,8 +33,9 @@ export function logExchange(exchange: Readonly<CapturedExchange>): void {
   const duration = exchange.durationMs !== undefined ? paint(ansi.dim, `${exchange.durationMs}ms`) : '';
   const size =
     exchange.responseBodySize > 0 ? paint(ansi.dim, `${formatBytes(exchange.responseBodySize)}`) : '';
+  const rule = exchange.ruleName ? paint(ansi.dim, `[rule: ${exchange.ruleName}]`) : '';
 
-  console.log(`${method} ${status} ${exchange.url} ${duration} ${size}`.replace(/\s+/g, ' ').trim());
+  console.log(`${method} ${status} ${exchange.url} ${duration} ${size} ${rule}`.replace(/\s+/g, ' ').trim());
   if (exchange.error) {
     console.log(`  ${paint(ansi.red, '✖')} ${exchange.error}`);
   }
