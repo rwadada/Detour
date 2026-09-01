@@ -15,12 +15,24 @@ export interface CapturedExchange {
   isSSL: boolean;
   requestHeaders: IncomingHttpHeaders;
   requestBodySize: number;
+  /**
+   * Captured request body, base64-encoded, capped at `MAX_CAPTURED_BODY_BYTES`
+   * (see proxyServer.ts). Undefined when the body was empty or hasn't been
+   * captured yet (e.g. a `request` event fired before the body finished).
+   */
+  requestBody?: string;
+  /** True when `requestBodySize` exceeds what was actually captured in `requestBody`. */
+  requestBodyTruncated?: boolean;
   startedAt: number;
 
   statusCode?: number;
   statusMessage?: string;
   responseHeaders?: IncomingHttpHeaders;
   responseBodySize: number;
+  /** Captured response body, base64-encoded and capped — see `requestBody`. */
+  responseBody?: string;
+  /** True when `responseBodySize` exceeds what was actually captured in `responseBody`. */
+  responseBodyTruncated?: boolean;
   finishedAt?: number;
   durationMs?: number;
 

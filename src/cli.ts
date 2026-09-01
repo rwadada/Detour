@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Command } from 'commander';
+import { startDashboardServer, WEB_DIST_DIR } from './dashboard/dashboardServer';
 import { DetourEventBus } from './eventBus';
 import { logExchange, logProxyError } from './logger';
 import { startProxyServer } from './proxyServer';
@@ -54,11 +55,27 @@ async function runStart(options: StartOptions): Promise<void> {
   }
 
   const handle = await startProxyServer({ port, ruleEngine }, eventBus);
+  let dashboardHandle;
+  try {
+    dashboardHandle = await startDashboardServer({ port: dashboardPort }, eventBus);
+  } catch (err) {
+    // The proxy is already up and intercepting traffic at this point — don't
+    // leave it running (and the process alive) just because the dashboard
+    // failed to bind its port.
+    await handle.stop();
+    throw err;
+  }
 
   console.log(`Detour proxy started → http://localhost:${handle.port}`);
   console.log(`Root CA certificate: ${handle.caCertPath}`);
   console.log('  To decrypt HTTPS traffic, install this CA certificate as trusted on your target device/browser.');
-  console.log(`Reserved port ${dashboardPort} for the dashboard (not implemented yet — coming in a future issue).`);
+  if (fs.existsSync(path.join(WEB_DIST_DIR, 'index.html'))) {
+    console.log(`Dashboard → http://localhost:${dashboardHandle.port}`);
+  } else {
+    console.log(
+      `Dashboard → http://localhost:${dashboardHandle.port} (not built yet — run \`npm run build\`, or use \`npm run dev:dashboard\` for a dev server with hot reload)`,
+    );
+  }
   if (ruleEngine) {
     console.log(`Rules file: ${ruleEngine.filePath} (loaded ${ruleEngine.getRules().length} rule(s), watching for changes)`);
   }
@@ -66,7 +83,7 @@ async function runStart(options: StartOptions): Promise<void> {
 
   const shutdown = async (signal: NodeJS.Signals) => {
     console.log(`\nReceived ${signal}. Stopping the proxy…`);
-    await handle.stop();
+    await Promise.all([handle.stop(), dashboardHandle.stop()]);
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown('SIGINT'));
@@ -82,7 +99,7 @@ export function createCli(): Command {
     .command('start')
     .description('Starts the MITM proxy and begins capturing HTTP/HTTPS traffic')
     .option('-p, --port <port>', 'Port the proxy listens on', '8080')
-    .option('--dashboard-port <port>', 'Port reserved for the web dashboard (not implemented yet)', '4040')
+    .option('--dashboard-port <port>', 'Port the web dashboard listens on', '4040')
     .option(
       '--rules <path>',
       `Path to a rules file. When given, mock/route/rewrite rules are applied and reloaded automatically on change (when omitted, ${DEFAULT_RULES_FILENAME} in the current directory is loaded automatically if present)`,

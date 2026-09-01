@@ -9,25 +9,33 @@
   },
   "files": [
     "bin",
-    "dist"
+    "dist",
+    "web-dist"
   ],
   "engines": {
     "node": ">=18"
   },
+  "workspaces": [
+    "web"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && npm run build --workspace web",
+    "build:cli": "tsc -p tsconfig.json",
     "dev": "tsx watch src/cli.ts",
+    "dev:dashboard": "npm run dev --workspace web",
     "start": "node bin/detour.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && npm run typecheck --workspace web",
     "postinstall": "patch-package"
   },
   "dependencies": {
     "ajv": "^8.20.0",
     "commander": "^15.0.0",
-    "http-mitm-proxy": "^1.1.0"
+    "http-mitm-proxy": "^1.1.0",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
+    "@types/ws": "^8.18.1",
     "patch-package": "^8.0.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
