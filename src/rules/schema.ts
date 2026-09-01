@@ -128,7 +128,7 @@ const validateFn = ajv.compile(RULES_JSON_SCHEMA);
 
 function formatAjvError(err: ErrorObject): string {
   const at = err.instancePath || '(root)';
-  return `${at}: ${err.message ?? '不正な値です'}`;
+  return `${at}: ${err.message ?? 'invalid value'}`;
 }
 
 /** Rules a schema alone can't express (duplicate names, ambiguous mock body). */
@@ -139,12 +139,12 @@ function validateSemantics(data: RulesFile): string[] {
     const label = rule?.name ? `"${rule.name}"` : `#${index}`;
     if (rule.name) {
       if (seenNames.has(rule.name)) {
-        errors.push(`rules[${index}] (${label}): ルール名が重複しています`);
+        errors.push(`rules[${index}] (${label}): duplicate rule name`);
       }
       seenNames.add(rule.name);
     }
     if (rule.action?.type === 'mock' && rule.action.body !== undefined && rule.action.bodyFile !== undefined) {
-      errors.push(`rules[${index}] (${label}): action.body と action.bodyFile は同時に指定できません`);
+      errors.push(`rules[${index}] (${label}): action.body and action.bodyFile cannot both be set`);
     }
   }
   return errors;

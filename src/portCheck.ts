@@ -13,7 +13,7 @@ export function assertPortAvailable(port: number, host: string): Promise<void> {
     tester.unref();
     tester.once('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
-        reject(new Error(`ポート ${port} は既に使用されています。別の --port を指定してください。`));
+        reject(new Error(`Port ${port} is already in use. Specify a different --port.`));
       } else {
         reject(err);
       }

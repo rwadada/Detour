@@ -11,12 +11,12 @@ import { SAMPLE_RULES_FILE } from './rules/sample';
 const pkg = require('../package.json') as { version: string; description: string };
 
 /** Auto-loaded when `--rules` isn't given and this file exists in the current directory. */
-const DEFAULT_RULES_FILENAME = 'rules.json';
+const DEFAULT_RULES_FILENAME = 'passthrough.rule.json';
 
 function parsePort(value: string, flag: string): number {
   const port = Number(value);
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
-    throw new Error(`${flag} には 0〜65535 の整数を指定してください（受け取った値: ${value}）`);
+    throw new Error(`${flag} must be an integer between 0 and 65535 (got: ${value})`);
   }
   return port;
 }
@@ -35,14 +35,14 @@ async function runStart(options: StartOptions): Promise<void> {
   eventBus.on('response', logExchange);
   eventBus.on('error', logProxyError);
   eventBus.on('rulesReloaded', ({ filePath, ruleCount }) => {
-    console.log(`↻ ルールを再読み込みしました（${ruleCount}件）: ${filePath}`);
+    console.log(`↻ Reloaded rules (${ruleCount}): ${filePath}`);
   });
 
   let ruleEngine: RuleEngine | undefined;
   const autoDetected = !options.rules && fs.existsSync(path.resolve(process.cwd(), DEFAULT_RULES_FILENAME));
   const rulesPath = options.rules ?? (autoDetected ? DEFAULT_RULES_FILENAME : undefined);
   if (rulesPath) {
-    if (autoDetected) console.log(`ℹ ${DEFAULT_RULES_FILENAME} を検出したため、ルールとして読み込みます（--rules で明示的に指定も可能）`);
+    if (autoDetected) console.log(`ℹ Found ${DEFAULT_RULES_FILENAME}, loading it as rules (pass --rules to use a different file)`);
     // Load eagerly so a broken rules.json fails CLI startup with a clear
     // error, rather than the proxy silently starting without any rules.
     ruleEngine = RuleEngine.load({
@@ -55,19 +55,17 @@ async function runStart(options: StartOptions): Promise<void> {
 
   const handle = await startProxyServer({ port, ruleEngine }, eventBus);
 
-  console.log(`Detour プロキシを起動しました → http://localhost:${handle.port}`);
-  console.log(`ルートCA証明書: ${handle.caCertPath}`);
-  console.log('  HTTPSを復号するには、このCA証明書を対象デバイス/ブラウザに信頼済みとしてインストールしてください。');
-  console.log(
-    `ダッシュボード用ポート ${dashboardPort} を予約しました（ダッシュボード自体は未実装。今後の issue で追加予定）。`,
-  );
+  console.log(`Detour proxy started → http://localhost:${handle.port}`);
+  console.log(`Root CA certificate: ${handle.caCertPath}`);
+  console.log('  To decrypt HTTPS traffic, install this CA certificate as trusted on your target device/browser.');
+  console.log(`Reserved port ${dashboardPort} for the dashboard (not implemented yet — coming in a future issue).`);
   if (ruleEngine) {
-    console.log(`ルールファイル: ${ruleEngine.filePath}（${ruleEngine.getRules().length}件のルールを読み込み、変更を監視中）`);
+    console.log(`Rules file: ${ruleEngine.filePath} (loaded ${ruleEngine.getRules().length} rule(s), watching for changes)`);
   }
-  console.log('Ctrl+C で終了します。');
+  console.log('Press Ctrl+C to stop.');
 
   const shutdown = async (signal: NodeJS.Signals) => {
-    console.log(`\n${signal} を受信しました。プロキシを停止しています…`);
+    console.log(`\nReceived ${signal}. Stopping the proxy…`);
     await handle.stop();
     process.exit(0);
   };
@@ -82,12 +80,12 @@ export function createCli(): Command {
 
   program
     .command('start')
-    .description('MITMプロキシを起動し、HTTP/HTTPSトラフィックのキャプチャを開始します')
-    .option('-p, --port <port>', 'プロキシがリッスンするポート', '8080')
-    .option('--dashboard-port <port>', 'Webダッシュボード用に予約するポート（ダッシュボードは未実装）', '4040')
+    .description('Starts the MITM proxy and begins capturing HTTP/HTTPS traffic')
+    .option('-p, --port <port>', 'Port the proxy listens on', '8080')
+    .option('--dashboard-port <port>', 'Port reserved for the web dashboard (not implemented yet)', '4040')
     .option(
       '--rules <path>',
-      `rules.json のパス。指定するとmock/route/rewriteルールを適用し、変更を監視して自動反映します（省略時もカレントディレクトリに ${DEFAULT_RULES_FILENAME} があれば自動的に読み込みます）`,
+      `Path to a rules file. When given, mock/route/rewrite rules are applied and reloaded automatically on change (when omitted, ${DEFAULT_RULES_FILENAME} in the current directory is loaded automatically if present)`,
     )
     .action(async (options: StartOptions) => {
       try {
@@ -98,15 +96,15 @@ export function createCli(): Command {
       }
     });
 
-  const rules = program.command('rules').description('rules.json（宣言型ルールエンジン設定）の管理');
+  const rules = program.command('rules').description('Manage rules.json (the declarative rule engine config)');
 
   rules
     .command('validate <path>')
-    .description('rules.json のスキーマ・整合性を検証します')
+    .description('Validates a rules file against the schema and Detour\'s semantic rules')
     .action((rulesPath: string) => {
       try {
         const { rules: loaded } = loadRulesFile(path.resolve(rulesPath));
-        console.log(`✔ ${rulesPath} は妥当です（${loaded.length}件のルール）`);
+        console.log(`✔ ${rulesPath} is valid (${loaded.length} rule(s))`);
       } catch (err) {
         console.error(err instanceof Error ? err.message : String(err));
         process.exitCode = 1;
@@ -115,16 +113,16 @@ export function createCli(): Command {
 
   rules
     .command('init [path]')
-    .description('サンプルの rules.json を作成します')
+    .description('Creates a sample rules file')
     .action((rulesPath = 'rules.json') => {
       const dest = path.resolve(rulesPath);
       if (fs.existsSync(dest)) {
-        console.error(`✖ 既に存在します: ${dest}`);
+        console.error(`✖ Already exists: ${dest}`);
         process.exitCode = 1;
         return;
       }
       fs.writeFileSync(dest, SAMPLE_RULES_FILE);
-      console.log(`✔ サンプルルールを作成しました: ${dest}`);
+      console.log(`✔ Created sample rules file: ${dest}`);
     });
 
   return program;

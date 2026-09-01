@@ -68,7 +68,7 @@ function tryResolveMock(rule: Rule, basePath: string, onError: (message: string)
     return {
       status: 500,
       headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-      body: Buffer.from(`detour: モックルール "${rule.name}" の応答生成に失敗しました: ${message}`, 'utf8'),
+      body: Buffer.from(`detour: mock rule "${rule.name}" failed to build its response: ${message}`, 'utf8'),
     };
   }
 }
@@ -161,7 +161,7 @@ export async function startProxyServer(
         eventBus.emit('error', {
           id: ctx.uuid,
           errorKind: 'RULE_MOCK_ERROR',
-          message: `ルール "${rule.name}": ${mockError}`,
+          message: `rule "${rule.name}": ${mockError}`,
         });
       }
       const delayMs = rule.action.delayMs;

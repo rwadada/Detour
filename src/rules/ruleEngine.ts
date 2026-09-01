@@ -65,7 +65,7 @@ export class RuleEngine {
       this.scheduleReload();
     });
     this.watcher.on('error', (err) => {
-      this.options.onReloadError?.(`ルールファイルの監視でエラーが発生しました: ${err.message}`);
+      this.options.onReloadError?.(`Error watching the rules file: ${err.message}`);
     });
   }
 
