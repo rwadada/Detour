@@ -1,5 +1,5 @@
 import { Proxy } from 'http-mitm-proxy';
-import type { IContext } from 'http-mitm-proxy';
+import type { ErrorCallback, IContext } from 'http-mitm-proxy';
 import { resolveCertDir } from './certStore';
 import type { DetourEventBus } from './eventBus';
 import { assertPortAvailable } from './portCheck';
@@ -15,7 +15,12 @@ import {
 } from './rules/actions';
 import type { RuleEngine } from './rules/ruleEngine';
 import type { Rule } from './rules/types';
-import type { CapturedExchange } from './types';
+import type {
+  BreakpointRequestPayload,
+  BreakpointResponsePayload,
+  BreakpointResumeCommand,
+  CapturedExchange,
+} from './types';
 
 /**
  * Upper bound (in bytes, pre-base64) on how much of a request/response body
@@ -65,6 +70,21 @@ class BodyCapture {
     capture.add(buffer);
     return capture;
   }
+
+  /** The captured bytes as a single buffer (capped the same as `add`/`applyTo`). */
+  toBuffer(): Buffer {
+    return Buffer.concat(this.chunks);
+  }
+}
+
+/** Flattens a Node headers object (values may be a string or string[]) into the plain string map the breakpoint wire format uses. */
+function flattenHeaders(headers: Record<string, string | string[] | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (value === undefined) continue;
+    out[key] = Array.isArray(value) ? value.join(', ') : value;
+  }
+  return out;
 }
 
 export interface ProxyServerOptions {
@@ -147,10 +167,43 @@ export async function startProxyServer(
   // onRequest, since it's the same for both.
   const ruleContexts = new Map<string, Rule>();
 
+  // A `breakpoint` rule pauses an exchange by awaiting a promise resolved
+  // from here, keyed by `${ctx.uuid}:${phase}`. Resolved either by a
+  // matching `breakpointResume` from the dashboard, or synthetically (as an
+  // abort) on a proxy-level error, so a dropped connection never leaves a
+  // pause hanging forever.
+  const pendingBreakpoints = new Map<string, (command: BreakpointResumeCommand) => void>();
+
+  function waitForBreakpoint(
+    id: string,
+    phase: 'request',
+  ): Promise<Extract<BreakpointResumeCommand, { phase: 'request' }>>;
+  function waitForBreakpoint(
+    id: string,
+    phase: 'response',
+  ): Promise<Extract<BreakpointResumeCommand, { phase: 'response' }>>;
+  function waitForBreakpoint(id: string, phase: 'request' | 'response'): Promise<BreakpointResumeCommand> {
+    return new Promise((resolve) => {
+      pendingBreakpoints.set(`${id}:${phase}`, resolve);
+    });
+  }
+
+  function resolveBreakpoint(command: BreakpointResumeCommand): void {
+    const key = `${command.id}:${command.phase}`;
+    const resolve = pendingBreakpoints.get(key);
+    if (!resolve) return;
+    pendingBreakpoints.delete(key);
+    resolve(command);
+  }
+
+  eventBus.on('breakpointResume', resolveBreakpoint);
+
   proxy.onError((ctx, err, errorKind) => {
     if (ctx) {
       inFlight.delete(ctx.uuid);
       ruleContexts.delete(ctx.uuid);
+      resolveBreakpoint({ id: ctx.uuid, phase: 'request', action: 'abort' });
+      resolveBreakpoint({ id: ctx.uuid, phase: 'response', action: 'abort' });
     }
     eventBus.emit('error', {
       id: ctx?.uuid,
@@ -159,12 +212,207 @@ export async function startProxyServer(
     });
   });
 
+  /**
+   * Pauses a request matched by a `breakpoint` rule (request phase) before
+   * it's forwarded upstream, and resumes/aborts it once the dashboard
+   * responds.
+   *
+   * Mirrors the `mock` branch below: reads the client's request body
+   * directly off `clientToProxyRequest` (rather than via
+   * `onRequestData`/`onRequestEnd`, which only start flowing once `callback`
+   * is called) so the full body is available for the dashboard to show and
+   * edit before deciding whether/how to forward it. Once resumed, the
+   * (possibly edited) body is written directly to `proxyToServerRequest`
+   * from `onRequestEnd` — mirroring `installRequestBodyRewrite` — since the
+   * client stream was already fully drained here and carries no more data
+   * for http-mitm-proxy's own pipeline to forward.
+   */
+  function handleRequestBreakpoint(
+    ctx: IContext,
+    rule: Rule,
+    exchange: CapturedExchange,
+    callback: ErrorCallback,
+  ): void {
+    const requestCapture = new BodyCapture();
+    ctx.clientToProxyRequest.on('data', (chunk: Buffer) => {
+      exchange.requestBodySize += chunk.length;
+      requestCapture.add(chunk);
+    });
+    ctx.clientToProxyRequest.resume();
+
+    const pause = () => {
+      requestCapture.applyTo(exchange, 'request');
+
+      const opts = ctx.proxyToServerRequestOptions;
+      const payload: BreakpointRequestPayload = {
+        phase: 'request',
+        id: ctx.uuid,
+        method: exchange.method,
+        path: opts?.path ?? ctx.clientToProxyRequest.url ?? '/',
+        headers: flattenHeaders(opts?.headers ?? ctx.clientToProxyRequest.headers),
+        body: exchange.requestBody,
+        bodyTruncated: exchange.requestBodyTruncated ?? false,
+      };
+      eventBus.emit('breakpointHit', { exchange: { ...exchange, breakpoint: 'request' }, payload });
+
+      waitForBreakpoint(ctx.uuid, 'request').then((command) => {
+        if (command.action === 'abort') {
+          inFlight.delete(ctx.uuid);
+          ruleContexts.delete(ctx.uuid);
+          exchange.error = `rule "${rule.name}": request aborted via breakpoint`;
+          exchange.finishedAt = Date.now();
+          exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+          eventBus.emit('response', exchange);
+          ctx.proxyToClientResponse.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+          ctx.proxyToClientResponse.end(`detour: request aborted via breakpoint rule "${rule.name}"`);
+          // Deliberately never calls `callback`: leaving it uncalled is how
+          // http-mitm-proxy is designed to skip forwarding to upstream.
+          return;
+        }
+
+        const edits = command.edits;
+        const finalBody = edits?.body !== undefined ? Buffer.from(edits.body, 'base64') : requestCapture.toBuffer();
+
+        if (opts) {
+          if (edits?.method) opts.method = edits.method.toUpperCase();
+          if (edits?.path) opts.path = edits.path;
+          if (edits?.headers) opts.headers = { ...edits.headers };
+          // The edited body's length may differ from the original; drop
+          // content-length so Node sends it chunked instead (same as
+          // installRequestBodyRewrite's callers do).
+          delete opts.headers['content-length'];
+          exchange.method = opts.method;
+          exchange.url = `${ctx.isSSL ? 'https' : 'http'}://${exchange.host}${opts.path}`;
+        }
+        if (edits?.headers) exchange.requestHeaders = edits.headers;
+        exchange.requestBodySize = finalBody.length;
+        BodyCapture.of(finalBody).applyTo(exchange, 'request');
+
+        ctx.onRequestData((_dataCtx, _chunk, cb) => cb(undefined, Buffer.alloc(0)));
+        ctx.onRequestEnd((_endCtx, cb) => {
+          if (finalBody.length > 0) ctx.proxyToServerRequest?.write(finalBody);
+          eventBus.emit('request', exchange);
+          return cb();
+        });
+
+        callback();
+      });
+    };
+
+    if (ctx.clientToProxyRequest.complete) pause();
+    else ctx.clientToProxyRequest.once('end', pause);
+  }
+
+  /**
+   * Pauses a response matched by a `breakpoint` rule (response phase) once
+   * it's fully arrived from upstream but before any of it reaches the
+   * client, and resumes/aborts it once the dashboard responds.
+   *
+   * Must run from the proxy-level `onResponseHeaders` hook (see
+   * applyResponseHeaderRewrite's doc comment for why) — which is also the
+   * only point status/headers can still be edited, since http-mitm-proxy
+   * flushes them to the client immediately once this hook's callback fires.
+   * Reads the upstream body directly off `serverToProxyResponse` (mirroring
+   * handleRequestBreakpoint) so the full body is available before that
+   * callback is released; once resumed, the (possibly edited) body is
+   * written directly from `onResponseEnd` — mirroring
+   * `installResponseBodyRewrite` — since the upstream stream was already
+   * fully drained here.
+   */
+  function handleResponseBreakpoint(ctx: IContext, rule: Rule, callback: ErrorCallback): void {
+    const exchange = inFlight.get(ctx.uuid);
+    const res = ctx.serverToProxyResponse;
+    if (!res || !exchange) {
+      callback();
+      return;
+    }
+
+    const capture = new BodyCapture();
+    res.on('data', (chunk: Buffer) => capture.add(chunk));
+    // `serverToProxyResponse` is paused by http-mitm-proxy before this hook
+    // runs; without resuming it here, it never emits 'data'/'end' and the
+    // wait below deadlocks forever (same reasoning as the mock branch above).
+    res.resume();
+
+    const pause = () => {
+      const rawBody = capture.toBuffer();
+      const snapshot: CapturedExchange = { ...exchange, breakpoint: 'response' };
+      snapshot.statusCode = res.statusCode;
+      snapshot.statusMessage = res.statusMessage;
+      snapshot.responseHeaders = { ...res.headers };
+      snapshot.responseBodySize = rawBody.length;
+      BodyCapture.of(rawBody).applyTo(snapshot, 'response');
+
+      const payload: BreakpointResponsePayload = {
+        phase: 'response',
+        id: ctx.uuid,
+        status: res.statusCode ?? 200,
+        statusMessage: res.statusMessage,
+        headers: flattenHeaders(res.headers),
+        body: snapshot.responseBody,
+        bodyTruncated: snapshot.responseBodyTruncated ?? false,
+      };
+      eventBus.emit('breakpointHit', { exchange: snapshot, payload });
+
+      waitForBreakpoint(ctx.uuid, 'response').then((command) => {
+        if (command.action === 'abort') {
+          inFlight.delete(ctx.uuid);
+          ruleContexts.delete(ctx.uuid);
+          exchange.error = `rule "${rule.name}": response aborted via breakpoint (connection closed)`;
+          exchange.finishedAt = Date.now();
+          exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+          eventBus.emit('response', exchange);
+          ctx.proxyToClientResponse.destroy();
+          // Deliberately never calls `callback`: leaving it uncalled stops
+          // headers/body from ever reaching the client, same convention as
+          // the request-phase abort above.
+          return;
+        }
+
+        const edits = command.edits;
+        if (edits?.status !== undefined) res.statusCode = edits.status;
+        if (edits?.statusMessage !== undefined) res.statusMessage = edits.statusMessage;
+        if (edits?.headers) res.headers = { ...edits.headers };
+        // Same reasoning as the request phase: the edited body's length may
+        // differ, so drop content-length and let it go out chunked.
+        delete res.headers['content-length'];
+        const finalBody = edits?.body !== undefined ? Buffer.from(edits.body, 'base64') : rawBody;
+
+        exchange.statusCode = res.statusCode;
+        exchange.statusMessage = res.statusMessage;
+        exchange.responseHeaders = { ...res.headers };
+        exchange.responseBodySize = finalBody.length;
+        BodyCapture.of(finalBody).applyTo(exchange, 'response');
+        exchange.finishedAt = Date.now();
+        exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+
+        ctx.onResponseData((_dataCtx, _chunk, cb) => cb(undefined, Buffer.alloc(0)));
+        ctx.onResponseEnd((_endCtx, cb) => {
+          if (finalBody.length > 0) ctx.proxyToClientResponse.write(finalBody);
+          eventBus.emit('response', exchange);
+          inFlight.delete(ctx.uuid);
+          ruleContexts.delete(ctx.uuid);
+          return cb();
+        });
+
+        callback();
+      });
+    };
+
+    if (res.complete) pause();
+    else res.once('end', pause);
+  }
+
   // Response header/status rewrites must run before http-mitm-proxy
   // flushes them to the client. This has to be registered at the proxy
   // level (not via `ctx.onResponseHeaders`, which the library never
   // actually invokes) — see applyResponseHeaderRewrite's doc comment.
   proxy.onResponseHeaders((ctx, callback) => {
     const rule = ruleContexts.get(ctx.uuid);
+    if (rule?.action.type === 'breakpoint' && rule.action.response !== false) {
+      handleResponseBreakpoint(ctx, rule, callback);
+      return;
+    }
     if (rule?.action.type === 'rewrite' && rule.action.response) {
       applyResponseHeaderRewrite(ctx, rule.action.response);
     }
@@ -282,6 +530,12 @@ export async function startProxyServer(
       return;
     }
 
+    if (rule?.action.type === 'breakpoint' && rule.action.request !== false) {
+      ruleContexts.set(ctx.uuid, rule);
+      handleRequestBreakpoint(ctx, rule, exchange, callback);
+      return;
+    }
+
     if (rule) ruleContexts.set(ctx.uuid, rule);
     if (rule?.action.type === 'route') {
       applyRouteAction(ctx, rule.action);
@@ -311,6 +565,15 @@ export async function startProxyServer(
   proxy.onResponse((ctx, callback) => {
     const exchange = inFlight.get(ctx.uuid);
     const rule = ruleContexts.get(ctx.uuid);
+
+    if (rule?.action.type === 'breakpoint' && rule.action.response !== false) {
+      // Fully handled by handleResponseBreakpoint from the onResponseHeaders
+      // hook instead, which needs to pause *before* headers are flushed —
+      // skip the normal capture/bookkeeping below entirely so it isn't done
+      // twice (once here with an empty body, once there with the real one).
+      return callback();
+    }
+
     if (exchange && ctx.serverToProxyResponse) {
       exchange.statusCode = ctx.serverToProxyResponse.statusCode;
       exchange.statusMessage = ctx.serverToProxyResponse.statusMessage;
@@ -360,6 +623,7 @@ export async function startProxyServer(
           caCertPath: proxy.ca.getCACertPath(),
           stop: () =>
             new Promise<void>((res) => {
+              eventBus.off('breakpointResume', resolveBreakpoint);
               ruleEngine?.close();
               proxy.close();
               res();

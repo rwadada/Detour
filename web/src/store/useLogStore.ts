@@ -1,7 +1,13 @@
 import { create } from 'zustand';
 import { RingBuffer } from '@/lib/ringBuffer';
 import { connectDashboardSocket, type ConnectionStatus } from '@/lib/ws';
-import type { CapturedExchange, ProxyErrorEvent } from '@/types';
+import type {
+  BreakpointPayload,
+  BreakpointRequestEdits,
+  BreakpointResponseEdits,
+  CapturedExchange,
+  ProxyErrorEvent,
+} from '@/types';
 
 /** Bounds memory: with `MAX_ERRORS` and a ~1KB average exchange, this store's array itself never exceeds a few MB regardless of session length. */
 const MAX_EXCHANGES = 5000;
@@ -24,10 +30,18 @@ interface LogStoreState {
   connectionStatus: ConnectionStatus;
   filters: Filters;
   errors: ProxyErrorEvent[];
+  /** Exchanges currently paused by a `breakpoint` rule, keyed by exchange id — awaiting resume/abort from this (or any other connected) dashboard tab. */
+  pausedBreakpoints: Record<string, BreakpointPayload>;
 
   select: (id: string | null) => void;
   setFilters: (patch: Partial<Filters>) => void;
   clear: () => void;
+  /** Resumes a paused request, optionally with edits. Omit `edits` to forward it unchanged. */
+  resumeBreakpointRequest: (id: string, edits?: BreakpointRequestEdits) => void;
+  /** Resumes a paused response, optionally with edits. Omit `edits` to return it unchanged. */
+  resumeBreakpointResponse: (id: string, edits?: BreakpointResponseEdits) => void;
+  /** Aborts a paused exchange instead of letting it continue. */
+  abortBreakpoint: (id: string, phase: 'request' | 'response') => void;
 }
 
 const buffer = new RingBuffer<CapturedExchange>(MAX_EXCHANGES, (item) => item.id);
@@ -53,7 +67,7 @@ export const useLogStore = create<LogStoreState>((set) => {
     if (flushHandle === undefined) flushHandle = requestAnimationFrame(flush);
   };
 
-  connectDashboardSocket({
+  const socket = connectDashboardSocket({
     onStatusChange: (status) => set({ connectionStatus: status }),
     onMessage: (message) => {
       switch (message.type) {
@@ -67,9 +81,25 @@ export const useLogStore = create<LogStoreState>((set) => {
         case 'response':
           pendingUpserts.push(message.exchange);
           scheduleFlush();
+          // A `request`/`response` update for an id that was paused means
+          // it just resumed (or was aborted) — from this tab or another —
+          // so it's no longer awaiting an editor here.
+          set((state) => {
+            if (!(message.exchange.id in state.pausedBreakpoints)) return state;
+            const pausedBreakpoints = { ...state.pausedBreakpoints };
+            delete pausedBreakpoints[message.exchange.id];
+            return { pausedBreakpoints };
+          });
           return;
         case 'error':
           set((state) => ({ errors: [message.event, ...state.errors].slice(0, MAX_ERRORS) }));
+          return;
+        case 'breakpoint':
+          pendingUpserts.push(message.exchange);
+          scheduleFlush();
+          set((state) => ({
+            pausedBreakpoints: { ...state.pausedBreakpoints, [message.payload.id]: message.payload },
+          }));
           return;
       }
     },
@@ -81,6 +111,7 @@ export const useLogStore = create<LogStoreState>((set) => {
     connectionStatus: 'connecting',
     filters: DEFAULT_FILTERS,
     errors: [],
+    pausedBreakpoints: {},
 
     select: (id) => set({ selectedId: id }),
     setFilters: (patch) => set((state) => ({ filters: { ...state.filters, ...patch } })),
@@ -88,7 +119,15 @@ export const useLogStore = create<LogStoreState>((set) => {
       buffer.clear();
       pendingUpserts = [];
       set({ exchanges: [], selectedId: null, errors: [] });
+      // Deliberately not touched: entries in `pausedBreakpoints` reflect
+      // exchanges genuinely still paused server-side — clearing the log
+      // table shouldn't hide them, or there'd be no way left to resume them.
     },
+    resumeBreakpointRequest: (id, edits) =>
+      socket.send({ type: 'breakpointResume', command: { id, phase: 'request', action: 'resume', edits } }),
+    resumeBreakpointResponse: (id, edits) =>
+      socket.send({ type: 'breakpointResume', command: { id, phase: 'response', action: 'resume', edits } }),
+    abortBreakpoint: (id, phase) => socket.send({ type: 'breakpointResume', command: { id, phase, action: 'abort' } }),
   };
 });
 

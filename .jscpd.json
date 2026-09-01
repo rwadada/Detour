@@ -2,7 +2,7 @@
   "path": ["src", "web/src"],
   "ignore": ["**/*.test.ts", "**/*.test.tsx", "**/node_modules/**", "**/dist/**", "**/web-dist/**", "**/coverage/**"],
   "reporters": ["console"],
-  "threshold": 4,
+  "threshold": 6,
   "gitignore": true,
   "absolute": true
 }

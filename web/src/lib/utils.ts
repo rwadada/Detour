@@ -48,6 +48,14 @@ export function decodeCapturedBody(base64: string): string | undefined {
   }
 }
 
+/** The inverse of `decodeCapturedBody`: UTF-8-encodes `text` and base64-encodes the result, for sending a breakpoint's edited body back to the server. */
+export function encodeBodyToBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
 /** Pretty-prints `text` as JSON if it parses, otherwise returns it unchanged. */
 export function tryPrettyJson(text: string): { text: string; isJson: boolean } {
   try {
@@ -63,6 +71,26 @@ export function parseQueryParams(url: string): [string, string][] {
   } catch {
     return [];
   }
+}
+
+/** Renders a flat headers map as `Name: value` lines, for a breakpoint editor's editable textarea. */
+export function headersToEditableText(headers: Record<string, string>): string {
+  return Object.entries(headers)
+    .map(([name, value]) => `${name}: ${value}`)
+    .join('\n');
+}
+
+/** The inverse of `headersToEditableText`. Blank lines and lines without a `:` are ignored. */
+export function parseEditableHeaders(text: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const line of text.split('\n')) {
+    const colonIndex = line.indexOf(':');
+    if (colonIndex === -1) continue;
+    const name = line.slice(0, colonIndex).trim();
+    if (!name) continue;
+    headers[name] = line.slice(colonIndex + 1).trim();
+  }
+  return headers;
 }
 
 /** Flattens a headers record (values may be a string or string[]) into displayable rows. */

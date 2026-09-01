@@ -68,6 +68,7 @@ export const RULES_JSON_SCHEMA = {
             { $ref: '#/definitions/mockAction' },
             { $ref: '#/definitions/routeAction' },
             { $ref: '#/definitions/rewriteAction' },
+            { $ref: '#/definitions/breakpointAction' },
           ],
         },
       },
@@ -133,6 +134,16 @@ export const RULES_JSON_SCHEMA = {
         },
       },
     },
+    breakpointAction: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['type'],
+      properties: {
+        type: { const: 'breakpoint' },
+        request: { type: 'boolean' },
+        response: { type: 'boolean' },
+      },
+    },
   },
 } as const;
 
@@ -165,6 +176,11 @@ function validateSemantics(data: RulesFile): string[] {
       (rule.action.body !== undefined || rule.action.bodyFile !== undefined)
     ) {
       errors.push(`rules[${index}] (${label}): action.simulate cannot be combined with action.body/action.bodyFile`);
+    }
+    if (rule.action?.type === 'breakpoint' && rule.action.request === false && rule.action.response === false) {
+      errors.push(
+        `rules[${index}] (${label}): action.request and action.response cannot both be false — this breakpoint would never pause anything`,
+      );
     }
   }
   return errors;

@@ -1,5 +1,6 @@
 import { lazy, Suspense, useMemo, useState } from 'react';
 import { X } from 'lucide-react';
+import { BreakpointEditor } from '@/components/BreakpointEditor';
 import { MethodBadge, StatusBadge } from '@/components/StatusBadge';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -16,6 +17,7 @@ export function InspectorPanel() {
   const exchanges = useLogStore((s) => s.exchanges);
   const selectedId = useLogStore((s) => s.selectedId);
   const select = useLogStore((s) => s.select);
+  const pausedBreakpoints = useLogStore((s) => s.pausedBreakpoints);
   const exchange = useMemo(() => exchanges.find((e) => e.id === selectedId), [exchanges, selectedId]);
 
   if (!exchange) {
@@ -24,6 +26,14 @@ export function InspectorPanel() {
         Select a request to inspect its headers, query params, and body.
       </div>
     );
+  }
+
+  // A `breakpoint` rule paused this exchange — edit/resume/abort it instead
+  // of the normal read-only inspector, since it can't be inspected any
+  // further until it's let through (or dropped) one way or another.
+  const pausedPayload = pausedBreakpoints[exchange.id];
+  if (pausedPayload) {
+    return <BreakpointEditor payload={pausedPayload} />;
   }
 
   const queryParams = parseQueryParams(exchange.url);

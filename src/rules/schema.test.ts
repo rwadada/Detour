@@ -80,6 +80,19 @@ describe('validateRulesData', () => {
     expect(result.valid).toBe(true);
   });
 
+  it('accepts a breakpoint action with only one phase enabled', () => {
+    const result = validateRulesData({ rules: [baseRule({ action: { type: 'breakpoint', response: false } })] });
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects a breakpoint action with both phases disabled', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'breakpoint', request: false, response: false } })],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('never pause anything'))).toBe(true);
+  });
+
   it('collects every validation error rather than stopping at the first', () => {
     const result = validateRulesData({
       rules: [baseRule({ name: 'dup' }), baseRule({ name: 'dup', action: { type: 'bogus' } })],
