@@ -1,5 +1,6 @@
 import { Moon, Shield, ShieldOff, Sun } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { FocusControl } from '@/components/FocusControl';
 import { setTheme, useTheme } from '@/lib/theme';
 import { cn } from '@/lib/utils';
 import { useLogStore } from '@/store/useLogStore';
@@ -64,6 +65,7 @@ export function Header() {
           {interceptEnabled ? <Shield className="h-3 w-3" /> : <ShieldOff className="h-3 w-3" />}
           Intercept {interceptEnabled ? 'On' : 'Off'}
         </button>
+        <FocusControl />
         <Button
           variant="ghost"
           size="icon"
