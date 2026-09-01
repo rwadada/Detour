@@ -16,6 +16,56 @@ import type { RuleEngine } from './rules/ruleEngine';
 import type { Rule } from './rules/types';
 import type { CapturedExchange } from './types';
 
+/**
+ * Upper bound (in bytes, pre-base64) on how much of a request/response body
+ * we hold in memory per exchange for the dashboard's inspector. Traffic
+ * bodies can be arbitrarily large (file uploads/downloads); capturing them
+ * unbounded would let a single exchange blow up process memory. Bytes past
+ * this cap are still proxied through to the client/server as normal — only
+ * the *captured copy* used for display is truncated.
+ */
+const MAX_CAPTURED_BODY_BYTES = 256 * 1024;
+
+/** Accumulates chunks up to `MAX_CAPTURED_BODY_BYTES` and reports whether more arrived than that. */
+class BodyCapture {
+  private readonly chunks: Buffer[] = [];
+  private capturedBytes = 0;
+  private truncated = false;
+
+  add(chunk: Buffer): void {
+    if (chunk.length === 0) return;
+    if (this.capturedBytes >= MAX_CAPTURED_BODY_BYTES) {
+      this.truncated = true;
+      return;
+    }
+    const room = MAX_CAPTURED_BODY_BYTES - this.capturedBytes;
+    const slice = chunk.length > room ? chunk.subarray(0, room) : chunk;
+    this.chunks.push(slice);
+    this.capturedBytes += slice.length;
+    if (slice.length < chunk.length) this.truncated = true;
+  }
+
+  /** Applies the capture to an exchange's `{prefix}Body`/`{prefix}BodyTruncated` fields. Omitted entirely when nothing was captured. */
+  applyTo(exchange: CapturedExchange, prefix: 'request' | 'response'): void {
+    if (this.chunks.length === 0) return;
+    const body = Buffer.concat(this.chunks).toString('base64');
+    if (prefix === 'request') {
+      exchange.requestBody = body;
+      exchange.requestBodyTruncated = this.truncated;
+    } else {
+      exchange.responseBody = body;
+      exchange.responseBodyTruncated = this.truncated;
+    }
+  }
+
+  /** Same capping as `add`, for a body that's already fully in memory (e.g. a resolved `mock` action's response). */
+  static of(buffer: Buffer): BodyCapture {
+    const capture = new BodyCapture();
+    capture.add(buffer);
+    return capture;
+  }
+}
+
 export interface ProxyServerOptions {
   port: number;
   host?: string;
@@ -140,16 +190,37 @@ export async function startProxyServer(
     inFlight.set(ctx.uuid, exchange);
 
     if (rule?.action.type === 'mock') {
+      const mockAction = rule.action;
       let mockError: string | undefined;
       const mock = tryResolveMock(rule, ruleEngine!.basePath, (message) => {
         mockError = message;
       });
+
+      // A mock never forwards to upstream (callback() is never called
+      // below), so the usual onRequestData/onRequestEnd hooks — which only
+      // fire as part of that forwarding pipeline — never run for it. Capture
+      // the client's raw request stream directly instead, so the dashboard
+      // still shows what was actually sent to a mocked endpoint.
+      const requestCapture = new BodyCapture();
+      ctx.clientToProxyRequest.on('data', (chunk: Buffer) => {
+        exchange.requestBodySize += chunk.length;
+        requestCapture.add(chunk);
+      });
+      // http-mitm-proxy calls ctx.clientToProxyRequest.pause() before onRequest
+      // runs; adding a 'data' listener alone does NOT auto-resume a stream
+      // that was explicitly paused (see Readable.prototype.on in Node's
+      // stream internals), so without this, the request stream never emits
+      // 'data'/'end' and the wait below deadlocks forever.
+      ctx.clientToProxyRequest.resume();
+
       const respond = () => {
+        requestCapture.applyTo(exchange, 'request');
         sendMockResponse(ctx, mock);
         exchange.statusCode = mock.status;
         exchange.statusMessage = mock.statusMessage;
         exchange.responseHeaders = mock.headers;
         exchange.responseBodySize = mock.body.length;
+        BodyCapture.of(mock.body).applyTo(exchange, 'response');
         exchange.finishedAt = Date.now();
         exchange.durationMs = exchange.finishedAt - exchange.startedAt;
         exchange.error = mockError;
@@ -164,11 +235,21 @@ export async function startProxyServer(
           message: `rule "${rule.name}": ${mockError}`,
         });
       }
-      const delayMs = rule.action.delayMs;
-      if (delayMs && delayMs > 0) {
-        setTimeout(respond, delayMs);
+      const sendMockAfterDelay = () => {
+        const delayMs = mockAction.delayMs;
+        if (delayMs && delayMs > 0) {
+          setTimeout(respond, delayMs);
+        } else {
+          respond();
+        }
+      };
+      // Wait for the request body to finish arriving (if it hasn't
+      // already) so it's fully captured before responding — sendMockResponse
+      // drains/discards whatever's left on the socket regardless.
+      if (ctx.clientToProxyRequest.complete) {
+        sendMockAfterDelay();
       } else {
-        respond();
+        ctx.clientToProxyRequest.once('end', sendMockAfterDelay);
       }
       // Deliberately does not call `callback()`: leaving it uncalled is
       // how http-mitm-proxy is designed to skip forwarding to upstream.
@@ -182,15 +263,18 @@ export async function startProxyServer(
       applyRequestRewrite(ctx, rule.action.request);
     }
 
+    const requestCapture = new BodyCapture();
     ctx.onRequestData((_dataCtx, chunk, cb) => {
       exchange.requestBodySize += chunk.length;
+      requestCapture.add(chunk);
       return cb(undefined, chunk);
     });
 
     ctx.onRequestEnd((_endCtx, cb) => {
+      requestCapture.applyTo(exchange, 'request');
       // Published as soon as the request is fully sent, before the
-      // response arrives — lets consumers (e.g. a future dashboard)
-      // show a request as "pending" while it's in flight.
+      // response arrives — lets consumers (e.g. the dashboard) show a
+      // request as "pending" while it's in flight.
       eventBus.emit('request', exchange);
       return cb();
     });
@@ -207,8 +291,12 @@ export async function startProxyServer(
       exchange.responseHeaders = { ...ctx.serverToProxyResponse.headers };
     }
 
+    const responseCapture = new BodyCapture();
     ctx.onResponseData((_dataCtx, chunk, cb) => {
-      if (exchange) exchange.responseBodySize += chunk.length;
+      if (exchange) {
+        exchange.responseBodySize += chunk.length;
+        responseCapture.add(chunk);
+      }
       return cb(undefined, chunk);
     });
 
@@ -224,6 +312,10 @@ export async function startProxyServer(
         if (ctx.serverToProxyResponse) exchange.statusCode = ctx.serverToProxyResponse.statusCode;
         exchange.finishedAt = Date.now();
         exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+        // Captures the pre-rewrite body (mirroring responseBodySize's
+        // accounting above) — the dashboard shows what actually came from
+        // upstream, not what a rewrite rule replaced it with.
+        responseCapture.applyTo(exchange, 'response');
         eventBus.emit('response', exchange);
         inFlight.delete(ctx.uuid);
       }

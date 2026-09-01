@@ -1,0 +1,99 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/*
+ * Dark-first devtools palette (Charles / Chrome DevTools / VS Code lineage) —
+ * matches the project's design guide token-for-token. `.light` on <html> —
+ * toggled by setTheme (src/lib/theme.ts) and applied synchronously by the
+ * inline script in index.html to avoid a flash — switches to the light
+ * palette below (not part of the design guide; offered as a bonus, not a
+ * requirement).
+ */
+:root {
+  --background: #0f1117;
+  --panel: #1b2030;
+  --border: #2a3144;
+  --foreground: #e6eaf2;
+  --muted: #9aa3b2;
+  --accent: #5eb3e8;
+  --accent-foreground: #0f1117;
+  --row-hover: #1b2030;
+  --row-selected: #232a3d;
+
+  /* Request/response/system/error/warn semantic colors from the design guide. */
+  --method: #d2a8ff;
+  --status-2xx: #7ee787;
+  --status-3xx: #79c0ff;
+  --status-4xx: #e6c04a;
+  --status-5xx: #ff7b72;
+  --status-pending: #9aa3b2;
+}
+
+:root.light {
+  --background: oklch(0.99 0 0);
+  --foreground: oklch(0.18 0.01 260);
+  --panel: oklch(0.97 0 0);
+  --border: oklch(0.88 0 0);
+  --muted: oklch(0.55 0.01 260);
+  --accent: oklch(0.6 0.19 264);
+  --accent-foreground: oklch(0.99 0 0);
+  --row-hover: oklch(0.94 0 0);
+  --row-selected: oklch(0.92 0.03 264);
+
+  --method: oklch(0.55 0.18 300);
+  --status-2xx: oklch(0.6 0.16 150);
+  --status-3xx: oklch(0.62 0.15 230);
+  --status-4xx: oklch(0.65 0.18 70);
+  --status-5xx: oklch(0.58 0.22 25);
+  --status-pending: oklch(0.6 0 0);
+}
+
+* {
+  border-color: var(--border);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-mono-ui {
+  font-family: var(--font-mono);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 9999px;
+}
