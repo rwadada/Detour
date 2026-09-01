@@ -124,7 +124,28 @@ export interface RewriteAction {
   };
 }
 
-export type RuleAction = MockAction | RouteAction | RewriteAction;
+/**
+ * Pauses a matching exchange for interactive inspection/editing from the
+ * dashboard, instead of letting it flow straight through. `request`/`response`
+ * independently control which phase(s) pause; each paused phase waits
+ * (indefinitely — there's no timeout) for the dashboard to resume or abort it.
+ */
+export interface BreakpointAction {
+  type: 'breakpoint';
+  /**
+   * Pause before the request is forwarded upstream, exposing method/path/
+   * headers/body for editing from the dashboard. Defaults to true.
+   */
+  request?: boolean;
+  /**
+   * Pause once the upstream response has fully arrived, exposing status/
+   * headers/body for editing from the dashboard before it's returned to the
+   * client. Defaults to true.
+   */
+  response?: boolean;
+}
+
+export type RuleAction = MockAction | RouteAction | RewriteAction | BreakpointAction;
 
 export interface Rule {
   name: string;

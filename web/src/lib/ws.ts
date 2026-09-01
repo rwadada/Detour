@@ -1,10 +1,17 @@
-import type { DashboardServerMessage } from '@/types';
+import type { DashboardClientMessage, DashboardServerMessage } from '@/types';
 
 export type ConnectionStatus = 'connecting' | 'open' | 'closed';
 
 export interface DashboardSocketHandlers {
   onMessage: (message: DashboardServerMessage) => void;
   onStatusChange: (status: ConnectionStatus) => void;
+}
+
+export interface DashboardSocketHandle {
+  /** Tears the connection down and stops reconnecting. */
+  close: () => void;
+  /** Sends a message to the dashboard server, if currently connected (silently dropped otherwise — resuming a breakpoint while disconnected has nothing to resume anyway). */
+  send: (message: DashboardClientMessage) => void;
 }
 
 const INITIAL_RETRY_DELAY_MS = 500;
@@ -18,10 +25,10 @@ function wsUrl(): string {
 /**
  * Connects to the dashboard server's live feed, reconnecting with
  * exponential backoff if the connection drops (the proxy process restarting,
- * a laptop waking from sleep, etc). Returns a function that tears the
- * connection down and stops reconnecting.
+ * a laptop waking from sleep, etc). Returns a handle to tear the connection
+ * down and to send messages back (e.g. resuming a paused breakpoint).
  */
-export function connectDashboardSocket(handlers: DashboardSocketHandlers): () => void {
+export function connectDashboardSocket(handlers: DashboardSocketHandlers): DashboardSocketHandle {
   let socket: WebSocket | undefined;
   let retryDelay = INITIAL_RETRY_DELAY_MS;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -59,9 +66,14 @@ export function connectDashboardSocket(handlers: DashboardSocketHandlers): () =>
 
   connect();
 
-  return () => {
-    stopped = true;
-    if (retryTimer) clearTimeout(retryTimer);
-    socket?.close();
+  return {
+    close: () => {
+      stopped = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      socket?.close();
+    },
+    send: (message) => {
+      if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+    },
   };
 }

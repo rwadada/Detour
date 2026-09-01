@@ -1,4 +1,4 @@
-import type { CapturedExchange, ProxyErrorEvent } from '../types';
+import type { BreakpointPayload, BreakpointResumeCommand, CapturedExchange, ProxyErrorEvent } from '../types';
 
 /**
  * Messages sent from the dashboard server to a connected browser client over
@@ -14,4 +14,20 @@ export type DashboardServerMessage =
   /** A request/response exchange finished. */
   | { type: 'response'; exchange: CapturedExchange }
   /** A proxy-level error (connection reset, TLS failure, rules.json reload failure, etc). */
-  | { type: 'error'; event: ProxyErrorEvent };
+  | { type: 'error'; event: ProxyErrorEvent }
+  /**
+   * A `breakpoint` rule paused this exchange. `exchange` is a transient
+   * snapshot with `breakpoint` set (see `CapturedExchange.breakpoint`) — for
+   * table/row display; `payload` carries the full editable request/response
+   * content for the breakpoint editor.
+   */
+  | { type: 'breakpoint'; exchange: CapturedExchange; payload: BreakpointPayload };
+
+/**
+ * Messages sent from a connected browser client to the dashboard server over
+ * the `/ws` WebSocket. This is the one place traffic flows browser → server
+ * — every other message type is server → browser only.
+ */
+export type DashboardClientMessage =
+  /** Resumes (optionally with edits) or aborts an exchange paused by a `breakpoint` rule. */
+  { type: 'breakpointResume'; command: BreakpointResumeCommand };

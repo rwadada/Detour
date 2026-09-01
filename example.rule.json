@@ -105,6 +105,19 @@
           }
         }
       }
+    },
+    {
+      "name": "breakpoint-checkout",
+      "enabled": false,
+      "match": {
+        "method": "POST",
+        "url": "https://api.example.com/checkout"
+      },
+      "action": {
+        "type": "breakpoint",
+        "request": true,
+        "response": true
+      }
     }
   ]
 }

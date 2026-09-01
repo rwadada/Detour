@@ -29,3 +29,17 @@ export function MethodBadge({ method }: { method: string }) {
     </Badge>
   );
 }
+
+/** Shown in place of `StatusBadge` for an exchange currently paused by a `breakpoint` rule. */
+export function BreakpointBadge({ phase }: { phase: 'request' | 'response' }) {
+  const color = 'var(--status-3xx)';
+  return (
+    <Badge
+      className="min-w-[3.25rem] animate-pulse justify-center border"
+      style={{ color, borderColor: color, backgroundColor: `color-mix(in oklch, ${color} 14%, transparent)` }}
+      title={`Paused at ${phase} breakpoint`}
+    >
+      ⏸ {phase === 'request' ? 'REQ' : 'RES'}
+    </Badge>
+  );
+}

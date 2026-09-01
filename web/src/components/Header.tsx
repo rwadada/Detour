@@ -18,7 +18,11 @@ const STATUS_DOT: Record<string, string> = {
 
 export function Header() {
   const status = useLogStore((s) => s.connectionStatus);
+  const pausedBreakpoints = useLogStore((s) => s.pausedBreakpoints);
+  const select = useLogStore((s) => s.select);
   const theme = useTheme();
+  const pausedIds = Object.keys(pausedBreakpoints);
+
   return (
     <header className="flex items-center justify-between border-b border-[var(--border)] px-3 py-2">
       <div className="flex items-center gap-2">
@@ -26,6 +30,16 @@ export function Header() {
         <span className="text-xs text-[var(--muted)]">Dashboard</span>
       </div>
       <div className="flex items-center gap-3">
+        {pausedIds.length > 0 && (
+          <button
+            type="button"
+            onClick={() => select(pausedIds[0] ?? null)}
+            className="flex animate-pulse items-center gap-1.5 rounded-full border border-[var(--status-3xx)] px-2 py-0.5 text-xs font-medium text-[var(--status-3xx)]"
+            title="Jump to a paused exchange"
+          >
+            ⏸ {pausedIds.length} paused
+          </button>
+        )}
         <div className="flex items-center gap-1.5 text-xs text-[var(--muted)]">
           <span
             className={cn('h-1.5 w-1.5 rounded-full', STATUS_DOT[status], status === 'open' && 'animate-pulse')}
