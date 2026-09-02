@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import type { DetourEvents } from './types';
+import type { DetourEvents } from '../domain/exchange/types';
 
 /**
  * Thin, strongly-typed wrapper around Node's EventEmitter.

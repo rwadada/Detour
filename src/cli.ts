@@ -1,13 +1,22 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Command } from 'commander';
-import { startDashboardServer, WEB_DIST_DIR } from './dashboard/dashboardServer';
-import { DetourEventBus } from './eventBus';
-import { logExchange, logProxyError } from './logger';
-import { startProxyServer } from './proxyServer';
-import { loadRulesFile } from './rules/loader';
-import { RuleEngine } from './rules/ruleEngine';
-import { SAMPLE_RULES_FILE } from './rules/sample';
+import { SAMPLE_RULES_FILE } from './domain/rules/sample';
+import { startDashboardServer, WEB_DIST_DIR } from './infra/dashboard/dashboardServer';
+import { DetourEventBus } from './infra/eventBus';
+import { fsFileWatcher, fsRulesFileReader, loadRulesFile } from './infra/fs/rulesFileSource';
+import { startProxyServer } from './infra/proxy/proxyServer';
+import { logExchange, logProxyError } from './presentation/logger';
+import { RuleEngine } from './usecase/ruleEngine';
+
+// This file is Detour's composition root: the one place allowed to import
+// across every layer (domain/usecase/infra/presentation) to wire concrete
+// Infrastructure adapters (the real filesystem, http-mitm-proxy, ws) into
+// the UseCases that only depend on their ports. Everything under
+// domain/usecase/infra/presentation is checked by
+// `boundaries/element-types` (see eslint.config.mjs); this file — and
+// cli.e2e.test.ts, which drives it as a black box — deliberately sit
+// outside those directories so this wiring has somewhere to live.
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- reads package.json at runtime; a static `import` would need resolveJsonModule wired through the CJS build.
 const pkg = require('../package.json') as { version: string; description: string };
 
@@ -49,6 +58,8 @@ async function runStart(options: StartOptions): Promise<void> {
     // error, rather than the proxy silently starting without any rules.
     ruleEngine = RuleEngine.load({
       filePath: rulesPath,
+      reader: fsRulesFileReader,
+      watcher: fsFileWatcher,
       onReload: (info) => eventBus.emit('rulesReloaded', { filePath: ruleEngine!.filePath, ruleCount: info.ruleCount }),
       onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
     });

@@ -1,8 +1,8 @@
-import fs from 'node:fs';
 import path from 'node:path';
-import { compileRule, findMatchingRule, type CompiledRule, type MatchableRequest } from './matcher';
-import { loadRulesFile } from './loader';
-import type { Rule } from './types';
+import { compileRule, findMatchingRule, type CompiledRule, type MatchableRequest } from '../domain/rules/matcher';
+import type { Rule } from '../domain/rules/types';
+import type { FileWatcher } from './ports/fileWatcher';
+import type { RulesFileReader } from './ports/rulesFileReader';
 
 export interface RuleEngineOptions {
   /** Path to rules.json. Resolved relative to the current working directory if not absolute. */
@@ -13,6 +13,10 @@ export interface RuleEngineOptions {
   debounceMs?: number;
   onReload?: (info: { ruleCount: number }) => void;
   onReloadError?: (message: string) => void;
+  /** Reads/validates rules.json — injected so this UseCase never touches the filesystem directly (see infra/fs/rulesFileSource.ts). */
+  reader: RulesFileReader;
+  /** Watches rules.json for changes — injected for the same reason. Required unless `watch` is false. */
+  watcher?: FileWatcher;
 }
 
 /**
@@ -26,8 +30,8 @@ export class RuleEngine {
   /** Directory rules.json lives in — the base for relative paths like `mock.bodyFile`. */
   readonly basePath: string;
   private compiledRules: CompiledRule[];
-  private watcher?: fs.FSWatcher;
-  private debounceTimer?: NodeJS.Timeout;
+  private stopWatching?: () => void;
+  private debounceTimer?: ReturnType<typeof setTimeout>;
   private readonly options: RuleEngineOptions;
 
   private constructor(filePath: string, rules: Rule[], options: RuleEngineOptions) {
@@ -40,7 +44,7 @@ export class RuleEngine {
   /** Loads rules.json (throwing on an invalid initial file) and starts watching it unless disabled. */
   static load(options: RuleEngineOptions): RuleEngine {
     const filePath = path.resolve(options.filePath);
-    const { rules } = loadRulesFile(filePath);
+    const { rules } = options.reader.read(filePath);
     const engine = new RuleEngine(filePath, rules, options);
     if (options.watch !== false) engine.startWatching();
     return engine;
@@ -55,18 +59,14 @@ export class RuleEngine {
   }
 
   private startWatching(): void {
-    const dir = path.dirname(this.filePath);
-    const base = path.basename(this.filePath);
-    // Watch the containing directory (not the file itself): editors that
-    // save atomically (write temp file + rename) replace the inode, which
-    // a watch on the file itself can silently stop tracking.
-    this.watcher = fs.watch(dir, (_eventType, filename) => {
-      if (filename && filename !== base) return;
-      this.scheduleReload();
-    });
-    this.watcher.on('error', (err) => {
-      this.options.onReloadError?.(`Error watching the rules file: ${err.message}`);
-    });
+    if (!this.options.watcher) {
+      throw new Error('RuleEngine: a `watcher` is required when `watch` is not false');
+    }
+    this.stopWatching = this.options.watcher.watch(
+      this.filePath,
+      () => this.scheduleReload(),
+      (message) => this.options.onReloadError?.(`Error watching the rules file: ${message}`),
+    );
   }
 
   private scheduleReload(): void {
@@ -76,7 +76,7 @@ export class RuleEngine {
 
   private reload(): void {
     try {
-      const { rules } = loadRulesFile(this.filePath);
+      const { rules } = this.options.reader.read(this.filePath);
       this.compiledRules = rules.map(compileRule);
       this.options.onReload?.({ ruleCount: rules.length });
     } catch (err) {
@@ -87,6 +87,6 @@ export class RuleEngine {
 
   close(): void {
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.watcher?.close();
+    this.stopWatching?.();
   }
 }

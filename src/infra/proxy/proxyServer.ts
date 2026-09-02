@@ -1,11 +1,28 @@
 import type { IncomingMessage } from 'node:http';
 import net from 'node:net';
-import { Transform, type Duplex } from 'node:stream';
+import type { Duplex } from 'node:stream';
 import { Proxy } from 'http-mitm-proxy';
 import type { ErrorCallback, IContext } from 'http-mitm-proxy';
-import { resolveCertDir } from './certStore';
-import type { DetourEventBus } from './eventBus';
-import { assertPortAvailable } from './portCheck';
+import { BodyCapture } from '../../domain/exchange/bodyCapture';
+import { flattenHeaders } from '../../domain/exchange/headers';
+import type {
+  BreakpointRequestPayload,
+  BreakpointResponsePayload,
+  BreakpointResumeCommand,
+  CapturedExchange,
+  ThrottleState,
+} from '../../domain/exchange/types';
+import { formatHostPort, isHostFocused, normalizeFocusHosts } from '../../domain/focus/focusPolicy';
+import type { Rule } from '../../domain/rules/types';
+import { BandwidthState, flushThrottledBody, transferDelayMs } from '../../domain/throttle/bandwidth';
+import { DEFAULT_THROTTLE_STATE, normalizeThrottleState } from '../../domain/throttle/throttlePolicy';
+import { BreakpointCoordinator } from '../../usecase/breakpointCoordinator';
+import { resolveConnectRoute } from '../../usecase/resolveConnectRoute';
+import { resolveExchangeAction } from '../../usecase/resolveExchangeAction';
+import type { RuleEngine } from '../../usecase/ruleEngine';
+import { resolveCertDir } from '../certStore';
+import type { DetourEventBus } from '../eventBus';
+import { assertPortAvailable } from '../portCheck';
 import {
   applyRequestRewrite,
   applyResponseHeaderRewrite,
@@ -15,232 +32,8 @@ import {
   sendMockResponse,
   sendMockSimulate,
   type MockResponse,
-} from './rules/actions';
-import { compileGlob } from './rules/matcher';
-import type { RuleEngine } from './rules/ruleEngine';
-import type { Rule } from './rules/types';
-import type {
-  BreakpointRequestPayload,
-  BreakpointResponsePayload,
-  BreakpointResumeCommand,
-  CapturedExchange,
-  ThrottleState,
-} from './types';
-
-/** Formats a host/port pair the same way throughout: `host:port`, unless `port` is the scheme's default, in which case it's omitted. */
-function formatHostPort(host: string, port: number, defaultPort: number): string {
-  return port !== defaultPort ? `${host}:${port}` : host;
-}
-
-/**
- * Builds the origin-only URL a route rule is matched against for a CONNECT
- * tunnel while intercept is off. There's no path to match on — the tunnel is
- * never decrypted — so this mirrors `resolveUrl`'s hostname formatting
- * (default port omitted) applied to just the host.
- */
-function connectMatchUrl(host: string, port: number): string {
-  return `https://${formatHostPort(host, port, 443)}`;
-}
-
-/** Trims/lowercases/dedupes a raw Focus host list (see `FocusState`), dropping empty entries. */
-function normalizeFocusHosts(hosts: readonly string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of hosts) {
-    const trimmed = raw.trim().toLowerCase();
-    if (!trimmed || seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    out.push(trimmed);
-  }
-  return out;
-}
-
-/**
- * Whether `host` (formatted like `formatHostPort`/`connectMatchUrl` — a bare
- * hostname, or `host:port` when the port isn't the scheme's default) should
- * be MITM-intercepted under the current Focus allowlist. An empty list means
- * Focus is off — every host qualifies, so this feature is a no-op until the
- * user opts in. A pattern with no `:port` (the common case — most sites are
- * reached on their scheme's default port, which is omitted from `host`)
- * matches only that same default-port form; targeting a non-default port
- * needs the pattern to include it (or a trailing `*`).
- */
-function isHostFocused(focusHosts: readonly string[], host: string): boolean {
-  if (focusHosts.length === 0) return true;
-  const target = host.toLowerCase();
-  return focusHosts.some((pattern) => compileGlob(pattern).test(target));
-}
-
-/** `enabled: false`, every rate/delay `0` — Throttle's true no-op default (see `ThrottleState`'s doc comment). */
-const DEFAULT_THROTTLE_STATE: ThrottleState = {
-  enabled: false,
-  downKbps: 0,
-  upKbps: 0,
-  latencyMs: 0,
-  packetLossPct: 0,
-};
-
-/** Clamps a Throttle profile's numeric fields to sane, non-negative values — a stray negative from a malformed dashboard message would otherwise flip a bandwidth cap's "unlimited" check and speed traffic up instead of slowing it down. */
-function normalizeThrottleState(state: ThrottleState): ThrottleState {
-  const nonNegative = (n: number) => (Number.isFinite(n) && n > 0 ? n : 0);
-  return {
-    enabled: state.enabled,
-    downKbps: nonNegative(state.downKbps),
-    upKbps: nonNegative(state.upKbps),
-    latencyMs: nonNegative(state.latencyMs),
-    packetLossPct: Math.min(100, nonNegative(state.packetLossPct)),
-  };
-}
-
-/**
- * Extra stall (ms) applied to a chunk "lost" under Throttle's
- * `packetLossPct`. This is an HTTP-level proxy, not a raw packet filter —
- * actually dropping bytes here would just corrupt the body — so loss is
- * approximated as the stall a real TCP retransmit timeout would cause
- * instead of an literal drop (see `ThrottleState`'s doc comment).
- */
-const RETRANSMIT_DELAY_MS = 300;
-
-/**
- * Per-exchange, per-direction token bucket backing Throttle's bandwidth cap:
- * spaces consecutive chunks out so their aggregate throughput matches
- * `kbps`, rather than just delaying each chunk independently (which would
- * let a burst of small chunks straight through). Each exchange/direction
- * gets its own instance, so concurrent exchanges are throttled
- * independently rather than sharing one simulated pipe.
- */
-class BandwidthState {
-  private nextTime = 0;
-
-  /**
-   * Delay (ms, ≥0) before a chunk of `byteLength` bytes may go out, given
-   * `kbps` (0 = unlimited). Advances internal state so a later call's delay
-   * accounts for this chunk having "used up" its share of the bucket.
-   */
-  delayFor(byteLength: number, kbps: number): number {
-    if (kbps <= 0) return 0;
-    const bytesPerMs = (kbps * 1000) / 8 / 1000;
-    const now = Date.now();
-    // This chunk starts transmitting once the link is free (either now, or
-    // once the previous chunk finished) and takes `byteLength / bytesPerMs`
-    // to finish — the caller should wait until *that* point, not just until
-    // this chunk's turn starts, or a lone/first chunk would see 0 delay
-    // despite genuinely taking time to "transmit" at the capped rate.
-    const start = Math.max(now, this.nextTime);
-    this.nextTime = start + byteLength / bytesPerMs;
-    return Math.max(0, this.nextTime - now);
-  }
-}
-
-/**
- * Writes a Throttle-buffered request/response body via `write` after
- * `delayMs`, then calls `cb` — shared by the upload (onRequestEnd) and
- * download (onResponseEnd) finalization below, which are otherwise
- * identical apart from which stream they write to.
- */
-function flushThrottledBody(body: Buffer, delayMs: number, write: (body: Buffer) => void, cb: () => void): void {
-  const flush = () => {
-    if (body.length > 0) write(body);
-    cb();
-  };
-  if (delayMs > 0) setTimeout(flush, delayMs);
-  else flush();
-}
-
-/** Combines bandwidth pacing and simulated packet loss into one delay (ms) for `byteLength` bytes of transferred data — see `BandwidthState` and `RETRANSMIT_DELAY_MS`. */
-function transferDelayMs(byteLength: number, kbps: number, packetLossPct: number, bandwidth: BandwidthState): number {
-  let delay = bandwidth.delayFor(byteLength, kbps);
-  // Simulated packet loss, purely for local network-condition testing — not
-  // security-sensitive, so Math.random()'s non-cryptographic PRNG is fine.
-  // eslint-disable-next-line sonarjs/pseudo-random
-  if (packetLossPct > 0 && Math.random() * 100 < packetLossPct) delay += RETRANSMIT_DELAY_MS;
-  return delay;
-}
-
-/**
- * A `Transform` that re-emits each chunk after `transferDelayMs`'s delay,
- * spliced into a raw `Duplex.pipe()` chain (the intercept-off CONNECT
- * tunnel). Real Node stream backpressure applies here — piping through a
- * Transform correctly holds the source until this delay elapses — unlike
- * http-mitm-proxy's own onRequestData/onResponseData hooks below, whose
- * internal filter doesn't honor a delayed per-chunk callback the same way
- * (see the buffer-then-flush comment on the MITM'd request/response paths).
- */
-function createThrottleTransform(kbps: number, packetLossPct: number): Transform {
-  const bandwidth = new BandwidthState();
-  return new Transform({
-    transform(chunk: Buffer, _encoding, cb) {
-      const delay = transferDelayMs(chunk.length, kbps, packetLossPct, bandwidth);
-      if (delay > 0) setTimeout(() => cb(null, chunk), delay);
-      else cb(null, chunk);
-    },
-  });
-}
-
-/**
- * Upper bound (in bytes, pre-base64) on how much of a request/response body
- * we hold in memory per exchange for the dashboard's inspector. Traffic
- * bodies can be arbitrarily large (file uploads/downloads); capturing them
- * unbounded would let a single exchange blow up process memory. Bytes past
- * this cap are still proxied through to the client/server as normal — only
- * the *captured copy* used for display is truncated.
- */
-const MAX_CAPTURED_BODY_BYTES = 256 * 1024;
-
-/** Accumulates chunks up to `MAX_CAPTURED_BODY_BYTES` and reports whether more arrived than that. */
-class BodyCapture {
-  private readonly chunks: Buffer[] = [];
-  private capturedBytes = 0;
-  private truncated = false;
-
-  add(chunk: Buffer): void {
-    if (chunk.length === 0) return;
-    if (this.capturedBytes >= MAX_CAPTURED_BODY_BYTES) {
-      this.truncated = true;
-      return;
-    }
-    const room = MAX_CAPTURED_BODY_BYTES - this.capturedBytes;
-    const slice = chunk.length > room ? chunk.subarray(0, room) : chunk;
-    this.chunks.push(slice);
-    this.capturedBytes += slice.length;
-    if (slice.length < chunk.length) this.truncated = true;
-  }
-
-  /** Applies the capture to an exchange's `{prefix}Body`/`{prefix}BodyTruncated` fields. Omitted entirely when nothing was captured. */
-  applyTo(exchange: CapturedExchange, prefix: 'request' | 'response'): void {
-    if (this.chunks.length === 0) return;
-    const body = Buffer.concat(this.chunks).toString('base64');
-    if (prefix === 'request') {
-      exchange.requestBody = body;
-      exchange.requestBodyTruncated = this.truncated;
-    } else {
-      exchange.responseBody = body;
-      exchange.responseBodyTruncated = this.truncated;
-    }
-  }
-
-  /** Same capping as `add`, for a body that's already fully in memory (e.g. a resolved `mock` action's response). */
-  static of(buffer: Buffer): BodyCapture {
-    const capture = new BodyCapture();
-    capture.add(buffer);
-    return capture;
-  }
-
-  /** The captured bytes as a single buffer (capped the same as `add`/`applyTo`). */
-  toBuffer(): Buffer {
-    return Buffer.concat(this.chunks);
-  }
-}
-
-/** Flattens a Node headers object (values may be a string or string[]) into the plain string map the breakpoint wire format uses. */
-function flattenHeaders(headers: Record<string, string | string[] | undefined>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(headers)) {
-    if (value === undefined) continue;
-    out[key] = Array.isArray(value) ? value.join(', ') : value;
-  }
-  return out;
-}
+} from './actionsRuntime';
+import { createThrottleTransform } from './throttleTransform';
 
 /**
  * Captures the client's raw request body directly off `clientToProxyRequest`
@@ -390,31 +183,9 @@ export async function startProxyServer(
   // matching `breakpointResume` from the dashboard, or synthetically (as an
   // abort) on a proxy-level error, so a dropped connection never leaves a
   // pause hanging forever.
-  const pendingBreakpoints = new Map<string, (command: BreakpointResumeCommand) => void>();
-
-  function waitForBreakpoint(
-    id: string,
-    phase: 'request',
-  ): Promise<Extract<BreakpointResumeCommand, { phase: 'request' }>>;
-  function waitForBreakpoint(
-    id: string,
-    phase: 'response',
-  ): Promise<Extract<BreakpointResumeCommand, { phase: 'response' }>>;
-  function waitForBreakpoint(id: string, phase: 'request' | 'response'): Promise<BreakpointResumeCommand> {
-    return new Promise((resolve) => {
-      pendingBreakpoints.set(`${id}:${phase}`, resolve);
-    });
-  }
-
-  function resolveBreakpoint(command: BreakpointResumeCommand): void {
-    const key = `${command.id}:${command.phase}`;
-    const resolve = pendingBreakpoints.get(key);
-    if (!resolve) return;
-    pendingBreakpoints.delete(key);
-    resolve(command);
-  }
-
-  eventBus.on('breakpointResume', resolveBreakpoint);
+  const breakpoints = new BreakpointCoordinator();
+  const handleBreakpointResume = (command: BreakpointResumeCommand): void => breakpoints.resolve(command);
+  eventBus.on('breakpointResume', handleBreakpointResume);
 
   /**
    * While intercept is off (globally, or for this one host via Focus), a
@@ -433,8 +204,7 @@ export async function startProxyServer(
       return;
     }
     const originalPort = target.port ?? 443;
-    const rule = ruleEngine?.match({ method: 'CONNECT', url: connectMatchUrl(target.host, originalPort) });
-    const route = rule?.action.type === 'route' ? rule.action : undefined;
+    const route = resolveConnectRoute(ruleEngine, target.host, originalPort);
     const destHost = route?.host ?? target.host;
     const destPort = route?.port ?? originalPort;
 
@@ -501,8 +271,8 @@ export async function startProxyServer(
     if (ctx) {
       inFlight.delete(ctx.uuid);
       ruleContexts.delete(ctx.uuid);
-      resolveBreakpoint({ id: ctx.uuid, phase: 'request', action: 'abort' });
-      resolveBreakpoint({ id: ctx.uuid, phase: 'response', action: 'abort' });
+      breakpoints.resolve({ id: ctx.uuid, phase: 'request', action: 'abort' });
+      breakpoints.resolve({ id: ctx.uuid, phase: 'response', action: 'abort' });
     }
     eventBus.emit('error', {
       id: ctx?.uuid,
@@ -549,7 +319,7 @@ export async function startProxyServer(
       };
       eventBus.emit('breakpointHit', { exchange: { ...exchange, breakpoint: 'request' }, payload });
 
-      waitForBreakpoint(ctx.uuid, 'request').then((command) => {
+      breakpoints.wait(ctx.uuid, 'request').then((command) => {
         if (command.action === 'abort') {
           inFlight.delete(ctx.uuid);
           ruleContexts.delete(ctx.uuid);
@@ -648,7 +418,7 @@ export async function startProxyServer(
       };
       eventBus.emit('breakpointHit', { exchange: snapshot, payload });
 
-      waitForBreakpoint(ctx.uuid, 'response').then((command) => {
+      breakpoints.wait(ctx.uuid, 'response').then((command) => {
         if (command.action === 'abort') {
           inFlight.delete(ctx.uuid);
           ruleContexts.delete(ctx.uuid);
@@ -722,13 +492,11 @@ export async function startProxyServer(
     const run = () => {
       const { url, host: reqHost } = resolveUrl(ctx);
       const method = ctx.clientToProxyRequest.method ?? 'GET';
-      const matched = ruleEngine?.match({ method, url });
       // While intercept is off (globally, or for this host via Focus), only a
       // `route` rule keeps applying (see `interceptEnabled`'s doc comment
       // above) — mock/rewrite/breakpoint rules are treated as if nothing
       // matched, so the request flows through untouched.
-      const focused = isHostFocused(focusHosts, reqHost);
-      const rule = (interceptEnabled && focused) || matched?.action.type === 'route' ? matched : undefined;
+      const rule = resolveExchangeAction(ruleEngine, { method, url, host: reqHost, interceptEnabled, focusHosts });
 
       const exchange: CapturedExchange = {
         id: ctx.uuid,
@@ -851,11 +619,11 @@ export async function startProxyServer(
       // write from onRequestEnd below (whose callback IS properly awaited
       // before the request is finalized), after a delay proportional to its
       // total size — the same buffer-then-flush shape
-      // rules/actions.ts's installRequestBodyRewrite uses, for the same
-      // reason. Skipped when a `rewrite` rule is also rewriting this body:
-      // that rule's own onRequestData hook (registered earlier, see
-      // `applyRequestRewrite` above) already reduces every chunk this hook
-      // sees to empty, so there'd be nothing left to throttle anyway.
+      // infra/proxy/actionsRuntime.ts's installRequestBodyRewrite uses, for
+      // the same reason. Skipped when a `rewrite` rule is also rewriting
+      // this body: that rule's own onRequestData hook (registered earlier,
+      // see `applyRequestRewrite` above) already reduces every chunk this
+      // hook sees to empty, so there'd be nothing left to throttle anyway.
       const throttleUpload =
         throttleState.enabled &&
         (throttleState.upKbps > 0 || throttleState.packetLossPct > 0) &&
@@ -970,7 +738,7 @@ export async function startProxyServer(
           caCertPath: proxy.ca.getCACertPath(),
           stop: () =>
             new Promise<void>((res) => {
-              eventBus.off('breakpointResume', resolveBreakpoint);
+              eventBus.off('breakpointResume', handleBreakpointResume);
               eventBus.off('setIntercept', handleSetIntercept);
               eventBus.off('setFocus', handleSetFocus);
               eventBus.off('setThrottle', handleSetThrottle);
