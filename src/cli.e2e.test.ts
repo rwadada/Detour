@@ -230,6 +230,7 @@ function requestThroughProxy(
   proxyPort: number,
   targetPort: number,
   reqPath: string,
+  headers?: http.OutgoingHttpHeaders,
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     // Connect via the hostname `detour start` itself binds to by default
@@ -243,6 +244,7 @@ function requestThroughProxy(
         port: proxyPort,
         path: `http://127.0.0.1:${targetPort}${reqPath}`,
         method: 'GET',
+        headers,
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -263,7 +265,7 @@ function requestThroughProxy(
  */
 async function startDetourCli(
   args: string[] = [],
-): Promise<{ port: number; dashboardPort: number; kill: () => Promise<void> }> {
+): Promise<{ port: number; dashboardPort: number; stdout: () => string; kill: () => Promise<void> }> {
   const subprocess = execa('npx', ['tsx', 'src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', ...args], {
     cwd: REPO_ROOT,
     reject: false,
@@ -295,11 +297,23 @@ async function startDetourCli(
   return {
     port: Number(portMatch[1]),
     dashboardPort: Number(dashboardMatch[1]),
+    stdout: () => stdout,
     kill: async () => {
       subprocess.kill('SIGTERM');
       await subprocess.catch(() => {}); // a killed process "fails" — that's expected, not a test failure.
     },
   };
+}
+
+/** Polls `cli.stdout()` until it matches `pattern`, throwing after 5s (see `startDetourCli`'s ready-banner loop). */
+async function waitForStdout(cli: { stdout: () => string }, pattern: RegExp): Promise<void> {
+  const start = Date.now();
+  while (!pattern.test(cli.stdout())) {
+    if (Date.now() - start > 5_000) {
+      throw new Error(`stdout never matched ${pattern}.\nstdout: ${cli.stdout()}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 describe('detour start (CLI, end-to-end)', () => {
@@ -756,6 +770,75 @@ describe('detour start (CLI, end-to-end)', () => {
       const result = await requestThroughProxy(cli.port, echo.port, '/hello');
       expect(result.status).toBe(200);
       expect(JSON.parse(result.body)).toEqual({ method: 'GET', path: '/hello', body: '' });
+    });
+  });
+
+  describe('request dump (issue #15)', () => {
+    it('summary level (default) logs one line, without full headers/body', async () => {
+      echo = await startEchoServer();
+      cli = await startDetourCli();
+
+      await requestThroughProxy(cli.port, echo.port, '/hello', { Authorization: 'Bearer secret-token' });
+      await waitForStdout(cli, /GET.*\/hello/);
+
+      expect(cli.stdout()).not.toContain('Request headers:');
+      expect(cli.stdout()).not.toContain('secret-token');
+    });
+
+    it('rejects an invalid --dump level without starting the proxy', async () => {
+      const result = await execa(
+        'npx',
+        ['tsx', 'src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', '--dump', 'bogus'],
+        { cwd: REPO_ROOT, reject: false },
+      );
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain('--dump must be one of');
+    });
+
+    it('full level prints headers/body to the console, redacting sensitive headers', async () => {
+      echo = await startEchoServer();
+      cli = await startDetourCli(['--dump', 'full']);
+
+      await requestThroughProxy(cli.port, echo.port, '/hello', { Authorization: 'Bearer secret-token' });
+      await waitForStdout(cli, /Request headers:/);
+
+      const stdout = cli.stdout();
+      expect(stdout).toContain('authorization: [REDACTED]');
+      expect(stdout).not.toContain('secret-token');
+      expect(stdout).toContain('Response headers:');
+    });
+
+    it('file level writes a redacted dump per exchange instead of printing full details to the console', async () => {
+      echo = await startEchoServer();
+      cli = await startDetourCli(['--dump', 'file']);
+      // Not a security-sensitive use — just a unique-enough marker to pick this test's dump file
+      // out of `~/.detour/dumps` among whatever other exchanges land there concurrently.
+      // eslint-disable-next-line sonarjs/pseudo-random
+      const marker = `dump-e2e-${process.pid}-${Math.random().toString(36).slice(2)}`;
+
+      await requestThroughProxy(cli.port, echo.port, `/${marker}`, { Authorization: 'Bearer secret-token' });
+
+      const dumpDir = path.join(os.homedir(), '.detour', 'dumps');
+      const start = Date.now();
+      let dumpFile: string | undefined;
+      while (!dumpFile) {
+        dumpFile = fs
+          .readdirSync(dumpDir)
+          .map((name) => path.join(dumpDir, name))
+          .find((file) => fs.readFileSync(file, 'utf8').includes(marker));
+        if (dumpFile) break;
+        if (Date.now() - start > 5_000) throw new Error(`no dump file matching ${marker} appeared in ${dumpDir}`);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      try {
+        const content = fs.readFileSync(dumpFile, 'utf8');
+        expect(content).toContain('authorization: [REDACTED]');
+        expect(content).not.toContain('secret-token');
+        expect(cli.stdout()).not.toContain('Request headers:');
+      } finally {
+        fs.rmSync(dumpFile, { force: true });
+      }
     });
   });
 });

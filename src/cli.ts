@@ -1,12 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Command } from 'commander';
+import { isDumpLevel } from './domain/dump/dumpPolicy';
+import type { DumpLevel } from './domain/dump/dumpPolicy';
 import { SAMPLE_RULES_FILE } from './domain/rules/sample';
 import { startDashboardServer, WEB_DIST_DIR } from './infra/dashboard/dashboardServer';
 import { DetourEventBus } from './infra/eventBus';
+import { resolveDumpDir, writeExchangeDumpFile } from './infra/fs/dumpFileWriter';
 import { fsFileWatcher, fsRulesFileReader, loadRulesFile } from './infra/fs/rulesFileSource';
 import { startProxyServer } from './infra/proxy/proxyServer';
-import { logExchange, logProxyError } from './presentation/logger';
+import { logExchange, logExchangeFull, logProxyError } from './presentation/logger';
 import { RuleEngine } from './usecase/ruleEngine';
 
 // This file is Detour's composition root: the one place allowed to import
@@ -31,18 +34,32 @@ function parsePort(value: string, flag: string): number {
   return port;
 }
 
+function parseDumpLevel(value: string): DumpLevel {
+  if (!isDumpLevel(value)) {
+    throw new Error(`--dump must be one of "summary", "full", "file" (got: ${value})`);
+  }
+  return value;
+}
+
 interface StartOptions {
   port: string;
   dashboardPort: string;
   rules?: string;
+  dump: string;
 }
 
 async function runStart(options: StartOptions): Promise<void> {
   const port = parsePort(options.port, '--port');
   const dashboardPort = parsePort(options.dashboardPort, '--dashboard-port');
+  const dumpLevel = parseDumpLevel(options.dump);
+  const dumpDir = dumpLevel === 'file' ? resolveDumpDir() : undefined;
 
   const eventBus = new DetourEventBus();
-  eventBus.on('response', logExchange);
+  eventBus.on('response', (exchange) => {
+    logExchange(exchange);
+    if (dumpLevel === 'full') logExchangeFull(exchange);
+    if (dumpDir) writeExchangeDumpFile(exchange, dumpDir);
+  });
   eventBus.on('error', logProxyError);
   eventBus.on('rulesReloaded', ({ filePath, ruleCount }) => {
     console.log(`↻ Reloaded rules (${ruleCount}): ${filePath}`);
@@ -77,22 +94,13 @@ async function runStart(options: StartOptions): Promise<void> {
     throw err;
   }
 
-  console.log(`Detour proxy started → http://localhost:${handle.port}`);
-  console.log(`Root CA certificate: ${handle.caCertPath}`);
-  console.log('  To decrypt HTTPS traffic, install this CA certificate as trusted on your target device/browser.');
-  if (fs.existsSync(path.join(WEB_DIST_DIR, 'index.html'))) {
-    console.log(`Dashboard → http://localhost:${dashboardHandle.port}`);
-  } else {
-    console.log(
-      `Dashboard → http://localhost:${dashboardHandle.port} (not built yet — run \`npm run build\`, or use \`npm run dev:dashboard\` for a dev server with hot reload)`,
-    );
-  }
-  if (ruleEngine) {
-    console.log(
-      `Rules file: ${ruleEngine.filePath} (loaded ${ruleEngine.getRules().length} rule(s), watching for changes)`,
-    );
-  }
-  console.log('Press Ctrl+C to stop.');
+  printStartupBanner({
+    proxyPort: handle.port,
+    caCertPath: handle.caCertPath,
+    dashboardPort: dashboardHandle.port,
+    ruleEngine,
+    dumpDir,
+  });
 
   const shutdown = async (signal: NodeJS.Signals) => {
     console.log(`\nReceived ${signal}. Stopping the proxy…`);
@@ -101,6 +109,34 @@ async function runStart(options: StartOptions): Promise<void> {
   };
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
+}
+
+function printStartupBanner(info: {
+  proxyPort: number;
+  caCertPath: string;
+  dashboardPort: number;
+  ruleEngine: RuleEngine | undefined;
+  dumpDir: string | undefined;
+}): void {
+  console.log(`Detour proxy started → http://localhost:${info.proxyPort}`);
+  console.log(`Root CA certificate: ${info.caCertPath}`);
+  console.log('  To decrypt HTTPS traffic, install this CA certificate as trusted on your target device/browser.');
+  if (fs.existsSync(path.join(WEB_DIST_DIR, 'index.html'))) {
+    console.log(`Dashboard → http://localhost:${info.dashboardPort}`);
+  } else {
+    console.log(
+      `Dashboard → http://localhost:${info.dashboardPort} (not built yet — run \`npm run build\`, or use \`npm run dev:dashboard\` for a dev server with hot reload)`,
+    );
+  }
+  if (info.ruleEngine) {
+    console.log(
+      `Rules file: ${info.ruleEngine.filePath} (loaded ${info.ruleEngine.getRules().length} rule(s), watching for changes)`,
+    );
+  }
+  if (info.dumpDir) {
+    console.log(`Full request/response dumps → ${info.dumpDir}`);
+  }
+  console.log('Press Ctrl+C to stop.');
 }
 
 export function createCli(): Command {
@@ -116,6 +152,11 @@ export function createCli(): Command {
     .option(
       '--rules <path>',
       `Path to a rules file. When given, mock/route/rewrite rules are applied and reloaded automatically on change (when omitted, ${DEFAULT_RULES_FILENAME} in the current directory is loaded automatically if present)`,
+    )
+    .option(
+      '--dump <level>',
+      'Verbosity of the request/response log: "summary" (default, one line per exchange), "full" (also prints headers/body to the console, sensitive headers redacted), or "file" (also writes a redacted dump per exchange to ~/.detour/dumps)',
+      'summary',
     )
     .action(async (options: StartOptions) => {
       try {

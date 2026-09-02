@@ -1,3 +1,4 @@
+import { formatExchangeDump } from '../domain/dump/dumpPolicy';
 import type { CapturedExchange, ProxyErrorEvent } from '../domain/exchange/types';
 
 const ansi = {
@@ -38,6 +39,11 @@ export function logExchange(exchange: Readonly<CapturedExchange>): void {
   if (exchange.error) {
     console.log(`  ${paint(ansi.red, '✖')} ${exchange.error}`);
   }
+}
+
+/** Prints the full request/response dump (`--dump full`) — headers redacted, body pretty-printed where JSON. */
+export function logExchangeFull(exchange: Readonly<CapturedExchange>): void {
+  console.log(formatExchangeDump(exchange));
 }
 
 export function logProxyError(event: ProxyErrorEvent): void {

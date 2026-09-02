@@ -14,6 +14,7 @@ npm start -- start --port 8080 --dashboard-port 4040
 - `--port <number>`: Port the proxy listens on (default: `8080`)
 - `--dashboard-port <number>`: Port the web dashboard listens on (default: `4040`)
 - `--rules <path>`: Path to a rules file. When given, mock/route/rewrite rules are applied to matching requests (see below). Changes to the file are detected and reloaded automatically. When omitted, `passthrough.rule.json` in the current directory is loaded automatically if present
+- `--dump <level>`: Verbosity of the request/response log (default: `summary`, one line per exchange, as today). `full` additionally prints each exchange's headers and body to the console; `file` skips the console spam and instead writes that same dump to its own file under `~/.detour/dumps`, one file per exchange (overwritten as it moves from request to response). Both `full` and `file` redact sensitive headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Auth-Token`) as `[REDACTED]`; a JSON body is pretty-printed, anything else is shown as raw text
 
 On first run, a local CA root certificate is generated at `~/.detour/certs/certs/ca.pem`. To decrypt HTTPS traffic, install this certificate as a trusted root certificate on your target browser/OS/device.
 
@@ -121,7 +122,6 @@ detour cert export
 --headless  
 --exit-on-idle  
 --fail-on-running  
---dump <level>  
 
 ## Setup
 something like `detour setup --target android`
