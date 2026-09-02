@@ -200,6 +200,31 @@ function setThrottle(dashboardPort: number, state: ThrottleProfile): Promise<voi
   });
 }
 
+interface BlockHostsProfile {
+  hosts: string[];
+  mode: 'forbidden' | 'reset';
+}
+
+/**
+ * Sets the "Block Hosts" denylist through the dashboard's `/ws`, the same
+ * way `setFocus`/`setThrottle` do — waits for the server to broadcast the
+ * change back before resolving.
+ */
+function setBlockHosts(dashboardPort: number, state: BlockHostsProfile): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+    socket.on('open', () => socket.send(JSON.stringify({ type: 'setBlockHosts', state })));
+    socket.on('message', (raw) => {
+      const message = JSON.parse(raw.toString()) as { type: string; state?: BlockHostsProfile };
+      if (message.type === 'blockHosts' && JSON.stringify(message.state) === JSON.stringify(state)) {
+        socket.close();
+        resolve();
+      }
+    });
+    socket.on('error', reject);
+  });
+}
+
 /** Requests `path` through the given HTTP proxy, to `http://127.0.0.1:targetPort`. */
 function requestThroughProxy(
   proxyPort: number,
@@ -657,6 +682,80 @@ describe('detour start (CLI, end-to-end)', () => {
 
       expect(result.status).toBe(200);
       expect(fastElapsed).toBeLessThan(300);
+    });
+  });
+
+  describe('block hosts (issue #14)', () => {
+    it('denies a plain HTTP request to a blocked host with 403, without reaching the real upstream', async () => {
+      echo = await startEchoServer();
+      cli = await startDetourCli();
+      await setBlockHosts(cli.dashboardPort, { hosts: [`127.0.0.1:${echo.port}`], mode: 'forbidden' });
+
+      const result = await requestThroughProxy(cli.port, echo.port, '/blocked');
+      expect(result.status).toBe(403);
+      // Not the echo server's own JSON response — it was never reached.
+      expect(() => JSON.parse(result.body)).toThrow();
+    });
+
+    it('resets the connection instead of responding when mode is "reset"', async () => {
+      echo = await startEchoServer();
+      cli = await startDetourCli();
+      await setBlockHosts(cli.dashboardPort, { hosts: [`127.0.0.1:${echo.port}`], mode: 'reset' });
+
+      await expect(requestThroughProxy(cli.port, echo.port, '/blocked')).rejects.toThrow();
+    });
+
+    it('rejects a CONNECT tunnel to a blocked host with a 403 status line, never establishing the tunnel', async () => {
+      const upstream = await startMarkerEchoServer('upstream');
+      cli = await startDetourCli();
+      await setBlockHosts(cli.dashboardPort, { hosts: [`127.0.0.1:${upstream.port}`], mode: 'forbidden' });
+
+      try {
+        await expect(connectTunnel(cli.port, '127.0.0.1', upstream.port)).rejects.toThrow(/403/);
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('never establishes a CONNECT tunnel to a blocked host when mode is "reset"', async () => {
+      const upstream = await startMarkerEchoServer('upstream');
+      cli = await startDetourCli();
+      await setBlockHosts(cli.dashboardPort, { hosts: [`127.0.0.1:${upstream.port}`], mode: 'reset' });
+
+      try {
+        const proxyPort = cli.port;
+        const established = await new Promise<boolean>((resolve) => {
+          const socket = net.connect({ host: 'localhost', port: proxyPort }, () => {
+            socket.write(`CONNECT 127.0.0.1:${upstream.port} HTTP/1.1\r\nHost: 127.0.0.1:${upstream.port}\r\n\r\n`);
+          });
+          let sawEstablished = false;
+          socket.on('data', (chunk: Buffer) => {
+            if (/^HTTP\/1\.[01] 200/.test(chunk.toString('utf8'))) sawEstablished = true;
+          });
+          // The socket is simply destroyed — whether that surfaces as
+          // 'close' or 'error' depends on OS-level TCP RST/FIN timing, so
+          // both settle the same way: the tunnel was never established.
+          socket.once('close', () => resolve(sawEstablished));
+          socket.once('error', () => resolve(sawEstablished));
+        });
+        expect(established).toBe(false);
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('clearing the block list goes back to allowing every host', async () => {
+      echo = await startEchoServer();
+      cli = await startDetourCli();
+      await setBlockHosts(cli.dashboardPort, { hosts: [`127.0.0.1:${echo.port}`], mode: 'forbidden' });
+      const blocked = await requestThroughProxy(cli.port, echo.port, '/hello');
+      expect(blocked.status).toBe(403);
+
+      await setBlockHosts(cli.dashboardPort, { hosts: [], mode: 'forbidden' });
+
+      const result = await requestThroughProxy(cli.port, echo.port, '/hello');
+      expect(result.status).toBe(200);
+      expect(JSON.parse(result.body)).toEqual({ method: 'GET', path: '/hello', body: '' });
     });
   });
 });

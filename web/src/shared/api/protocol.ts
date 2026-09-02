@@ -99,6 +99,12 @@ export interface ThrottleState {
   packetLossPct: number;
 }
 
+/** The current "Block Hosts" denylist — see `src/types.ts`'s `BlockHostsState`. */
+export interface BlockHostsState {
+  hosts: string[];
+  mode: 'forbidden' | 'reset';
+}
+
 export type DashboardServerMessage =
   | { type: 'backlog'; items: CapturedExchange[] }
   | { type: 'request'; exchange: CapturedExchange }
@@ -107,10 +113,12 @@ export type DashboardServerMessage =
   | { type: 'breakpoint'; exchange: CapturedExchange; payload: BreakpointPayload }
   | { type: 'intercept'; state: InterceptState }
   | { type: 'focus'; state: FocusState }
-  | { type: 'throttle'; state: ThrottleState };
+  | { type: 'throttle'; state: ThrottleState }
+  | { type: 'blockHosts'; state: BlockHostsState };
 
 export type DashboardClientMessage =
   | { type: 'breakpointResume'; command: BreakpointResumeCommand }
   | { type: 'setIntercept'; enabled: boolean }
   | { type: 'setFocus'; hosts: string[] }
-  | { type: 'setThrottle'; state: ThrottleState };
+  | { type: 'setThrottle'; state: ThrottleState }
+  | { type: 'setBlockHosts'; state: BlockHostsState };

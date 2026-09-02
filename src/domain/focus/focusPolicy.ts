@@ -1,4 +1,4 @@
-import { compileGlob } from '../rules/matcher';
+import { matchesAnyHostPattern, normalizeHostPatterns } from '../shared/hostPatternList';
 
 /** Formats a host/port pair the same way throughout: `host:port`, unless `port` is the scheme's default, in which case it's omitted. */
 export function formatHostPort(host: string, port: number, defaultPort: number): string {
@@ -17,15 +17,7 @@ export function connectMatchUrl(host: string, port: number): string {
 
 /** Trims/lowercases/dedupes a raw Focus host list (see `FocusState`), dropping empty entries. */
 export function normalizeFocusHosts(hosts: readonly string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of hosts) {
-    const trimmed = raw.trim().toLowerCase();
-    if (!trimmed || seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    out.push(trimmed);
-  }
-  return out;
+  return normalizeHostPatterns(hosts);
 }
 
 /**
@@ -40,6 +32,5 @@ export function normalizeFocusHosts(hosts: readonly string[]): string[] {
  */
 export function isHostFocused(focusHosts: readonly string[], host: string): boolean {
   if (focusHosts.length === 0) return true;
-  const target = host.toLowerCase();
-  return focusHosts.some((pattern) => compileGlob(pattern).test(target));
+  return matchesAnyHostPattern(focusHosts, host);
 }

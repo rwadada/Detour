@@ -2,6 +2,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type {
+  BlockHostsState,
   CapturedExchange,
   DetourEvents,
   FocusState,
@@ -66,6 +67,9 @@ export async function startDashboardServer(
   // Mirrors the proxy server's own `throttleState` the same way, kept in
   // sync via `throttleChanged`.
   let throttleState: ThrottleState = { enabled: false, downKbps: 0, upKbps: 0, latencyMs: 0, packetLossPct: 0 };
+  // Mirrors the proxy server's own `blockHostsState` the same way, kept in
+  // sync via `blockHostsChanged`.
+  let blockHostsState: BlockHostsState = { hosts: [], mode: 'forbidden' };
 
   const httpServer = http.createServer((req, res) => serveStatic(WEB_DIST_DIR, req, res));
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
@@ -103,6 +107,10 @@ export async function startDashboardServer(
     throttleState = state;
     broadcast({ type: 'throttle', state });
   };
+  const onBlockHostsChanged: DetourEvents['blockHostsChanged'] = (state) => {
+    blockHostsState = state;
+    broadcast({ type: 'blockHosts', state });
+  };
 
   wss.on('connection', (socket: WebSocket) => {
     const backlogMessage: DashboardServerMessage = { type: 'backlog', items: backlog.toArray() };
@@ -113,13 +121,15 @@ export async function startDashboardServer(
     socket.send(JSON.stringify(focusMessage));
     const throttleMessage: DashboardServerMessage = { type: 'throttle', state: throttleState };
     socket.send(JSON.stringify(throttleMessage));
+    const blockHostsMessage: DashboardServerMessage = { type: 'blockHosts', state: blockHostsState };
+    socket.send(JSON.stringify(blockHostsMessage));
 
     // The only browser → server traffic on this socket: resuming/aborting a
     // paused breakpoint, toggling intercept on/off, editing the Focus host
-    // allowlist, and editing the Throttle profile. All are relayed onto the
-    // event bus, where the proxy server is waiting on them (see
-    // proxyServer.ts's
-    // `waitForBreakpoint`/`handleSetIntercept`/`handleSetFocus`/`handleSetThrottle`).
+    // allowlist, editing the Throttle profile, and editing the Block Hosts
+    // denylist. All are relayed onto the event bus, where the proxy server
+    // is waiting on them (see proxyServer.ts's
+    // `waitForBreakpoint`/`handleSetIntercept`/`handleSetFocus`/`handleSetThrottle`/`handleSetBlockHosts`).
     socket.on('message', (raw) => {
       try {
         const message = JSON.parse(raw.toString()) as DashboardClientMessage;
@@ -127,6 +137,7 @@ export async function startDashboardServer(
         else if (message.type === 'setIntercept') eventBus.emit('setIntercept', message.enabled);
         else if (message.type === 'setFocus') eventBus.emit('setFocus', message.hosts);
         else if (message.type === 'setThrottle') eventBus.emit('setThrottle', message.state);
+        else if (message.type === 'setBlockHosts') eventBus.emit('setBlockHosts', message.state);
       } catch {
         // Ignore malformed frames rather than crashing the dashboard.
       }
@@ -146,6 +157,7 @@ export async function startDashboardServer(
       eventBus.on('interceptChanged', onInterceptChanged);
       eventBus.on('focusChanged', onFocusChanged);
       eventBus.on('throttleChanged', onThrottleChanged);
+      eventBus.on('blockHostsChanged', onBlockHostsChanged);
 
       const address = httpServer.address();
       const boundPort = typeof address === 'object' && address ? address.port : options.port;
@@ -160,6 +172,7 @@ export async function startDashboardServer(
             eventBus.off('interceptChanged', onInterceptChanged);
             eventBus.off('focusChanged', onFocusChanged);
             eventBus.off('throttleChanged', onThrottleChanged);
+            eventBus.off('blockHostsChanged', onBlockHostsChanged);
             for (const client of wss.clients) client.close();
             wss.close(() => httpServer.close(() => res()));
           }),
