@@ -3,6 +3,7 @@ import type {
   BreakpointPayload,
   BreakpointResumeCommand,
   CapturedExchange,
+  CapturedWebSocketConnection,
   FocusState,
   InterceptState,
   ProxyErrorEvent,
@@ -18,6 +19,8 @@ import type {
 export type DashboardServerMessage =
   /** Sent once, right after connecting: the recent-history backlog so a client that (re)connects mid-session isn't starting from a blank table. */
   | { type: 'backlog'; items: CapturedExchange[] }
+  /** Sent once, right after connecting: the recent WebSocket connection backlog (see `backlog` above; issue #17). */
+  | { type: 'wsBacklog'; items: CapturedWebSocketConnection[] }
   /** A request finished sending to the upstream server (may still be awaiting a response). */
   | { type: 'request'; exchange: CapturedExchange }
   /** A request/response exchange finished. */
@@ -54,7 +57,17 @@ export type DashboardServerMessage =
    * (alongside `backlog`) so a (re)connecting client starts in sync, and
    * again on every change so all connected tabs stay in sync with each other.
    */
-  | { type: 'blockHosts'; state: BlockHostsState };
+  | { type: 'blockHosts'; state: BlockHostsState }
+  /**
+   * A proxied WebSocket connection completed its upgrade handshake (issue
+   * #17). `connection` starts with an empty `frames` array — frame data
+   * arrives via subsequent `wsFrame` messages sharing the same `id`.
+   */
+  | { type: 'wsOpen'; connection: CapturedWebSocketConnection }
+  /** A WebSocket frame was relayed — `connection` is the full up-to-date record (see `DetourEvents['wsFrame']`'s doc comment), not just the new frame. */
+  | { type: 'wsFrame'; connection: CapturedWebSocketConnection }
+  /** A proxied WebSocket connection closed, cleanly or via error. */
+  | { type: 'wsClose'; connection: CapturedWebSocketConnection };
 
 /**
  * Messages sent from a connected browser client to the dashboard server over

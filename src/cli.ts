@@ -6,10 +6,16 @@ import type { DumpLevel } from './domain/dump/dumpPolicy';
 import { SAMPLE_RULES_FILE } from './domain/rules/sample';
 import { startDashboardServer, WEB_DIST_DIR } from './infra/dashboard/dashboardServer';
 import { DetourEventBus } from './infra/eventBus';
-import { resolveDumpDir, writeExchangeDumpFile } from './infra/fs/dumpFileWriter';
+import { resolveDumpDir, writeExchangeDumpFile, writeWebSocketDumpFile } from './infra/fs/dumpFileWriter';
 import { fsFileWatcher, fsRulesFileReader, loadRulesFile } from './infra/fs/rulesFileSource';
 import { startProxyServer } from './infra/proxy/proxyServer';
-import { logExchange, logExchangeFull, logProxyError } from './presentation/logger';
+import {
+  logExchange,
+  logExchangeFull,
+  logProxyError,
+  logWebSocketConnection,
+  logWebSocketFull,
+} from './presentation/logger';
 import { RuleEngine } from './usecase/ruleEngine';
 
 // This file is Detour's composition root: the one place allowed to import
@@ -59,6 +65,14 @@ async function runStart(options: StartOptions): Promise<void> {
     logExchange(exchange);
     if (dumpLevel === 'full') logExchangeFull(exchange);
     if (dumpDir) writeExchangeDumpFile(exchange, dumpDir);
+  });
+  // Logged once the WebSocket connection closes (its one clear "done"
+  // point), mirroring 'response' above — not on every frame, which would
+  // spam the console for a chatty socket.
+  eventBus.on('wsClose', (connection) => {
+    logWebSocketConnection(connection);
+    if (dumpLevel === 'full') logWebSocketFull(connection);
+    if (dumpDir) writeWebSocketDumpFile(connection, dumpDir);
   });
   eventBus.on('error', logProxyError);
   eventBus.on('rulesReloaded', ({ filePath, ruleCount }) => {
