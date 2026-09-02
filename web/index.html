@@ -7,8 +7,9 @@
     <title>Detour Dashboard</title>
     <script>
       // Applied synchronously, before first paint, so switching to light
-      // mode (dark is the default palette — see src/index.css) never flashes
-      // dark-then-light on load. Kept in sync with src/lib/theme.ts.
+      // mode (dark is the default palette — see src/app/index.css) never
+      // flashes dark-then-light on load. Kept in sync with
+      // src/shared/lib/theme.ts.
       (function () {
         if (localStorage.getItem('detour-theme') === 'light') {
           document.documentElement.classList.add('light');

@@ -33,8 +33,9 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "dep-cruise": "depcruise --config .dependency-cruiser.cjs --output-type err src bin && cd web && depcruise --config ../.dependency-cruiser.cjs --ts-config tsconfig.app.json --output-type err src",
+    "lint:fsd": "npm run lint:fsd --workspace web",
     "dup-check": "jscpd",
-    "verify": "npm run format:check && npm run typecheck && npm run lint && npm run dep-cruise && npm run dup-check && npm run test:coverage && npm run test:web && npm run test:e2e",
+    "verify": "npm run format:check && npm run typecheck && npm run lint && npm run lint:fsd && npm run dep-cruise && npm run dup-check && npm run test:coverage && npm run test:web && npm run test:e2e",
     "test:mutation": "stryker run",
     "knip": "knip",
     "postinstall": "patch-package"
