@@ -9,6 +9,7 @@ function exchange(overrides: Partial<CapturedExchange> = {}): CapturedExchange {
     url: 'https://x/',
     host: 'x',
     isSSL: true,
+    protocol: 'HTTP/1.1',
     requestHeaders: {},
     requestBodySize: 0,
     responseBodySize: 0,

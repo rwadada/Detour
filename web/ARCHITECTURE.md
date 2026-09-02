@@ -48,6 +48,8 @@ that slice (`import { useFocusStore } from '@/features/focus/model/store'` inste
 | features | `throttle` | Simulated bandwidth/latency/packet-loss (issue #13) |
 | features | `intercept-toggle` | Master MITM on/off switch |
 | features | `breakpoint-resume` | Pausing/editing/resuming or aborting an exchange mid-flight |
+| features | `log-viewer` | Loading a saved HAR/JSON log file and viewing it without a running proxy (issue #19) |
+| features | `log-export` | Exporting the captured log as HAR 1.2 or Detour's native JSON (issue #19) |
 | entities | `exchange` | The captured-traffic list itself: data, selection, filtering |
 | entities | `proxy-error` | Proxy-level errors (connection resets, TLS failures, …) — captured, no UI surfaces them yet (see `steiger.config.ts`) |
 | shared | `api` | `DashboardConnection` (the WebSocket to the proxy) and the wire protocol types |

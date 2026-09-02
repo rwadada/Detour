@@ -3,6 +3,8 @@ import { BlockHostsControl } from '@/features/block-hosts';
 import { PausedBreakpointsIndicator } from '@/features/breakpoint-resume';
 import { FocusControl } from '@/features/focus';
 import { InterceptToggle } from '@/features/intercept-toggle';
+import { ExportMenu } from '@/features/log-export';
+import { ImportButton } from '@/features/log-viewer';
 import { ThrottleControl } from '@/features/throttle';
 import { useConnectionStatus } from '@/shared/api';
 import { setTheme, useTheme } from '@/shared/lib/theme';
@@ -41,6 +43,8 @@ export function Header() {
         <FocusControl />
         <ThrottleControl />
         <BlockHostsControl />
+        <ImportButton />
+        <ExportMenu />
         <Button
           variant="ghost"
           size="icon"

@@ -20,10 +20,23 @@ export interface ExchangeState {
   exchanges: CapturedExchange[];
   selectedId: string | null;
   filters: Filters;
+  /** 'imported' while the LogViewer (issue #19) is showing a loaded HAR/JSON file instead of live traffic. */
+  source: 'live' | 'imported';
+  /** The imported file's name, for display in the "viewing a saved log" banner. Null outside imported mode. */
+  importedFileName: string | null;
   select: (id: string | null) => void;
   setFilters: (patch: Partial<Filters>) => void;
   /** Empties the log table. Selection is cleared too; other entities/features (e.g. a still-paused breakpoint) are untouched — they reflect state that's still genuinely true server-side. */
   clear: () => void;
+  /**
+   * Switches the log table into "imported" mode, showing `exchanges` from a
+   * loaded HAR/JSON file instead of live traffic (issue #19's LogViewer —
+   * viewing a saved log without a running proxy). Live traffic keeps being
+   * captured in the background so `exitImport` can return to it unchanged.
+   */
+  importExchanges: (exchanges: CapturedExchange[], fileName: string) => void;
+  /** Leaves imported mode, restoring whatever live traffic accumulated in the background while a file was being viewed. */
+  exitImport: () => void;
 }
 
 /**
@@ -43,6 +56,10 @@ export function createExchangeStore(connection: DashboardConnection) {
   const buffer = new RingBuffer<CapturedExchange>(MAX_EXCHANGES, (item) => item.id);
   let pendingUpserts: CapturedExchange[] = [];
   let flushHandle: number | undefined;
+  // Non-null while in imported mode: the live buffer above keeps being
+  // updated by WS traffic underneath, but `exchanges` shows this snapshot
+  // instead until `exitImport` swaps back to `buffer.toArray()`.
+  let importedExchanges: CapturedExchange[] | null = null;
 
   return create<ExchangeState>((set) => {
     // Incoming WS messages can arrive far faster than React should re-render
@@ -54,7 +71,7 @@ export function createExchangeStore(connection: DashboardConnection) {
       if (pendingUpserts.length === 0) return;
       for (const item of pendingUpserts) buffer.upsert(item);
       pendingUpserts = [];
-      set({ exchanges: buffer.toArray() });
+      if (importedExchanges === null) set({ exchanges: buffer.toArray() });
     };
 
     const scheduleFlush = () => {
@@ -67,7 +84,7 @@ export function createExchangeStore(connection: DashboardConnection) {
           buffer.clear();
           for (const item of message.items) buffer.upsert(item);
           pendingUpserts = [];
-          set({ exchanges: buffer.toArray() });
+          if (importedExchanges === null) set({ exchanges: buffer.toArray() });
           return;
         case 'request':
         case 'response':
@@ -84,12 +101,23 @@ export function createExchangeStore(connection: DashboardConnection) {
       exchanges: [],
       selectedId: null,
       filters: DEFAULT_FILTERS,
+      source: 'live',
+      importedFileName: null,
       select: (id) => set({ selectedId: id }),
       setFilters: (patch) => set((state) => ({ filters: { ...state.filters, ...patch } })),
       clear: () => {
         buffer.clear();
         pendingUpserts = [];
-        set({ exchanges: [], selectedId: null });
+        importedExchanges = null;
+        set({ exchanges: [], selectedId: null, source: 'live', importedFileName: null });
+      },
+      importExchanges: (exchanges, fileName) => {
+        importedExchanges = exchanges;
+        set({ exchanges, selectedId: null, source: 'imported', importedFileName: fileName });
+      },
+      exitImport: () => {
+        importedExchanges = null;
+        set({ exchanges: buffer.toArray(), selectedId: null, source: 'live', importedFileName: null });
       },
     };
   });
