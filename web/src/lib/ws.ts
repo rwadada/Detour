@@ -23,12 +23,22 @@ function wsUrl(): string {
 }
 
 /**
+ * Shape of `connectDashboardSocket` — the one dependency `useLogStore`
+ * (see store/useLogStore.ts) has on an actual network connection. Kept as a
+ * named type so the store can take it as an injectable parameter (defaulting
+ * to the real WebSocket-backed implementation below) rather than importing
+ * and calling it directly, so tests can supply a fake connection instead of
+ * standing up a real WebSocket.
+ */
+export type DashboardConnector = (handlers: DashboardSocketHandlers) => DashboardSocketHandle;
+
+/**
  * Connects to the dashboard server's live feed, reconnecting with
  * exponential backoff if the connection drops (the proxy process restarting,
  * a laptop waking from sleep, etc). Returns a handle to tear the connection
  * down and to send messages back (e.g. resuming a paused breakpoint).
  */
-export function connectDashboardSocket(handlers: DashboardSocketHandlers): DashboardSocketHandle {
+export const connectDashboardSocket: DashboardConnector = (handlers) => {
   let socket: WebSocket | undefined;
   let retryDelay = INITIAL_RETRY_DELAY_MS;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -76,4 +86,4 @@ export function connectDashboardSocket(handlers: DashboardSocketHandlers): Dashb
       if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
     },
   };
-}
+};
