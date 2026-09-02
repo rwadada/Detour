@@ -8,10 +8,13 @@ import { startDashboardServer, WEB_DIST_DIR } from './infra/dashboard/dashboardS
 import { DetourEventBus } from './infra/eventBus';
 import { resolveDumpDir, writeExchangeDumpFile, writeWebSocketDumpFile } from './infra/fs/dumpFileWriter';
 import { fsFileWatcher, fsRulesFileReader, loadRulesFile } from './infra/fs/rulesFileSource';
+import { buildGrpcExchangeInfo } from './infra/grpc/grpcExchangeInfo';
+import { ProtoRegistry } from './infra/grpc/protoRegistry';
 import { startProxyServer } from './infra/proxy/proxyServer';
 import {
   logExchange,
   logExchangeFull,
+  logGrpcSection,
   logProxyError,
   logWebSocketConnection,
   logWebSocketFull,
@@ -47,11 +50,17 @@ function parseDumpLevel(value: string): DumpLevel {
   return value;
 }
 
+/** Accumulates repeated `--proto <path>` flags into an array (commander's convention for a repeatable option). */
+function collectProtoPath(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
 interface StartOptions {
   port: string;
   dashboardPort: string;
   rules?: string;
   dump: string;
+  proto: string[];
 }
 
 async function runStart(options: StartOptions): Promise<void> {
@@ -59,12 +68,23 @@ async function runStart(options: StartOptions): Promise<void> {
   const dashboardPort = parsePort(options.dashboardPort, '--dashboard-port');
   const dumpLevel = parseDumpLevel(options.dump);
   const dumpDir = dumpLevel === 'file' ? resolveDumpDir() : undefined;
+  // Loaded eagerly (like rules.json below) so a broken .proto schema fails
+  // CLI startup with a clear error, rather than every gRPC exchange
+  // silently falling back to "no --proto configured" for the whole session.
+  const protoRegistry = options.proto.length > 0 ? await ProtoRegistry.load(options.proto) : undefined;
 
   const eventBus = new DetourEventBus();
   eventBus.on('response', (exchange) => {
     logExchange(exchange);
-    if (dumpLevel === 'full') logExchangeFull(exchange);
-    if (dumpDir) writeExchangeDumpFile(exchange, dumpDir);
+    // Decoding (and, for a compressed frame, decompressing) every gRPC
+    // message is real work — skip it entirely at the default `summary`
+    // level, where the result would never be printed or written anyway.
+    const grpcInfo = dumpLevel !== 'summary' ? buildGrpcExchangeInfo(exchange, protoRegistry) : undefined;
+    if (dumpLevel === 'full') {
+      logExchangeFull(exchange);
+      if (grpcInfo) logGrpcSection(grpcInfo);
+    }
+    if (dumpDir) writeExchangeDumpFile(exchange, dumpDir, grpcInfo);
   });
   // Logged once the WebSocket connection closes (its one clear "done"
   // point), mirroring 'response' above — not on every frame, which would
@@ -114,6 +134,7 @@ async function runStart(options: StartOptions): Promise<void> {
     dashboardPort: dashboardHandle.port,
     ruleEngine,
     dumpDir,
+    protoPaths: options.proto,
   });
 
   const shutdown = async (signal: NodeJS.Signals) => {
@@ -131,6 +152,7 @@ function printStartupBanner(info: {
   dashboardPort: number;
   ruleEngine: RuleEngine | undefined;
   dumpDir: string | undefined;
+  protoPaths: string[];
 }): void {
   console.log(`Detour proxy started → http://localhost:${info.proxyPort}`);
   console.log(`Root CA certificate: ${info.caCertPath}`);
@@ -149,6 +171,9 @@ function printStartupBanner(info: {
   }
   if (info.dumpDir) {
     console.log(`Full request/response dumps → ${info.dumpDir}`);
+  }
+  if (info.protoPaths.length > 0) {
+    console.log(`gRPC message decoding: ${info.protoPaths.length} .proto file(s) loaded`);
   }
   console.log('Press Ctrl+C to stop.');
 }
@@ -171,6 +196,12 @@ export function createCli(): Command {
       '--dump <level>',
       'Verbosity of the request/response log: "summary" (default, one line per exchange), "full" (also prints headers/body to the console, sensitive headers redacted), or "file" (also writes a redacted dump per exchange to ~/.detour/dumps)',
       'summary',
+    )
+    .option(
+      '--proto <path>',
+      'Path to a .proto file used to decode gRPC (application/grpc*) message bodies. Repeatable for a schema split across multiple files sharing imports. Detection of gRPC traffic itself always happens, with or without this flag.',
+      collectProtoPath,
+      [],
     )
     .action(async (options: StartOptions) => {
       try {
