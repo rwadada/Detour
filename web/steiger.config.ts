@@ -10,13 +10,18 @@ import fsd from '@feature-sliced/steiger-plugin';
 export default defineConfig([
   ...fsd.configs.recommended,
   {
-    // `focus`/`intercept-toggle`/`throttle` currently have only one
-    // consumer (widgets/header), which `fsd/insignificant-slice` flags as
-    // "just merge it into Header" — but each is kept as its own feature
-    // slice because issues #24/#19 plan to relocate them independently
-    // (toolbar/sidebar/Settings panel); merging now would just be undone
-    // later.
-    files: ['./src/features/focus/**', './src/features/intercept-toggle/**', './src/features/throttle/**'],
+    // `focus`/`intercept-toggle`/`throttle`/`block-hosts` currently have
+    // only one consumer (widgets/header), which `fsd/insignificant-slice`
+    // flags as "just merge it into Header" — but each is kept as its own
+    // feature slice because issues #24/#19 plan to relocate them
+    // independently (toolbar/sidebar/Settings panel); merging now would
+    // just be undone later.
+    files: [
+      './src/features/focus/**',
+      './src/features/intercept-toggle/**',
+      './src/features/throttle/**',
+      './src/features/block-hosts/**',
+    ],
     rules: { 'fsd/insignificant-slice': 'off' },
   },
   {

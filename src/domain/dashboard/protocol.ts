@@ -1,4 +1,5 @@
 import type {
+  BlockHostsState,
   BreakpointPayload,
   BreakpointResumeCommand,
   CapturedExchange,
@@ -47,7 +48,13 @@ export type DashboardServerMessage =
    * (alongside `backlog`) so a (re)connecting client starts in sync, and
    * again on every change so all connected tabs stay in sync with each other.
    */
-  | { type: 'throttle'; state: ThrottleState };
+  | { type: 'throttle'; state: ThrottleState }
+  /**
+   * The current Block Hosts denylist — sent once right after connecting
+   * (alongside `backlog`) so a (re)connecting client starts in sync, and
+   * again on every change so all connected tabs stay in sync with each other.
+   */
+  | { type: 'blockHosts'; state: BlockHostsState };
 
 /**
  * Messages sent from a connected browser client to the dashboard server over
@@ -62,4 +69,6 @@ export type DashboardClientMessage =
   /** Replaces the Focus host allowlist wholesale (see `FocusState`). */
   | { type: 'setFocus'; hosts: string[] }
   /** Replaces the Throttle profile wholesale (see `ThrottleState`). */
-  | { type: 'setThrottle'; state: ThrottleState };
+  | { type: 'setThrottle'; state: ThrottleState }
+  /** Replaces the Block Hosts denylist wholesale (see `BlockHostsState`). */
+  | { type: 'setBlockHosts'; state: BlockHostsState };

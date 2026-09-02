@@ -167,6 +167,27 @@ export interface ThrottleState {
   packetLossPct: number;
 }
 
+/**
+ * The "Block Hosts" denylist: outright denies requests to matching hosts
+ * instead of letting them reach Focus/Intercept or the rule engine, toggled
+ * at runtime from the dashboard. Empty (the default) means nothing is
+ * blocked — identical to this feature not existing. A pattern is matched
+ * the same way as Focus (`*`/`?` glob against `host`, or `host:port` when
+ * the request's port isn't its scheme's default). Checked before every
+ * other feature, so a blocked host is denied unconditionally — even with
+ * Intercept off or a `route` rule that would otherwise still apply.
+ *
+ * `mode` picks how a blocked request is denied: `'forbidden'` sends back an
+ * HTTP 403 response (for a CONNECT tunnel, a 403 status line before the
+ * tunnel is ever established); `'reset'` drops the connection immediately
+ * instead, without ever sending a response — the same as a `mock` rule's
+ * `simulate: 'close'`.
+ */
+export interface BlockHostsState {
+  hosts: string[];
+  mode: 'forbidden' | 'reset';
+}
+
 /** Events published on the in-memory event bus. */
 export interface DetourEvents {
   /** Fired once the client finished sending the request (headers + body). */
@@ -198,4 +219,8 @@ export interface DetourEvents {
   setThrottle: (state: ThrottleState) => void;
   /** The proxy applied a throttle change; broadcast to dashboards so every connected tab (and newly-connecting ones) reflect the current profile. */
   throttleChanged: (state: ThrottleState) => void;
+  /** The dashboard changed the "Block Hosts" denylist (see `BlockHostsState`). */
+  setBlockHosts: (state: BlockHostsState) => void;
+  /** The proxy applied a Block Hosts change; broadcast to dashboards so every connected tab (and newly-connecting ones) reflect the current denylist. */
+  blockHostsChanged: (state: BlockHostsState) => void;
 }

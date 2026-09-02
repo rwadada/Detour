@@ -1,4 +1,5 @@
 import { Moon, Sun } from 'lucide-react';
+import { BlockHostsControl } from '@/features/block-hosts';
 import { PausedBreakpointsIndicator } from '@/features/breakpoint-resume';
 import { FocusControl } from '@/features/focus';
 import { InterceptToggle } from '@/features/intercept-toggle';
@@ -39,6 +40,7 @@ export function Header() {
         <InterceptToggle />
         <FocusControl />
         <ThrottleControl />
+        <BlockHostsControl />
         <Button
           variant="ghost"
           size="icon"

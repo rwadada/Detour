@@ -3,9 +3,11 @@ import net from 'node:net';
 import type { Duplex } from 'node:stream';
 import { Proxy } from 'http-mitm-proxy';
 import type { ErrorCallback, IContext } from 'http-mitm-proxy';
+import { isHostBlocked, normalizeBlockHosts } from '../../domain/blockHosts/blockHostsPolicy';
 import { BodyCapture } from '../../domain/exchange/bodyCapture';
 import { flattenHeaders } from '../../domain/exchange/headers';
 import type {
+  BlockHostsState,
   BreakpointRequestPayload,
   BreakpointResponsePayload,
   BreakpointResumeCommand,
@@ -97,6 +99,25 @@ function resolveUrl(ctx: IContext): { url: string; host: string } {
   return { url: `${scheme}://${hostname}${path}`, host: hostname };
 }
 
+/** Builds the initial `CapturedExchange` for a request just as it starts, before its outcome (blocked/mock/route/rewrite/forwarded) is known. Shared by the Block Hosts branch and the normal rule-resolution path in `proxy.onRequest` below. */
+function buildBaseExchange(
+  ctx: IContext,
+  info: { url: string; method: string; host: string; ruleName: string | undefined },
+): CapturedExchange {
+  return {
+    id: ctx.uuid,
+    method: info.method,
+    url: info.url,
+    host: info.host,
+    isSSL: ctx.isSSL,
+    requestHeaders: { ...ctx.clientToProxyRequest.headers },
+    requestBodySize: 0,
+    responseBodySize: 0,
+    startedAt: Date.now(),
+    ruleName: info.ruleName,
+  };
+}
+
 /**
  * Resolves a `mock` rule's response, falling back to a 500 describing the
  * failure (e.g. an unreadable `bodyFile`) rather than crashing the proxy
@@ -178,6 +199,19 @@ export async function startProxyServer(
   };
   eventBus.on('setThrottle', handleSetThrottle);
 
+  // "Block Hosts" outright denies requests to matching hosts, toggled at
+  // runtime from the dashboard (see `setBlockHosts`/`blockHostsChanged` in
+  // eventBus.ts and `BlockHostsState`'s doc comment). Empty (the default) is
+  // a true no-op. Checked before Focus/Intercept and the rule engine
+  // everywhere below (both the CONNECT tunnel and the MITM'd onRequest
+  // path), so a blocked host is denied unconditionally.
+  let blockHostsState: BlockHostsState = { hosts: [], mode: 'forbidden' };
+  const handleSetBlockHosts = (state: BlockHostsState): void => {
+    blockHostsState = { hosts: normalizeBlockHosts(state.hosts), mode: state.mode };
+    eventBus.emit('blockHostsChanged', blockHostsState);
+  };
+  eventBus.on('setBlockHosts', handleSetBlockHosts);
+
   // A `breakpoint` rule pauses an exchange by awaiting a promise resolved
   // from here, keyed by `${ctx.uuid}:${phase}`. Resolved either by a
   // matching `breakpointResume` from the dashboard, or synthetically (as an
@@ -255,11 +289,26 @@ export async function startProxyServer(
   }
 
   proxy.onConnect((req, socket, head, callback) => {
-    // An unparseable target can't be checked against Focus — fall through
-    // to the normal intercept-enabled path (same as before this feature),
-    // rather than treating "can't tell" as "not focused".
+    // An unparseable target can't be checked against Block Hosts/Focus —
+    // fall through to the normal intercept-enabled path (same as before
+    // this feature), rather than treating "can't tell" as blocked/unfocused.
     const target = Proxy.parseHostAndPort(req, 443);
-    const focused = !target?.host || isHostFocused(focusHosts, formatHostPort(target.host, target.port ?? 443, 443));
+    const formatted = target?.host ? formatHostPort(target.host, target.port ?? 443, 443) : undefined;
+    if (formatted && isHostBlocked(blockHostsState.hosts, formatted)) {
+      eventBus.emit('error', {
+        errorKind: 'BLOCKED_HOST',
+        message: `blocked CONNECT to ${formatted} (${blockHostsState.mode})`,
+      });
+      if (blockHostsState.mode === 'reset') {
+        socket.destroy();
+      } else {
+        socket.end(
+          `HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\ndetour: CONNECT to "${formatted}" blocked by Block Hosts\n`,
+        );
+      }
+      return;
+    }
+    const focused = !formatted || isHostFocused(focusHosts, formatted);
     if (interceptEnabled && focused) {
       callback();
       return;
@@ -492,24 +541,67 @@ export async function startProxyServer(
     const run = () => {
       const { url, host: reqHost } = resolveUrl(ctx);
       const method = ctx.clientToProxyRequest.method ?? 'GET';
+
+      if (isHostBlocked(blockHostsState.hosts, reqHost)) {
+        const exchange = buildBaseExchange(ctx, {
+          url,
+          method,
+          host: reqHost,
+          ruleName: `block-hosts (${blockHostsState.mode})`,
+        });
+        inFlight.set(ctx.uuid, exchange);
+        // A blocked request never forwards to upstream (callback() is never
+        // called below), so the usual onRequestData/onRequestEnd hooks never
+        // run for it — capture the client's raw request stream directly
+        // instead, same as the `mock` branch below.
+        const requestCapture = captureClientRequestBody(ctx, exchange);
+        const respondBlocked = () => {
+          requestCapture.applyTo(exchange, 'request');
+          if (blockHostsState.mode === 'reset') {
+            sendMockSimulate(ctx, 'close');
+            eventBus.emit('request', exchange);
+            exchange.error = `blocked host "${reqHost}": simulated connection close (no response sent)`;
+            exchange.finishedAt = Date.now();
+            exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+            eventBus.emit('response', exchange);
+            inFlight.delete(ctx.uuid);
+            return;
+          }
+          const mock: MockResponse = {
+            status: 403,
+            statusMessage: 'Forbidden',
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+            body: Buffer.from(`detour: request to "${reqHost}" blocked by Block Hosts\n`, 'utf8'),
+          };
+          sendMockResponse(ctx, mock);
+          exchange.statusCode = mock.status;
+          exchange.statusMessage = mock.statusMessage;
+          exchange.responseHeaders = mock.headers;
+          exchange.responseBodySize = mock.body.length;
+          BodyCapture.of(mock.body).applyTo(exchange, 'response');
+          exchange.finishedAt = Date.now();
+          exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+          eventBus.emit('request', exchange);
+          eventBus.emit('response', exchange);
+          inFlight.delete(ctx.uuid);
+        };
+        if (ctx.clientToProxyRequest.complete) {
+          respondBlocked();
+        } else {
+          ctx.clientToProxyRequest.once('end', respondBlocked);
+        }
+        // Deliberately does not call `callback()`: leaving it uncalled is how
+        // http-mitm-proxy is designed to skip forwarding to upstream.
+        return;
+      }
+
       // While intercept is off (globally, or for this host via Focus), only a
       // `route` rule keeps applying (see `interceptEnabled`'s doc comment
       // above) — mock/rewrite/breakpoint rules are treated as if nothing
       // matched, so the request flows through untouched.
       const rule = resolveExchangeAction(ruleEngine, { method, url, host: reqHost, interceptEnabled, focusHosts });
 
-      const exchange: CapturedExchange = {
-        id: ctx.uuid,
-        method,
-        url,
-        host: reqHost,
-        isSSL: ctx.isSSL,
-        requestHeaders: { ...ctx.clientToProxyRequest.headers },
-        requestBodySize: 0,
-        responseBodySize: 0,
-        startedAt: Date.now(),
-        ruleName: rule?.name,
-      };
+      const exchange = buildBaseExchange(ctx, { url, method, host: reqHost, ruleName: rule?.name });
       inFlight.set(ctx.uuid, exchange);
 
       if (rule?.action.type === 'mock') {
@@ -742,6 +834,7 @@ export async function startProxyServer(
               eventBus.off('setIntercept', handleSetIntercept);
               eventBus.off('setFocus', handleSetFocus);
               eventBus.off('setThrottle', handleSetThrottle);
+              eventBus.off('setBlockHosts', handleSetBlockHosts);
               ruleEngine?.close();
               proxy.close();
               res();
