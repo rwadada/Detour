@@ -8,7 +8,7 @@ export {
   type Filters,
   type ExchangeState,
 } from './model/createExchangeStore';
-export { BreakpointBadge, MethodBadge, StatusBadge } from './ui/StatusBadge';
+export { BreakpointBadge, MethodBadge, ProtocolBadge, StatusBadge } from './ui/StatusBadge';
 
 /** The app's real exchange store, wired to the real dashboard connection (see shared/api/dashboardConnection.ts). */
 export const useExchangeStore = createExchangeStore(getDashboardConnection());

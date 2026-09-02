@@ -22,6 +22,7 @@ function baseExchange(overrides: Partial<CapturedExchange> = {}): CapturedExchan
     url: 'https://example.com',
     host: 'example.com',
     isSSL: true,
+    protocol: 'HTTP/1.1',
     requestHeaders: {},
     requestBodySize: 0,
     responseBodySize: 0,

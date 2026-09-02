@@ -55,9 +55,14 @@ export function logExchange(exchange: Readonly<CapturedExchange>): void {
   const duration = exchange.durationMs !== undefined ? paint(ansi.dim, `${exchange.durationMs}ms`) : '';
   const size = exchange.responseBodySize > 0 ? paint(ansi.dim, `${formatBytes(exchange.responseBodySize)}`) : '';
   const rule = exchange.ruleName ? paint(ansi.dim, `[rule: ${exchange.ruleName}]`) : '';
+  // Only shown for the (uncommon) HTTP/2 case, matching issue #16's
+  // "Protocol表示対応" — HTTP/1.1 stays implicit rather than tagging every line.
+  const protocol = exchange.protocol === 'HTTP/2' ? paint(ansi.cyan, '[h2]') : '';
   const grpc = grpcTag(exchange);
 
-  console.log(`${method} ${status} ${exchange.url} ${duration} ${size} ${grpc} ${rule}`.replace(/\s+/g, ' ').trim());
+  console.log(
+    `${method} ${status} ${exchange.url} ${duration} ${size} ${protocol} ${grpc} ${rule}`.replace(/\s+/g, ' ').trim(),
+  );
   if (exchange.error) {
     console.log(`  ${paint(ansi.red, '✖')} ${exchange.error}`);
   }

@@ -60,6 +60,7 @@ interface StartOptions {
   dashboardPort: string;
   rules?: string;
   dump: string;
+  http2: boolean;
   proto: string[];
 }
 
@@ -116,7 +117,7 @@ async function runStart(options: StartOptions): Promise<void> {
     });
   }
 
-  const handle = await startProxyServer({ port, ruleEngine }, eventBus);
+  const handle = await startProxyServer({ port, ruleEngine, http2Enabled: options.http2 }, eventBus);
   let dashboardHandle;
   try {
     dashboardHandle = await startDashboardServer({ port: dashboardPort }, eventBus);
@@ -134,6 +135,7 @@ async function runStart(options: StartOptions): Promise<void> {
     dashboardPort: dashboardHandle.port,
     ruleEngine,
     dumpDir,
+    http2Enabled: options.http2,
     protoPaths: options.proto,
   });
 
@@ -152,9 +154,12 @@ function printStartupBanner(info: {
   dashboardPort: number;
   ruleEngine: RuleEngine | undefined;
   dumpDir: string | undefined;
+  http2Enabled: boolean;
   protoPaths: string[];
 }): void {
-  console.log(`Detour proxy started → http://localhost:${info.proxyPort}`);
+  console.log(
+    `Detour proxy started → http://localhost:${info.proxyPort} (HTTP/2: ${info.http2Enabled ? 'on' : 'off'})`,
+  );
   console.log(`Root CA certificate: ${info.caCertPath}`);
   console.log('  To decrypt HTTPS traffic, install this CA certificate as trusted on your target device/browser.');
   if (fs.existsSync(path.join(WEB_DIST_DIR, 'index.html'))) {
@@ -196,6 +201,10 @@ export function createCli(): Command {
       '--dump <level>',
       'Verbosity of the request/response log: "summary" (default, one line per exchange), "full" (also prints headers/body to the console, sensitive headers redacted), or "file" (also writes a redacted dump per exchange to ~/.detour/dumps)',
       'summary',
+    )
+    .option(
+      '--no-http2',
+      "Disable HTTP/2 (ALPN) on MITM'd HTTPS connections — every intercepted host falls back to HTTP/1.1 only, matching Detour's behavior before this flag existed. HTTP/2 is negotiated with the client by default; the connection to the real upstream server is always HTTP/1.1 either way.",
     )
     .option(
       '--proto <path>',

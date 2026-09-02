@@ -52,6 +52,7 @@ function baseExchange(overrides: Partial<CapturedExchange> = {}): CapturedExchan
     url: 'https://api.example.com/helloworld.Greeter/SayHello',
     host: 'api.example.com',
     isSSL: true,
+    protocol: 'HTTP/1.1',
     requestHeaders: { 'content-type': 'application/grpc+proto' },
     requestBodySize: 0,
     responseBodySize: 0,
