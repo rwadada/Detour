@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { fsFileWatcher, fsRulesFileReader } from '../infra/fs/rulesFileSource';
 import { RuleEngine } from './ruleEngine';
 
 function writeRules(filePath: string, rules: unknown[]): void {
@@ -51,7 +52,7 @@ describe('RuleEngine', () => {
 
   it('loads rules and exposes filePath (resolved) / basePath', () => {
     writeRules(filePath, [routeRule('r1')]);
-    engine = RuleEngine.load({ filePath, watch: false });
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });
     expect(engine.filePath).toBe(path.resolve(filePath));
     expect(engine.basePath).toBe(dir);
     expect(engine.getRules()).toHaveLength(1);
@@ -59,12 +60,12 @@ describe('RuleEngine', () => {
 
   it('throws on an initially invalid rules file', () => {
     writeRules(filePath, [{ name: 'bad', match: {}, action: { type: 'bogus' } }]);
-    expect(() => RuleEngine.load({ filePath, watch: false })).toThrow();
+    expect(() => RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader })).toThrow();
   });
 
   it('match() returns the first enabled rule matching a request', () => {
     writeRules(filePath, [routeRule('a'), routeRule('b')]);
-    engine = RuleEngine.load({ filePath, watch: false });
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });
     const matched = engine.match({ method: 'GET', url: 'https://api.example.com/x' });
     expect(matched?.name).toBe('a');
     expect(engine.match({ method: 'GET', url: 'https://unrelated.example.com/x' })).toBeUndefined();
@@ -76,6 +77,7 @@ describe('RuleEngine', () => {
     engine = RuleEngine.load({
       filePath,
       watch: false,
+      reader: fsRulesFileReader,
       onReload: (info) => {
         reloaded = info;
       },
@@ -94,6 +96,7 @@ describe('RuleEngine', () => {
     engine = RuleEngine.load({
       filePath,
       watch: false,
+      reader: fsRulesFileReader,
       onReloadError: (message) => {
         reloadError = message;
       },
@@ -113,6 +116,7 @@ describe('RuleEngine', () => {
     engine = RuleEngine.load({
       filePath,
       watch: false,
+      reader: fsRulesFileReader,
       debounceMs: 10,
       onReload: () => {
         reloadCount += 1;
@@ -134,6 +138,8 @@ describe('RuleEngine', () => {
     let reloadCount = 0;
     engine = RuleEngine.load({
       filePath,
+      reader: fsRulesFileReader,
+      watcher: fsFileWatcher,
       debounceMs: 10,
       onReload: () => {
         reloadCount += 1;

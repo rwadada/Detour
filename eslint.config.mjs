@@ -1,6 +1,7 @@
 // @ts-check
 import js from '@eslint/js';
 import globals from 'globals';
+import boundaries from 'eslint-plugin-boundaries';
 import reactHooks from 'eslint-plugin-react-hooks';
 import reactRefresh from 'eslint-plugin-react-refresh';
 import sonarjs from 'eslint-plugin-sonarjs';
@@ -63,6 +64,37 @@ export default tseslint.config(
     languageOptions: {
       globals: globals.node,
     },
+    plugins: { boundaries },
+    settings: {
+      // eslint-plugin-boundaries resolves each import's target file to
+      // check it against the element rules below; without a TS-aware
+      // resolver it can't follow extensionless relative imports (`./types`
+      // → `./types.ts`) and every local dependency silently resolves as
+      // "unknown" — which the element-type check below then treats as
+      // exempt, defeating the whole rule.
+      'import/resolver': {
+        typescript: { project: 'tsconfig.json' },
+      },
+      // Layered architecture (see issue #29): Domain → UseCase → Infra/
+      // Presentation, enforced mechanically below rather than by convention.
+      // Element patterns intentionally name only the folder (no file
+      // extension) — every file nested under it, at any depth, inherits
+      // that element's type. `src/cli.ts` deliberately matches none of
+      // these — it's the composition root, the one place allowed to wire
+      // concrete Infra adapters into UseCases (see cli.ts's own doc
+      // comment). `*.test.ts` files are classified separately, by file
+      // category (see `boundaries/files` below), so a test living under
+      // e.g. usecase/ (like ruleEngine.test.ts, which wires a real Infra
+      // adapter for an integration-style test) isn't held to the same
+      // restrictions as the UseCase code it's testing.
+      'boundaries/elements': [
+        { type: 'domain', pattern: 'src/domain/**' },
+        { type: 'usecase', pattern: 'src/usecase/**' },
+        { type: 'infra', pattern: 'src/infra/**' },
+        { type: 'presentation', pattern: 'src/presentation/**' },
+      ],
+      'boundaries/files': [{ category: 'test', pattern: 'src/**/*.test.ts' }],
+    },
     rules: {
       // The rule engine's action handlers intentionally build up largish,
       // sequential functions (e.g. proxyServer.ts's onRequest/onResponse
@@ -78,6 +110,37 @@ export default tseslint.config(
       'sonarjs/no-nested-functions': ['warn', { threshold: 6 }],
       'no-unused-vars': 'off',
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      // Domain depends on nothing internal; UseCase depends only on Domain;
+      // Infra/Presentation may depend on Domain/UseCase and their own kind,
+      // but not on each other — only the composition root (src/cli.ts,
+      // unclassified above) is allowed to wire both together. `*.test.ts`
+      // files (the `test` file category, see `boundaries/files` above) may
+      // import anything, for integration-style test setup.
+      'boundaries/dependencies': [
+        'error',
+        {
+          default: 'disallow',
+          policies: [
+            {
+              from: { file: { categories: 'test' } },
+              allow: { to: { element: { types: { anyOf: ['domain', 'usecase', 'infra', 'presentation'] } } } },
+            },
+            { from: { element: { type: 'domain' } }, allow: { to: { element: { type: 'domain' } } } },
+            {
+              from: { element: { type: 'usecase' } },
+              allow: { to: { element: { types: { anyOf: ['domain', 'usecase'] } } } },
+            },
+            {
+              from: { element: { type: 'infra' } },
+              allow: { to: { element: { types: { anyOf: ['domain', 'usecase', 'infra'] } } } },
+            },
+            {
+              from: { element: { type: 'presentation' } },
+              allow: { to: { element: { types: { anyOf: ['domain', 'usecase', 'presentation'] } } } },
+            },
+          ],
+        },
+      ],
     },
   },
   {
