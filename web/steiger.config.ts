@@ -25,6 +25,13 @@ export default defineConfig([
     rules: { 'fsd/insignificant-slice': 'off' },
   },
   {
+    // `log-export` currently has only one consumer (widgets/header) too —
+    // same reasoning as the block above. Kept as its own slice since #19's
+    // planned toolbar/Settings relocation applies here as well.
+    files: ['./src/features/log-export/**'],
+    rules: { 'fsd/insignificant-slice': 'off' },
+  },
+  {
     // `proxy-error` mirrors `ProxyErrorEvent` messages the server already
     // sends, but no UI surfaces them yet (the pre-FSD store had this same
     // capture-but-never-render gap — see git history). Kept ready for

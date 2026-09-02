@@ -26,6 +26,7 @@ function exchange(overrides: Partial<CapturedExchange> = {}): CapturedExchange {
     url: 'https://example.com/',
     host: 'example.com',
     isSSL: true,
+    protocol: 'HTTP/1.1',
     requestHeaders: {},
     requestBodySize: 0,
     responseBodySize: 0,
@@ -96,6 +97,55 @@ describe('createExchangeStore', () => {
 
     expect(store.getState().exchanges).toEqual([]);
     expect(store.getState().selectedId).toBeNull();
+  });
+
+  it('importExchanges() switches to imported mode, showing the given exchanges', () => {
+    const fake = fakeConnection();
+    const store = createExchangeStore(fake.connection);
+    fake.emit({ type: 'backlog', items: [exchange({ id: 'live-1' })] });
+    store.getState().select('live-1');
+
+    store.getState().importExchanges([exchange({ id: 'imported-1' })], 'saved.har');
+
+    expect(store.getState().exchanges.map((e) => e.id)).toEqual(['imported-1']);
+    expect(store.getState().source).toBe('imported');
+    expect(store.getState().importedFileName).toBe('saved.har');
+    expect(store.getState().selectedId).toBeNull();
+  });
+
+  it('ignores live traffic pushed in while in imported mode, but keeps buffering it', () => {
+    const fake = fakeConnection();
+    const store = createExchangeStore(fake.connection);
+    store.getState().importExchanges([exchange({ id: 'imported-1' })], 'saved.har');
+
+    fake.emit({ type: 'request', exchange: exchange({ id: 'live-1' }) });
+
+    expect(store.getState().exchanges.map((e) => e.id)).toEqual(['imported-1']);
+  });
+
+  it('exitImport() restores whatever live traffic accumulated in the background', () => {
+    const fake = fakeConnection();
+    const store = createExchangeStore(fake.connection);
+    store.getState().importExchanges([exchange({ id: 'imported-1' })], 'saved.har');
+    fake.emit({ type: 'request', exchange: exchange({ id: 'live-1' }) });
+
+    store.getState().exitImport();
+
+    expect(store.getState().exchanges.map((e) => e.id)).toEqual(['live-1']);
+    expect(store.getState().source).toBe('live');
+    expect(store.getState().importedFileName).toBeNull();
+  });
+
+  it('clear() also resets imported mode back to live', () => {
+    const fake = fakeConnection();
+    const store = createExchangeStore(fake.connection);
+    store.getState().importExchanges([exchange({ id: 'imported-1' })], 'saved.har');
+
+    store.getState().clear();
+
+    expect(store.getState().exchanges).toEqual([]);
+    expect(store.getState().source).toBe('live');
+    expect(store.getState().importedFileName).toBeNull();
   });
 
   it('two store instances never share buffered state', () => {
