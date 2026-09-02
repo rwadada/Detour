@@ -5,6 +5,7 @@ import type {
   FocusState,
   InterceptState,
   ProxyErrorEvent,
+  ThrottleState,
 } from '../types';
 
 /**
@@ -40,7 +41,13 @@ export type DashboardServerMessage =
    * (alongside `backlog`) so a (re)connecting client starts in sync, and
    * again on every change so all connected tabs stay in sync with each other.
    */
-  | { type: 'focus'; state: FocusState };
+  | { type: 'focus'; state: FocusState }
+  /**
+   * The current Throttle profile — sent once right after connecting
+   * (alongside `backlog`) so a (re)connecting client starts in sync, and
+   * again on every change so all connected tabs stay in sync with each other.
+   */
+  | { type: 'throttle'; state: ThrottleState };
 
 /**
  * Messages sent from a connected browser client to the dashboard server over
@@ -53,4 +60,6 @@ export type DashboardClientMessage =
   /** Turns interception on/off (see `InterceptState`). */
   | { type: 'setIntercept'; enabled: boolean }
   /** Replaces the Focus host allowlist wholesale (see `FocusState`). */
-  | { type: 'setFocus'; hosts: string[] };
+  | { type: 'setFocus'; hosts: string[] }
+  /** Replaces the Throttle profile wholesale (see `ThrottleState`). */
+  | { type: 'setThrottle'; state: ThrottleState };

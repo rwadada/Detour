@@ -145,6 +145,28 @@ export interface FocusState {
   hosts: string[];
 }
 
+/**
+ * "Throttle" simulates degraded network conditions (bandwidth cap, latency,
+ * packet loss) on proxied traffic, toggled at runtime from the dashboard.
+ * `enabled: false` (the default) is a true no-op. `downKbps`/`upKbps` cap
+ * response/request throughput in kilobits/sec (`0` = unlimited, per-exchange
+ * — see `BandwidthState` in proxyServer.ts); `latencyMs` adds one-time delay
+ * before an exchange starts forwarding; `packetLossPct` (0-100) is the
+ * chance a transfer is held back by `RETRANSMIT_DELAY_MS` to approximate a
+ * lost packet's retransmit stall, since bytes can't actually be dropped
+ * without corrupting the body. See proxyServer.ts's onRequestEnd/
+ * onResponseEnd for exactly what's covered (buffered MITM'd bodies, skipped
+ * for mock/breakpoint/rewrite responses) vs. the raw CONNECT tunnel's
+ * genuine chunk-by-chunk throttling.
+ */
+export interface ThrottleState {
+  enabled: boolean;
+  downKbps: number;
+  upKbps: number;
+  latencyMs: number;
+  packetLossPct: number;
+}
+
 /** Events published on the in-memory event bus. */
 export interface DetourEvents {
   /** Fired once the client finished sending the request (headers + body). */
@@ -172,4 +194,8 @@ export interface DetourEvents {
   setFocus: (hosts: string[]) => void;
   /** The proxy applied a focus change; broadcast to dashboards so every connected tab (and newly-connecting ones) reflect the current allowlist. */
   focusChanged: (state: FocusState) => void;
+  /** The dashboard changed the Throttle profile (see `ThrottleState`). */
+  setThrottle: (state: ThrottleState) => void;
+  /** The proxy applied a throttle change; broadcast to dashboards so every connected tab (and newly-connecting ones) reflect the current profile. */
+  throttleChanged: (state: ThrottleState) => void;
 }

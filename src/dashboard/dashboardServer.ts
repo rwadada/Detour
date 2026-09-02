@@ -4,7 +4,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { DetourEventBus } from '../eventBus';
 import { assertPortAvailable } from '../portCheck';
 import { RingBuffer } from '../ringBuffer';
-import type { CapturedExchange, DetourEvents, FocusState, InterceptState } from '../types';
+import type { CapturedExchange, DetourEvents, FocusState, InterceptState, ThrottleState } from '../types';
 import type { DashboardClientMessage, DashboardServerMessage } from './protocol';
 import { serveStatic } from './staticServer';
 
@@ -57,6 +57,9 @@ export async function startDashboardServer(
   // Mirrors the proxy server's own `focusHosts` the same way, kept in sync
   // via `focusChanged`.
   let focusState: FocusState = { hosts: [] };
+  // Mirrors the proxy server's own `throttleState` the same way, kept in
+  // sync via `throttleChanged`.
+  let throttleState: ThrottleState = { enabled: false, downKbps: 0, upKbps: 0, latencyMs: 0, packetLossPct: 0 };
 
   const httpServer = http.createServer((req, res) => serveStatic(WEB_DIST_DIR, req, res));
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
@@ -90,6 +93,10 @@ export async function startDashboardServer(
     focusState = state;
     broadcast({ type: 'focus', state });
   };
+  const onThrottleChanged: DetourEvents['throttleChanged'] = (state) => {
+    throttleState = state;
+    broadcast({ type: 'throttle', state });
+  };
 
   wss.on('connection', (socket: WebSocket) => {
     const backlogMessage: DashboardServerMessage = { type: 'backlog', items: backlog.toArray() };
@@ -98,18 +105,22 @@ export async function startDashboardServer(
     socket.send(JSON.stringify(interceptMessage));
     const focusMessage: DashboardServerMessage = { type: 'focus', state: focusState };
     socket.send(JSON.stringify(focusMessage));
+    const throttleMessage: DashboardServerMessage = { type: 'throttle', state: throttleState };
+    socket.send(JSON.stringify(throttleMessage));
 
     // The only browser → server traffic on this socket: resuming/aborting a
-    // paused breakpoint, toggling intercept on/off, and editing the Focus
-    // host allowlist. All are relayed onto the event bus, where the proxy
-    // server is waiting on them (see proxyServer.ts's
-    // `waitForBreakpoint`/`handleSetIntercept`/`handleSetFocus`).
+    // paused breakpoint, toggling intercept on/off, editing the Focus host
+    // allowlist, and editing the Throttle profile. All are relayed onto the
+    // event bus, where the proxy server is waiting on them (see
+    // proxyServer.ts's
+    // `waitForBreakpoint`/`handleSetIntercept`/`handleSetFocus`/`handleSetThrottle`).
     socket.on('message', (raw) => {
       try {
         const message = JSON.parse(raw.toString()) as DashboardClientMessage;
         if (message.type === 'breakpointResume') eventBus.emit('breakpointResume', message.command);
         else if (message.type === 'setIntercept') eventBus.emit('setIntercept', message.enabled);
         else if (message.type === 'setFocus') eventBus.emit('setFocus', message.hosts);
+        else if (message.type === 'setThrottle') eventBus.emit('setThrottle', message.state);
       } catch {
         // Ignore malformed frames rather than crashing the dashboard.
       }
@@ -128,6 +139,7 @@ export async function startDashboardServer(
       eventBus.on('breakpointHit', onBreakpointHit);
       eventBus.on('interceptChanged', onInterceptChanged);
       eventBus.on('focusChanged', onFocusChanged);
+      eventBus.on('throttleChanged', onThrottleChanged);
 
       const address = httpServer.address();
       const boundPort = typeof address === 'object' && address ? address.port : options.port;
@@ -141,6 +153,7 @@ export async function startDashboardServer(
             eventBus.off('breakpointHit', onBreakpointHit);
             eventBus.off('interceptChanged', onInterceptChanged);
             eventBus.off('focusChanged', onFocusChanged);
+            eventBus.off('throttleChanged', onThrottleChanged);
             for (const client of wss.clients) client.close();
             wss.close(() => httpServer.close(() => res()));
           }),

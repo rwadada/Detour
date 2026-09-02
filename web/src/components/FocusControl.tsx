@@ -1,7 +1,8 @@
 import { Target, X } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { Input } from '@/components/ui/input';
-import { cn } from '@/lib/utils';
+import { PillToggle } from '@/components/ui/pill-toggle';
+import { useDismissablePopover } from '@/lib/useDismissablePopover';
 import { useLogStore } from '@/store/useLogStore';
 
 /**
@@ -18,23 +19,7 @@ export function FocusControl() {
   const [draft, setDraft] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Closes the panel on an outside click or Escape — there's no dialog
-  // library in this project (see web/package.json), so this is hand-rolled.
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('pointerdown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open]);
+  useDismissablePopover(open, containerRef, () => setOpen(false));
 
   const addHost = () => {
     const trimmed = draft.trim();
@@ -49,22 +34,18 @@ export function FocusControl() {
 
   return (
     <div className="relative" ref={containerRef}>
-      <button
-        type="button"
+      <PillToggle
+        active={active}
         onClick={() => setOpen((v) => !v)}
-        className={cn(
-          'flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium transition-colors',
-          active ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-[var(--muted)] text-[var(--muted)]',
-        )}
+        icon={<Target className="h-3 w-3" />}
         title={
           active
             ? `Focus is on — MITM applies only to: ${focusHosts.join(', ')}`
             : 'Focus is off — every host is intercepted; click to restrict to specific hosts'
         }
       >
-        <Target className="h-3 w-3" />
         {active ? `Focus (${focusHosts.length})` : 'Focus: All'}
-      </button>
+      </PillToggle>
       {open && (
         <div className="absolute right-0 top-full z-10 mt-2 w-64 rounded-md border border-[var(--border)] bg-[var(--panel)] p-2.5 shadow-lg">
           <p className="mb-2 text-xs text-[var(--muted)]">
