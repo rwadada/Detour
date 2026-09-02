@@ -1,9 +1,13 @@
 import fs from 'node:fs';
 import http from 'node:http';
+import http2 from 'node:http2';
+import https from 'node:https';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import tls from 'node:tls';
 import { execa } from 'execa';
+import forge from 'node-forge';
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
@@ -119,6 +123,101 @@ function connectTunnel(proxyPort: number, targetHost: string, targetPort: number
     };
     socket.on('data', onData);
     socket.on('error', reject);
+  });
+}
+
+/** Generates a throwaway self-signed cert (RSA-2048, sha256) for `commonName`, for a fake HTTPS upstream server. */
+function generateSelfSignedCert(commonName: string): { key: string; cert: string } {
+  const keys = forge.pki.rsa.generateKeyPair(2048);
+  const cert = forge.pki.createCertificate();
+  cert.publicKey = keys.publicKey;
+  cert.serialNumber = '01';
+  cert.validity.notBefore = new Date();
+  cert.validity.notAfter = new Date();
+  cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 1);
+  const attrs = [{ name: 'commonName', value: commonName }];
+  cert.setSubject(attrs);
+  cert.setIssuer(attrs);
+  cert.sign(keys.privateKey, forge.md.sha256.create());
+  return { key: forge.pki.privateKeyToPem(keys.privateKey), cert: forge.pki.certificateToPem(cert) };
+}
+
+/**
+ * Starts a plain HTTPS server (the "real" upstream an HTTP/2 test connects
+ * to through the proxy) with a throwaway self-signed cert — Detour's own
+ * outbound request to it therefore needs
+ * `NODE_TLS_REJECT_UNAUTHORIZED=0` (see the HTTP/2 describe block below),
+ * same as it would for any dev server using a self-signed cert.
+ */
+function startHttpsUpstreamServer(): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const { key, cert } = generateSelfSignedCert('127.0.0.1');
+    const server = https.createServer({ key, cert }, (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ method: req.method, path: req.url }));
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('failed to bind https upstream server'));
+      resolve({ port: address.port, close: () => new Promise((res) => server.close(() => res())) });
+    });
+  });
+}
+
+/**
+ * Opens a CONNECT tunnel to `targetHost:targetPort` through the proxy (see
+ * `connectTunnel`), then performs a real TLS handshake through it —
+ * against Detour's dynamically-generated, CA-signed leaf cert for that
+ * host — offering `h2` via ALPN. Returns the resulting `http2.ClientHttp2Session`
+ * so the caller can inspect `session.alpnProtocol` to confirm HTTP/2 was
+ * actually negotiated (not silently downgraded), plus the raw TLS socket
+ * for cleanup.
+ */
+async function connectHttp2ThroughProxy(
+  proxyPort: number,
+  targetHost: string,
+  targetPort: number,
+  caCertPath: string,
+): Promise<{ session: http2.ClientHttp2Session; tlsSocket: tls.TLSSocket }> {
+  const tunnelSocket = await connectTunnel(proxyPort, targetHost, targetPort);
+  const tlsSocket = await new Promise<tls.TLSSocket>((resolve, reject) => {
+    const socket = tls.connect({
+      socket: tunnelSocket,
+      servername: targetHost,
+      ca: fs.readFileSync(caCertPath, 'utf8'),
+      ALPNProtocols: ['h2', 'http/1.1'],
+    });
+    socket.once('secureConnect', () => resolve(socket));
+    socket.once('error', reject);
+  });
+  const session = http2.connect(`https://${targetHost}:${targetPort}`, {
+    createConnection: () => tlsSocket,
+  });
+  return { session, tlsSocket };
+}
+
+/** Issues a single HTTP/2 GET request over an already-connected session and resolves with its status/body. */
+function h2Get(
+  session: http2.ClientHttp2Session,
+  authority: string,
+  reqPath: string,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    // `:authority` isn't auto-filled from the session's own connect target
+    // — set explicitly, since it's what http-mitm-proxy's
+    // `Proxy.parseHostAndPort` needs (the HTTP/2 equivalent of the `Host`
+    // header) to know which upstream to forward this request to.
+    const req = session.request({ ':path': reqPath, ':method': 'GET', ':authority': authority });
+    let status = 0;
+    const chunks: Buffer[] = [];
+    req.on('response', (headers) => {
+      status = Number(headers[':status']);
+    });
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => resolve({ status, body: Buffer.concat(chunks).toString('utf8') }));
+    req.on('error', reject);
+    req.end();
   });
 }
 
@@ -265,10 +364,19 @@ function requestThroughProxy(
  */
 async function startDetourCli(
   args: string[] = [],
-): Promise<{ port: number; dashboardPort: number; stdout: () => string; kill: () => Promise<void> }> {
+  env?: NodeJS.ProcessEnv,
+): Promise<{
+  port: number;
+  dashboardPort: number;
+  caCertPath: string;
+  stdout: () => string;
+  stderr: () => string;
+  kill: () => Promise<void>;
+}> {
   const subprocess = execa('npx', ['tsx', 'src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', ...args], {
     cwd: REPO_ROOT,
     reject: false,
+    env: env ? { ...process.env, ...env } : undefined,
   });
 
   let stdout = '';
@@ -293,11 +401,15 @@ async function startDetourCli(
   if (!portMatch) throw new Error(`could not parse proxy port from stdout: ${stdout}`);
   const dashboardMatch = stdout.match(/Dashboard → http:\/\/localhost:(\d+)/);
   if (!dashboardMatch) throw new Error(`could not parse dashboard port from stdout: ${stdout}`);
+  const caCertMatch = stdout.match(/Root CA certificate: (.+)/);
+  if (!caCertMatch) throw new Error(`could not parse CA cert path from stdout: ${stdout}`);
 
   return {
     port: Number(portMatch[1]),
     dashboardPort: Number(dashboardMatch[1]),
+    caCertPath: caCertMatch[1]!.trim(),
     stdout: () => stdout,
+    stderr: () => stderr,
     kill: async () => {
       subprocess.kill('SIGTERM');
       await subprocess.catch(() => {}); // a killed process "fails" — that's expected, not a test failure.
@@ -838,6 +950,100 @@ describe('detour start (CLI, end-to-end)', () => {
         expect(cli.stdout()).not.toContain('Request headers:');
       } finally {
         fs.rmSync(dumpFile, { force: true });
+      }
+    });
+  });
+
+  describe('HTTP/2 (issue #16)', () => {
+    // Detour's outbound request to the fake upstream server below hits its
+    // throwaway self-signed cert — the same trust problem a real dev
+    // server's self-signed cert would cause, and orthogonal to this
+    // describe block's own TLS handshake against Detour's (properly
+    // CA-signed) leaf cert, which stays fully verified via `caCertPath`.
+    const insecureUpstreamEnv = { NODE_TLS_REJECT_UNAUTHORIZED: '0' };
+
+    it('negotiates HTTP/2 with the client by default and proxies the request through to the (HTTP/1.1) upstream', async () => {
+      const upstream = await startHttpsUpstreamServer();
+      cli = await startDetourCli([], insecureUpstreamEnv);
+      let session: http2.ClientHttp2Session | undefined;
+      try {
+        const connected = await connectHttp2ThroughProxy(cli.port, 'localhost', upstream.port, cli.caCertPath);
+        session = connected.session;
+        expect(connected.tlsSocket.alpnProtocol).toBe('h2');
+
+        const result = await h2Get(session, `localhost:${upstream.port}`, '/hello');
+        expect(result.status).toBe(200);
+        expect(JSON.parse(result.body)).toEqual({ method: 'GET', path: '/hello' });
+
+        await waitForStdout(cli, /\[h2\]/);
+      } finally {
+        session?.close();
+        await upstream.close();
+      }
+    });
+
+    it('--no-http2 falls back to HTTP/1.1 only, even though the client offers h2 via ALPN', async () => {
+      const upstream = await startHttpsUpstreamServer();
+      cli = await startDetourCli(['--no-http2'], insecureUpstreamEnv);
+      const { port: proxyPort, caCertPath } = cli;
+      try {
+        const tunnelSocket = await connectTunnel(proxyPort, 'localhost', upstream.port);
+        const tlsSocket = await new Promise<tls.TLSSocket>((resolve, reject) => {
+          const socket = tls.connect({
+            socket: tunnelSocket,
+            servername: 'localhost',
+            ca: fs.readFileSync(caCertPath, 'utf8'),
+            ALPNProtocols: ['h2', 'http/1.1'],
+          });
+          socket.once('secureConnect', () => resolve(socket));
+          socket.once('error', reject);
+        });
+        try {
+          expect(tlsSocket.alpnProtocol).toBe('http/1.1');
+        } finally {
+          tlsSocket.destroy();
+        }
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    // The http-mitm-proxy patch's behavioral changes are all gated on the
+    // client having negotiated HTTP/2 (see patches/http-mitm-proxy+1.1.0.patch's
+    // `clientIsHttp2` checks) — this proves the original HTTP/1.1 HTTPS
+    // interception path (what every other exchange in this suite already
+    // exercises over a raw CONNECT tunnel, just never through a real TLS
+    // handshake against Detour's own leaf cert) is still bit-for-bit intact
+    // with HTTP/2 enabled (the new default) but not negotiated.
+    it('still decrypts and forwards HTTPS traffic over HTTP/1.1 when the client only offers http/1.1', async () => {
+      const upstream = await startHttpsUpstreamServer();
+      cli = await startDetourCli([], insecureUpstreamEnv);
+      const { port: proxyPort, caCertPath } = cli;
+      try {
+        const tunnelSocket = await connectTunnel(proxyPort, 'localhost', upstream.port);
+        const tlsSocket = await new Promise<tls.TLSSocket>((resolve, reject) => {
+          const socket = tls.connect({
+            socket: tunnelSocket,
+            servername: 'localhost',
+            ca: fs.readFileSync(caCertPath, 'utf8'),
+            ALPNProtocols: ['http/1.1'],
+          });
+          socket.once('secureConnect', () => resolve(socket));
+          socket.once('error', reject);
+        });
+        try {
+          expect(tlsSocket.alpnProtocol).toBe('http/1.1');
+          const response = await writeAndRead(
+            tlsSocket,
+            `GET /hello HTTP/1.1\r\nHost: localhost:${upstream.port}\r\nConnection: close\r\n\r\n`,
+          );
+          expect(response).toContain('HTTP/1.1 200');
+          expect(response).toContain('{"method":"GET","path":"/hello"}');
+        } finally {
+          tlsSocket.destroy();
+        }
+      } finally {
+        await upstream.close();
       }
     });
   });

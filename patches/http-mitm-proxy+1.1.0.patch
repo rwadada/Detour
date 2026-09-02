@@ -1,8 +1,34 @@
 diff --git a/node_modules/http-mitm-proxy/dist/lib/proxy.js b/node_modules/http-mitm-proxy/dist/lib/proxy.js
-index e896595..48409cf 100644
+index e896595..b366528 100644
 --- a/node_modules/http-mitm-proxy/dist/lib/proxy.js
 +++ b/node_modules/http-mitm-proxy/dist/lib/proxy.js
-@@ -361,7 +361,7 @@ class Proxy {
+@@ -31,6 +31,7 @@ const async_1 = __importDefault(require("async"));
+ const net_1 = __importDefault(require("net"));
+ const http_1 = __importDefault(require("http"));
+ const https_1 = __importDefault(require("https"));
++const http2_1 = __importDefault(require("http2"));
+ const fs_1 = __importDefault(require("fs"));
+ const path_1 = __importDefault(require("path"));
+ const ws_1 = __importStar(require("ws"));
+@@ -131,9 +132,14 @@ class Proxy {
+         return this;
+     }
+     _createHttpsServer(options, callback) {
+-        const httpsServer = https_1.default.createServer({
+-            ...options,
+-        });
++        const httpsServer = this.options && this.options.http2
++            ? http2_1.default.createSecureServer({
++                ...options,
++                allowHTTP1: true,
++            })
++            : https_1.default.createServer({
++                ...options,
++            });
+         httpsServer.timeout = this.timeout;
+         httpsServer.on("error", this._onError.bind(this, "HTTPS_SERVER_ERROR", null));
+         httpsServer.on("clientError", this._onError.bind(this, "HTTPS_CLIENT_ERROR", null));
+@@ -361,7 +367,7 @@ class Proxy {
          function makeConnection(port) {
              const conn = net_1.default.connect({
                  port,
@@ -11,3 +37,30 @@ index e896595..48409cf 100644
                  allowHalfOpen: true,
              }, () => {
                  const connectKey = `${conn.localPort}:${conn.remotePort}`;
+@@ -558,7 +564,12 @@ class Proxy {
+         if (ctx) {
+             ctx.onErrorHandlers.forEach((handler) => handler(ctx, err, kind));
+             if (ctx.proxyToClientResponse && !ctx.proxyToClientResponse.headersSent) {
+-                ctx.proxyToClientResponse.writeHead(504, "Proxy Error");
++                // A string statusMessage (2nd positional arg) isn't valid for
++                // Http2ServerResponse.writeHead (HTTP/2 has no reason phrases);
++                // the body written right below already carries the real
++                // message, so just the status code is enough here regardless
++                // of which protocol this response is on.
++                ctx.proxyToClientResponse.writeHead(504);
+             }
+             if (ctx.proxyToClientResponse && !ctx.proxyToClientResponse.finished) {
+                 ctx.proxyToClientResponse.end(`${kind}: ${err}`, "utf8");
+diff --git a/node_modules/http-mitm-proxy/dist/lib/types.d.ts b/node_modules/http-mitm-proxy/dist/lib/types.d.ts
+index f4ada74..7c27fc6 100644
+--- a/node_modules/http-mitm-proxy/dist/lib/types.d.ts
++++ b/node_modules/http-mitm-proxy/dist/lib/types.d.ts
+@@ -24,6 +24,8 @@ export interface IProxyOptions {
+     forceSNI?: boolean;
+     httpsPort?: number;
+     forceChunkedRequest?: boolean;
++    /** Detour patch: negotiate HTTP/2 (via ALPN, falling back to HTTP/1.1) on each per-host MITM'd TLS server. See patches/http-mitm-proxy+1.1.0.patch. */
++    http2?: boolean;
+ }
+ export interface IProxySSLServer {
+     port: number;

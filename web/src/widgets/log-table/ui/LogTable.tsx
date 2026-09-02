@@ -1,6 +1,13 @@
 import { useMemo, useRef, type CSSProperties } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { BreakpointBadge, matchesFilters, MethodBadge, StatusBadge, useExchangeStore } from '@/entities/exchange';
+import {
+  BreakpointBadge,
+  matchesFilters,
+  MethodBadge,
+  ProtocolBadge,
+  StatusBadge,
+  useExchangeStore,
+} from '@/entities/exchange';
 import type { CapturedExchange } from '@/shared/api';
 import { cn, formatBytes, formatDuration, formatTime } from '@/shared/lib/utils';
 
@@ -125,7 +132,9 @@ function LogRow({
           <StatusBadge status={exchange.statusCode} error={exchange.error} />
         )}
       </span>
-      <span className="min-w-0 flex-1 truncate pr-2">{exchange.url}</span>
+      <span className="min-w-0 flex-1 truncate pr-2">
+        <ProtocolBadge protocol={exchange.protocol} /> {exchange.url}
+      </span>
       <span className="w-16 shrink-0 text-right text-[var(--muted)]">{formatDuration(exchange.durationMs)}</span>
       <span className="w-16 shrink-0 text-right text-[var(--muted)]">
         {exchange.responseBodySize > 0 ? formatBytes(exchange.responseBodySize) : '—'}

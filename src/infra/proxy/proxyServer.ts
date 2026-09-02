@@ -66,6 +66,18 @@ export interface ProxyServerOptions {
   host?: string;
   /** When set, requests are matched against rules.json (mock/route/rewrite) before/while proxying. */
   ruleEngine?: RuleEngine;
+  /**
+   * Whether each per-host MITM'd TLS server negotiates HTTP/2 via ALPN
+   * (falling back to HTTP/1.1 for clients that don't offer it) — issue
+   * #16's `listen.http2`. Implemented as a small patch to `http-mitm-proxy`
+   * itself (see patches/http-mitm-proxy+1.1.0.patch), since the library
+   * doesn't expose a hook to swap in `http2.createSecureServer`. Plain
+   * (non-CONNECT) `http://` traffic and the proxy→upstream leg are
+   * unaffected either way — only the client-facing HTTPS side can
+   * negotiate HTTP/2.
+   * @default true
+   */
+  http2Enabled?: boolean;
 }
 
 export interface ProxyServerHandle {
@@ -110,6 +122,12 @@ function buildBaseExchange(
     url: info.url,
     host: info.host,
     isSSL: ctx.isSSL,
+    // Set by Node itself on the client-facing request: `2` when the client
+    // ALPN-negotiated HTTP/2 against the (patched, http2-enabled) per-host
+    // MITM'd TLS server — see patches/http-mitm-proxy+1.1.0.patch — `1`
+    // otherwise. The proxy→upstream leg is unaffected either way (see
+    // `makeProxyToServerRequest` in http-mitm-proxy, always plain HTTP/1.1).
+    protocol: ctx.clientToProxyRequest.httpVersionMajor === 2 ? 'HTTP/2' : 'HTTP/1.1',
     requestHeaders: { ...ctx.clientToProxyRequest.headers },
     requestBodySize: 0,
     responseBodySize: 0,
@@ -824,7 +842,7 @@ export async function startProxyServer(
 
   return new Promise((resolve, reject) => {
     try {
-      proxy.listen({ port: options.port, host, sslCaDir }, () => {
+      proxy.listen({ port: options.port, host, sslCaDir, http2: options.http2Enabled ?? true }, () => {
         resolve({
           port: proxy.httpPort,
           caCertPath: proxy.ca.getCACertPath(),

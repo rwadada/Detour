@@ -36,6 +36,28 @@ export function MethodBadge({ method }: { method: string }) {
   );
 }
 
+/**
+ * Shown next to the method/status of an HTTP/2-negotiated exchange (issue
+ * #16). Renders nothing for the (overwhelmingly common) HTTP/1.1 case,
+ * rather than a column showing the same label on every row.
+ */
+export function ProtocolBadge({ protocol }: { protocol: 'HTTP/1.1' | 'HTTP/2' }) {
+  if (protocol !== 'HTTP/2') return null;
+  return (
+    <Badge
+      className="min-w-[2rem] justify-center border"
+      style={{
+        color: 'var(--accent)',
+        borderColor: 'var(--accent)',
+        backgroundColor: 'color-mix(in oklch, var(--accent) 14%, transparent)',
+      }}
+      title="Negotiated HTTP/2 with the client"
+    >
+      h2
+    </Badge>
+  );
+}
+
 /** Shown in place of `StatusBadge` for an exchange currently paused by a `breakpoint` rule. */
 export function BreakpointBadge({ phase }: { phase: 'request' | 'response' }) {
   const color = 'var(--status-3xx)';

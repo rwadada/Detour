@@ -13,6 +13,15 @@ export interface CapturedExchange {
   url: string;
   host: string;
   isSSL: boolean;
+  /**
+   * The protocol version negotiated with the client for this exchange
+   * (issue #16) — `'HTTP/2'` when the client ALPN-negotiated h2 against the
+   * MITM'd TLS server (only possible when `listen.http2` is enabled; see
+   * `ProxyServerOptions.http2Enabled`), `'HTTP/1.1'` otherwise. The
+   * proxy→upstream leg is always HTTP/1.1 regardless of this value — only
+   * the client-facing side can differ.
+   */
+  protocol: 'HTTP/1.1' | 'HTTP/2';
   requestHeaders: IncomingHttpHeaders;
   requestBodySize: number;
   /**

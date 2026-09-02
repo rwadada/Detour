@@ -9,6 +9,7 @@ function baseExchange(overrides: Partial<CapturedExchange> = {}): CapturedExchan
     url: 'https://api.example.com/users?x=1',
     host: 'api.example.com',
     isSSL: true,
+    protocol: 'HTTP/1.1',
     requestHeaders: { host: 'api.example.com' },
     requestBodySize: 0,
     startedAt: 0,
