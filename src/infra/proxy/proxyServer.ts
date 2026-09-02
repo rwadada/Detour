@@ -2,7 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import net from 'node:net';
 import type { Duplex } from 'node:stream';
 import { Proxy } from 'http-mitm-proxy';
-import type { ErrorCallback, IContext } from 'http-mitm-proxy';
+import type { ErrorCallback, IContext, IWebSocketContext } from 'http-mitm-proxy';
 import { isHostBlocked, normalizeBlockHosts } from '../../domain/blockHosts/blockHostsPolicy';
 import { BodyCapture } from '../../domain/exchange/bodyCapture';
 import { flattenHeaders } from '../../domain/exchange/headers';
@@ -12,8 +12,11 @@ import type {
   BreakpointResponsePayload,
   BreakpointResumeCommand,
   CapturedExchange,
+  CapturedWebSocketConnection,
   ThrottleState,
+  WebSocketFrameRecord,
 } from '../../domain/exchange/types';
+import { recordWebSocketFrame } from '../../domain/exchange/webSocketCapture';
 import { formatHostPort, isHostFocused, normalizeFocusHosts } from '../../domain/focus/focusPolicy';
 import type { Rule } from '../../domain/rules/types';
 import { BandwidthState, flushThrottledBody, transferDelayMs } from '../../domain/throttle/bandwidth';
@@ -111,6 +114,36 @@ function resolveUrl(ctx: IContext): { url: string; host: string } {
   return { url: `${scheme}://${hostname}${path}`, host: hostname };
 }
 
+/**
+ * Extracts the target `ws://`/`wss://` URL and bare host from a WebSocket
+ * context. `ctx.proxyToServerWebSocketOptions.url` is already fully
+ * resolved by http-mitm-proxy by the time `onWebSocketConnection` fires
+ * (from either the upgrade request's absolute URL, or its `Host` header —
+ * see the library's `_onWebSocketServerConnect`), so unlike `resolveUrl`
+ * above there's no host/port reassembly to do here.
+ */
+function resolveWsUrl(ctx: IWebSocketContext): { url: string; host: string } {
+  const url = ctx.proxyToServerWebSocketOptions?.url ?? '';
+  try {
+    return { url, host: new URL(url).host };
+  } catch {
+    return { url, host: url };
+  }
+}
+
+/**
+ * Coerces a WebSocket frame's raw payload (as delivered by the `ws`
+ * library — a `Buffer` in the common case, but its types also allow
+ * `ArrayBuffer`/`Buffer[]` depending on client options) into a plain
+ * `Buffer` for capture.
+ */
+function toBuffer(data: unknown): Buffer {
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof ArrayBuffer) return Buffer.from(data);
+  if (Array.isArray(data)) return Buffer.concat(data as Buffer[]);
+  return Buffer.from(String(data ?? ''), 'utf8');
+}
+
 /** Builds the initial `CapturedExchange` for a request just as it starts, before its outcome (blocked/mock/route/rewrite/forwarded) is known. Shared by the Block Hosts branch and the normal rule-resolution path in `proxy.onRequest` below. */
 function buildBaseExchange(
   ctx: IContext,
@@ -177,6 +210,12 @@ export async function startProxyServer(
   // any) matched this request — matching itself only happens once, in
   // onRequest, since it's the same for both.
   const ruleContexts = new Map<string, Rule>();
+  // Keyed by ctx.uuid (a WebSocket context's own, stable for its whole
+  // lifecycle — see `_onWebSocketServerConnect` in http-mitm-proxy), so the
+  // frame/close/error hooks below (which fire as separate callbacks over
+  // the life of one connection) can keep accumulating into the same record
+  // (issue #17).
+  const wsConnections = new Map<string, CapturedWebSocketConnection>();
 
   // Master on/off switch, toggled at runtime from the dashboard (see
   // `setIntercept`/`interceptChanged` in eventBus.ts). While disabled: HTTPS
@@ -332,6 +371,99 @@ export async function startProxyServer(
       return;
     }
     handleInterceptOffConnect(req, socket, head as Buffer);
+  });
+
+  /**
+   * WebSocket support (issue #17): http-mitm-proxy relays `ws://`/`wss://`
+   * traffic transparently on its own (a `wss://` tunnel only ever reaches
+   * these hooks once intercept has already MITM-decrypted it — see
+   * `handleInterceptOffConnect` above; a passthrough tunnel's WS frames are
+   * just opaque encrypted bytes to us like the rest of its traffic), so
+   * these four hooks are purely observational: they build up a
+   * `CapturedWebSocketConnection` per connection and publish it on the
+   * event bus, mirroring `request`/`response` for HTTP exchanges. None of
+   * them touch `data`/`flags` before calling back, so the actual proxied
+   * traffic is never altered by recording it.
+   */
+  proxy.onWebSocketConnection((ctx, callback) => {
+    const { url, host } = resolveWsUrl(ctx);
+    const connection: CapturedWebSocketConnection = {
+      id: ctx.uuid,
+      url,
+      host,
+      isSSL: ctx.isSSL,
+      // `sec-websocket-*` headers are handshake plumbing (key/version/
+      // extensions), not application data — already stripped out by
+      // http-mitm-proxy when it built this options object, so what's left
+      // is exactly what's worth showing in a debug dump.
+      requestHeaders: { ...(ctx.proxyToServerWebSocketOptions?.headers as Record<string, string> | undefined) },
+      openedAt: Date.now(),
+      frames: [],
+      frameCount: 0,
+      framesTruncated: false,
+    };
+    wsConnections.set(ctx.uuid, connection);
+    eventBus.emit('wsOpen', connection);
+    callback();
+  });
+
+  proxy.onWebSocketFrame((ctx, type, fromServer, data, flags, callback) => {
+    const connection = wsConnections.get(ctx.uuid);
+    if (connection) {
+      recordWebSocketFrame(connection, {
+        type: type as WebSocketFrameRecord['type'],
+        direction: fromServer ? 'toClient' : 'toServer',
+        // For a `message` frame, http-mitm-proxy forwards the underlying
+        // `ws` library's `isBinary` event argument through as `flags`
+        // (despite the type declaring it `any` — see the library's
+        // `_onWebSocketFrame`, which itself does `.send(data, {binary:
+        // flags})`); `ping`/`pong` frames carry no such flag.
+        binary: typeof flags === 'boolean' ? flags : false,
+        payload: toBuffer(data),
+        at: Date.now(),
+      });
+      eventBus.emit('wsFrame', connection);
+    }
+    callback(null, data, flags);
+  });
+
+  proxy.onWebSocketClose((ctx, code, message, callback) => {
+    const connection = wsConnections.get(ctx.uuid);
+    if (connection) {
+      connection.closedAt = Date.now();
+      connection.durationMs = connection.closedAt - connection.openedAt;
+      connection.closeCode = typeof code === 'number' ? code : undefined;
+      connection.closeReason = Buffer.isBuffer(message) ? message.toString('utf8') : undefined;
+      connection.closedByServer = ctx.closedByServer;
+      wsConnections.delete(ctx.uuid);
+      eventBus.emit('wsClose', connection);
+    }
+    // Unlike `ErrorCallback` elsewhere in this file, `onWebSocketClose`'s
+    // callback type doesn't mark its `err` parameter optional — pass `null`
+    // explicitly to satisfy it (equivalent to "no error" here either way).
+    callback(null);
+  });
+
+  proxy.onWebSocketError((ctx, err) => {
+    // A connection already closed (and thus already reported via
+    // `wsClose` above) is removed from `wsConnections`, so a follow-up
+    // error on its other leg — see http-mitm-proxy's own close/error
+    // cross-signaling in `_onWebSocketClose`/`_onWebSocketError` — is a
+    // harmless no-op here rather than a second `wsClose` for the same
+    // connection.
+    const connection = wsConnections.get(ctx.uuid);
+    if (connection) {
+      connection.error = err?.message ?? 'unknown websocket error';
+      connection.closedAt = Date.now();
+      connection.durationMs = connection.closedAt - connection.openedAt;
+      wsConnections.delete(ctx.uuid);
+      eventBus.emit('wsClose', connection);
+    }
+    eventBus.emit('error', {
+      id: ctx.uuid,
+      errorKind: 'WEBSOCKET_ERROR',
+      message: err?.message ?? 'unknown websocket error',
+    });
   });
 
   proxy.onError((ctx, err, errorKind) => {

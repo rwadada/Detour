@@ -58,6 +58,59 @@ export interface CapturedExchange {
   breakpoint?: 'request' | 'response';
 }
 
+/**
+ * A single WebSocket frame captured while a proxied `ws://`/`wss://`
+ * connection is open (issue #17). `type` mirrors the `ws` library's own
+ * event names — `message` carries the application payload, `ping`/`pong`
+ * are keepalive frames.
+ */
+export interface WebSocketFrameRecord {
+  type: 'message' | 'ping' | 'pong';
+  /** Which leg this frame traveled: client→proxy (relayed on to the server) or server→proxy (relayed on to the client). */
+  direction: 'toServer' | 'toClient';
+  /** True for a binary `message` frame; always false for `ping`/`pong` (their payload, if any, is just a control-frame body, not application data). */
+  binary: boolean;
+  /** Original payload size in bytes, even when `data` below was capped or omitted. */
+  size: number;
+  at: number;
+  /** Captured payload, base64-encoded and capped the same way as `CapturedExchange` bodies. Undefined when the frame was empty. */
+  data?: string;
+  /** True when `size` exceeds what was actually captured in `data`. */
+  truncated?: boolean;
+}
+
+/**
+ * A WebSocket connection tunneled through the proxy (issue #17): the
+ * upgrade handshake, every frame exchanged, and how it eventually closed.
+ * Kept alongside (not merged into) `CapturedExchange`, since a WS
+ * connection's shape — a long-lived stream of frames rather than one
+ * request/response pair — doesn't fit that type's fields.
+ */
+export interface CapturedWebSocketConnection {
+  /** Unique id for this connection, stable across its whole lifecycle. */
+  id: string;
+  /** Fully-qualified URL, e.g. wss://example.com/socket */
+  url: string;
+  host: string;
+  isSSL: boolean;
+  /** The upgrade request's headers, minus `sec-websocket-*` (handshake noise, not application data). */
+  requestHeaders: IncomingHttpHeaders;
+  openedAt: number;
+  /** Captured frames, capped at `MAX_CAPTURED_WS_FRAMES` — see `framesTruncated`. */
+  frames: WebSocketFrameRecord[];
+  /** Total frames seen so far, even beyond what's retained in `frames`. */
+  frameCount: number;
+  /** True once `frames` has hit its cap and older frames are evicted to make room for new ones. */
+  framesTruncated: boolean;
+  closedAt?: number;
+  durationMs?: number;
+  closeCode?: number;
+  closeReason?: string;
+  /** True when the upstream server closed first; false when the client did. Undefined if the connection ended via `error` before either side closed cleanly. */
+  closedByServer?: boolean;
+  error?: string;
+}
+
 export interface ProxyErrorEvent {
   id?: string;
   errorKind: string;
@@ -232,4 +285,10 @@ export interface DetourEvents {
   setBlockHosts: (state: BlockHostsState) => void;
   /** The proxy applied a Block Hosts change; broadcast to dashboards so every connected tab (and newly-connecting ones) reflect the current denylist. */
   blockHostsChanged: (state: BlockHostsState) => void;
+  /** A proxied WebSocket connection just completed its upgrade handshake (issue #17). */
+  wsOpen: (connection: Readonly<CapturedWebSocketConnection>) => void;
+  /** A WebSocket frame was relayed through the proxy — fired after `wsOpen`, potentially many times over a connection's life. Carries the full up-to-date connection (mirroring how `request`/`response` share `CapturedExchange`), not just the new frame. */
+  wsFrame: (connection: Readonly<CapturedWebSocketConnection>) => void;
+  /** A proxied WebSocket connection closed, cleanly or via error. */
+  wsClose: (connection: Readonly<CapturedWebSocketConnection>) => void;
 }

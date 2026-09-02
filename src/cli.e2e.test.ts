@@ -9,7 +9,7 @@ import tls from 'node:tls';
 import { execa } from 'execa';
 import forge from 'node-forge';
 import { afterEach, describe, expect, it } from 'vitest';
-import WebSocket from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
@@ -92,6 +92,64 @@ function startMarkerEchoServer(marker: string): Promise<{ port: number; close: (
       });
     });
   });
+}
+
+/**
+ * Starts a plain-HTTP WebSocket server (the "real" upstream a proxied `ws://`
+ * connection should reach) that echoes every message straight back,
+ * preserving whether it was sent as text or binary.
+ */
+function startWsEchoServer(): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer();
+    const wss = new WebSocketServer({ server });
+    wss.on('connection', (socket) => {
+      socket.on('message', (data, isBinary) => socket.send(data, { binary: isBinary }));
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('failed to bind ws echo server'));
+      resolve({
+        port: address.port,
+        close: () =>
+          new Promise((res) => {
+            wss.close();
+            server.close(() => res());
+          }),
+      });
+    });
+  });
+}
+
+/**
+ * Opens a `ws://` connection to `127.0.0.1:targetPort` tunneled through the
+ * proxy at `proxyPort`, the same way a browser configured to use `detour
+ * start` as its HTTP proxy would: the TCP socket dials the proxy, while the
+ * upgrade request's own `Host`/path still name the real target, so
+ * http-mitm-proxy's `Proxy.parseHostAndPort` resolves it correctly (see
+ * proxyServer.ts's `resolveWsUrl`). A custom `http.Agent` is the standard
+ * way to split "where the socket connects" from "what the request asks
+ * for" — the same trick a real HTTP-proxy-aware `ws` client library uses.
+ */
+function connectWebSocketThroughProxy(
+  proxyPort: number,
+  targetPort: number,
+  wsPath: string,
+  headers?: Record<string, string>,
+): WebSocket {
+  class ProxyAgent extends http.Agent {
+    override createConnection(
+      _options: http.ClientRequestArgs,
+      callback?: (err: Error | null, socket: net.Socket) => void,
+    ): net.Socket {
+      const socket = net.connect({ host: 'localhost', port: proxyPort });
+      socket.once('connect', () => callback?.(null, socket));
+      socket.once('error', (err) => callback?.(err, socket));
+      return socket;
+    }
+  }
+  return new WebSocket(`ws://127.0.0.1:${targetPort}${wsPath}`, { agent: new ProxyAgent(), headers });
 }
 
 /**
@@ -1044,6 +1102,79 @@ describe('detour start (CLI, end-to-end)', () => {
         }
       } finally {
         await upstream.close();
+      }
+    });
+  });
+
+  describe('websocket logging (issue #17)', () => {
+    it('relays messages through a proxied ws:// connection to the real upstream server', async () => {
+      const wsEcho = await startWsEchoServer();
+      cli = await startDetourCli();
+      try {
+        const socket = connectWebSocketThroughProxy(cli.port, wsEcho.port, '/chat');
+        await new Promise<void>((resolve, reject) => {
+          socket.once('open', resolve);
+          socket.once('error', reject);
+        });
+        const reply = await new Promise<string>((resolve, reject) => {
+          socket.once('message', (data: Buffer) => resolve(data.toString('utf8')));
+          socket.once('error', reject);
+          socket.send('hello');
+        });
+        expect(reply).toBe('hello');
+        socket.close(1000, 'done');
+      } finally {
+        await wsEcho.close();
+      }
+    });
+
+    it('logs a closed connection as a summary line by default, without printing frame details', async () => {
+      const wsEcho = await startWsEchoServer();
+      cli = await startDetourCli();
+      try {
+        const socket = connectWebSocketThroughProxy(cli.port, wsEcho.port, '/chat');
+        await new Promise<void>((resolve, reject) => {
+          socket.once('open', resolve);
+          socket.once('error', reject);
+        });
+        socket.close(1000, 'done');
+        await waitForStdout(cli, /WS\s+closed 1000/);
+
+        const stdout = cli.stdout();
+        expect(stdout).toContain(`ws://127.0.0.1:${wsEcho.port}/chat`);
+        expect(stdout).not.toContain('Frames (');
+      } finally {
+        await wsEcho.close();
+      }
+    });
+
+    it('full level prints every captured frame and redacts sensitive upgrade-request headers', async () => {
+      const wsEcho = await startWsEchoServer();
+      cli = await startDetourCli(['--dump', 'full']);
+      try {
+        const socket = connectWebSocketThroughProxy(cli.port, wsEcho.port, '/chat', {
+          Authorization: 'Bearer secret-token',
+        });
+        await new Promise<void>((resolve, reject) => {
+          socket.once('open', resolve);
+          socket.once('error', reject);
+        });
+        await new Promise<void>((resolve, reject) => {
+          socket.once('message', () => resolve());
+          socket.once('error', reject);
+          socket.send('hello');
+        });
+        socket.close(1000, 'done');
+        await waitForStdout(cli, /Closed: 1000/);
+
+        const stdout = cli.stdout();
+        expect(stdout).toContain(`WS ws://127.0.0.1:${wsEcho.port}/chat`);
+        expect(stdout).toContain('→ server text');
+        expect(stdout).toContain('→ client text');
+        expect(stdout).toContain('authorization: [REDACTED]');
+        expect(stdout).not.toContain('secret-token');
+      } finally {
+        await wsEcho.close();
       }
     });
   });

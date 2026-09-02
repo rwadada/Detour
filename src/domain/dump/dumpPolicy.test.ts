@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { CapturedExchange } from '../exchange/types';
-import { formatExchangeDump, isDumpLevel, redactHeaders } from './dumpPolicy';
+import type { CapturedExchange, CapturedWebSocketConnection } from '../exchange/types';
+import { formatExchangeDump, formatWebSocketDump, isDumpLevel, redactHeaders } from './dumpPolicy';
 
 function baseExchange(overrides: Partial<CapturedExchange> = {}): CapturedExchange {
   return {
@@ -113,5 +113,116 @@ describe('formatExchangeDump', () => {
     expect(dump).toContain('204\n');
     expect(dump).not.toContain('undefined');
     expect(dump).toContain('Response headers:\n  (none)');
+  });
+});
+
+function baseWsConnection(overrides: Partial<CapturedWebSocketConnection> = {}): CapturedWebSocketConnection {
+  return {
+    id: 'ws-1',
+    url: 'wss://api.example.com/socket',
+    host: 'api.example.com',
+    isSSL: true,
+    requestHeaders: { host: 'api.example.com' },
+    openedAt: 0,
+    frames: [],
+    frameCount: 0,
+    framesTruncated: false,
+    ...overrides,
+  };
+}
+
+describe('formatWebSocketDump', () => {
+  it('includes the connection line and redacts sensitive headers', () => {
+    const dump = formatWebSocketDump(
+      baseWsConnection({ requestHeaders: { host: 'api.example.com', cookie: 'session=secret' } }),
+    );
+    expect(dump).toContain('WS wss://api.example.com/socket');
+    expect(dump).toContain('cookie: [REDACTED]');
+    expect(dump).not.toContain('secret');
+  });
+
+  it('shows "(none)" when there are no frames', () => {
+    const dump = formatWebSocketDump(baseWsConnection());
+    expect(dump).toContain('Frames (0):');
+    expect(dump).toContain('(none)');
+  });
+
+  it('renders a text message frame with its direction and pretty-printed JSON body', () => {
+    const dump = formatWebSocketDump(
+      baseWsConnection({
+        frameCount: 1,
+        frames: [
+          {
+            type: 'message',
+            direction: 'toServer',
+            binary: false,
+            size: 13,
+            at: 0,
+            data: Buffer.from(JSON.stringify({ id: 1 })).toString('base64'),
+          },
+        ],
+      }),
+    );
+    expect(dump).toContain('→ server text');
+    expect(dump).toContain('"id": 1');
+  });
+
+  it('labels a binary message frame accordingly', () => {
+    const dump = formatWebSocketDump(
+      baseWsConnection({
+        frameCount: 1,
+        frames: [
+          {
+            type: 'message',
+            direction: 'toServer',
+            binary: true,
+            size: 4,
+            at: 0,
+            data: Buffer.from('data').toString('base64'),
+          },
+        ],
+      }),
+    );
+    expect(dump).toContain('→ server binary');
+  });
+
+  it('renders a ping/pong frame without a body section', () => {
+    const dump = formatWebSocketDump(
+      baseWsConnection({
+        frameCount: 1,
+        frames: [{ type: 'ping', direction: 'toClient', binary: false, size: 0, at: 0 }],
+      }),
+    );
+    expect(dump).toContain('→ client ping (0B)');
+  });
+
+  it('notes truncation with the total frame count vs. what is shown', () => {
+    const dump = formatWebSocketDump(baseWsConnection({ frameCount: 250, framesTruncated: true, frames: [] }));
+    expect(dump).toContain('Frames (250 total, showing the last 0):');
+  });
+
+  it('includes the close line once closed, with code/reason/side/duration', () => {
+    const dump = formatWebSocketDump(
+      baseWsConnection({ closedAt: 100, durationMs: 100, closeCode: 1000, closeReason: 'bye', closedByServer: true }),
+    );
+    expect(dump).toContain('Closed: 1000 bye (closed by server) (100ms)');
+  });
+
+  it('labels a client-initiated close accordingly', () => {
+    const dump = formatWebSocketDump(baseWsConnection({ closedAt: 100, closedByServer: false }));
+    expect(dump).toContain('(closed by client)');
+  });
+
+  it('defaults code to "(none)" and omits reason/side/duration when none are known', () => {
+    const dump = formatWebSocketDump(baseWsConnection({ closedAt: 100 }));
+    expect(dump).toContain('Closed: (none)');
+    expect(dump).not.toContain('closed by');
+    expect(dump).not.toContain('undefined');
+  });
+
+  it('omits the close line while still open, and includes an error line when present', () => {
+    const dump = formatWebSocketDump(baseWsConnection({ error: 'ECONNRESET' }));
+    expect(dump).not.toContain('Closed:');
+    expect(dump).toContain('Error: ECONNRESET');
   });
 });
