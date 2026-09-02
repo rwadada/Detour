@@ -90,6 +90,15 @@ export interface FocusState {
   hosts: string[];
 }
 
+/** The current "Throttle" network-simulation profile — see `src/types.ts`'s `ThrottleState`. */
+export interface ThrottleState {
+  enabled: boolean;
+  downKbps: number;
+  upKbps: number;
+  latencyMs: number;
+  packetLossPct: number;
+}
+
 export type DashboardServerMessage =
   | { type: 'backlog'; items: CapturedExchange[] }
   | { type: 'request'; exchange: CapturedExchange }
@@ -97,9 +106,11 @@ export type DashboardServerMessage =
   | { type: 'error'; event: ProxyErrorEvent }
   | { type: 'breakpoint'; exchange: CapturedExchange; payload: BreakpointPayload }
   | { type: 'intercept'; state: InterceptState }
-  | { type: 'focus'; state: FocusState };
+  | { type: 'focus'; state: FocusState }
+  | { type: 'throttle'; state: ThrottleState };
 
 export type DashboardClientMessage =
   | { type: 'breakpointResume'; command: BreakpointResumeCommand }
   | { type: 'setIntercept'; enabled: boolean }
-  | { type: 'setFocus'; hosts: string[] };
+  | { type: 'setFocus'; hosts: string[] }
+  | { type: 'setThrottle'; state: ThrottleState };

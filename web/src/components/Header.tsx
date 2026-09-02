@@ -1,6 +1,7 @@
 import { Moon, Shield, ShieldOff, Sun } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { FocusControl } from '@/components/FocusControl';
+import { ThrottleControl } from '@/components/ThrottleControl';
 import { setTheme, useTheme } from '@/lib/theme';
 import { cn } from '@/lib/utils';
 import { useLogStore } from '@/store/useLogStore';
@@ -66,6 +67,7 @@ export function Header() {
           Intercept {interceptEnabled ? 'On' : 'Off'}
         </button>
         <FocusControl />
+        <ThrottleControl />
         <Button
           variant="ghost"
           size="icon"

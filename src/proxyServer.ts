@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import net from 'node:net';
-import type { Duplex } from 'node:stream';
+import { Transform, type Duplex } from 'node:stream';
 import { Proxy } from 'http-mitm-proxy';
 import type { ErrorCallback, IContext } from 'http-mitm-proxy';
 import { resolveCertDir } from './certStore';
@@ -24,6 +24,7 @@ import type {
   BreakpointResponsePayload,
   BreakpointResumeCommand,
   CapturedExchange,
+  ThrottleState,
 } from './types';
 
 /** Formats a host/port pair the same way throughout: `host:port`, unless `port` is the scheme's default, in which case it's omitted. */
@@ -68,6 +69,112 @@ function isHostFocused(focusHosts: readonly string[], host: string): boolean {
   if (focusHosts.length === 0) return true;
   const target = host.toLowerCase();
   return focusHosts.some((pattern) => compileGlob(pattern).test(target));
+}
+
+/** `enabled: false`, every rate/delay `0` — Throttle's true no-op default (see `ThrottleState`'s doc comment). */
+const DEFAULT_THROTTLE_STATE: ThrottleState = {
+  enabled: false,
+  downKbps: 0,
+  upKbps: 0,
+  latencyMs: 0,
+  packetLossPct: 0,
+};
+
+/** Clamps a Throttle profile's numeric fields to sane, non-negative values — a stray negative from a malformed dashboard message would otherwise flip a bandwidth cap's "unlimited" check and speed traffic up instead of slowing it down. */
+function normalizeThrottleState(state: ThrottleState): ThrottleState {
+  const nonNegative = (n: number) => (Number.isFinite(n) && n > 0 ? n : 0);
+  return {
+    enabled: state.enabled,
+    downKbps: nonNegative(state.downKbps),
+    upKbps: nonNegative(state.upKbps),
+    latencyMs: nonNegative(state.latencyMs),
+    packetLossPct: Math.min(100, nonNegative(state.packetLossPct)),
+  };
+}
+
+/**
+ * Extra stall (ms) applied to a chunk "lost" under Throttle's
+ * `packetLossPct`. This is an HTTP-level proxy, not a raw packet filter —
+ * actually dropping bytes here would just corrupt the body — so loss is
+ * approximated as the stall a real TCP retransmit timeout would cause
+ * instead of an literal drop (see `ThrottleState`'s doc comment).
+ */
+const RETRANSMIT_DELAY_MS = 300;
+
+/**
+ * Per-exchange, per-direction token bucket backing Throttle's bandwidth cap:
+ * spaces consecutive chunks out so their aggregate throughput matches
+ * `kbps`, rather than just delaying each chunk independently (which would
+ * let a burst of small chunks straight through). Each exchange/direction
+ * gets its own instance, so concurrent exchanges are throttled
+ * independently rather than sharing one simulated pipe.
+ */
+class BandwidthState {
+  private nextTime = 0;
+
+  /**
+   * Delay (ms, ≥0) before a chunk of `byteLength` bytes may go out, given
+   * `kbps` (0 = unlimited). Advances internal state so a later call's delay
+   * accounts for this chunk having "used up" its share of the bucket.
+   */
+  delayFor(byteLength: number, kbps: number): number {
+    if (kbps <= 0) return 0;
+    const bytesPerMs = (kbps * 1000) / 8 / 1000;
+    const now = Date.now();
+    // This chunk starts transmitting once the link is free (either now, or
+    // once the previous chunk finished) and takes `byteLength / bytesPerMs`
+    // to finish — the caller should wait until *that* point, not just until
+    // this chunk's turn starts, or a lone/first chunk would see 0 delay
+    // despite genuinely taking time to "transmit" at the capped rate.
+    const start = Math.max(now, this.nextTime);
+    this.nextTime = start + byteLength / bytesPerMs;
+    return Math.max(0, this.nextTime - now);
+  }
+}
+
+/**
+ * Writes a Throttle-buffered request/response body via `write` after
+ * `delayMs`, then calls `cb` — shared by the upload (onRequestEnd) and
+ * download (onResponseEnd) finalization below, which are otherwise
+ * identical apart from which stream they write to.
+ */
+function flushThrottledBody(body: Buffer, delayMs: number, write: (body: Buffer) => void, cb: () => void): void {
+  const flush = () => {
+    if (body.length > 0) write(body);
+    cb();
+  };
+  if (delayMs > 0) setTimeout(flush, delayMs);
+  else flush();
+}
+
+/** Combines bandwidth pacing and simulated packet loss into one delay (ms) for `byteLength` bytes of transferred data — see `BandwidthState` and `RETRANSMIT_DELAY_MS`. */
+function transferDelayMs(byteLength: number, kbps: number, packetLossPct: number, bandwidth: BandwidthState): number {
+  let delay = bandwidth.delayFor(byteLength, kbps);
+  // Simulated packet loss, purely for local network-condition testing — not
+  // security-sensitive, so Math.random()'s non-cryptographic PRNG is fine.
+  // eslint-disable-next-line sonarjs/pseudo-random
+  if (packetLossPct > 0 && Math.random() * 100 < packetLossPct) delay += RETRANSMIT_DELAY_MS;
+  return delay;
+}
+
+/**
+ * A `Transform` that re-emits each chunk after `transferDelayMs`'s delay,
+ * spliced into a raw `Duplex.pipe()` chain (the intercept-off CONNECT
+ * tunnel). Real Node stream backpressure applies here — piping through a
+ * Transform correctly holds the source until this delay elapses — unlike
+ * http-mitm-proxy's own onRequestData/onResponseData hooks below, whose
+ * internal filter doesn't honor a delayed per-chunk callback the same way
+ * (see the buffer-then-flush comment on the MITM'd request/response paths).
+ */
+function createThrottleTransform(kbps: number, packetLossPct: number): Transform {
+  const bandwidth = new BandwidthState();
+  return new Transform({
+    transform(chunk: Buffer, _encoding, cb) {
+      const delay = transferDelayMs(chunk.length, kbps, packetLossPct, bandwidth);
+      if (delay > 0) setTimeout(() => cb(null, chunk), delay);
+      else cb(null, chunk);
+    },
+  });
 }
 
 /**
@@ -133,6 +240,30 @@ function flattenHeaders(headers: Record<string, string | string[] | undefined>):
     out[key] = Array.isArray(value) ? value.join(', ') : value;
   }
   return out;
+}
+
+/**
+ * Captures the client's raw request body directly off `clientToProxyRequest`
+ * into a fresh `BodyCapture`, resuming the stream so `data`/`end` actually
+ * fire. Shared by the `mock` and `breakpoint` (request-phase) branches
+ * below, neither of which forwards via the normal onRequestData/onRequestEnd
+ * pipeline — that pipeline only starts flowing once `callback()` is called,
+ * which neither branch does (a mock never reaches upstream; a breakpoint
+ * needs the full body available for the dashboard to inspect/edit first).
+ */
+function captureClientRequestBody(ctx: IContext, exchange: CapturedExchange): BodyCapture {
+  const requestCapture = new BodyCapture();
+  ctx.clientToProxyRequest.on('data', (chunk: Buffer) => {
+    exchange.requestBodySize += chunk.length;
+    requestCapture.add(chunk);
+  });
+  // http-mitm-proxy calls ctx.clientToProxyRequest.pause() before onRequest
+  // runs; adding a 'data' listener alone does NOT auto-resume a stream that
+  // was explicitly paused (see Readable.prototype.on in Node's stream
+  // internals), so without this, the request stream never emits 'data'/'end'
+  // and a caller waiting on it would deadlock forever.
+  ctx.clientToProxyRequest.resume();
+  return requestCapture;
 }
 
 export interface ProxyServerOptions {
@@ -242,6 +373,18 @@ export async function startProxyServer(
   };
   eventBus.on('setFocus', handleSetFocus);
 
+  // Simulated network conditions (bandwidth/latency/packet loss), toggled at
+  // runtime from the dashboard (see `setThrottle`/`throttleChanged` in
+  // eventBus.ts and `ThrottleState`'s doc comment). Disabled (the default)
+  // is a true no-op — every read of `throttleState` below is guarded on
+  // `.enabled`.
+  let throttleState: ThrottleState = DEFAULT_THROTTLE_STATE;
+  const handleSetThrottle = (state: ThrottleState): void => {
+    throttleState = normalizeThrottleState(state);
+    eventBus.emit('throttleChanged', throttleState);
+  };
+  eventBus.on('setThrottle', handleSetThrottle);
+
   // A `breakpoint` rule pauses an exchange by awaiting a promise resolved
   // from here, keyed by `${ctx.uuid}:${phase}`. Resolved either by a
   // matching `breakpointResume` from the dashboard, or synthetically (as an
@@ -301,11 +444,29 @@ export async function startProxyServer(
     // what the client now treats as a byte stream.
     let established = false;
     const upstream = net.connect({ host: destHost, port: destPort }, () => {
-      established = true;
-      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-      if (head.length > 0) upstream.write(head);
-      socket.pipe(upstream);
-      upstream.pipe(socket);
+      // Establishing (and throttling) the tunnel happens behind Throttle's
+      // latency delay, same as the MITM path's onRequest below — but a
+      // teardown (client/upstream error or close) can land during that
+      // delay, so re-check both ends are still alive before touching them.
+      const finishConnect = () => {
+        if (socket.destroyed || upstream.destroyed) return;
+        established = true;
+        socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        if (head.length > 0) upstream.write(head);
+        if (throttleState.enabled && (throttleState.upKbps > 0 || throttleState.packetLossPct > 0)) {
+          socket.pipe(createThrottleTransform(throttleState.upKbps, throttleState.packetLossPct)).pipe(upstream);
+        } else {
+          socket.pipe(upstream);
+        }
+        if (throttleState.enabled && (throttleState.downKbps > 0 || throttleState.packetLossPct > 0)) {
+          upstream.pipe(createThrottleTransform(throttleState.downKbps, throttleState.packetLossPct)).pipe(socket);
+        } else {
+          upstream.pipe(socket);
+        }
+      };
+      const latency = throttleState.enabled ? throttleState.latencyMs : 0;
+      if (latency > 0) setTimeout(finishConnect, latency);
+      else finishConnect();
     });
     const teardown = () => {
       socket.destroy();
@@ -371,12 +532,7 @@ export async function startProxyServer(
     exchange: CapturedExchange,
     callback: ErrorCallback,
   ): void {
-    const requestCapture = new BodyCapture();
-    ctx.clientToProxyRequest.on('data', (chunk: Buffer) => {
-      exchange.requestBodySize += chunk.length;
-      requestCapture.add(chunk);
-    });
-    ctx.clientToProxyRequest.resume();
+    const requestCapture = captureClientRequestBody(ctx, exchange);
 
     const pause = () => {
       requestCapture.applyTo(exchange, 'request');
@@ -558,152 +714,180 @@ export async function startProxyServer(
   });
 
   proxy.onRequest((ctx, callback) => {
-    const { url, host: reqHost } = resolveUrl(ctx);
-    const method = ctx.clientToProxyRequest.method ?? 'GET';
-    const matched = ruleEngine?.match({ method, url });
-    // While intercept is off (globally, or for this host via Focus), only a
-    // `route` rule keeps applying (see `interceptEnabled`'s doc comment
-    // above) — mock/rewrite/breakpoint rules are treated as if nothing
-    // matched, so the request flows through untouched.
-    const focused = isHostFocused(focusHosts, reqHost);
-    const rule = (interceptEnabled && focused) || matched?.action.type === 'route' ? matched : undefined;
+    // The entire request handler — rule matching, mock/breakpoint/route/
+    // rewrite, and forwarding to upstream — runs behind Throttle's one-time
+    // per-exchange latency delay (see `ThrottleState`'s doc comment), so
+    // every code path below (including a `mock` rule's own response) shares
+    // the same simulated round-trip cost.
+    const run = () => {
+      const { url, host: reqHost } = resolveUrl(ctx);
+      const method = ctx.clientToProxyRequest.method ?? 'GET';
+      const matched = ruleEngine?.match({ method, url });
+      // While intercept is off (globally, or for this host via Focus), only a
+      // `route` rule keeps applying (see `interceptEnabled`'s doc comment
+      // above) — mock/rewrite/breakpoint rules are treated as if nothing
+      // matched, so the request flows through untouched.
+      const focused = isHostFocused(focusHosts, reqHost);
+      const rule = (interceptEnabled && focused) || matched?.action.type === 'route' ? matched : undefined;
 
-    const exchange: CapturedExchange = {
-      id: ctx.uuid,
-      method,
-      url,
-      host: reqHost,
-      isSSL: ctx.isSSL,
-      requestHeaders: { ...ctx.clientToProxyRequest.headers },
-      requestBodySize: 0,
-      responseBodySize: 0,
-      startedAt: Date.now(),
-      ruleName: rule?.name,
-    };
-    inFlight.set(ctx.uuid, exchange);
+      const exchange: CapturedExchange = {
+        id: ctx.uuid,
+        method,
+        url,
+        host: reqHost,
+        isSSL: ctx.isSSL,
+        requestHeaders: { ...ctx.clientToProxyRequest.headers },
+        requestBodySize: 0,
+        responseBodySize: 0,
+        startedAt: Date.now(),
+        ruleName: rule?.name,
+      };
+      inFlight.set(ctx.uuid, exchange);
 
-    if (rule?.action.type === 'mock') {
-      const mockAction = rule.action;
-      const simulate = mockAction.simulate;
-      let mockError: string | undefined;
-      const mock = simulate
-        ? undefined
-        : tryResolveMock(rule, ruleEngine!.basePath, (message) => {
-            mockError = message;
+      if (rule?.action.type === 'mock') {
+        const mockAction = rule.action;
+        const simulate = mockAction.simulate;
+        let mockError: string | undefined;
+        const mock = simulate
+          ? undefined
+          : tryResolveMock(rule, ruleEngine!.basePath, (message) => {
+              mockError = message;
+            });
+
+        // A mock never forwards to upstream (callback() is never called
+        // below), so the usual onRequestData/onRequestEnd hooks — which only
+        // fire as part of that forwarding pipeline — never run for it. Capture
+        // the client's raw request stream directly instead, so the dashboard
+        // still shows what was actually sent to a mocked endpoint.
+        const requestCapture = captureClientRequestBody(ctx, exchange);
+
+        const respond = () => {
+          requestCapture.applyTo(exchange, 'request');
+
+          if (simulate) {
+            sendMockSimulate(ctx, simulate);
+            eventBus.emit('request', exchange);
+            if (simulate === 'close') {
+              // Unlike 'timeout' (which just leaves the client hanging, with
+              // nothing further to report), a closed connection is a
+              // definite, reportable outcome — flag it on the exchange the
+              // same way a real connection reset would show up, rather than
+              // only as a separate proxy-level 'error' event.
+              exchange.error = `rule "${rule.name}": simulated connection close (no response sent)`;
+              exchange.finishedAt = Date.now();
+              exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+              eventBus.emit('response', exchange);
+            }
+            // 'timeout' deliberately never emits 'response': the exchange
+            // stays "pending" in the dashboard for as long as the connection
+            // stays open, same as a real server that stopped responding.
+            inFlight.delete(ctx.uuid);
+            return;
+          }
+
+          sendMockResponse(ctx, mock as MockResponse);
+          exchange.statusCode = (mock as MockResponse).status;
+          exchange.statusMessage = (mock as MockResponse).statusMessage;
+          exchange.responseHeaders = (mock as MockResponse).headers;
+          exchange.responseBodySize = (mock as MockResponse).body.length;
+          BodyCapture.of((mock as MockResponse).body).applyTo(exchange, 'response');
+          exchange.finishedAt = Date.now();
+          exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+          exchange.error = mockError;
+          eventBus.emit('request', exchange);
+          eventBus.emit('response', exchange);
+          inFlight.delete(ctx.uuid);
+        };
+        if (mockError) {
+          eventBus.emit('error', {
+            id: ctx.uuid,
+            errorKind: 'RULE_MOCK_ERROR',
+            message: `rule "${rule.name}": ${mockError}`,
           });
+        }
+        const sendMockAfterDelay = () => {
+          const delayMs = mockAction.delayMs;
+          if (delayMs && delayMs > 0) {
+            setTimeout(respond, delayMs);
+          } else {
+            respond();
+          }
+        };
+        // Wait for the request body to finish arriving (if it hasn't
+        // already) so it's fully captured before responding — sendMockResponse
+        // drains/discards whatever's left on the socket regardless.
+        if (ctx.clientToProxyRequest.complete) {
+          sendMockAfterDelay();
+        } else {
+          ctx.clientToProxyRequest.once('end', sendMockAfterDelay);
+        }
+        // Deliberately does not call `callback()`: leaving it uncalled is
+        // how http-mitm-proxy is designed to skip forwarding to upstream.
+        return;
+      }
 
-      // A mock never forwards to upstream (callback() is never called
-      // below), so the usual onRequestData/onRequestEnd hooks — which only
-      // fire as part of that forwarding pipeline — never run for it. Capture
-      // the client's raw request stream directly instead, so the dashboard
-      // still shows what was actually sent to a mocked endpoint.
+      if (rule?.action.type === 'breakpoint' && rule.action.request !== false) {
+        ruleContexts.set(ctx.uuid, rule);
+        handleRequestBreakpoint(ctx, rule, exchange, callback);
+        return;
+      }
+
+      if (rule) ruleContexts.set(ctx.uuid, rule);
+      if (rule?.action.type === 'route') {
+        applyRouteAction(ctx, rule.action);
+      } else if (rule?.action.type === 'rewrite' && rule.action.request) {
+        applyRequestRewrite(ctx, rule.action.request);
+      }
+
       const requestCapture = new BodyCapture();
-      ctx.clientToProxyRequest.on('data', (chunk: Buffer) => {
+      // Throttle's upload bandwidth cap/packet-loss simulation. A per-chunk
+      // delayed forward (`cb(undefined, chunk)` called late) doesn't work
+      // here: http-mitm-proxy's internal request filter finalizes the
+      // upstream request as soon as the client's own stream ends, without
+      // waiting for an outstanding onRequestData callback from an earlier
+      // chunk (see `ProxyFinalRequestFilter.end()` in http-mitm-proxy) — a
+      // delayed chunk can be silently dropped instead of just arriving
+      // late. So instead the whole body is buffered here and flushed as one
+      // write from onRequestEnd below (whose callback IS properly awaited
+      // before the request is finalized), after a delay proportional to its
+      // total size — the same buffer-then-flush shape
+      // rules/actions.ts's installRequestBodyRewrite uses, for the same
+      // reason. Skipped when a `rewrite` rule is also rewriting this body:
+      // that rule's own onRequestData hook (registered earlier, see
+      // `applyRequestRewrite` above) already reduces every chunk this hook
+      // sees to empty, so there'd be nothing left to throttle anyway.
+      const throttleUpload =
+        throttleState.enabled &&
+        (throttleState.upKbps > 0 || throttleState.packetLossPct > 0) &&
+        !(rule?.action.type === 'rewrite' && rule.action.request?.body);
+      const upBandwidth = new BandwidthState();
+      const uploadChunks: Buffer[] = [];
+      ctx.onRequestData((_dataCtx, chunk, cb) => {
         exchange.requestBodySize += chunk.length;
         requestCapture.add(chunk);
+        if (!throttleUpload) return cb(undefined, chunk);
+        uploadChunks.push(chunk);
+        return cb(undefined, Buffer.alloc(0));
       });
-      // http-mitm-proxy calls ctx.clientToProxyRequest.pause() before onRequest
-      // runs; adding a 'data' listener alone does NOT auto-resume a stream
-      // that was explicitly paused (see Readable.prototype.on in Node's
-      // stream internals), so without this, the request stream never emits
-      // 'data'/'end' and the wait below deadlocks forever.
-      ctx.clientToProxyRequest.resume();
 
-      const respond = () => {
+      ctx.onRequestEnd((_endCtx, cb) => {
         requestCapture.applyTo(exchange, 'request');
-
-        if (simulate) {
-          sendMockSimulate(ctx, simulate);
-          eventBus.emit('request', exchange);
-          if (simulate === 'close') {
-            // Unlike 'timeout' (which just leaves the client hanging, with
-            // nothing further to report), a closed connection is a
-            // definite, reportable outcome — flag it on the exchange the
-            // same way a real connection reset would show up, rather than
-            // only as a separate proxy-level 'error' event.
-            exchange.error = `rule "${rule.name}": simulated connection close (no response sent)`;
-            exchange.finishedAt = Date.now();
-            exchange.durationMs = exchange.finishedAt - exchange.startedAt;
-            eventBus.emit('response', exchange);
-          }
-          // 'timeout' deliberately never emits 'response': the exchange
-          // stays "pending" in the dashboard for as long as the connection
-          // stays open, same as a real server that stopped responding.
-          inFlight.delete(ctx.uuid);
-          return;
-        }
-
-        sendMockResponse(ctx, mock as MockResponse);
-        exchange.statusCode = (mock as MockResponse).status;
-        exchange.statusMessage = (mock as MockResponse).statusMessage;
-        exchange.responseHeaders = (mock as MockResponse).headers;
-        exchange.responseBodySize = (mock as MockResponse).body.length;
-        BodyCapture.of((mock as MockResponse).body).applyTo(exchange, 'response');
-        exchange.finishedAt = Date.now();
-        exchange.durationMs = exchange.finishedAt - exchange.startedAt;
-        exchange.error = mockError;
+        // Published as soon as the request is fully sent, before the
+        // response arrives — lets consumers (e.g. the dashboard) show a
+        // request as "pending" while it's in flight.
         eventBus.emit('request', exchange);
-        eventBus.emit('response', exchange);
-        inFlight.delete(ctx.uuid);
-      };
-      if (mockError) {
-        eventBus.emit('error', {
-          id: ctx.uuid,
-          errorKind: 'RULE_MOCK_ERROR',
-          message: `rule "${rule.name}": ${mockError}`,
-        });
-      }
-      const sendMockAfterDelay = () => {
-        const delayMs = mockAction.delayMs;
-        if (delayMs && delayMs > 0) {
-          setTimeout(respond, delayMs);
-        } else {
-          respond();
-        }
-      };
-      // Wait for the request body to finish arriving (if it hasn't
-      // already) so it's fully captured before responding — sendMockResponse
-      // drains/discards whatever's left on the socket regardless.
-      if (ctx.clientToProxyRequest.complete) {
-        sendMockAfterDelay();
-      } else {
-        ctx.clientToProxyRequest.once('end', sendMockAfterDelay);
-      }
-      // Deliberately does not call `callback()`: leaving it uncalled is
-      // how http-mitm-proxy is designed to skip forwarding to upstream.
-      return;
-    }
+        if (!throttleUpload || uploadChunks.length === 0) return cb();
+        const body = Buffer.concat(uploadChunks);
+        const delay = transferDelayMs(body.length, throttleState.upKbps, throttleState.packetLossPct, upBandwidth);
+        flushThrottledBody(body, delay, (b) => ctx.proxyToServerRequest?.write(b), cb);
+      });
 
-    if (rule?.action.type === 'breakpoint' && rule.action.request !== false) {
-      ruleContexts.set(ctx.uuid, rule);
-      handleRequestBreakpoint(ctx, rule, exchange, callback);
-      return;
-    }
+      return callback();
+    };
 
-    if (rule) ruleContexts.set(ctx.uuid, rule);
-    if (rule?.action.type === 'route') {
-      applyRouteAction(ctx, rule.action);
-    } else if (rule?.action.type === 'rewrite' && rule.action.request) {
-      applyRequestRewrite(ctx, rule.action.request);
-    }
-
-    const requestCapture = new BodyCapture();
-    ctx.onRequestData((_dataCtx, chunk, cb) => {
-      exchange.requestBodySize += chunk.length;
-      requestCapture.add(chunk);
-      return cb(undefined, chunk);
-    });
-
-    ctx.onRequestEnd((_endCtx, cb) => {
-      requestCapture.applyTo(exchange, 'request');
-      // Published as soon as the request is fully sent, before the
-      // response arrives — lets consumers (e.g. the dashboard) show a
-      // request as "pending" while it's in flight.
-      eventBus.emit('request', exchange);
-      return cb();
-    });
-
-    return callback();
+    const latency = throttleState.enabled ? throttleState.latencyMs : 0;
+    if (latency > 0) setTimeout(run, latency);
+    else run();
   });
 
   proxy.onResponse((ctx, callback) => {
@@ -725,12 +909,28 @@ export async function startProxyServer(
     }
 
     const responseCapture = new BodyCapture();
+    // Throttle's download bandwidth cap/packet-loss simulation — same
+    // buffer-then-flush shape as the upload side in onRequest above (see
+    // its comment for why per-chunk delayed forwarding doesn't work with
+    // this library), flushed from onResponseEnd below instead. Skipped when
+    // a `rewrite` rule is also rewriting this body: its own onResponseData
+    // hook is registered *after* this one (right below), so if this hook
+    // reduced every chunk to empty first, the rewrite would see nothing to
+    // rewrite.
+    const throttleDownload =
+      throttleState.enabled &&
+      (throttleState.downKbps > 0 || throttleState.packetLossPct > 0) &&
+      !(rule?.action.type === 'rewrite' && rule.action.response?.body);
+    const downBandwidth = new BandwidthState();
+    const downloadChunks: Buffer[] = [];
     ctx.onResponseData((_dataCtx, chunk, cb) => {
       if (exchange) {
         exchange.responseBodySize += chunk.length;
         responseCapture.add(chunk);
       }
-      return cb(undefined, chunk);
+      if (!throttleDownload) return cb(undefined, chunk);
+      downloadChunks.push(chunk);
+      return cb(undefined, Buffer.alloc(0));
     });
 
     if (rule?.action.type === 'rewrite' && rule.action.response?.body) {
@@ -753,7 +953,10 @@ export async function startProxyServer(
         inFlight.delete(ctx.uuid);
       }
       ruleContexts.delete(ctx.uuid);
-      return cb();
+      if (!throttleDownload || downloadChunks.length === 0) return cb();
+      const body = Buffer.concat(downloadChunks);
+      const delay = transferDelayMs(body.length, throttleState.downKbps, throttleState.packetLossPct, downBandwidth);
+      flushThrottledBody(body, delay, (b) => ctx.proxyToClientResponse.write(b), cb);
     });
 
     return callback();
@@ -770,6 +973,7 @@ export async function startProxyServer(
               eventBus.off('breakpointResume', resolveBreakpoint);
               eventBus.off('setIntercept', handleSetIntercept);
               eventBus.off('setFocus', handleSetFocus);
+              eventBus.off('setThrottle', handleSetThrottle);
               ruleEngine?.close();
               proxy.close();
               res();

@@ -7,7 +7,17 @@ import type {
   BreakpointResponseEdits,
   CapturedExchange,
   ProxyErrorEvent,
+  ThrottleState,
 } from '@/types';
+
+/** Throttle's true no-op default (see `src/types.ts`'s `ThrottleState`) — used until the server's own `throttle` message arrives. */
+export const DEFAULT_THROTTLE_STATE: ThrottleState = {
+  enabled: false,
+  downKbps: 0,
+  upKbps: 0,
+  latencyMs: 0,
+  packetLossPct: 0,
+};
 
 /** Bounds memory: with `MAX_ERRORS` and a ~1KB average exchange, this store's array itself never exceeds a few MB regardless of session length. */
 const MAX_EXCHANGES = 5000;
@@ -36,6 +46,8 @@ interface LogStoreState {
   interceptEnabled: boolean;
   /** The "Focus" host allowlist (see `src/types.ts`'s `FocusState`). Empty means unrestricted — every host is intercepted. */
   focusHosts: string[];
+  /** The "Throttle" network-simulation profile (see `src/types.ts`'s `ThrottleState`). Defaults to `DEFAULT_THROTTLE_STATE` until the server's own `throttle` message arrives. */
+  throttle: ThrottleState;
 
   select: (id: string | null) => void;
   setFilters: (patch: Partial<Filters>) => void;
@@ -50,6 +62,8 @@ interface LogStoreState {
   setIntercept: (enabled: boolean) => void;
   /** Replaces the Focus host allowlist wholesale. Pass an empty array to intercept every host again. */
   setFocus: (hosts: string[]) => void;
+  /** Replaces the Throttle profile wholesale. Pass `{ ...DEFAULT_THROTTLE_STATE }` (or `enabled: false`) to turn it off. */
+  setThrottle: (state: ThrottleState) => void;
 }
 
 const buffer = new RingBuffer<CapturedExchange>(MAX_EXCHANGES, (item) => item.id);
@@ -115,6 +129,9 @@ export const useLogStore = create<LogStoreState>((set) => {
         case 'focus':
           set({ focusHosts: message.state.hosts });
           return;
+        case 'throttle':
+          set({ throttle: message.state });
+          return;
       }
     },
   });
@@ -128,6 +145,7 @@ export const useLogStore = create<LogStoreState>((set) => {
     pausedBreakpoints: {},
     interceptEnabled: true,
     focusHosts: [],
+    throttle: DEFAULT_THROTTLE_STATE,
 
     select: (id) => set({ selectedId: id }),
     setFilters: (patch) => set((state) => ({ filters: { ...state.filters, ...patch } })),
@@ -146,6 +164,7 @@ export const useLogStore = create<LogStoreState>((set) => {
     abortBreakpoint: (id, phase) => socket.send({ type: 'breakpointResume', command: { id, phase, action: 'abort' } }),
     setIntercept: (enabled) => socket.send({ type: 'setIntercept', enabled }),
     setFocus: (hosts) => socket.send({ type: 'setFocus', hosts }),
+    setThrottle: (state) => socket.send({ type: 'setThrottle', state }),
   };
 });
 

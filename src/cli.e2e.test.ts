@@ -42,6 +42,31 @@ function startEchoServer(): Promise<{ port: number; close: () => Promise<void> }
 }
 
 /**
+ * Starts a plain HTTP server that always responds with a fixed-size body
+ * (`'a'` repeated `bodyBytes` times), regardless of the request — used by
+ * the Throttle bandwidth tests, where the response size (not its content)
+ * is what matters.
+ */
+function startFixedBodyServer(bodyBytes: number): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const body = 'a'.repeat(bodyBytes);
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end(body);
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('failed to bind fixed-body server'));
+      resolve({
+        port: address.port,
+        close: () => new Promise((res) => server.close(() => res())),
+      });
+    });
+  });
+}
+
+/**
  * Starts a raw TCP server that prefixes whatever it receives with `marker`
  * and echoes it straight back — deliberately not HTTP or TLS. Used to prove
  * a CONNECT tunnel is a genuine byte-level passthrough (a real MITM would
@@ -139,6 +164,34 @@ function setFocus(dashboardPort: number, hosts: string[]): Promise<void> {
     socket.on('message', (raw) => {
       const message = JSON.parse(raw.toString()) as { type: string; state?: { hosts: string[] } };
       if (message.type === 'focus' && JSON.stringify(message.state?.hosts) === JSON.stringify(hosts)) {
+        socket.close();
+        resolve();
+      }
+    });
+    socket.on('error', reject);
+  });
+}
+
+interface ThrottleProfile {
+  enabled: boolean;
+  downKbps: number;
+  upKbps: number;
+  latencyMs: number;
+  packetLossPct: number;
+}
+
+/**
+ * Sets the "Throttle" network-simulation profile through the dashboard's
+ * `/ws`, the same way `setFocus`/`setIntercept` do — waits for the server to
+ * broadcast the change back before resolving.
+ */
+function setThrottle(dashboardPort: number, state: ThrottleProfile): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+    socket.on('open', () => socket.send(JSON.stringify({ type: 'setThrottle', state })));
+    socket.on('message', (raw) => {
+      const message = JSON.parse(raw.toString()) as { type: string; state?: ThrottleProfile };
+      if (message.type === 'throttle' && JSON.stringify(message.state) === JSON.stringify(state)) {
         socket.close();
         resolve();
       }
@@ -531,6 +584,79 @@ describe('detour start (CLI, end-to-end)', () => {
       } finally {
         await other.close();
       }
+    });
+  });
+
+  describe('throttle (issue #13)', () => {
+    const DISABLED: ThrottleProfile = { enabled: false, downKbps: 0, upKbps: 0, latencyMs: 0, packetLossPct: 0 };
+
+    it('delays an exchange by the configured latency', async () => {
+      echo = await startEchoServer();
+      cli = await startDetourCli();
+      await setThrottle(cli.dashboardPort, { ...DISABLED, enabled: true, latencyMs: 500 });
+
+      const start = Date.now();
+      const result = await requestThroughProxy(cli.port, echo.port, '/hello');
+      const elapsed = Date.now() - start;
+
+      expect(result.status).toBe(200);
+      // Generous lower bound: the real work here (a loopback HTTP round
+      // trip) is a couple of ms at most, so anything past ~400ms is
+      // unambiguously the simulated latency, not test-runner jitter.
+      expect(elapsed).toBeGreaterThanOrEqual(400);
+    });
+
+    it('caps download throughput to the configured bandwidth', async () => {
+      const fixed = await startFixedBodyServer(1200);
+      cli = await startDetourCli();
+      // 8 Kbps = 1 byte/ms, so a 1200-byte body should take ~1200ms —
+      // comfortably distinguishable from an unthrottled loopback transfer.
+      await setThrottle(cli.dashboardPort, { ...DISABLED, enabled: true, downKbps: 8 });
+
+      try {
+        const start = Date.now();
+        const result = await requestThroughProxy(cli.port, fixed.port, '/');
+        const elapsed = Date.now() - start;
+
+        expect(result.status).toBe(200);
+        expect(result.body).toHaveLength(1200);
+        expect(elapsed).toBeGreaterThanOrEqual(900);
+      } finally {
+        await fixed.close();
+      }
+    });
+
+    it('stalls a response by the retransmit delay when packet loss is 100%', async () => {
+      echo = await startEchoServer();
+      cli = await startDetourCli();
+      await setThrottle(cli.dashboardPort, { ...DISABLED, enabled: true, packetLossPct: 100 });
+
+      const start = Date.now();
+      const result = await requestThroughProxy(cli.port, echo.port, '/hello');
+      const elapsed = Date.now() - start;
+
+      expect(result.status).toBe(200);
+      // Deterministic at 100% loss: every chunk of the (single-chunk) small
+      // response body incurs proxyServer.ts's RETRANSMIT_DELAY_MS (300ms).
+      expect(elapsed).toBeGreaterThanOrEqual(250);
+    });
+
+    it('disabling throttle again restores normal speed', async () => {
+      echo = await startEchoServer();
+      cli = await startDetourCli();
+      await setThrottle(cli.dashboardPort, { ...DISABLED, enabled: true, latencyMs: 600 });
+      const slow = Date.now();
+      await requestThroughProxy(cli.port, echo.port, '/hello');
+      const slowElapsed = Date.now() - slow;
+      expect(slowElapsed).toBeGreaterThanOrEqual(400);
+
+      await setThrottle(cli.dashboardPort, DISABLED);
+      const fast = Date.now();
+      const result = await requestThroughProxy(cli.port, echo.port, '/hello');
+      const fastElapsed = Date.now() - fast;
+
+      expect(result.status).toBe(200);
+      expect(fastElapsed).toBeLessThan(300);
     });
   });
 });
