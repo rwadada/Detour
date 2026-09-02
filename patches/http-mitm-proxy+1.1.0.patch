@@ -1,5 +1,5 @@
 diff --git a/node_modules/http-mitm-proxy/dist/lib/proxy.js b/node_modules/http-mitm-proxy/dist/lib/proxy.js
-index e896595..b366528 100644
+index e896595..9df8b85 100644
 --- a/node_modules/http-mitm-proxy/dist/lib/proxy.js
 +++ b/node_modules/http-mitm-proxy/dist/lib/proxy.js
 @@ -31,6 +31,7 @@ const async_1 = __importDefault(require("async"));
@@ -51,6 +51,96 @@ index e896595..b366528 100644
              }
              if (ctx.proxyToClientResponse && !ctx.proxyToClientResponse.finished) {
                  ctx.proxyToClientResponse.end(`${kind}: ${err}`, "utf8");
+@@ -808,24 +819,48 @@ class Proxy {
+                     return self._onError("ON_RESPONSE_ERROR", ctx, err);
+                 }
+                 const servToProxyResp = ctx.serverToProxyResponse;
+-                if (self.responseContentPotentiallyModified ||
+-                    ctx.responseContentPotentiallyModified) {
++                // Detour patch (HTTP/2 support, issue #16): `transfer-encoding`,
++                // `connection`, and `proxy-connection` are HTTP/1-only
++                // connection-specific headers — HTTP/2 has no equivalent (framing
++                // is handled natively by DATA frames, and there's no persistent-
++                // connection negotiation at the header level) and Node's h2 compat
++                // `Http2ServerResponse.writeHead` throws if any of them are set.
++                // Only apply them when responding to the client over HTTP/1.1.
++                const clientIsHttp2 = ctx.clientToProxyRequest.httpVersionMajor === 2;
++                if (!clientIsHttp2 &&
++                    (self.responseContentPotentiallyModified ||
++                        ctx.responseContentPotentiallyModified)) {
+                     servToProxyResp.headers["transfer-encoding"] = "chunked";
+                     delete servToProxyResp.headers["content-length"];
+                 }
+-                if (self.keepAlive) {
+-                    if (ctx.clientToProxyRequest.headers["proxy-connection"]) {
+-                        servToProxyResp.headers["proxy-connection"] = "keep-alive";
+-                        servToProxyResp.headers["connection"] = "keep-alive";
++                if (!clientIsHttp2) {
++                    if (self.keepAlive) {
++                        if (ctx.clientToProxyRequest.headers["proxy-connection"]) {
++                            servToProxyResp.headers["proxy-connection"] = "keep-alive";
++                            servToProxyResp.headers["connection"] = "keep-alive";
++                        }
++                    }
++                    else {
++                        servToProxyResp.headers["connection"] = "close";
+                     }
+-                }
+-                else {
+-                    servToProxyResp.headers["connection"] = "close";
+                 }
+                 return self._onResponseHeaders(ctx, (err) => {
+                     if (err) {
+                         return self._onError("ON_RESPONSEHEADERS_ERROR", ctx, err);
+                     }
++                    // Detour patch (HTTP/2 support, issue #16): strip HTTP/1-only
++                    // connection-specific headers unconditionally before handing
++                    // off to an HTTP/2 client — not just the ones this file adds
++                    // itself (see `clientIsHttp2` above), but also any the real
++                    // upstream server sent on its own (e.g. its own
++                    // `transfer-encoding: chunked`), which reach here untouched.
++                    if (clientIsHttp2) {
++                        delete servToProxyResp.headers["connection"];
++                        delete servToProxyResp.headers["transfer-encoding"];
++                        delete servToProxyResp.headers["keep-alive"];
++                        delete servToProxyResp.headers["proxy-connection"];
++                        delete servToProxyResp.headers["upgrade"];
++                    }
+                     ctx.proxyToClientResponse.writeHead(servToProxyResp.statusCode, Proxy.filterAndCanonizeHeaders(servToProxyResp.headers));
+                     ctx.responseFilters.push(new ProxyFinalResponseFilter_1.ProxyFinalResponseFilter(self, ctx));
+                     let prevResponsePipeElem = servToProxyResp;
+@@ -859,7 +894,16 @@ class Proxy {
+         else {
+             const headers = {};
+             for (const h in ctx.clientToProxyRequest.headers) {
+-                if (!/^proxy-/i.test(h)) {
++                // Detour patch (HTTP/2 support, issue #16): HTTP/2 pseudo-headers
++                // (`:path`, `:method`, `:authority`, `:scheme`) live in the same
++                // `req.headers` object as real headers under Node's http2 compat
++                // layer, but aren't valid HTTP/1.1 header tokens — forwarding one
++                // straight through crashes the upstream `http(s).request()` call.
++                // The upstream request is always plain HTTP/1.1 (see `proto` a
++                // few lines below), which gets its own request line/`Host` header
++                // from `ctx.proxyToServerRequestOptions.{method,path,host}` below,
++                // so these carry no information a real request still needs.
++                if (!/^proxy-/i.test(h) && !h.startsWith(":")) {
+                     headers[h] = ctx.clientToProxyRequest.headers[h];
+                 }
+             }
+@@ -1048,6 +1092,13 @@ class Proxy {
+         else if (req.headers.host) {
+             return Proxy.parseHost(req.headers.host, defaultPort);
+         }
++        else if (req.headers[":authority"]) {
++            // Detour patch (HTTP/2 support, issue #16): an HTTP/2 request has
++            // no `Host` header — the `:authority` pseudo-header is its
++            // equivalent, and Node's http2 compat layer does NOT alias it
++            // into `req.headers.host` the way it does most other things.
++            return Proxy.parseHost(req.headers[":authority"], defaultPort);
++        }
+         else {
+             return null;
+         }
 diff --git a/node_modules/http-mitm-proxy/dist/lib/types.d.ts b/node_modules/http-mitm-proxy/dist/lib/types.d.ts
 index f4ada74..7c27fc6 100644
 --- a/node_modules/http-mitm-proxy/dist/lib/types.d.ts
