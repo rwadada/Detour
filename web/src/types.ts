@@ -85,14 +85,21 @@ export interface InterceptState {
   enabled: boolean;
 }
 
+/** The current "Focus" host allowlist — see `src/types.ts`'s `FocusState`. */
+export interface FocusState {
+  hosts: string[];
+}
+
 export type DashboardServerMessage =
   | { type: 'backlog'; items: CapturedExchange[] }
   | { type: 'request'; exchange: CapturedExchange }
   | { type: 'response'; exchange: CapturedExchange }
   | { type: 'error'; event: ProxyErrorEvent }
   | { type: 'breakpoint'; exchange: CapturedExchange; payload: BreakpointPayload }
-  | { type: 'intercept'; state: InterceptState };
+  | { type: 'intercept'; state: InterceptState }
+  | { type: 'focus'; state: FocusState };
 
 export type DashboardClientMessage =
   | { type: 'breakpointResume'; command: BreakpointResumeCommand }
-  | { type: 'setIntercept'; enabled: boolean };
+  | { type: 'setIntercept'; enabled: boolean }
+  | { type: 'setFocus'; hosts: string[] };

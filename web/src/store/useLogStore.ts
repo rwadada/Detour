@@ -34,6 +34,8 @@ interface LogStoreState {
   pausedBreakpoints: Record<string, BreakpointPayload>;
   /** Whether the proxy is actively intercepting traffic (see `src/types.ts`'s `InterceptState`). Defaults to `true` until the server's own `intercept` message arrives. */
   interceptEnabled: boolean;
+  /** The "Focus" host allowlist (see `src/types.ts`'s `FocusState`). Empty means unrestricted — every host is intercepted. */
+  focusHosts: string[];
 
   select: (id: string | null) => void;
   setFilters: (patch: Partial<Filters>) => void;
@@ -46,6 +48,8 @@ interface LogStoreState {
   abortBreakpoint: (id: string, phase: 'request' | 'response') => void;
   /** Turns interception on/off. */
   setIntercept: (enabled: boolean) => void;
+  /** Replaces the Focus host allowlist wholesale. Pass an empty array to intercept every host again. */
+  setFocus: (hosts: string[]) => void;
 }
 
 const buffer = new RingBuffer<CapturedExchange>(MAX_EXCHANGES, (item) => item.id);
@@ -108,6 +112,9 @@ export const useLogStore = create<LogStoreState>((set) => {
         case 'intercept':
           set({ interceptEnabled: message.state.enabled });
           return;
+        case 'focus':
+          set({ focusHosts: message.state.hosts });
+          return;
       }
     },
   });
@@ -120,6 +127,7 @@ export const useLogStore = create<LogStoreState>((set) => {
     errors: [],
     pausedBreakpoints: {},
     interceptEnabled: true,
+    focusHosts: [],
 
     select: (id) => set({ selectedId: id }),
     setFilters: (patch) => set((state) => ({ filters: { ...state.filters, ...patch } })),
@@ -137,6 +145,7 @@ export const useLogStore = create<LogStoreState>((set) => {
       socket.send({ type: 'breakpointResume', command: { id, phase: 'response', action: 'resume', edits } }),
     abortBreakpoint: (id, phase) => socket.send({ type: 'breakpointResume', command: { id, phase, action: 'abort' } }),
     setIntercept: (enabled) => socket.send({ type: 'setIntercept', enabled }),
+    setFocus: (hosts) => socket.send({ type: 'setFocus', hosts }),
   };
 });
 

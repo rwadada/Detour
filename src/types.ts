@@ -129,6 +129,22 @@ export interface InterceptState {
   enabled: boolean;
 }
 
+/**
+ * The "Focus" host allowlist. Empty (the default) means unrestricted — every
+ * host is intercepted, exactly as if Focus didn't exist. When non-empty,
+ * only a host matching one of these `*`/`?` glob patterns is
+ * MITM-decrypted/intercepted; every other host is treated as if intercept
+ * were off for it alone (HTTPS is a raw TLS passthrough, mock/rewrite/
+ * breakpoint rules are skipped for plain HTTP). A `route` rule keeps
+ * applying regardless of focus, same as `InterceptState`. A pattern is
+ * matched against `host`, or `host:port` when the request's port isn't its
+ * scheme's default (443 for HTTPS, 80 for plain HTTP) — e.g. `*.example.com`
+ * or `localhost:3000`.
+ */
+export interface FocusState {
+  hosts: string[];
+}
+
 /** Events published on the in-memory event bus. */
 export interface DetourEvents {
   /** Fired once the client finished sending the request (headers + body). */
@@ -152,4 +168,8 @@ export interface DetourEvents {
   setIntercept: (enabled: boolean) => void;
   /** The proxy applied an intercept on/off change; broadcast to dashboards so every connected tab (and newly-connecting ones) reflect the current state. */
   interceptChanged: (state: InterceptState) => void;
+  /** The dashboard changed the "Focus" host allowlist (see `FocusState`). */
+  setFocus: (hosts: string[]) => void;
+  /** The proxy applied a focus change; broadcast to dashboards so every connected tab (and newly-connecting ones) reflect the current allowlist. */
+  focusChanged: (state: FocusState) => void;
 }

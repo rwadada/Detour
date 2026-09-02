@@ -127,6 +127,26 @@ function setIntercept(dashboardPort: number, enabled: boolean): Promise<void> {
   });
 }
 
+/**
+ * Sets the "Focus" host allowlist through the dashboard's `/ws`, the same
+ * way `setIntercept` toggles interception — waits for the server to
+ * broadcast the change back before resolving.
+ */
+function setFocus(dashboardPort: number, hosts: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+    socket.on('open', () => socket.send(JSON.stringify({ type: 'setFocus', hosts })));
+    socket.on('message', (raw) => {
+      const message = JSON.parse(raw.toString()) as { type: string; state?: { hosts: string[] } };
+      if (message.type === 'focus' && JSON.stringify(message.state?.hosts) === JSON.stringify(hosts)) {
+        socket.close();
+        resolve();
+      }
+    });
+    socket.on('error', reject);
+  });
+}
+
 /** Requests `path` through the given HTTP proxy, to `http://127.0.0.1:targetPort`. */
 function requestThroughProxy(
   proxyPort: number,
@@ -356,6 +376,160 @@ describe('detour start (CLI, end-to-end)', () => {
         socket?.destroy();
         await original.close();
         await routed.close();
+      }
+    });
+  });
+
+  describe('focus (issue #12)', () => {
+    it('applies a mock rule to a focused host but skips it (reaching the real upstream) for one outside the list', async () => {
+      const focused = await startEchoServer();
+      const unfocused = await startEchoServer();
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+      const rulesPath = path.join(tmpDir, 'rules.json');
+      fs.writeFileSync(
+        rulesPath,
+        JSON.stringify({
+          rules: [
+            {
+              name: 'e2e-mock',
+              match: { url: 'http://*/mocked' },
+              action: { type: 'mock', status: 200, body: { mocked: true } },
+            },
+          ],
+        }),
+      );
+      cli = await startDetourCli(['--rules', rulesPath]);
+      await setFocus(cli.dashboardPort, [`127.0.0.1:${focused.port}`]);
+
+      try {
+        const focusedResult = await requestThroughProxy(cli.port, focused.port, '/mocked');
+        expect(focusedResult.status).toBe(200);
+        expect(JSON.parse(focusedResult.body)).toEqual({ mocked: true });
+
+        const unfocusedResult = await requestThroughProxy(cli.port, unfocused.port, '/mocked');
+        expect(unfocusedResult.status).toBe(200);
+        // The mock rule never fired for the unfocused host — this is the real echo server's response.
+        expect(JSON.parse(unfocusedResult.body)).toEqual({ method: 'GET', path: '/mocked', body: '' });
+      } finally {
+        await unfocused.close();
+      }
+    });
+
+    it('keeps applying a route rule for plain HTTP to a host outside the focus list', async () => {
+      echo = await startEchoServer();
+      const routed = await startEchoServer();
+      const somewhereElse = await startEchoServer();
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+      const rulesPath = path.join(tmpDir, 'rules.json');
+      fs.writeFileSync(
+        rulesPath,
+        JSON.stringify({
+          rules: [
+            {
+              name: 'e2e-route',
+              match: { url: `http://127.0.0.1:${echo.port}/*` },
+              action: { type: 'route', host: '127.0.0.1', port: routed.port },
+            },
+          ],
+        }),
+      );
+      cli = await startDetourCli(['--rules', rulesPath]);
+      // Focused on a host that isn't `echo` — the route rule should still fire for it.
+      await setFocus(cli.dashboardPort, [`127.0.0.1:${somewhereElse.port}`]);
+
+      try {
+        const result = await requestThroughProxy(cli.port, echo.port, '/routed');
+        expect(result.status).toBe(200);
+        expect(JSON.parse(result.body)).toEqual({ method: 'GET', path: '/routed', body: '' });
+      } finally {
+        await routed.close();
+        await somewhereElse.close();
+      }
+    });
+
+    it('blind-tunnels a CONNECT to a host outside the focus list instead of MITM-decrypting it', async () => {
+      const upstream = await startMarkerEchoServer('upstream');
+      const somewhereElse = await startEchoServer();
+      cli = await startDetourCli();
+      await setFocus(cli.dashboardPort, [`127.0.0.1:${somewhereElse.port}`]);
+
+      let socket: net.Socket | undefined;
+      try {
+        socket = await connectTunnel(cli.port, '127.0.0.1', upstream.port);
+        const reply = await writeAndRead(socket, 'ping');
+        expect(reply).toBe('upstream:ping');
+      } finally {
+        socket?.destroy();
+        await upstream.close();
+        await somewhereElse.close();
+      }
+    });
+
+    it('keeps applying a route rule to a CONNECT tunnel outside the focus list', async () => {
+      const original = await startMarkerEchoServer('original');
+      const routed = await startMarkerEchoServer('routed');
+      const somewhereElse = await startEchoServer();
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+      const rulesPath = path.join(tmpDir, 'rules.json');
+      fs.writeFileSync(
+        rulesPath,
+        JSON.stringify({
+          rules: [
+            {
+              name: 'e2e-connect-route',
+              match: { url: `https://127.0.0.1:${original.port}` },
+              action: { type: 'route', host: '127.0.0.1', port: routed.port },
+            },
+          ],
+        }),
+      );
+      cli = await startDetourCli(['--rules', rulesPath]);
+      await setFocus(cli.dashboardPort, [`127.0.0.1:${somewhereElse.port}`]);
+
+      let socket: net.Socket | undefined;
+      try {
+        socket = await connectTunnel(cli.port, '127.0.0.1', original.port);
+        const reply = await writeAndRead(socket, 'ping');
+        expect(reply).toBe('routed:ping');
+      } finally {
+        socket?.destroy();
+        await original.close();
+        await routed.close();
+        await somewhereElse.close();
+      }
+    });
+
+    it('clearing the focus list goes back to intercepting every host', async () => {
+      echo = await startEchoServer();
+      const other = await startEchoServer();
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+      const rulesPath = path.join(tmpDir, 'rules.json');
+      fs.writeFileSync(
+        rulesPath,
+        JSON.stringify({
+          rules: [
+            {
+              name: 'e2e-mock',
+              match: { url: 'http://*/mocked' },
+              action: { type: 'mock', status: 200, body: { mocked: true } },
+            },
+          ],
+        }),
+      );
+      cli = await startDetourCli(['--rules', rulesPath]);
+      await setFocus(cli.dashboardPort, [`127.0.0.1:${other.port}`]);
+      // `echo` isn't focused yet — confirm the mock is indeed skipped before clearing.
+      const beforeClear = await requestThroughProxy(cli.port, echo.port, '/mocked');
+      expect(JSON.parse(beforeClear.body)).toEqual({ method: 'GET', path: '/mocked', body: '' });
+
+      await setFocus(cli.dashboardPort, []);
+
+      try {
+        const result = await requestThroughProxy(cli.port, echo.port, '/mocked');
+        expect(result.status).toBe(200);
+        expect(JSON.parse(result.body)).toEqual({ mocked: true });
+      } finally {
+        await other.close();
       }
     });
   });

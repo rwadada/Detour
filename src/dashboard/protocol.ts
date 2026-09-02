@@ -2,6 +2,7 @@ import type {
   BreakpointPayload,
   BreakpointResumeCommand,
   CapturedExchange,
+  FocusState,
   InterceptState,
   ProxyErrorEvent,
 } from '../types';
@@ -33,7 +34,13 @@ export type DashboardServerMessage =
    * (alongside `backlog`) so a (re)connecting client starts in sync, and
    * again on every change so all connected tabs stay in sync with each other.
    */
-  | { type: 'intercept'; state: InterceptState };
+  | { type: 'intercept'; state: InterceptState }
+  /**
+   * The current Focus host allowlist — sent once right after connecting
+   * (alongside `backlog`) so a (re)connecting client starts in sync, and
+   * again on every change so all connected tabs stay in sync with each other.
+   */
+  | { type: 'focus'; state: FocusState };
 
 /**
  * Messages sent from a connected browser client to the dashboard server over
@@ -44,4 +51,6 @@ export type DashboardClientMessage =
   /** Resumes (optionally with edits) or aborts an exchange paused by a `breakpoint` rule. */
   | { type: 'breakpointResume'; command: BreakpointResumeCommand }
   /** Turns interception on/off (see `InterceptState`). */
-  | { type: 'setIntercept'; enabled: boolean };
+  | { type: 'setIntercept'; enabled: boolean }
+  /** Replaces the Focus host allowlist wholesale (see `FocusState`). */
+  | { type: 'setFocus'; hosts: string[] };

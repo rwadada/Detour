@@ -16,6 +16,7 @@ import {
   sendMockSimulate,
   type MockResponse,
 } from './rules/actions';
+import { compileGlob } from './rules/matcher';
 import type { RuleEngine } from './rules/ruleEngine';
 import type { Rule } from './rules/types';
 import type {
@@ -25,6 +26,11 @@ import type {
   CapturedExchange,
 } from './types';
 
+/** Formats a host/port pair the same way throughout: `host:port`, unless `port` is the scheme's default, in which case it's omitted. */
+function formatHostPort(host: string, port: number, defaultPort: number): string {
+  return port !== defaultPort ? `${host}:${port}` : host;
+}
+
 /**
  * Builds the origin-only URL a route rule is matched against for a CONNECT
  * tunnel while intercept is off. There's no path to match on — the tunnel is
@@ -32,8 +38,36 @@ import type {
  * (default port omitted) applied to just the host.
  */
 function connectMatchUrl(host: string, port: number): string {
-  const hostname = port !== 443 ? `${host}:${port}` : host;
-  return `https://${hostname}`;
+  return `https://${formatHostPort(host, port, 443)}`;
+}
+
+/** Trims/lowercases/dedupes a raw Focus host list (see `FocusState`), dropping empty entries. */
+function normalizeFocusHosts(hosts: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of hosts) {
+    const trimmed = raw.trim().toLowerCase();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * Whether `host` (formatted like `formatHostPort`/`connectMatchUrl` — a bare
+ * hostname, or `host:port` when the port isn't the scheme's default) should
+ * be MITM-intercepted under the current Focus allowlist. An empty list means
+ * Focus is off — every host qualifies, so this feature is a no-op until the
+ * user opts in. A pattern with no `:port` (the common case — most sites are
+ * reached on their scheme's default port, which is omitted from `host`)
+ * matches only that same default-port form; targeting a non-default port
+ * needs the pattern to include it (or a trailing `*`).
+ */
+function isHostFocused(focusHosts: readonly string[], host: string): boolean {
+  if (focusHosts.length === 0) return true;
+  const target = host.toLowerCase();
+  return focusHosts.some((pattern) => compileGlob(pattern).test(target));
 }
 
 /**
@@ -194,6 +228,20 @@ export async function startProxyServer(
   };
   eventBus.on('setIntercept', handleSetIntercept);
 
+  // "Focus" narrows interception down to a host allowlist, toggled at
+  // runtime from the dashboard (see `setFocus`/`focusChanged` in
+  // eventBus.ts). Empty (the default) means unrestricted — identical to
+  // this feature not existing. Applied as an extra `&& isHostFocused(...)`
+  // alongside `interceptEnabled` everywhere below, so a host outside the
+  // list gets exactly the "intercept off" treatment (see `interceptEnabled`'s
+  // doc comment) while every other host is unaffected.
+  let focusHosts: string[] = [];
+  const handleSetFocus = (hosts: string[]): void => {
+    focusHosts = normalizeFocusHosts(hosts);
+    eventBus.emit('focusChanged', { hosts: focusHosts });
+  };
+  eventBus.on('setFocus', handleSetFocus);
+
   // A `breakpoint` rule pauses an exchange by awaiting a promise resolved
   // from here, keyed by `${ctx.uuid}:${phase}`. Resolved either by a
   // matching `breakpointResume` from the dashboard, or synthetically (as an
@@ -226,13 +274,14 @@ export async function startProxyServer(
   eventBus.on('breakpointResume', resolveBreakpoint);
 
   /**
-   * While intercept is off, a CONNECT tunnel is relayed byte-for-byte
-   * between the client and the real upstream server instead of being
-   * terminated by our local per-host cert — true TLS passthrough, since we
-   * never touch (or can see) the encrypted bytes flowing through. A `route`
-   * rule still redirects the tunnel's destination (matched on host/port
-   * only — there's no path/method to go on without decrypting), but nothing
-   * else about the connection is observable or editable.
+   * While intercept is off (globally, or for this one host via Focus), a
+   * CONNECT tunnel is relayed byte-for-byte between the client and the real
+   * upstream server instead of being terminated by our local per-host cert —
+   * true TLS passthrough, since we never touch (or can see) the encrypted
+   * bytes flowing through. A `route` rule still redirects the tunnel's
+   * destination (matched on host/port only — there's no path/method to go on
+   * without decrypting), but nothing else about the connection is observable
+   * or editable.
    */
   function handleInterceptOffConnect(req: IncomingMessage, socket: Duplex, head: Buffer): void {
     const target = Proxy.parseHostAndPort(req, 443);
@@ -275,7 +324,12 @@ export async function startProxyServer(
   }
 
   proxy.onConnect((req, socket, head, callback) => {
-    if (interceptEnabled) {
+    // An unparseable target can't be checked against Focus — fall through
+    // to the normal intercept-enabled path (same as before this feature),
+    // rather than treating "can't tell" as "not focused".
+    const target = Proxy.parseHostAndPort(req, 443);
+    const focused = !target?.host || isHostFocused(focusHosts, formatHostPort(target.host, target.port ?? 443, 443));
+    if (interceptEnabled && focused) {
       callback();
       return;
     }
@@ -507,11 +561,12 @@ export async function startProxyServer(
     const { url, host: reqHost } = resolveUrl(ctx);
     const method = ctx.clientToProxyRequest.method ?? 'GET';
     const matched = ruleEngine?.match({ method, url });
-    // While intercept is off, only a `route` rule keeps applying (see
-    // `interceptEnabled`'s doc comment above) — mock/rewrite/breakpoint
-    // rules are treated as if nothing matched, so the request flows through
-    // untouched.
-    const rule = interceptEnabled || matched?.action.type === 'route' ? matched : undefined;
+    // While intercept is off (globally, or for this host via Focus), only a
+    // `route` rule keeps applying (see `interceptEnabled`'s doc comment
+    // above) — mock/rewrite/breakpoint rules are treated as if nothing
+    // matched, so the request flows through untouched.
+    const focused = isHostFocused(focusHosts, reqHost);
+    const rule = (interceptEnabled && focused) || matched?.action.type === 'route' ? matched : undefined;
 
     const exchange: CapturedExchange = {
       id: ctx.uuid,
@@ -714,6 +769,7 @@ export async function startProxyServer(
             new Promise<void>((res) => {
               eventBus.off('breakpointResume', resolveBreakpoint);
               eventBus.off('setIntercept', handleSetIntercept);
+              eventBus.off('setFocus', handleSetFocus);
               ruleEngine?.close();
               proxy.close();
               res();
