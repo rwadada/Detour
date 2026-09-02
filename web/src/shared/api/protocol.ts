@@ -5,13 +5,16 @@
  * with Vite and isn't set up with TS project references into the CLI
  * package. Keep this in sync when the wire format changes.
  */
+/** A Node-style headers object (values may be a string or multi-value string array, e.g. `set-cookie`). */
+export type HeaderMap = Record<string, string | string[] | undefined>;
+
 export interface CapturedExchange {
   id: string;
   method: string;
   url: string;
   host: string;
   isSSL: boolean;
-  requestHeaders: Record<string, string | string[] | undefined>;
+  requestHeaders: HeaderMap;
   requestBodySize: number;
   requestBody?: string;
   requestBodyTruncated?: boolean;
@@ -19,7 +22,7 @@ export interface CapturedExchange {
 
   statusCode?: number;
   statusMessage?: string;
-  responseHeaders?: Record<string, string | string[] | undefined>;
+  responseHeaders?: HeaderMap;
   responseBodySize: number;
   responseBody?: string;
   responseBodyTruncated?: boolean;
@@ -122,7 +125,7 @@ export interface CapturedWebSocketConnection {
   url: string;
   host: string;
   isSSL: boolean;
-  requestHeaders: Record<string, string | string[] | undefined>;
+  requestHeaders: HeaderMap;
   openedAt: number;
   frames: WebSocketFrameRecord[];
   frameCount: number;
