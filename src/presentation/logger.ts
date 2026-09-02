@@ -1,5 +1,8 @@
 import { formatExchangeDump, formatWebSocketDump } from '../domain/dump/dumpPolicy';
+import { findHeader } from '../domain/exchange/headers';
 import type { CapturedExchange, CapturedWebSocketConnection, ProxyErrorEvent } from '../domain/exchange/types';
+import { formatGrpcSection, type GrpcExchangeInfo } from '../domain/grpc/grpcDumpFormat';
+import { isGrpcContentType, parseGrpcPath } from '../domain/grpc/grpcFraming';
 
 const ansi = {
   reset: '\x1b[0m',
@@ -27,6 +30,24 @@ function statusCode(status?: number): string {
   return paint(ansi.green, String(status));
 }
 
+/**
+ * Lightweight gRPC detection (issue #18) for the one-line summary: needs
+ * only the request content-type and URL path, so — unlike the full decode
+ * in `infra/grpc/grpcExchangeInfo.ts` — it's always on, with no `--proto`
+ * required, and shown as e.g. `[gRPC helloworld.Greeter/SayHello]`.
+ */
+function grpcTag(exchange: Readonly<CapturedExchange>): string {
+  if (!isGrpcContentType(findHeader(exchange.requestHeaders, 'content-type'))) return '';
+  let pathname: string;
+  try {
+    pathname = new URL(exchange.url).pathname;
+  } catch {
+    return '';
+  }
+  const parsed = parseGrpcPath(pathname);
+  return parsed ? paint(ansi.dim, `[gRPC ${parsed.service}/${parsed.method}]`) : '';
+}
+
 /** Logs a completed request/response exchange as a single readable line. */
 export function logExchange(exchange: Readonly<CapturedExchange>): void {
   const method = paint(ansi.magenta, exchange.method.padEnd(6));
@@ -37,9 +58,10 @@ export function logExchange(exchange: Readonly<CapturedExchange>): void {
   // Only shown for the (uncommon) HTTP/2 case, matching issue #16's
   // "Protocol表示対応" — HTTP/1.1 stays implicit rather than tagging every line.
   const protocol = exchange.protocol === 'HTTP/2' ? paint(ansi.cyan, '[h2]') : '';
+  const grpc = grpcTag(exchange);
 
   console.log(
-    `${method} ${status} ${exchange.url} ${duration} ${size} ${protocol} ${rule}`.replace(/\s+/g, ' ').trim(),
+    `${method} ${status} ${exchange.url} ${duration} ${size} ${protocol} ${grpc} ${rule}`.replace(/\s+/g, ' ').trim(),
   );
   if (exchange.error) {
     console.log(`  ${paint(ansi.red, '✖')} ${exchange.error}`);
@@ -49,6 +71,11 @@ export function logExchange(exchange: Readonly<CapturedExchange>): void {
 /** Prints the full request/response dump (`--dump full`) — headers redacted, body pretty-printed where JSON. */
 export function logExchangeFull(exchange: Readonly<CapturedExchange>): void {
   console.log(formatExchangeDump(exchange));
+}
+
+/** Prints the decoded gRPC messages for an exchange (`--dump full`), appended after `logExchangeFull`'s regular headers/body dump. */
+export function logGrpcSection(info: GrpcExchangeInfo): void {
+  console.log(formatGrpcSection(info));
 }
 
 /** Logs a closed (or errored) WebSocket connection as a single readable line — mirrors `logExchange`, fired once the connection ends since (unlike a request/response) it has no other natural "done" point. */

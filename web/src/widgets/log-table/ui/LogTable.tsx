@@ -133,7 +133,12 @@ function LogRow({
         )}
       </span>
       <span className="min-w-0 flex-1 truncate pr-2">
-        <ProtocolBadge protocol={exchange.protocol} /> {exchange.url}
+        {exchange.protocol === 'HTTP/2' && (
+          <>
+            <ProtocolBadge protocol={exchange.protocol} />{' '}
+          </>
+        )}
+        {exchange.url}
       </span>
       <span className="w-16 shrink-0 text-right text-[var(--muted)]">{formatDuration(exchange.durationMs)}</span>
       <span className="w-16 shrink-0 text-right text-[var(--muted)]">

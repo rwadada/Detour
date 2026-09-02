@@ -1,5 +1,5 @@
 diff --git a/node_modules/http-mitm-proxy/dist/lib/proxy.js b/node_modules/http-mitm-proxy/dist/lib/proxy.js
-index e896595..9df8b85 100644
+index e896595..2dae493 100644
 --- a/node_modules/http-mitm-proxy/dist/lib/proxy.js
 +++ b/node_modules/http-mitm-proxy/dist/lib/proxy.js
 @@ -31,6 +31,7 @@ const async_1 = __importDefault(require("async"));
@@ -37,21 +37,25 @@ index e896595..9df8b85 100644
                  allowHalfOpen: true,
              }, () => {
                  const connectKey = `${conn.localPort}:${conn.remotePort}`;
-@@ -558,7 +564,12 @@ class Proxy {
+@@ -558,7 +564,16 @@ class Proxy {
          if (ctx) {
              ctx.onErrorHandlers.forEach((handler) => handler(ctx, err, kind));
              if (ctx.proxyToClientResponse && !ctx.proxyToClientResponse.headersSent) {
 -                ctx.proxyToClientResponse.writeHead(504, "Proxy Error");
 +                // A string statusMessage (2nd positional arg) isn't valid for
-+                // Http2ServerResponse.writeHead (HTTP/2 has no reason phrases);
-+                // the body written right below already carries the real
-+                // message, so just the status code is enough here regardless
-+                // of which protocol this response is on.
-+                ctx.proxyToClientResponse.writeHead(504);
++                // Http2ServerResponse.writeHead (HTTP/2 has no reason phrases)
++                // — omit it there; HTTP/1.1 keeps its original "Proxy Error"
++                // reason phrase unchanged.
++                if (ctx.clientToProxyRequest && ctx.clientToProxyRequest.httpVersionMajor === 2) {
++                    ctx.proxyToClientResponse.writeHead(504);
++                }
++                else {
++                    ctx.proxyToClientResponse.writeHead(504, "Proxy Error");
++                }
              }
              if (ctx.proxyToClientResponse && !ctx.proxyToClientResponse.finished) {
                  ctx.proxyToClientResponse.end(`${kind}: ${err}`, "utf8");
-@@ -808,24 +819,48 @@ class Proxy {
+@@ -808,24 +823,48 @@ class Proxy {
                      return self._onError("ON_RESPONSE_ERROR", ctx, err);
                  }
                  const servToProxyResp = ctx.serverToProxyResponse;
@@ -109,7 +113,7 @@ index e896595..9df8b85 100644
                      ctx.proxyToClientResponse.writeHead(servToProxyResp.statusCode, Proxy.filterAndCanonizeHeaders(servToProxyResp.headers));
                      ctx.responseFilters.push(new ProxyFinalResponseFilter_1.ProxyFinalResponseFilter(self, ctx));
                      let prevResponsePipeElem = servToProxyResp;
-@@ -859,7 +894,16 @@ class Proxy {
+@@ -859,7 +898,16 @@ class Proxy {
          else {
              const headers = {};
              for (const h in ctx.clientToProxyRequest.headers) {
@@ -127,7 +131,7 @@ index e896595..9df8b85 100644
                      headers[h] = ctx.clientToProxyRequest.headers[h];
                  }
              }
-@@ -1048,6 +1092,13 @@ class Proxy {
+@@ -1048,6 +1096,13 @@ class Proxy {
          else if (req.headers.host) {
              return Proxy.parseHost(req.headers.host, defaultPort);
          }
