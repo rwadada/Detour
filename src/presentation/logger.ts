@@ -1,4 +1,4 @@
-import type { CapturedExchange, ProxyErrorEvent } from './types';
+import type { CapturedExchange, ProxyErrorEvent } from '../domain/exchange/types';
 
 const ansi = {
   reset: '\x1b[0m',

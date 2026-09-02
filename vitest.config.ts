@@ -19,18 +19,26 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'html'],
       reportsDirectory: 'coverage',
-      // Only the pure rule-engine logic actually under unit test here
-      // (matching, schema validation, mock/route/rewrite helpers). The
-      // proxy/dashboard wiring (proxyServer.ts, dashboardServer.ts,
-      // ruleEngine.ts, cli.ts, certStore.ts, portCheck.ts, logger.ts,
-      // eventBus.ts) is callback-driven glue around http-mitm-proxy/ws/fs —
-      // it's exercised by the CLI E2E test (vitest.e2e.config.ts) instead of
-      // unit tests, and holding it to a unit-test branch-coverage gate would
-      // either be unenforceable or force low-value tests built entirely out
-      // of mocks. Widen this include list as real unit tests for that code
-      // are added.
-      include: ['src/rules/**/*.ts', 'src/ringBuffer.ts'],
-      exclude: ['src/**/*.test.ts', 'src/rules/sample.ts'],
+      // The Domain layer (pure matching/validation/rewrite/mock/route/
+      // throttle/focus logic, no I/O) and UseCase layer (RuleEngine and the
+      // rule-resolution/breakpoint orchestration, dependency-injected against
+      // fakes in tests) are fully under unit test here, plus the two
+      // Infrastructure adapters (rulesFileSource.ts, actionsRuntime.ts) with
+      // direct behavioral tests of their own. The rest of Infrastructure
+      // (proxyServer.ts, dashboardServer.ts, certStore.ts, portCheck.ts,
+      // eventBus.ts) and Presentation (logger.ts) plus the cli.ts composition
+      // root are callback-driven glue around http-mitm-proxy/ws/fs — exercised
+      // by the CLI E2E test (vitest.e2e.config.ts) instead of unit tests, and
+      // holding them to a unit-test branch-coverage gate would either be
+      // unenforceable or force low-value tests built entirely out of mocks.
+      // Widen this include list as real unit tests for that code are added.
+      include: [
+        'src/domain/**/*.ts',
+        'src/usecase/**/*.ts',
+        'src/infra/fs/rulesFileSource.ts',
+        'src/infra/proxy/actionsRuntime.ts',
+      ],
+      exclude: ['src/**/*.test.ts', 'src/domain/rules/sample.ts'],
       // C1 (branch coverage) ~85%, per team convention.
       thresholds: {
         branches: 85,

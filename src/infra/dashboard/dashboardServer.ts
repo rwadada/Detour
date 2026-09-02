@@ -1,11 +1,17 @@
 import http from 'node:http';
 import path from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
+import type {
+  CapturedExchange,
+  DetourEvents,
+  FocusState,
+  InterceptState,
+  ThrottleState,
+} from '../../domain/exchange/types';
+import { RingBuffer } from '../../domain/shared/ringBuffer';
+import type { DashboardClientMessage, DashboardServerMessage } from '../../domain/dashboard/protocol';
 import type { DetourEventBus } from '../eventBus';
 import { assertPortAvailable } from '../portCheck';
-import { RingBuffer } from '../ringBuffer';
-import type { CapturedExchange, DetourEvents, FocusState, InterceptState, ThrottleState } from '../types';
-import type { DashboardClientMessage, DashboardServerMessage } from './protocol';
 import { serveStatic } from './staticServer';
 
 /**

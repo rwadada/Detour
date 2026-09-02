@@ -11,7 +11,7 @@ import {
   resolveMockResponse,
   sendMockResponse,
   sendMockSimulate,
-} from './actions';
+} from './actionsRuntime';
 
 describe('resolveMockResponse', () => {
   it('defaults to an empty 200 body when neither body nor bodyFile is set', () => {

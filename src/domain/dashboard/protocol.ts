@@ -6,7 +6,7 @@ import type {
   InterceptState,
   ProxyErrorEvent,
   ThrottleState,
-} from '../types';
+} from '../exchange/types';
 
 /**
  * Messages sent from the dashboard server to a connected browser client over
