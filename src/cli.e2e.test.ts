@@ -4,6 +4,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { execa } from 'execa';
+import protobuf from 'protobufjs';
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
@@ -87,6 +88,102 @@ function startMarkerEchoServer(marker: string): Promise<{ port: number; close: (
         close: () => new Promise((res) => server.close(() => res())),
       });
     });
+  });
+}
+
+const HELLOWORLD_PROTO_SOURCE = `
+syntax = "proto3";
+package helloworld;
+
+service Greeter {
+  rpc SayHello (HelloRequest) returns (HelloReply);
+}
+
+message HelloRequest {
+  string name = 1;
+}
+
+message HelloReply {
+  string message = 1;
+}
+`;
+
+/** Writes the shared `helloworld.proto` fixture to a fresh tmp dir, returning its path. */
+function writeHelloworldProtoFile(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-grpc-'));
+  const file = path.join(dir, 'helloworld.proto');
+  fs.writeFileSync(file, HELLOWORLD_PROTO_SOURCE, 'utf8');
+  return file;
+}
+
+/** Wraps a Protobuf-encoded payload in a single gRPC wire frame (1-byte flags + 4-byte BE length), uncompressed. */
+function grpcFrame(payload: Uint8Array): Buffer {
+  const header = Buffer.alloc(5);
+  header.writeUInt32BE(payload.length, 1);
+  return Buffer.concat([header, Buffer.from(payload)]);
+}
+
+/**
+ * Starts a plain-HTTP "gRPC-like" upstream server: reads a single framed
+ * `HelloRequest` and replies with a framed `HelloReply` greeting it by
+ * name — the same wire framing and content-type real gRPC uses, just
+ * carried over HTTP/1.1 (this proxy's own transport today), so the
+ * detect/decode logic under test never depends on which HTTP version
+ * actually carried the bytes.
+ */
+function startGrpcUpstreamServer(): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const root = protobuf.parse(HELLOWORLD_PROTO_SOURCE).root;
+    const HelloRequest = root.lookupType('helloworld.HelloRequest');
+    const HelloReply = root.lookupType('helloworld.HelloReply');
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () => {
+        const body = Buffer.concat(chunks);
+        const { name } = HelloRequest.toObject(HelloRequest.decode(body.subarray(5))) as { name: string };
+        const reply = grpcFrame(HelloReply.encode({ message: `Hello, ${name}!` }).finish());
+        res.writeHead(200, { 'Content-Type': 'application/grpc+proto' });
+        res.end(reply);
+      });
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('failed to bind grpc upstream server'));
+      resolve({ port: address.port, close: () => new Promise((res) => server.close(() => res())) });
+    });
+  });
+}
+
+/**
+ * Same as `requestThroughProxy`, but issues a POST with a binary body and
+ * returns a binary-safe response body — needed for gRPC's length-prefixed
+ * framing, which `toString('utf8')` would corrupt.
+ */
+function postThroughProxy(
+  proxyPort: number,
+  targetPort: number,
+  reqPath: string,
+  request: { headers: http.OutgoingHttpHeaders; body: Buffer },
+): Promise<{ status: number; body: Buffer }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        host: 'localhost',
+        port: proxyPort,
+        path: `http://127.0.0.1:${targetPort}${reqPath}`,
+        method: 'POST',
+        headers: request.headers,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks) }));
+      },
+    );
+    req.on('error', reject);
+    req.end(request.body);
   });
 }
 
@@ -838,6 +935,74 @@ describe('detour start (CLI, end-to-end)', () => {
         expect(cli.stdout()).not.toContain('Request headers:');
       } finally {
         fs.rmSync(dumpFile, { force: true });
+      }
+    });
+  });
+
+  describe('gRPC detection and decoding (issue #18)', () => {
+    it('detects and tags a gRPC exchange in the default summary log, without --proto', async () => {
+      const grpcUpstream = await startGrpcUpstreamServer();
+      cli = await startDetourCli();
+      try {
+        await postThroughProxy(cli.port, grpcUpstream.port, '/helloworld.Greeter/SayHello', {
+          headers: { 'Content-Type': 'application/grpc+proto' },
+          body: grpcFrame(
+            Buffer.from(
+              protobuf
+                .parse(HELLOWORLD_PROTO_SOURCE)
+                .root.lookupType('helloworld.HelloRequest')
+                .encode({ name: 'world' })
+                .finish(),
+            ),
+          ),
+        });
+        await waitForStdout(cli, /\[gRPC helloworld\.Greeter\/SayHello\]/);
+        expect(cli.stdout()).toMatch(/\[gRPC helloworld\.Greeter\/SayHello\]/);
+      } finally {
+        await grpcUpstream.close();
+      }
+    });
+
+    it('decodes request/response messages via --proto and prints them under --dump full', async () => {
+      const grpcUpstream = await startGrpcUpstreamServer();
+      const protoPath = writeHelloworldProtoFile();
+      cli = await startDetourCli(['--dump', 'full', '--proto', protoPath]);
+      try {
+        const root = protobuf.parse(HELLOWORLD_PROTO_SOURCE).root;
+        const requestBody = grpcFrame(
+          Buffer.from(root.lookupType('helloworld.HelloRequest').encode({ name: 'world' }).finish()),
+        );
+
+        const result = await postThroughProxy(cli.port, grpcUpstream.port, '/helloworld.Greeter/SayHello', {
+          headers: { 'Content-Type': 'application/grpc+proto' },
+          body: requestBody,
+        });
+        expect(result.status).toBe(200);
+        await waitForStdout(cli, /gRPC: helloworld\.Greeter\/SayHello/);
+
+        const stdout = cli.stdout();
+        expect(stdout).toContain('"name": "world"');
+        expect(stdout).toContain('"message": "Hello, world!"');
+      } finally {
+        await grpcUpstream.close();
+        fs.rmSync(path.dirname(protoPath), { recursive: true, force: true });
+      }
+    });
+
+    it('rejects a broken .proto schema at startup instead of starting the proxy', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-grpc-bad-'));
+      const protoPath = path.join(dir, 'broken.proto');
+      fs.writeFileSync(protoPath, 'this is not a valid .proto file', 'utf8');
+      try {
+        const result = await execa(
+          'npx',
+          ['tsx', 'src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', '--proto', protoPath],
+          { cwd: REPO_ROOT, reject: false },
+        );
+        expect(result.exitCode).not.toBe(0);
+        expect(result.stderr).not.toBe('');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
       }
     });
   });

@@ -44,6 +44,7 @@
     "ajv": "^8.20.0",
     "commander": "^15.0.0",
     "http-mitm-proxy": "^1.1.0",
+    "protobufjs": "^8.8.0",
     "ws": "^8.21.3"
   },
   "devDependencies": {

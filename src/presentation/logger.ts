@@ -1,5 +1,7 @@
 import { formatExchangeDump } from '../domain/dump/dumpPolicy';
 import type { CapturedExchange, ProxyErrorEvent } from '../domain/exchange/types';
+import { formatGrpcSection, type GrpcExchangeInfo } from '../domain/grpc/grpcDumpFormat';
+import { isGrpcContentType, parseGrpcPath } from '../domain/grpc/grpcFraming';
 
 const ansi = {
   reset: '\x1b[0m',
@@ -27,6 +29,24 @@ function statusCode(status?: number): string {
   return paint(ansi.green, String(status));
 }
 
+/**
+ * Lightweight gRPC detection (issue #18) for the one-line summary: needs
+ * only the request content-type and URL path, so — unlike the full decode
+ * in `infra/grpc/grpcExchangeInfo.ts` — it's always on, with no `--proto`
+ * required, and shown as e.g. `[gRPC helloworld.Greeter/SayHello]`.
+ */
+function grpcTag(exchange: Readonly<CapturedExchange>): string {
+  if (!isGrpcContentType(exchange.requestHeaders['content-type'])) return '';
+  let pathname: string;
+  try {
+    pathname = new URL(exchange.url).pathname;
+  } catch {
+    return '';
+  }
+  const parsed = parseGrpcPath(pathname);
+  return parsed ? paint(ansi.dim, `[gRPC ${parsed.service}/${parsed.method}]`) : '';
+}
+
 /** Logs a completed request/response exchange as a single readable line. */
 export function logExchange(exchange: Readonly<CapturedExchange>): void {
   const method = paint(ansi.magenta, exchange.method.padEnd(6));
@@ -34,8 +54,9 @@ export function logExchange(exchange: Readonly<CapturedExchange>): void {
   const duration = exchange.durationMs !== undefined ? paint(ansi.dim, `${exchange.durationMs}ms`) : '';
   const size = exchange.responseBodySize > 0 ? paint(ansi.dim, `${formatBytes(exchange.responseBodySize)}`) : '';
   const rule = exchange.ruleName ? paint(ansi.dim, `[rule: ${exchange.ruleName}]`) : '';
+  const grpc = grpcTag(exchange);
 
-  console.log(`${method} ${status} ${exchange.url} ${duration} ${size} ${rule}`.replace(/\s+/g, ' ').trim());
+  console.log(`${method} ${status} ${exchange.url} ${duration} ${size} ${grpc} ${rule}`.replace(/\s+/g, ' ').trim());
   if (exchange.error) {
     console.log(`  ${paint(ansi.red, '✖')} ${exchange.error}`);
   }
@@ -44,6 +65,11 @@ export function logExchange(exchange: Readonly<CapturedExchange>): void {
 /** Prints the full request/response dump (`--dump full`) — headers redacted, body pretty-printed where JSON. */
 export function logExchangeFull(exchange: Readonly<CapturedExchange>): void {
   console.log(formatExchangeDump(exchange));
+}
+
+/** Prints the decoded gRPC messages for an exchange (`--dump full`), appended after `logExchangeFull`'s regular headers/body dump. */
+export function logGrpcSection(info: GrpcExchangeInfo): void {
+  console.log(formatGrpcSection(info));
 }
 
 export function logProxyError(event: ProxyErrorEvent): void {
