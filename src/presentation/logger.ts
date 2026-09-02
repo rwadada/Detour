@@ -1,4 +1,5 @@
 import { formatExchangeDump, formatWebSocketDump } from '../domain/dump/dumpPolicy';
+import { findHeader } from '../domain/exchange/headers';
 import type { CapturedExchange, CapturedWebSocketConnection, ProxyErrorEvent } from '../domain/exchange/types';
 import { formatGrpcSection, type GrpcExchangeInfo } from '../domain/grpc/grpcDumpFormat';
 import { isGrpcContentType, parseGrpcPath } from '../domain/grpc/grpcFraming';
@@ -36,7 +37,7 @@ function statusCode(status?: number): string {
  * required, and shown as e.g. `[gRPC helloworld.Greeter/SayHello]`.
  */
 function grpcTag(exchange: Readonly<CapturedExchange>): string {
-  if (!isGrpcContentType(exchange.requestHeaders['content-type'])) return '';
+  if (!isGrpcContentType(findHeader(exchange.requestHeaders, 'content-type'))) return '';
   let pathname: string;
   try {
     pathname = new URL(exchange.url).pathname;

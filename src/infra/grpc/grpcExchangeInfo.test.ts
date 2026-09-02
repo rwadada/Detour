@@ -66,6 +66,14 @@ describe('buildGrpcExchangeInfo', () => {
     expect(buildGrpcExchangeInfo(exchange, undefined)).toBeUndefined();
   });
 
+  it("detects gRPC regardless of the content-type header's casing", () => {
+    // A `rewrite` rule's request.headers (from rules.json) or a breakpoint
+    // edit's headers (typed by hand in the dashboard) aren't guaranteed to
+    // be lowercased the way Node's own HTTP parser lowercases them.
+    const exchange = baseExchange({ requestHeaders: { 'Content-Type': 'application/grpc+proto' } });
+    expect(buildGrpcExchangeInfo(exchange, undefined)?.service).toBe('helloworld.Greeter');
+  });
+
   it('returns undefined when the URL path is not a well-formed gRPC path', () => {
     const exchange = baseExchange({ url: 'https://api.example.com/not-grpc-shaped' });
     expect(buildGrpcExchangeInfo(exchange, undefined)).toBeUndefined();
@@ -136,6 +144,37 @@ describe('buildGrpcExchangeInfo', () => {
     const exchange = baseExchange({ requestBody: Buffer.from([0, 0, 0]).toString('base64') });
     const info = buildGrpcExchangeInfo(exchange, registry);
     expect(info?.requestFramesTruncated).toBe(true);
+  });
+
+  it('also reports truncation when BodyCapture itself truncated the body, even if it happened to land on a frame boundary', async () => {
+    // Simulates BodyCapture's own cap (MAX_CAPTURED_BODY_BYTES) cutting the
+    // body exactly at a frame boundary — splitGrpcFrames alone would see a
+    // clean, "complete" stream and report untruncated, silently hiding that
+    // later frames existed but were never captured.
+    const registry = await loadRegistry();
+    const requestType = registry.resolveMethod('helloworld.Greeter', 'SayHello')!.requestType;
+    const completeFrame = frame(Buffer.from(requestType.encode({ name: 'world' }).finish()));
+    const exchange = baseExchange({
+      requestBody: completeFrame.toString('base64'),
+      requestBodyTruncated: true,
+    });
+    const info = buildGrpcExchangeInfo(exchange, registry);
+    expect(info?.requestFramesTruncated).toBe(true);
+  });
+
+  it('decodes gzip using a case-insensitive grpc-encoding header lookup', async () => {
+    const registry = await loadRegistry();
+    const requestType = registry.resolveMethod('helloworld.Greeter', 'SayHello')!.requestType;
+    const compressed = zlib.gzipSync(Buffer.from(requestType.encode({ name: 'zipped' }).finish()));
+    const requestBody = frame(compressed, 0x1);
+
+    const exchange = baseExchange({
+      requestHeaders: { 'content-type': 'application/grpc+proto', 'Grpc-Encoding': 'gzip' },
+      requestBody: requestBody.toString('base64'),
+    });
+
+    const info = buildGrpcExchangeInfo(exchange, registry);
+    expect(info?.requestFrames).toEqual([{ json: { name: 'zipped' } }]);
   });
 
   it('treats a missing body as zero frames rather than throwing', async () => {

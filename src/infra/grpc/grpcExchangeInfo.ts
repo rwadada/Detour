@@ -1,16 +1,17 @@
 import zlib from 'node:zlib';
+import { findHeader } from '../../domain/exchange/headers';
 import type { CapturedExchange } from '../../domain/exchange/types';
 import type { GrpcDecodedFrame, GrpcExchangeInfo } from '../../domain/grpc/grpcDumpFormat';
 import { type GrpcFrame, isGrpcContentType, parseGrpcPath, splitGrpcFrames } from '../../domain/grpc/grpcFraming';
 import type { ProtoRegistry, ResolvedGrpcMethod } from './protoRegistry';
 import type protobuf from 'protobufjs';
 
-/** Single-value read of a possibly multi-value header, lowercased for case-insensitive comparison. */
+/** Single-value, case-insensitive read of a possibly multi-value header — see `findHeader`'s doc comment for why the lookup itself must be case-insensitive. */
 function headerValue(
   headers: Readonly<Record<string, string | string[] | undefined>>,
   name: string,
 ): string | undefined {
-  const value = headers[name];
+  const value = findHeader(headers, name);
   return (Array.isArray(value) ? value[0] : value)?.toLowerCase();
 }
 
@@ -74,7 +75,7 @@ export function buildGrpcExchangeInfo(
   exchange: Readonly<CapturedExchange>,
   registry: ProtoRegistry | undefined,
 ): GrpcExchangeInfo | undefined {
-  if (!isGrpcContentType(exchange.requestHeaders['content-type'])) return undefined;
+  if (!isGrpcContentType(findHeader(exchange.requestHeaders, 'content-type'))) return undefined;
 
   let pathname: string;
   try {
@@ -85,10 +86,19 @@ export function buildGrpcExchangeInfo(
   const parsed = parseGrpcPath(pathname);
   if (!parsed) return undefined;
 
-  const { frames: requestFrames, truncated: requestFramesTruncated } = splitGrpcFrames(bufferOf(exchange.requestBody));
-  const { frames: responseFrames, truncated: responseFramesTruncated } = splitGrpcFrames(
+  const { frames: requestFrames, truncated: requestFramesSplitTruncated } = splitGrpcFrames(
+    bufferOf(exchange.requestBody),
+  );
+  const { frames: responseFrames, truncated: responseFramesSplitTruncated } = splitGrpcFrames(
     bufferOf(exchange.responseBody),
   );
+  // `splitGrpcFrames` only sees a body already capped by `BodyCapture` (see
+  // `MAX_CAPTURED_BODY_BYTES`) — if that cap happened to land exactly on a
+  // frame boundary, it reports `truncated: false` even though later frames
+  // may have existed beyond the cap and were never captured at all. Folding
+  // in the exchange's own truncation flags catches that case too.
+  const requestFramesTruncated = requestFramesSplitTruncated || Boolean(exchange.requestBodyTruncated);
+  const responseFramesTruncated = responseFramesSplitTruncated || Boolean(exchange.responseBodyTruncated);
 
   const truncated = { requestFramesTruncated, responseFramesTruncated };
 

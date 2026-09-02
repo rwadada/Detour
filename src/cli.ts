@@ -76,7 +76,10 @@ async function runStart(options: StartOptions): Promise<void> {
   const eventBus = new DetourEventBus();
   eventBus.on('response', (exchange) => {
     logExchange(exchange);
-    const grpcInfo = buildGrpcExchangeInfo(exchange, protoRegistry);
+    // Decoding (and, for a compressed frame, decompressing) every gRPC
+    // message is real work — skip it entirely at the default `summary`
+    // level, where the result would never be printed or written anyway.
+    const grpcInfo = dumpLevel !== 'summary' ? buildGrpcExchangeInfo(exchange, protoRegistry) : undefined;
     if (dumpLevel === 'full') {
       logExchangeFull(exchange);
       if (grpcInfo) logGrpcSection(grpcInfo);
