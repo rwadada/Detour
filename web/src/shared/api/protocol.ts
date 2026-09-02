@@ -105,8 +105,39 @@ export interface BlockHostsState {
   mode: 'forbidden' | 'reset';
 }
 
+/** A single captured WebSocket frame — see `src/domain/exchange/types.ts`'s `WebSocketFrameRecord` (issue #17). */
+export interface WebSocketFrameRecord {
+  type: 'message' | 'ping' | 'pong';
+  direction: 'toServer' | 'toClient';
+  binary: boolean;
+  size: number;
+  at: number;
+  data?: string;
+  truncated?: boolean;
+}
+
+/** A WebSocket connection tunneled through the proxy — see `src/domain/exchange/types.ts`'s `CapturedWebSocketConnection` (issue #17). */
+export interface CapturedWebSocketConnection {
+  id: string;
+  url: string;
+  host: string;
+  isSSL: boolean;
+  requestHeaders: Record<string, string | string[] | undefined>;
+  openedAt: number;
+  frames: WebSocketFrameRecord[];
+  frameCount: number;
+  framesTruncated: boolean;
+  closedAt?: number;
+  durationMs?: number;
+  closeCode?: number;
+  closeReason?: string;
+  closedByServer?: boolean;
+  error?: string;
+}
+
 export type DashboardServerMessage =
   | { type: 'backlog'; items: CapturedExchange[] }
+  | { type: 'wsBacklog'; items: CapturedWebSocketConnection[] }
   | { type: 'request'; exchange: CapturedExchange }
   | { type: 'response'; exchange: CapturedExchange }
   | { type: 'error'; event: ProxyErrorEvent }
@@ -114,7 +145,10 @@ export type DashboardServerMessage =
   | { type: 'intercept'; state: InterceptState }
   | { type: 'focus'; state: FocusState }
   | { type: 'throttle'; state: ThrottleState }
-  | { type: 'blockHosts'; state: BlockHostsState };
+  | { type: 'blockHosts'; state: BlockHostsState }
+  | { type: 'wsOpen'; connection: CapturedWebSocketConnection }
+  | { type: 'wsFrame'; connection: CapturedWebSocketConnection }
+  | { type: 'wsClose'; connection: CapturedWebSocketConnection };
 
 export type DashboardClientMessage =
   | { type: 'breakpointResume'; command: BreakpointResumeCommand }
