@@ -1,5 +1,5 @@
-import { formatExchangeDump } from '../domain/dump/dumpPolicy';
-import type { CapturedExchange, ProxyErrorEvent } from '../domain/exchange/types';
+import { formatExchangeDump, formatWebSocketDump } from '../domain/dump/dumpPolicy';
+import type { CapturedExchange, CapturedWebSocketConnection, ProxyErrorEvent } from '../domain/exchange/types';
 import { formatGrpcSection, type GrpcExchangeInfo } from '../domain/grpc/grpcDumpFormat';
 import { isGrpcContentType, parseGrpcPath } from '../domain/grpc/grpcFraming';
 
@@ -70,6 +70,26 @@ export function logExchangeFull(exchange: Readonly<CapturedExchange>): void {
 /** Prints the decoded gRPC messages for an exchange (`--dump full`), appended after `logExchangeFull`'s regular headers/body dump. */
 export function logGrpcSection(info: GrpcExchangeInfo): void {
   console.log(formatGrpcSection(info));
+}
+
+/** Logs a closed (or errored) WebSocket connection as a single readable line — mirrors `logExchange`, fired once the connection ends since (unlike a request/response) it has no other natural "done" point. */
+export function logWebSocketConnection(connection: Readonly<CapturedWebSocketConnection>): void {
+  const proto = paint(ansi.magenta, (connection.isSSL ? 'WSS' : 'WS').padEnd(6));
+  const outcome = connection.error
+    ? paint(ansi.red, 'error')
+    : paint(ansi.green, `closed ${connection.closeCode ?? ''}`.trim());
+  const duration = connection.durationMs !== undefined ? paint(ansi.dim, `${connection.durationMs}ms`) : '';
+  const frames = paint(ansi.dim, `${connection.frameCount} frame${connection.frameCount === 1 ? '' : 's'}`);
+
+  console.log(`${proto} ${outcome} ${connection.url} ${duration} ${frames}`.replace(/\s+/g, ' ').trim());
+  if (connection.error) {
+    console.log(`  ${paint(ansi.red, '✖')} ${connection.error}`);
+  }
+}
+
+/** Prints the full WebSocket connection dump (`--dump full`) — headers redacted, every frame listed. */
+export function logWebSocketFull(connection: Readonly<CapturedWebSocketConnection>): void {
+  console.log(formatWebSocketDump(connection));
 }
 
 export function logProxyError(event: ProxyErrorEvent): void {

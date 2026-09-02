@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { CapturedExchange } from '../../domain/exchange/types';
+import type { CapturedExchange, CapturedWebSocketConnection } from '../../domain/exchange/types';
 import type { GrpcExchangeInfo } from '../../domain/grpc/grpcDumpFormat';
-import { resolveDumpDir, writeExchangeDumpFile } from './dumpFileWriter';
+import { resolveDumpDir, writeExchangeDumpFile, writeWebSocketDumpFile } from './dumpFileWriter';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'detour-dump-test-'));
@@ -28,7 +28,6 @@ function baseExchange(): CapturedExchange {
     startedAt: 0,
   };
 }
-
 describe('resolveDumpDir', () => {
   it('creates and returns ~/.detour/dumps', () => {
     const dir = resolveDumpDir();
@@ -63,5 +62,45 @@ describe('writeExchangeDumpFile', () => {
     expect(written).toContain('GET https://example.com');
     expect(written).toContain('gRPC: helloworld.Greeter/SayHello');
     expect(written).toContain('"name": "world"');
+  });
+
+  it('writes a dump named after the exchange id, sanitizing unsafe characters', () => {
+    const dir = tmpDir();
+    dirs.push(dir);
+    const exchange: CapturedExchange = {
+      id: 'a/b:c',
+      method: 'GET',
+      url: 'https://example.com',
+      host: 'example.com',
+      isSSL: true,
+      requestHeaders: {},
+      requestBodySize: 0,
+      responseBodySize: 0,
+      startedAt: 0,
+    };
+    writeExchangeDumpFile(exchange, dir);
+    const written = fs.readFileSync(path.join(dir, 'a_b_c.txt'), 'utf8');
+    expect(written).toContain('GET https://example.com');
+  });
+});
+
+describe('writeWebSocketDumpFile', () => {
+  it('writes a dump named after the connection id with a "ws-" prefix', () => {
+    const dir = tmpDir();
+    dirs.push(dir);
+    const connection: CapturedWebSocketConnection = {
+      id: 'a/b:c',
+      url: 'wss://example.com/socket',
+      host: 'example.com',
+      isSSL: true,
+      requestHeaders: {},
+      openedAt: 0,
+      frames: [],
+      frameCount: 0,
+      framesTruncated: false,
+    };
+    writeWebSocketDumpFile(connection, dir);
+    const written = fs.readFileSync(path.join(dir, 'ws-a_b_c.txt'), 'utf8');
+    expect(written).toContain('WS wss://example.com/socket');
   });
 });

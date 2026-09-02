@@ -1,5 +1,5 @@
 import type { IncomingHttpHeaders } from 'node:http';
-import type { CapturedExchange } from '../exchange/types';
+import type { CapturedExchange, CapturedWebSocketConnection, WebSocketFrameRecord } from '../exchange/types';
 
 /**
  * How much detail `--dump` prints for each exchange (issue #15): `summary`
@@ -121,6 +121,59 @@ export function formatExchangeDump(exchange: Readonly<CapturedExchange>): string
 
   if (exchange.error) {
     lines.push(`Error: ${exchange.error}`);
+  }
+
+  lines.push(SEPARATOR);
+  return lines.join('\n');
+}
+
+/** Renders one captured WebSocket frame as a single labeled, indented block — reusing `formatBody`'s JSON pretty-printing for `message` frames. */
+function formatWebSocketFrame(frame: WebSocketFrameRecord): string {
+  const arrow = frame.direction === 'toServer' ? '→ server' : '→ client';
+  let kind: string = frame.type;
+  if (frame.type === 'message') kind = frame.binary ? 'binary' : 'text';
+  const header = `  [${new Date(frame.at).toISOString()}] ${arrow} ${kind} (${frame.size}B)`;
+  if (frame.type !== 'message') return header;
+  return `${header}\n${indent(formatBody(frame.data, frame.truncated))}`;
+}
+
+/**
+ * Renders a full, human-readable dump of one WebSocket connection — the
+ * upgrade request's (redacted) headers, every captured frame in order, then
+ * (once known) how the connection closed. Mirrors `formatExchangeDump`'s
+ * shape and is used the same way by both the `full` (console) and `file`
+ * dump levels.
+ */
+export function formatWebSocketDump(connection: Readonly<CapturedWebSocketConnection>): string {
+  const lines: string[] = [
+    SEPARATOR,
+    `WS ${connection.url}`,
+    'Request headers:',
+    formatHeaders(connection.requestHeaders),
+  ];
+
+  const frameCountLabel = connection.framesTruncated
+    ? `${connection.frameCount} total, showing the last ${connection.frames.length}`
+    : `${connection.frameCount}`;
+  lines.push(`Frames (${frameCountLabel}):`);
+  if (connection.frames.length === 0) {
+    lines.push('  (none)');
+  } else {
+    for (const frame of connection.frames) lines.push(formatWebSocketFrame(frame));
+  }
+
+  if (connection.closedAt !== undefined) {
+    let by = '';
+    if (connection.closedByServer !== undefined)
+      by = connection.closedByServer ? ' (closed by server)' : ' (closed by client)';
+    const code = connection.closeCode !== undefined ? connection.closeCode : '(none)';
+    const reason = connection.closeReason ? ` ${connection.closeReason}` : '';
+    const duration = connection.durationMs !== undefined ? ` (${connection.durationMs}ms)` : '';
+    lines.push('-'.repeat(60), `Closed: ${code}${reason}${by}${duration}`);
+  }
+
+  if (connection.error) {
+    lines.push(`Error: ${connection.error}`);
   }
 
   lines.push(SEPARATOR);

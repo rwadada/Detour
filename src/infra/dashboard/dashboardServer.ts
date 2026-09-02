@@ -4,6 +4,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type {
   BlockHostsState,
   CapturedExchange,
+  CapturedWebSocketConnection,
   DetourEvents,
   FocusState,
   InterceptState,
@@ -56,6 +57,14 @@ export async function startDashboardServer(
   await assertPortAvailable(options.port, host);
 
   const backlog = new RingBuffer<CapturedExchange>(options.backlogSize ?? DEFAULT_BACKLOG_SIZE, (item) => item.id);
+  // Mirrors `backlog` above, but for WebSocket connections (issue #17) —
+  // kept in its own buffer/message type since a connection's shape (a
+  // stream of frames rather than one request/response pair) doesn't fit
+  // alongside `CapturedExchange`.
+  const wsBacklog = new RingBuffer<CapturedWebSocketConnection>(
+    options.backlogSize ?? DEFAULT_BACKLOG_SIZE,
+    (item) => item.id,
+  );
   // Mirrors the proxy server's own `interceptEnabled` (which is the source
   // of truth) so a newly-connecting client can be told the current state
   // without a round trip — kept in sync via the `interceptChanged` event,
@@ -111,10 +120,24 @@ export async function startDashboardServer(
     blockHostsState = state;
     broadcast({ type: 'blockHosts', state });
   };
+  const onWsOpen: DetourEvents['wsOpen'] = (connection) => {
+    wsBacklog.upsert(connection);
+    broadcast({ type: 'wsOpen', connection });
+  };
+  const onWsFrame: DetourEvents['wsFrame'] = (connection) => {
+    wsBacklog.upsert(connection);
+    broadcast({ type: 'wsFrame', connection });
+  };
+  const onWsClose: DetourEvents['wsClose'] = (connection) => {
+    wsBacklog.upsert(connection);
+    broadcast({ type: 'wsClose', connection });
+  };
 
   wss.on('connection', (socket: WebSocket) => {
     const backlogMessage: DashboardServerMessage = { type: 'backlog', items: backlog.toArray() };
     socket.send(JSON.stringify(backlogMessage));
+    const wsBacklogMessage: DashboardServerMessage = { type: 'wsBacklog', items: wsBacklog.toArray() };
+    socket.send(JSON.stringify(wsBacklogMessage));
     const interceptMessage: DashboardServerMessage = { type: 'intercept', state: interceptState };
     socket.send(JSON.stringify(interceptMessage));
     const focusMessage: DashboardServerMessage = { type: 'focus', state: focusState };
@@ -158,6 +181,9 @@ export async function startDashboardServer(
       eventBus.on('focusChanged', onFocusChanged);
       eventBus.on('throttleChanged', onThrottleChanged);
       eventBus.on('blockHostsChanged', onBlockHostsChanged);
+      eventBus.on('wsOpen', onWsOpen);
+      eventBus.on('wsFrame', onWsFrame);
+      eventBus.on('wsClose', onWsClose);
 
       const address = httpServer.address();
       const boundPort = typeof address === 'object' && address ? address.port : options.port;
@@ -173,6 +199,9 @@ export async function startDashboardServer(
             eventBus.off('focusChanged', onFocusChanged);
             eventBus.off('throttleChanged', onThrottleChanged);
             eventBus.off('blockHostsChanged', onBlockHostsChanged);
+            eventBus.off('wsOpen', onWsOpen);
+            eventBus.off('wsFrame', onWsFrame);
+            eventBus.off('wsClose', onWsClose);
             for (const client of wss.clients) client.close();
             wss.close(() => httpServer.close(() => res()));
           }),
