@@ -1,0 +1,14 @@
+{
+  "name": "Detour Dashboard",
+  "short_name": "Detour",
+  "description": "Real-time HTTP(S) traffic dashboard for the Detour debugging proxy.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f1117",
+  "theme_color": "#5eb3e8",
+  "icons": [
+    { "src": "/favicon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
+    { "src": "/icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" }
+  ]
+}

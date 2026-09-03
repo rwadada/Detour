@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { readPersistedState, writePersistedState } from '@/shared/lib/persistedState';
 
 /** Columns a user can sort the log table by (issue #24). `url` sorts lexicographically; the rest numerically. */
 export type SortColumn = 'time' | 'method' | 'status' | 'url' | 'duration' | 'size';
@@ -24,6 +25,38 @@ export const DEFAULT_COLUMN_WIDTHS: Record<ResizableColumn, number> = {
 /** Below this, a column's own label/value starts truncating illegibly. */
 export const MIN_COLUMN_WIDTH = 40;
 
+const COLUMN_WIDTHS_STORAGE_KEY = 'detour-log-view-column-widths';
+
+/** A finite number clamped to `MIN_COLUMN_WIDTH`, or `undefined` for anything else — guards `loadColumnWidths` against a hand-edited or stale-schema localStorage value (a string, `NaN`, a negative number, …) reaching a React `style={{ width }}` as-is. */
+function sanitizeColumnWidth(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(MIN_COLUMN_WIDTH, Math.round(value))
+    : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/** Merges persisted widths over the defaults — a column added by a later release (not present in an older saved value), or one whose persisted value fails `sanitizeColumnWidth`, still gets its default rather than `undefined`/garbage. */
+function loadColumnWidths(): Record<ResizableColumn, number> {
+  // `isRecord` rejects a hand-edited or stale-schema persisted value that
+  // parses as valid JSON but isn't an object — the literal `null` in
+  // particular parses fine and, without this check, would throw indexing
+  // into it below (`null[column]`).
+  const stored = readPersistedState<Record<ResizableColumn, unknown>>(
+    COLUMN_WIDTHS_STORAGE_KEY,
+    {} as Record<ResizableColumn, unknown>,
+    isRecord,
+  );
+  const widths = { ...DEFAULT_COLUMN_WIDTHS };
+  for (const column of Object.keys(widths) as ResizableColumn[]) {
+    const sanitized = sanitizeColumnWidth(stored[column]);
+    if (sanitized !== undefined) widths[column] = sanitized;
+  }
+  return widths;
+}
+
 export interface LogViewState {
   /** Groups the log table's rows under collapsible per-host headers instead of one flat list (issue #24's toolbar "Group by host"). */
   groupByHost: boolean;
@@ -33,7 +66,10 @@ export interface LogViewState {
   toggleGroupByHost: () => void;
   /** Clicking the currently-sorted column flips direction; clicking a different one switches to it ascending. */
   setSort: (column: SortColumn) => void;
+  /** Updates in-memory width only — called on every `pointermove` while dragging a resize handle, so it deliberately does *not* touch localStorage (a synchronous write per move event is a real jank risk on that hot path). See `persistColumnWidths`. */
   setColumnWidth: (column: ResizableColumn, width: number) => void;
+  /** Writes the current `columnWidths` to localStorage — called once on `pointerup`, after a resize drag finishes. */
+  persistColumnWidths: () => void;
 }
 
 /**
@@ -45,10 +81,10 @@ export interface LogViewState {
  * an entity below them).
  */
 export function createLogViewStore() {
-  return create<LogViewState>((set) => ({
+  return create<LogViewState>((set, get) => ({
     groupByHost: false,
     sort: { column: 'time', direction: 'asc' },
-    columnWidths: { ...DEFAULT_COLUMN_WIDTHS },
+    columnWidths: loadColumnWidths(),
     toggleGroupByHost: () => set((state) => ({ groupByHost: !state.groupByHost })),
     setSort: (column) =>
       set((state) => ({
@@ -61,5 +97,6 @@ export function createLogViewStore() {
       set((state) => ({
         columnWidths: { ...state.columnWidths, [column]: Math.max(MIN_COLUMN_WIDTH, Math.round(width)) },
       })),
+    persistColumnWidths: () => writePersistedState(COLUMN_WIDTHS_STORAGE_KEY, get().columnWidths),
   }));
 }
