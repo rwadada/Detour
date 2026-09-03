@@ -26,6 +26,14 @@ export interface ExchangeState {
   importedFileName: string | null;
   /** Ids marked for Compare (issue #19), oldest first, capped at 2 — toggling a 3rd id drops the oldest. */
   compareIds: string[];
+  /**
+   * True while the toolbar's Pause/Tail control (issue #24) has frozen the
+   * log table's view — traffic keeps being captured into the buffer
+   * underneath exactly as always (so nothing is lost, and Live/Paused/
+   * Compare/breakpoints keep working), only the `exchanges` snapshot stops
+   * advancing until `togglePause` resumes it.
+   */
+  paused: boolean;
   select: (id: string | null) => void;
   setFilters: (patch: Partial<Filters>) => void;
   /** Adds/removes `id` from the compare set. */
@@ -34,6 +42,8 @@ export interface ExchangeState {
   clearCompare: () => void;
   /** Empties the log table. Selection is cleared too; other entities/features (e.g. a still-paused breakpoint) are untouched — they reflect state that's still genuinely true server-side. */
   clear: () => void;
+  /** Freezes/unfreezes the live view (issue #24's Pause/Tail toolbar control). Unfreezing immediately catches `exchanges` up to whatever accumulated in the buffer while paused, rather than waiting for the next incoming message. */
+  togglePause: () => void;
   /**
    * Switches the log table into "imported" mode, showing `exchanges` from a
    * loaded HAR/JSON file instead of live traffic (issue #19's LogViewer —
@@ -66,6 +76,12 @@ export function createExchangeStore(connection: DashboardConnection) {
   // updated by WS traffic underneath, but `exchanges` shows this snapshot
   // instead until `exitImport` swaps back to `buffer.toArray()`.
   let importedExchanges: CapturedExchange[] | null = null;
+  // Mirrors `importedExchanges`'s "freeze the view, keep buffering
+  // underneath" pattern for Pause/Tail (issue #24) — a second, independent
+  // reason `exchanges` might stop tracking `buffer` (a user can pause a
+  // live view; imported mode is a different frozen view entirely, so the
+  // two flags are orthogonal rather than one implying the other).
+  let paused = false;
 
   return create<ExchangeState>((set) => {
     // Incoming WS messages can arrive far faster than React should re-render
@@ -77,7 +93,7 @@ export function createExchangeStore(connection: DashboardConnection) {
       if (pendingUpserts.length === 0) return;
       for (const item of pendingUpserts) buffer.upsert(item);
       pendingUpserts = [];
-      if (importedExchanges === null) set({ exchanges: buffer.toArray() });
+      if (importedExchanges === null && !paused) set({ exchanges: buffer.toArray() });
     };
 
     const scheduleFlush = () => {
@@ -90,7 +106,7 @@ export function createExchangeStore(connection: DashboardConnection) {
           buffer.clear();
           for (const item of message.items) buffer.upsert(item);
           pendingUpserts = [];
-          if (importedExchanges === null) set({ exchanges: buffer.toArray() });
+          if (importedExchanges === null && !paused) set({ exchanges: buffer.toArray() });
           return;
         case 'request':
         case 'response':
@@ -110,6 +126,7 @@ export function createExchangeStore(connection: DashboardConnection) {
       source: 'live',
       importedFileName: null,
       compareIds: [],
+      paused: false,
       select: (id) => set({ selectedId: id }),
       setFilters: (patch) => set((state) => ({ filters: { ...state.filters, ...patch } })),
       toggleCompare: (id) => set((state) => ({ compareIds: nextCompareIds(state.compareIds, id) })),
@@ -120,6 +137,15 @@ export function createExchangeStore(connection: DashboardConnection) {
         importedExchanges = null;
         set({ exchanges: [], selectedId: null, source: 'live', importedFileName: null, compareIds: [] });
       },
+      togglePause: () =>
+        set((state) => {
+          paused = !state.paused;
+          // Resuming: catch the frozen view up to whatever the buffer
+          // accumulated while paused, immediately rather than waiting for
+          // the next incoming message (which may be seconds away on quiet
+          // traffic).
+          return paused || importedExchanges !== null ? { paused } : { paused, exchanges: buffer.toArray() };
+        }),
       importExchanges: (exchanges, fileName) => {
         importedExchanges = exchanges;
         set({ exchanges, selectedId: null, source: 'imported', importedFileName: fileName });

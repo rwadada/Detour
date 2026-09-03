@@ -17,6 +17,7 @@
 :root {
   --background: #0f1117;
   --panel: #1b2030;
+  --sidebar: #151922;
   --border: #2a3144;
   --foreground: #e6eaf2;
   --muted: #9aa3b2;
@@ -38,6 +39,7 @@
   --background: oklch(0.99 0 0);
   --foreground: oklch(0.18 0.01 260);
   --panel: oklch(0.97 0 0);
+  --sidebar: oklch(0.95 0 0);
   --border: oklch(0.88 0 0);
   --muted: oklch(0.55 0.01 260);
   --accent: oklch(0.6 0.19 264);

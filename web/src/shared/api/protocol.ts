@@ -223,6 +223,8 @@ export interface RuleProfileSummary {
 }
 
 export type DashboardServerMessage =
+  /** Sent once, right after connecting: the proxy port this dashboard session is fronting (issue #24's sidebar Proxy URL / QR code). */
+  | { type: 'proxyInfo'; proxyPort: number }
   | { type: 'backlog'; items: CapturedExchange[] }
   | { type: 'wsBacklog'; items: CapturedWebSocketConnection[] }
   | { type: 'request'; exchange: CapturedExchange }

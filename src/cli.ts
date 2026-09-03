@@ -56,18 +56,43 @@ function collectProtoPath(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
+/** Dashboard defaults to this many ports above the proxy (e.g. proxy 8080 → dashboard 9080) when `--dashboard-port` isn't given explicitly. */
+const DEFAULT_DASHBOARD_PORT_OFFSET = 1000;
+
 interface StartOptions {
   port: string;
-  dashboardPort: string;
+  /** Undefined when `--dashboard-port` wasn't passed — defaults to `port + 1000` rather than a fixed value, so it tracks whatever `--port` was chosen (issue #24). */
+  dashboardPort?: string;
   rules?: string;
   dump: string;
   http2: boolean;
   proto: string[];
 }
 
+/**
+ * Resolves the dashboard's port: the explicit `--dashboard-port` value if
+ * given, otherwise `proxyPort + 1000` (issue #24's port spec — was a fixed
+ * `4040` default before this). Ephemeral proxy ports (`--port 0`, used by
+ * the test suite) skip the offset entirely — `0 + 1000` would silently stop
+ * being ephemeral, defeating the point of asking for one — and fall back to
+ * `0` (also ephemeral) so tests keep getting an unused port without needing
+ * to pass `--dashboard-port 0` explicitly.
+ */
+export function resolveDashboardPort(proxyPort: number, explicit: string | undefined): number {
+  if (explicit !== undefined) return parsePort(explicit, '--dashboard-port');
+  if (proxyPort === 0) return 0;
+  const derived = proxyPort + DEFAULT_DASHBOARD_PORT_OFFSET;
+  if (derived > 65535) {
+    throw new Error(
+      `--port ${proxyPort} + ${DEFAULT_DASHBOARD_PORT_OFFSET} would exceed the maximum port 65535 — pass --dashboard-port explicitly`,
+    );
+  }
+  return derived;
+}
+
 async function runStart(options: StartOptions): Promise<void> {
   const port = parsePort(options.port, '--port');
-  const dashboardPort = parsePort(options.dashboardPort, '--dashboard-port');
+  const dashboardPort = resolveDashboardPort(port, options.dashboardPort);
   const dumpLevel = parseDumpLevel(options.dump);
   const dumpDir = dumpLevel === 'file' ? resolveDumpDir() : undefined;
   // Loaded eagerly (like rules.json below) so a broken .proto schema fails
@@ -123,7 +148,7 @@ async function runStart(options: StartOptions): Promise<void> {
   let dashboardHandle;
   try {
     dashboardHandle = await startDashboardServer(
-      { port: dashboardPort, ruleEngine, ruleProfileStore: fsRuleProfileStore },
+      { port: dashboardPort, proxyPort: handle.port, ruleEngine, ruleProfileStore: fsRuleProfileStore },
       eventBus,
     );
   } catch (err) {
@@ -197,7 +222,10 @@ export function createCli(): Command {
     .command('start')
     .description('Starts the MITM proxy and begins capturing HTTP/HTTPS traffic')
     .option('-p, --port <port>', 'Port the proxy listens on', '8080')
-    .option('--dashboard-port <port>', 'Port the web dashboard listens on', '4040')
+    .option(
+      '--dashboard-port <port>',
+      `Port the web dashboard listens on (default: --port + ${DEFAULT_DASHBOARD_PORT_OFFSET}, e.g. 9080 for the default proxy port 8080)`,
+    )
     .option(
       '--rules <path>',
       `Path to a rules file. When given, mock/route/rewrite rules are applied and reloaded automatically on change (when omitted, ${DEFAULT_RULES_FILENAME} in the current directory is loaded automatically if present)`,

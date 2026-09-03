@@ -196,6 +196,34 @@ describe('createExchangeStore', () => {
     expect(storeA.getState().exchanges.map((e) => e.id)).toEqual(['a']);
     expect(storeB.getState().exchanges).toEqual([]);
   });
+
+  describe('togglePause (issue #24)', () => {
+    it('freezes `exchanges` while paused, even as new traffic arrives', () => {
+      const fake = fakeConnection();
+      const store = createExchangeStore(fake.connection);
+      fake.emit({ type: 'request', exchange: exchange({ id: 'a' }) });
+
+      store.getState().togglePause();
+      fake.emit({ type: 'request', exchange: exchange({ id: 'b' }) });
+
+      expect(store.getState().paused).toBe(true);
+      expect(store.getState().exchanges.map((e) => e.id)).toEqual(['a']);
+    });
+
+    it('catches the view up to the buffer immediately on resume, without waiting for the next message', () => {
+      const fake = fakeConnection();
+      const store = createExchangeStore(fake.connection);
+      fake.emit({ type: 'request', exchange: exchange({ id: 'a' }) });
+      store.getState().togglePause();
+      fake.emit({ type: 'request', exchange: exchange({ id: 'b' }) });
+      expect(store.getState().exchanges.map((e) => e.id)).toEqual(['a']); // still frozen
+
+      store.getState().togglePause();
+
+      expect(store.getState().paused).toBe(false);
+      expect(store.getState().exchanges.map((e) => e.id)).toEqual(['a', 'b']);
+    });
+  });
 });
 
 describe('matchesFilters', () => {

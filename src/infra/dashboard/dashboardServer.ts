@@ -45,6 +45,12 @@ export const WEB_DIST_DIR = path.resolve(__dirname, '..', '..', '..', 'web-dist'
 export interface DashboardServerOptions {
   port: number;
   host?: string;
+  /**
+   * The proxy's own port, broadcast to clients as `proxyInfo` (issue #24's
+   * sidebar Proxy URL / QR code). Optional so tests that only care about the
+   * dashboard itself don't need to fabricate one.
+   */
+  proxyPort?: number;
   /** @default 500 */
   backlogSize?: number;
   /**
@@ -184,6 +190,10 @@ export async function startDashboardServer(
   };
 
   wss.on('connection', (socket: WebSocket) => {
+    if (options.proxyPort !== undefined) {
+      const proxyInfoMessage: DashboardServerMessage = { type: 'proxyInfo', proxyPort: options.proxyPort };
+      socket.send(JSON.stringify(proxyInfoMessage));
+    }
     const backlogMessage: DashboardServerMessage = { type: 'backlog', items: backlog.toArray() };
     socket.send(JSON.stringify(backlogMessage));
     const wsBacklogMessage: DashboardServerMessage = { type: 'wsBacklog', items: wsBacklog.toArray() };
