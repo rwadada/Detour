@@ -1,15 +1,10 @@
 import { Download } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { exchangesToHar, useExchangeStore } from '@/entities/exchange';
+import { downloadTextFile } from '@/shared/lib/downloadTextFile';
 import { useDismissablePopover } from '@/shared/lib/useDismissablePopover';
 import { Button } from '@/shared/ui';
-import {
-  downloadTextFile,
-  exportFileName,
-  serializeExchangesAsJson,
-  serializeHar,
-  type ExportFormat,
-} from '../model/exportLog';
+import { exportFileName, serializeExchangesAsJson, serializeHar, type ExportFormat } from '../model/exportLog';
 
 /**
  * Header control for exporting the captured log (issue #19): HAR 1.2 for

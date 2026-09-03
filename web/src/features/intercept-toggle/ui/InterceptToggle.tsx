@@ -1,6 +1,6 @@
 import { Shield, ShieldOff } from 'lucide-react';
+import { useInterceptStore } from '@/entities/proxy-config';
 import { cn } from '@/shared/lib/utils';
-import { useInterceptStore } from '../model/store';
 
 export function InterceptToggle() {
   const interceptEnabled = useInterceptStore((s) => s.interceptEnabled);

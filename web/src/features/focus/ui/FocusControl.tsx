@@ -1,8 +1,8 @@
 import { Target } from 'lucide-react';
 import { useRef, useState } from 'react';
-import { HostChipList, PillToggle } from '@/shared/ui';
+import { useFocusStore } from '@/entities/proxy-config';
 import { useDismissablePopover } from '@/shared/lib/useDismissablePopover';
-import { useFocusStore } from '../model/store';
+import { HostChipList, PillToggle } from '@/shared/ui';
 
 /**
  * Header control for the "Focus" host allowlist (issue #12): restricts MITM

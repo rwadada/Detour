@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { getDashboardConnection, type DashboardConnection } from '@/shared/api';
+import type { DashboardConnection } from '@/shared/api';
 
 export interface ProxyInfoState {
   /** The proxy's port, or null until the `proxyInfo` message arrives (issue #24's sidebar Proxy URL / QR code). Null on an older server build that predates this message, too — the sidebar falls back to hiding the Proxy URL rather than guessing. */
@@ -27,6 +27,3 @@ export function createProxyInfoStore(connection: DashboardConnection) {
     return { proxyPort: null };
   });
 }
-
-/** The app's real proxy-info store, wired to the real dashboard connection. */
-export const useProxyInfoStore = createProxyInfoStore(getDashboardConnection());

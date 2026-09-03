@@ -24,14 +24,3 @@ export function exportFileName(format: ExportFormat, when: Date = new Date()): s
   const stamp = when.toISOString().replace(/[:.]/g, '-');
   return `detour-log-${stamp}.${format}`;
 }
-
-/** Triggers a browser download of `content` as `fileName` — a thin DOM side effect, not unit-tested (no jsdom in this project's vitest config; see `vitest.config.ts`). */
-export function downloadTextFile(fileName: string, content: string): void {
-  const blob = new Blob([content], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.click();
-  URL.revokeObjectURL(url);
-}

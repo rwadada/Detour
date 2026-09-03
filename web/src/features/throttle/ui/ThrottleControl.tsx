@@ -1,11 +1,10 @@
 import { Gauge } from 'lucide-react';
 import { useRef, useState } from 'react';
+import { PRESETS, presetFor, ThrottleFields, useThrottleStore, type PresetKey } from '@/entities/proxy-config';
 import type { ThrottleState } from '@/shared/api';
 import { useDismissablePopover } from '@/shared/lib/useDismissablePopover';
 import { cn } from '@/shared/lib/utils';
-import { Input, PillToggle, Select } from '@/shared/ui';
-import { PRESETS, type PresetKey, presetFor } from '../model/presets';
-import { useThrottleStore } from '../model/store';
+import { PillToggle, Select } from '@/shared/ui';
 
 /**
  * Header control for "Throttle" (issue #13): simulates degraded network
@@ -70,49 +69,7 @@ export function ThrottleControl() {
             <option value="slow3g">Slow 3G</option>
             <option value="custom">Custom</option>
           </Select>
-          <div className="grid grid-cols-2 gap-2">
-            <label className="text-[10px] text-[var(--muted)]">
-              Download (Kbps)
-              <Input
-                type="number"
-                min={0}
-                value={throttle.downKbps}
-                onChange={(e) => patch({ downKbps: Math.max(0, Number(e.target.value) || 0) })}
-                className="mt-0.5 h-7 text-xs"
-              />
-            </label>
-            <label className="text-[10px] text-[var(--muted)]">
-              Upload (Kbps)
-              <Input
-                type="number"
-                min={0}
-                value={throttle.upKbps}
-                onChange={(e) => patch({ upKbps: Math.max(0, Number(e.target.value) || 0) })}
-                className="mt-0.5 h-7 text-xs"
-              />
-            </label>
-            <label className="text-[10px] text-[var(--muted)]">
-              Latency (ms)
-              <Input
-                type="number"
-                min={0}
-                value={throttle.latencyMs}
-                onChange={(e) => patch({ latencyMs: Math.max(0, Number(e.target.value) || 0) })}
-                className="mt-0.5 h-7 text-xs"
-              />
-            </label>
-            <label className="text-[10px] text-[var(--muted)]">
-              Packet loss (%)
-              <Input
-                type="number"
-                min={0}
-                max={100}
-                value={throttle.packetLossPct}
-                onChange={(e) => patch({ packetLossPct: Math.min(100, Math.max(0, Number(e.target.value) || 0)) })}
-                className="mt-0.5 h-7 text-xs"
-              />
-            </label>
-          </div>
+          <ThrottleFields throttle={throttle} onChange={patch} />
           <p className="mt-2 text-[10px] text-[var(--muted)]">0 means unlimited/none for that field.</p>
         </div>
       )}
