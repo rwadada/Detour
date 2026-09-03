@@ -17,7 +17,7 @@ npm start -- start --port 8080
 - `--dump <level>`: Verbosity of the request/response log (default: `summary`, one line per exchange, as today). `full` additionally prints each exchange's headers and body to the console; `file` skips the console spam and instead writes that same dump to its own file under `~/.detour/dumps`, one file per exchange (overwritten as it moves from request to response). Both `full` and `file` redact sensitive headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Auth-Token`) as `[REDACTED]`; a JSON body is pretty-printed, anything else is shown as raw text
 - `--no-http2`: Disables HTTP/2 (ALPN) on MITM'd HTTPS connections, falling back to HTTP/1.1 only. HTTP/2 is negotiated with the client by default — shown as `HTTP/2: on`/`off` in the startup banner, and tagged `[h2]` in the log/dashboard for exchanges that negotiated it. The connection to the real upstream server is always HTTP/1.1 either way
 
-On first run, a local CA root certificate is generated at `~/.detour/certs/certs/ca.pem`. To decrypt HTTPS traffic, install this certificate as a trusted root certificate on your target browser/OS/device.
+On first run, a local CA root certificate is generated at `~/.detour/certs/certs/ca.pem`. To decrypt HTTPS traffic, install this certificate as a trusted root certificate on your target browser/OS/device. `detour cert export [path]` writes it to `<path>` (or stdout, if omitted) — generating it first if this is the very first time Detour has run on this machine — for scripting that install rather than digging into `~/.detour/certs` by hand.
 
 Once started, point an HTTP/HTTPS client at the `--port` you chose (e.g. `curl -x http://localhost:8080 https://example.com`, or your device's Wi-Fi proxy settings) and requests passing through will be logged to the console — and appear live in the web dashboard.
 
@@ -51,6 +51,20 @@ During development, run `npm run dev` to watch and run the TypeScript sources di
 - The "Block Hosts" control in the header outright denies requests to a set of `*`/`?` glob host patterns (issue #14), for simulating a host being unreachable. Empty by default (a true no-op); add host patterns (e.g. `*.example.com`, or `localhost:3000` for a non-default port — matched the same way as Focus) and pick a mode: `403 Forbidden` responds immediately without ever contacting the real server (a CONNECT tunnel gets a `403` status line before it's ever established), or `Connection reset` drops the connection instead, with no response at all. Checked before every other feature — Intercept off, Focus, and even a `route` rule never get a chance to run for a blocked host. Also live for the whole proxy and synced across every connected tab
 
 The dashboard's source lives in [`web/`](./web) (React 19 + Vite + Tailwind CSS + Zustand) and is built to `web-dist/`, which `npm run build` produces alongside the CLI's `dist/`. To iterate on the UI with `npm run dev:dashboard` (Vite's dev server with hot reload) instead of rebuilding, run `detour start` in one terminal and `npm run dev:dashboard` in another — Vite proxies `/ws` through to the default dashboard port.
+
+## Daemon mode, CI, and automation (issue #20)
+
+A handful of `start` flags and top-level commands exist specifically for running Detour unattended — from a CI pipeline or test harness, or as a long-lived background process — rather than in an interactive terminal.
+
+- `--headless`: skips starting the web dashboard entirely (proxy-only) — for a run where nothing is going to open the dashboard in a browser anyway
+- `--exit-on-idle <ms>`: exits automatically once this many milliseconds pass with no proxied HTTP/WebSocket activity, so a CI job never needs to send it a `Ctrl+C` of its own
+- `--fail-on-running`: exits with code `3` instead of starting if detour is already tracked as running on the same `--port`, rather than the generic port-in-use error — lets a script tell "already running" apart from any other startup failure
+- `--detach`: starts as a background daemon and returns only once it's actually ready to serve traffic, instead of blocking the terminal. Its output goes to `~/.detour/logs/<port>.log` instead of the console. Manage it afterwards with:
+  - `detour status --port <port>`: reports whether an instance (detached or foreground) is running on `<port>` — its PID, proxy/dashboard URLs, and start time
+  - `detour stop --port <port>`: stops it (`SIGTERM`, escalating to `SIGKILL` after a 10s grace period) — works on a foreground instance too, not just a detached one
+- Every successful `start` — detached or not — prints a `DETOUR_READY proxyPort=<n> [dashboardPort=<n>] pid=<n>` line once the proxy (and dashboard, unless `--headless`) has actually bound its port(s), so a script can wait on that line instead of guessing how long startup takes
+
+`--fail-on-running`/`--detach`/`status`/`stop` are all keyed by the `--port` value given to `start` — an ephemeral `--port 0` has no stable value to be looked up by later, so combining it with `--fail-on-running` or `--detach` is rejected outright.
 
 ## Rule engine (rules.json)
 
@@ -115,34 +129,21 @@ The repository ships two rules files for different purposes at its root:
 # Scratch notes
 ## Planned command set
 
-detour start  
-detour start --detach  
-detour status  
-detour stop  
 detour stop --cleanup : stop + undo setup  
 detour view <file> : launch the viewer  
 detour setup  
 detour cleanup  
 detour doctor  
 detour settings  
-detour rules init  
 detour rules edit  
-detour rules validate  
 detour rules use  
 detour session save/load/list  
-detour cert export  
 
 ## Main options for `start`
---detach  
---rules <path>  
---port <number>  
 --ui-port <number>  
 --ui-lan : expose the dashboard on the LAN  
 --no-open  
 --no-ui  
---headless  
---exit-on-idle  
---fail-on-running  
 
 ## Setup
 something like `detour setup --target android`

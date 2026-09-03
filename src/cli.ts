@@ -1,16 +1,28 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { Command } from 'commander';
+import { CliExitError } from './domain/daemon/errors';
 import { isDumpLevel } from './domain/dump/dumpPolicy';
 import type { DumpLevel } from './domain/dump/dumpPolicy';
 import { SAMPLE_RULES_FILE } from './domain/rules/sample';
 import { startDashboardServer, WEB_DIST_DIR } from './infra/dashboard/dashboardServer';
 import { DetourEventBus } from './infra/eventBus';
 import { resolveDumpDir, writeExchangeDumpFile, writeWebSocketDumpFile } from './infra/fs/dumpFileWriter';
+import {
+  findLiveRunState,
+  isProcessAlive,
+  removeRunState,
+  reserveRunState,
+  writeRunState,
+} from './infra/fs/runStateStore';
 import { fsRuleProfileStore } from './infra/fs/ruleProfileStore';
 import { fsFileWatcher, fsRulesFileReader, fsRulesFileWriter, loadRulesFile } from './infra/fs/rulesFileSource';
 import { buildGrpcExchangeInfo } from './infra/grpc/grpcExchangeInfo';
 import { ProtoRegistry } from './infra/grpc/protoRegistry';
+import { isDaemonChild, signalDaemonError, signalDaemonReady, spawnDaemonChild } from './infra/process/daemonize';
+import { ensureCaCert } from './infra/proxy/certExport';
+import { startIdleWatcher } from './infra/proxy/idleWatcher';
 import { startProxyServer } from './infra/proxy/proxyServer';
 import {
   logExchange,
@@ -51,6 +63,22 @@ function parseDumpLevel(value: string): DumpLevel {
   return value;
 }
 
+/** Validates `--exit-on-idle <ms>` (issue #20): a positive integer count of milliseconds. */
+function parseIdleMs(value: string): number {
+  const ms = Number(value);
+  if (!Number.isInteger(ms) || ms <= 0) {
+    throw new Error(`--exit-on-idle must be a positive integer of milliseconds (got: ${value})`);
+  }
+  return ms;
+}
+
+/** Where a `--detach` daemon's stdout/stderr are appended (~/.detour/logs/<port>.log — one file per tracked port, overwritten across restarts of the same port isn't attempted; it just keeps growing, same as the console output a foreground run would otherwise produce). Mirrors `certStore.ts`'s `resolveCertDir`/`dumpFileWriter.ts`'s `resolveDumpDir`/`runStateStore.ts`'s `resolveRunDir`. */
+function resolveLogFilePath(port: number): string {
+  const dir = path.join(os.homedir(), '.detour', 'logs');
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `${port}.log`);
+}
+
 /** Accumulates repeated `--proto <path>` flags into an array (commander's convention for a repeatable option). */
 function collectProtoPath(value: string, previous: string[]): string[] {
   return [...previous, value];
@@ -58,6 +86,15 @@ function collectProtoPath(value: string, previous: string[]): string[] {
 
 /** Dashboard defaults to this many ports above the proxy (e.g. proxy 8080 → dashboard 9080) when `--dashboard-port` isn't given explicitly. */
 const DEFAULT_DASHBOARD_PORT_OFFSET = 1000;
+
+/** How long `detour stop` waits for a SIGTERM'd process to exit on its own before escalating to SIGKILL. */
+const STOP_GRACE_PERIOD_MS = 10_000;
+
+/** Shared by `detour status`/`detour stop` (issue #20) when nothing is tracked as running on `port`. */
+function reportNotRunning(port: number): void {
+  console.log(`detour is not running on port ${port}.`);
+  process.exitCode = 1;
+}
 
 interface StartOptions {
   port: string;
@@ -67,6 +104,14 @@ interface StartOptions {
   dump: string;
   http2: boolean;
   proto: string[];
+  /** `--headless` (issue #20): skip starting the web dashboard entirely — proxy-only, for CI/scripted use. */
+  headless?: boolean;
+  /** `--exit-on-idle <ms>` (issue #20), unparsed. */
+  exitOnIdle?: string;
+  /** `--fail-on-running` (issue #20): exit 3 instead of starting if detour is already tracked as running on this `--port`. */
+  failOnRunning?: boolean;
+  /** `--detach` (issue #20): run as a background daemon; handled by `runDetached` before `runStart` is ever called for the parent process. */
+  detach?: boolean;
 }
 
 /**
@@ -90,11 +135,85 @@ export function resolveDashboardPort(proxyPort: number, explicit: string | undef
   return derived;
 }
 
+/**
+ * Validates flags, then — for `--fail-on-running` — atomically reserves the
+ * run-state slot before any of the slower work in `runStartBody` (proto/
+ * rules loading, the real port bind, the dashboard bind) so the check stays
+ * reliable under two concurrent `--fail-on-running` starts (see
+ * `reserveRunState`'s doc comment). If `runStartBody` fails for any other
+ * reason after that reservation, it's released here before rethrowing —
+ * this process never actually finished starting, so nothing should be left
+ * looking like it's running on this port.
+ */
 async function runStart(options: StartOptions): Promise<void> {
   const port = parsePort(options.port, '--port');
-  const dashboardPort = resolveDashboardPort(port, options.dashboardPort);
+  const headless = options.headless ?? false;
+  const exitOnIdleMs = options.exitOnIdle !== undefined ? parseIdleMs(options.exitOnIdle) : undefined;
+
+  // Run-state tracking (backs "Fail on Running", `detour status`, `detour
+  // stop` — issue #20) is keyed by the requested `--port`, so an ephemeral
+  // `--port 0` — which has no stable value to be looked up by later — simply
+  // isn't tracked. `--fail-on-running` explicitly asked for that lookup, so
+  // it fails loudly instead of silently no-op'ing.
+  const trackRunState = port !== 0;
+  if (options.failOnRunning && !trackRunState) {
+    throw new Error(
+      '--fail-on-running requires an explicit --port (an ephemeral "--port 0" has no stable port to check)',
+    );
+  }
+
+  const reservedRunState = trackRunState && options.failOnRunning === true;
+  if (reservedRunState) {
+    const reserved = reserveRunState({
+      pid: process.pid,
+      requestedPort: port,
+      // Placeholder until the real bind below resolves it (relevant if
+      // --port were ever ephemeral here, which trackRunState rules out) —
+      // overwritten by the unconditional `writeRunState` in `runStartBody`
+      // once the actual proxy/dashboard ports are known.
+      proxyPort: port,
+      dashboardPort: undefined,
+      headless,
+      detached: isDaemonChild(),
+      startedAt: Date.now(),
+      logFile: process.env.DETOUR_LOG_FILE,
+    });
+    if (!reserved) {
+      const existing = findLiveRunState(port);
+      const detail = existing ? ` (pid ${existing.pid}, started ${new Date(existing.startedAt).toISOString()})` : '';
+      throw new CliExitError(
+        `detour is already running on port ${port}${detail}. Stop it first with \`detour stop --port ${port}\`.`,
+        3,
+      );
+    }
+  }
+
+  try {
+    await runStartBody({ port, headless, exitOnIdleMs, trackRunState, options });
+  } catch (err) {
+    if (reservedRunState) removeRunState(port);
+    throw err;
+  }
+}
+
+interface RunStartBodyContext {
+  port: number;
+  headless: boolean;
+  exitOnIdleMs: number | undefined;
+  trackRunState: boolean;
+  options: StartOptions;
+}
+
+async function runStartBody({
+  port,
+  headless,
+  exitOnIdleMs,
+  trackRunState,
+  options,
+}: RunStartBodyContext): Promise<void> {
   const dumpLevel = parseDumpLevel(options.dump);
   const dumpDir = dumpLevel === 'file' ? resolveDumpDir() : undefined;
+
   // Loaded eagerly (like rules.json below) so a broken .proto schema fails
   // CLI startup with a clear error, rather than every gRPC exchange
   // silently falling back to "no --proto configured" for the whole session.
@@ -145,43 +264,114 @@ async function runStart(options: StartOptions): Promise<void> {
   }
 
   const handle = await startProxyServer({ port, ruleEngine, http2Enabled: options.http2 }, eventBus);
-  let dashboardHandle;
-  try {
-    dashboardHandle = await startDashboardServer(
-      { port: dashboardPort, proxyPort: handle.port, ruleEngine, ruleProfileStore: fsRuleProfileStore },
-      eventBus,
-    );
-  } catch (err) {
-    // The proxy is already up and intercepting traffic at this point — don't
-    // leave it running (and the process alive) just because the dashboard
-    // failed to bind its port.
-    await handle.stop();
-    throw err;
+  // `--headless` (issue #20): CI/scripted use has no need for the web
+  // dashboard — skip starting it entirely rather than starting it and just
+  // not opening a browser to it (there's no browser-open behavior to skip
+  // yet either way).
+  let dashboardHandle: Awaited<ReturnType<typeof startDashboardServer>> | undefined;
+  if (!headless) {
+    // Resolved only when actually needed: computed eagerly (outside this
+    // `if`), a `--port` close enough to 65535 that only its +1000 offset
+    // would overflow could fail this validation even under `--headless`,
+    // where no dashboard port is ever bound at all.
+    const dashboardPort = resolveDashboardPort(port, options.dashboardPort);
+    try {
+      dashboardHandle = await startDashboardServer(
+        { port: dashboardPort, proxyPort: handle.port, ruleEngine, ruleProfileStore: fsRuleProfileStore },
+        eventBus,
+      );
+    } catch (err) {
+      // The proxy is already up and intercepting traffic at this point — don't
+      // leave it running (and the process alive) just because the dashboard
+      // failed to bind its port.
+      await handle.stop();
+      throw err;
+    }
+  }
+
+  if (trackRunState) {
+    try {
+      writeRunState({
+        pid: process.pid,
+        requestedPort: port,
+        proxyPort: handle.port,
+        dashboardPort: dashboardHandle?.port,
+        headless,
+        detached: isDaemonChild(),
+        startedAt: Date.now(),
+        logFile: process.env.DETOUR_LOG_FILE,
+      });
+    } catch (err) {
+      // The proxy (and dashboard) are already up at this point — an
+      // unwritable ~/.detour/run (e.g. disk full, permissions) shouldn't
+      // leave them running with no corresponding run-state entry: `detour
+      // status`/`stop`/`--fail-on-running` would then have no way to find
+      // this process at all. Same shutdown-before-rethrow shape as the
+      // dashboard bind failure above.
+      await Promise.all([handle.stop(), dashboardHandle?.stop()]);
+      throw err;
+    }
   }
 
   printStartupBanner({
     proxyPort: handle.port,
     caCertPath: handle.caCertPath,
-    dashboardPort: dashboardHandle.port,
+    dashboardPort: dashboardHandle?.port,
     ruleEngine,
     dumpDir,
     http2Enabled: options.http2,
     protoPaths: options.proto,
   });
 
-  const shutdown = async (signal: NodeJS.Signals) => {
-    console.log(`\nReceived ${signal}. Stopping the proxy…`);
-    await Promise.all([handle.stop(), dashboardHandle.stop()]);
+  // DETOUR_READY (issue #20): a stable, greppable line a CI script can wait
+  // on to know the proxy (and dashboard, unless --headless) actually
+  // finished binding its port(s) — printed unconditionally, not just under
+  // --headless, since a foreground non-CI run benefits from it too. When
+  // running as a `--detach` daemon child (see `isDaemonChild`), this also
+  // unblocks the parent's `spawnDaemonChild` handshake — a no-op otherwise.
+  const dashboardPortSegment = dashboardHandle ? ` dashboardPort=${dashboardHandle.port}` : '';
+  console.log(`DETOUR_READY proxyPort=${handle.port}${dashboardPortSegment} pid=${process.pid}`);
+  signalDaemonReady({ proxyPort: handle.port, dashboardPort: dashboardHandle?.port });
+
+  let idleWatcher: ReturnType<typeof startIdleWatcher> | undefined;
+
+  const shutdown = async (reason: NodeJS.Signals | 'idle') => {
+    console.log(
+      reason === 'idle'
+        ? `\nNo activity for ${exitOnIdleMs}ms — exiting (--exit-on-idle).`
+        : `\nReceived ${reason}. Stopping the proxy…`,
+    );
+    idleWatcher?.stop();
+    let stopError: unknown;
+    try {
+      await Promise.all([handle.stop(), dashboardHandle?.stop()]);
+    } catch (err) {
+      stopError = err;
+    }
+    // Removed only once the stop attempt has actually settled (success or
+    // failure), not before — removing it first would let a concurrent
+    // `detour status`/`--fail-on-running` briefly see "not running" while
+    // the servers (and this process) are still very much alive.
+    if (trackRunState) removeRunState(port);
+    if (stopError) {
+      console.error(`✖ ${stopError instanceof Error ? stopError.message : String(stopError)}`);
+      process.exit(1);
+    }
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
+  if (exitOnIdleMs !== undefined) {
+    idleWatcher = startIdleWatcher(eventBus, exitOnIdleMs, () => void shutdown('idle'));
+  }
 }
 
 function printStartupBanner(info: {
   proxyPort: number;
   caCertPath: string;
-  dashboardPort: number;
+  /** Undefined when started with `--headless`. */
+  dashboardPort: number | undefined;
   ruleEngine: RuleEngine | undefined;
   dumpDir: string | undefined;
   http2Enabled: boolean;
@@ -192,7 +382,9 @@ function printStartupBanner(info: {
   );
   console.log(`Root CA certificate: ${info.caCertPath}`);
   console.log('  To decrypt HTTPS traffic, install this CA certificate as trusted on your target device/browser.');
-  if (fs.existsSync(path.join(WEB_DIST_DIR, 'index.html'))) {
+  if (info.dashboardPort === undefined) {
+    console.log('Dashboard → disabled (--headless)');
+  } else if (fs.existsSync(path.join(WEB_DIST_DIR, 'index.html'))) {
     console.log(`Dashboard → http://localhost:${info.dashboardPort}`);
   } else {
     console.log(
@@ -211,6 +403,32 @@ function printStartupBanner(info: {
     console.log(`gRPC message decoding: ${info.protoPaths.length} .proto file(s) loaded`);
   }
   console.log('Press Ctrl+C to stop.');
+}
+
+/**
+ * `--detach` (issue #20): re-invokes `detour start` (same entry point, same
+ * argv minus `--detach` itself) as a detached background process and waits
+ * for it to report readiness before returning — see `spawnDaemonChild`'s
+ * doc comment for the IPC handshake this relies on, and `signalDaemonReady`/
+ * `signalDaemonError` in `runStart`/the `start` action for the child side of
+ * it. `detour status`/`detour stop --port <n>` manage the daemon afterwards.
+ */
+async function runDetached(options: StartOptions): Promise<void> {
+  const port = parsePort(options.port, '--port');
+  if (port === 0) {
+    throw new Error(
+      '--detach requires an explicit --port (an ephemeral "--port 0" can\'t be reconnected to afterwards)',
+    );
+  }
+  const childArgs = process.argv.slice(3).filter((arg) => arg !== '--detach');
+  const logFile = resolveLogFilePath(port);
+  const info = await spawnDaemonChild({ scriptPath: process.argv[1]!, args: ['start', ...childArgs], logFile });
+
+  console.log(`✔ detour started in the background (pid ${info.pid})`);
+  console.log(`  Proxy     → http://localhost:${info.proxyPort}`);
+  if (info.dashboardPort !== undefined) console.log(`  Dashboard → http://localhost:${info.dashboardPort}`);
+  console.log(`  Logs      → ${logFile}`);
+  console.log(`  Stop with: detour stop --port ${port}`);
 }
 
 export function createCli(): Command {
@@ -245,9 +463,127 @@ export function createCli(): Command {
       collectProtoPath,
       [],
     )
+    .option('--headless', 'Skip starting the web dashboard entirely — proxy-only, for CI/scripted use (issue #20).')
+    .option(
+      '--exit-on-idle <ms>',
+      'Exit automatically after this many milliseconds with no proxied HTTP/WebSocket activity (issue #20) — so a CI job never has to send it a Ctrl+C of its own.',
+    )
+    .option(
+      '--fail-on-running',
+      'Exit with code 3 instead of starting if detour is already tracked as running on this --port (issue #20), rather than the generic port-in-use error.',
+    )
+    .option(
+      '--detach',
+      'Start as a background daemon and return once it reports ready (issue #20) — manage it afterwards with `detour status`/`detour stop`; its output goes to ~/.detour/logs/<port>.log instead of this terminal.',
+    )
     .action(async (options: StartOptions) => {
       try {
+        if (options.detach) {
+          await runDetached(options);
+          return;
+        }
         await runStart(options);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const exitCode = err instanceof CliExitError ? err.exitCode : 1;
+        // Running as a `--detach` daemon child (see `isDaemonChild`): tell
+        // the parent's `spawnDaemonChild` handshake why startup failed
+        // instead of leaving it to time out — a no-op in every other case.
+        if (isDaemonChild()) signalDaemonError(message, exitCode);
+        console.error(`✖ ${message}`);
+        process.exitCode = exitCode;
+      }
+    });
+
+  program
+    .command('status')
+    .description('Shows whether a detour instance (--detach or foreground) is running on the given --port (issue #20)')
+    .option('-p, --port <port>', 'Port to check (matches the --port a `detour start` was given)', '8080')
+    .action((options: { port: string }) => {
+      try {
+        const port = parsePort(options.port, '--port');
+        const state = findLiveRunState(port);
+        if (!state) {
+          reportNotRunning(port);
+          return;
+        }
+        console.log(
+          `✔ detour is running on port ${port} (pid ${state.pid}${state.detached ? ', detached' : ', foreground'})`,
+        );
+        console.log(`  Proxy     → http://localhost:${state.proxyPort}`);
+        console.log(
+          state.dashboardPort !== undefined
+            ? `  Dashboard → http://localhost:${state.dashboardPort}`
+            : '  Dashboard → disabled (--headless)',
+        );
+        console.log(`  Started   → ${new Date(state.startedAt).toISOString()}`);
+        if (state.logFile) console.log(`  Logs      → ${state.logFile}`);
+      } catch (err) {
+        console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('stop')
+    .description('Stops a detour instance (--detach or foreground) running on the given --port (issue #20)')
+    .option('-p, --port <port>', 'Port of the instance to stop (matches the --port it was given)', '8080')
+    .action(async (options: { port: string }) => {
+      try {
+        const port = parsePort(options.port, '--port');
+        const state = findLiveRunState(port);
+        if (!state) {
+          reportNotRunning(port);
+          return;
+        }
+        try {
+          process.kill(state.pid, 'SIGTERM');
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ESRCH') throw err;
+        }
+        const deadline = Date.now() + STOP_GRACE_PERIOD_MS;
+        while (isProcessAlive(state.pid) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        if (isProcessAlive(state.pid)) {
+          try {
+            process.kill(state.pid, 'SIGKILL');
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== 'ESRCH') throw err;
+          }
+        }
+        // Self-healing (see findLiveRunState): normally the process removes
+        // its own state file as part of graceful shutdown, but a SIGKILL after
+        // the grace period skips that — clean it up here either way.
+        removeRunState(port);
+        console.log(`✔ Stopped detour (pid ${state.pid}) on port ${port}.`);
+      } catch (err) {
+        console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  const cert = program
+    .command('cert')
+    .description('Manage the local root CA certificate used to decrypt HTTPS traffic');
+
+  cert
+    .command('export [path]')
+    .description(
+      'Writes the CA certificate to <path> (or prints it to stdout if omitted) — generates it first if detour has never run on this machine before (issue #20).',
+    )
+    .action(async (destPath?: string) => {
+      try {
+        const certPath = await ensureCaCert();
+        const pem = fs.readFileSync(certPath, 'utf8');
+        if (!destPath) {
+          process.stdout.write(pem);
+          return;
+        }
+        const dest = path.resolve(destPath);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.writeFileSync(dest, pem);
+        console.log(`✔ Exported CA certificate to ${dest}`);
       } catch (err) {
         console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;

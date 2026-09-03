@@ -1732,3 +1732,396 @@ describe('detour start (CLI, end-to-end)', () => {
     });
   });
 });
+
+/**
+ * Finds a currently-unused TCP port by binding to port 0 and reading back
+ * what the OS assigned, then releasing it — needed for the tests below that
+ * (unlike the rest of this file) can't just use `--port 0` themselves: "Fail
+ * on Running"/`--detach`/`status`/`stop` are keyed by a stable port (see
+ * `runStateStore.ts`), which an ephemeral one by definition isn't. Same
+ * small race any "find a free port, then use it" approach has — acceptable
+ * here, same as `assertPortAvailable`'s own doc comment reasons about.
+ */
+function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('failed to find a free port'));
+        return;
+      }
+      const { port } = address;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+/**
+ * Spawns `detour start` and waits for its `DETOUR_READY` line (issue #20)
+ * instead of `startDetourCli`'s startup-banner scraping — the more direct
+ * signal, and the one a real CI script would actually watch for. Exposes
+ * `exitCode()` (live, `null` while running) so `--exit-on-idle` tests can
+ * observe the process exiting on its own rather than being killed.
+ */
+async function startDetourCliReady(
+  args: string[],
+  env?: NodeJS.ProcessEnv,
+): Promise<{
+  proxyPort: number;
+  dashboardPort: number | undefined;
+  pid: number;
+  stdout: () => string;
+  stderr: () => string;
+  exitCode: () => number | null;
+  kill: () => Promise<void>;
+}> {
+  const subprocess = execa('npx', ['tsx', 'src/cli.ts', 'start', ...args], {
+    cwd: REPO_ROOT,
+    reject: false,
+    env: env ? { ...process.env, ...env } : undefined,
+  });
+
+  let stdout = '';
+  subprocess.stdout?.on('data', (chunk: Buffer) => {
+    stdout += chunk.toString();
+  });
+  let stderr = '';
+  subprocess.stderr?.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  // execa's typed subprocess (unlike Node's own ChildProcess) doesn't expose
+  // a live `.exitCode` property to poll — track it ourselves via the
+  // (never-rejecting, since `reject: false`) result promise settling.
+  let exitCode: number | null = null;
+  void subprocess.then((result) => {
+    exitCode = result.exitCode ?? null;
+  });
+
+  const start = Date.now();
+  while (!/DETOUR_READY/.test(stdout)) {
+    if (exitCode !== null) {
+      throw new Error(
+        `detour start exited before becoming ready (code ${exitCode}).\nstdout: ${stdout}\nstderr: ${stderr}`,
+      );
+    }
+    if (Date.now() - start > 15_000) {
+      subprocess.kill();
+      throw new Error(`detour start never printed DETOUR_READY.\nstdout: ${stdout}\nstderr: ${stderr}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  const match = stdout.match(/DETOUR_READY proxyPort=(\d+)(?: dashboardPort=(\d+))? pid=(\d+)/);
+  if (!match) throw new Error(`could not parse DETOUR_READY line from stdout: ${stdout}`);
+
+  return {
+    proxyPort: Number(match[1]),
+    dashboardPort: match[2] ? Number(match[2]) : undefined,
+    pid: Number(match[3]),
+    stdout: () => stdout,
+    stderr: () => stderr,
+    exitCode: () => exitCode,
+    kill: async () => {
+      subprocess.kill('SIGTERM');
+      await subprocess.catch(() => {});
+    },
+  };
+}
+
+describe('detour daemon mode / headless / idle / fail-on-running / cert export (issue #20, CLI end-to-end)', () => {
+  let echo: Awaited<ReturnType<typeof startEchoServer>> | undefined;
+  let cli: Awaited<ReturnType<typeof startDetourCliReady>> | undefined;
+  let tmpDir: string | undefined;
+
+  afterEach(async () => {
+    await cli?.kill();
+    await echo?.close();
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    cli = undefined;
+    echo = undefined;
+    tmpDir = undefined;
+  });
+
+  it('prints a DETOUR_READY line once the proxy and dashboard are listening', async () => {
+    cli = await startDetourCliReady(['--port', '0', '--dashboard-port', '0']);
+    expect(cli.stdout()).toMatch(/DETOUR_READY proxyPort=\d+ dashboardPort=\d+ pid=\d+/);
+  });
+
+  describe('--headless', () => {
+    it('skips starting the dashboard entirely while the proxy keeps working', async () => {
+      echo = await startEchoServer();
+      cli = await startDetourCliReady(['--port', '0', '--headless']);
+
+      expect(cli.dashboardPort).toBeUndefined();
+      expect(cli.stdout()).toContain('Dashboard → disabled (--headless)');
+      expect(cli.stdout()).toMatch(/DETOUR_READY proxyPort=\d+ pid=\d+/);
+      expect(cli.stdout()).not.toContain('dashboardPort=');
+
+      const result = await requestThroughProxy(cli.proxyPort, echo.port, '/hello');
+      expect(result.status).toBe(200);
+    });
+  });
+
+  describe('--exit-on-idle', () => {
+    it('exits on its own once the idle window elapses with no traffic', async () => {
+      cli = await startDetourCliReady(['--port', '0', '--dashboard-port', '0', '--exit-on-idle', '500']);
+
+      const start = Date.now();
+      while (cli.exitCode() === null) {
+        if (Date.now() - start > 10_000) throw new Error(`process never exited on its own.\nstdout: ${cli.stdout()}`);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(cli.exitCode()).toBe(0);
+      expect(cli.stdout()).toContain('No activity for 500ms');
+    });
+
+    it('rejects a non-positive value without starting the proxy', async () => {
+      const result = await execa(
+        'npx',
+        ['tsx', 'src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', '--exit-on-idle', '0'],
+        { cwd: REPO_ROOT, reject: false },
+      );
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain('--exit-on-idle must be a positive integer');
+    });
+
+    it('does not exit while a request is still in flight, even past the idle window', async () => {
+      // Responds only after `delayMs` — long enough to outlast --exit-on-idle
+      // below, so the idle timer would (incorrectly) fire mid-request if the
+      // watcher only rearmed on `response` instead of tracking in-flight
+      // requests (see idleWatcher.ts's doc comment).
+      const delayMs = 900;
+      const slow = await new Promise<{ port: number; close: () => Promise<void> }>((resolve, reject) => {
+        const server = http.createServer((_req, res) => {
+          setTimeout(() => {
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.end('done');
+          }, delayMs);
+        });
+        server.on('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+          const address = server.address();
+          if (!address || typeof address === 'string') {
+            reject(new Error('failed to bind slow server'));
+            return;
+          }
+          resolve({ port: address.port, close: () => new Promise((res) => server.close(() => res())) });
+        });
+      });
+
+      try {
+        cli = await startDetourCliReady(['--port', '0', '--dashboard-port', '0', '--exit-on-idle', '300']);
+        const requestPromise = requestThroughProxy(cli.proxyPort, slow.port, '/slow');
+
+        // Past the 300ms idle window, but the request above is still in
+        // flight (the slow server won't respond for `delayMs`) — the
+        // process must still be alive here.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        expect(cli.exitCode()).toBeNull();
+
+        const result = await requestPromise;
+        expect(result.status).toBe(200);
+
+        // Now genuinely idle — it should exit on its own shortly after.
+        const start = Date.now();
+        while (cli.exitCode() === null) {
+          if (Date.now() - start > 10_000)
+            throw new Error(`process never exited after going idle.\nstdout: ${cli.stdout()}`);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        expect(cli.exitCode()).toBe(0);
+      } finally {
+        await slow.close();
+      }
+    });
+  });
+
+  describe('--fail-on-running', () => {
+    it('exits with code 3 when another instance is already tracked as running on the same --port', async () => {
+      const port = await findFreePort();
+      cli = await startDetourCliReady(['--port', String(port), '--dashboard-port', '0', '--fail-on-running']);
+
+      const second = await execa(
+        'npx',
+        ['tsx', 'src/cli.ts', 'start', '--port', String(port), '--dashboard-port', '0', '--fail-on-running'],
+        { cwd: REPO_ROOT, reject: false },
+      );
+      expect(second.exitCode).toBe(3);
+      expect(second.stderr).toContain('already running');
+      expect(second.stderr).toContain(`port ${port}`);
+    });
+
+    it('rejects being combined with an ephemeral --port 0', async () => {
+      const result = await execa(
+        'npx',
+        ['tsx', 'src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', '--fail-on-running'],
+        { cwd: REPO_ROOT, reject: false },
+      );
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain('--fail-on-running requires an explicit --port');
+    });
+
+    it('reserves the port atomically: exactly one of two truly concurrent starts wins the race', async () => {
+      // Regression test for a TOCTOU race (found in local review before this
+      // ever reached a real reviewer): two `--fail-on-running` starts
+      // launched close enough together could previously both pass the
+      // early `findLiveRunState` check (nothing tracked yet) and both
+      // proceed, since the actual run-state write happened much later —
+      // reserveRunState (an atomic exclusive-create) is what closes that
+      // window. Launches both processes at once (not sequentially, unlike
+      // the test above) so they genuinely race for the same reservation.
+      const port = await findFreePort();
+      const spawnArgs = [
+        'tsx',
+        'src/cli.ts',
+        'start',
+        '--port',
+        String(port),
+        '--dashboard-port',
+        '0',
+        '--fail-on-running',
+      ];
+      const procA = execa('npx', spawnArgs, { cwd: REPO_ROOT, reject: false });
+      const procB = execa('npx', spawnArgs, { cwd: REPO_ROOT, reject: false });
+
+      let resultA: Awaited<typeof procA> | undefined;
+      let resultB: Awaited<typeof procB> | undefined;
+      void procA.then((r) => {
+        resultA = r;
+      });
+      void procB.then((r) => {
+        resultB = r;
+      });
+
+      let stdoutA = '';
+      procA.stdout?.on('data', (c: Buffer) => {
+        stdoutA += c.toString();
+      });
+      let stdoutB = '';
+      procB.stdout?.on('data', (c: Buffer) => {
+        stdoutB += c.toString();
+      });
+      let stderrA = '';
+      procA.stderr?.on('data', (c: Buffer) => {
+        stderrA += c.toString();
+      });
+      let stderrB = '';
+      procB.stderr?.on('data', (c: Buffer) => {
+        stderrB += c.toString();
+      });
+
+      try {
+        // The loser exits almost immediately (CliExitError(3), well before
+        // ever binding a port); the winner is a real, long-running `detour
+        // start` that only exits once killed below — so "one of the two
+        // execa promises settles" is exactly the signal that exactly one
+        // process lost the race, without waiting on the winner to exit.
+        const start = Date.now();
+        while (!resultA && !resultB) {
+          if (Date.now() - start > 15_000) {
+            throw new Error(
+              `neither concurrent start exited within 15s — expected exactly one to lose the reservation race.\nstdout A: ${stdoutA}\nstdout B: ${stdoutB}`,
+            );
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+
+        const [loserResult, loserStderr, winnerStdoutRef] = resultA
+          ? [resultA, stderrA, () => stdoutB]
+          : [resultB!, stderrB, () => stdoutA];
+
+        expect(loserResult.exitCode).toBe(3);
+        expect(loserStderr).toContain('already running');
+        expect(loserStderr).toContain(`port ${port}`);
+
+        // The winner should be a genuine, successful start — not also a
+        // reservation failure that happened to resolve slower.
+        await waitForStdout({ stdout: winnerStdoutRef }, /DETOUR_READY/);
+      } finally {
+        procA.kill('SIGTERM');
+        procB.kill('SIGTERM');
+        await Promise.all([procA.catch(() => {}), procB.catch(() => {})]);
+      }
+    }, 30_000);
+  });
+
+  describe('--detach / detour status / detour stop', () => {
+    it('starts detached, is visible via status, and can be stopped', async () => {
+      const port = await findFreePort();
+      const runDetourStop = () =>
+        execa('npx', ['tsx', 'src/cli.ts', 'stop', '--port', String(port)], { cwd: REPO_ROOT, reject: false });
+
+      try {
+        const detach = await execa(
+          'npx',
+          ['tsx', 'src/cli.ts', 'start', '--port', String(port), '--dashboard-port', '0', '--detach'],
+          { cwd: REPO_ROOT, reject: false, timeout: 20_000 },
+        );
+        expect(detach.exitCode).toBe(0);
+        expect(detach.stdout).toContain('started in the background');
+        expect(detach.stdout).toContain(`detour stop --port ${port}`);
+
+        const status = await execa('npx', ['tsx', 'src/cli.ts', 'status', '--port', String(port)], {
+          cwd: REPO_ROOT,
+          reject: false,
+        });
+        expect(status.exitCode).toBe(0);
+        expect(status.stdout).toContain(`running on port ${port}`);
+        expect(status.stdout).toContain('detached');
+
+        const stop = await runDetourStop();
+        expect(stop.exitCode).toBe(0);
+        expect(stop.stdout).toContain('Stopped detour');
+
+        const statusAfterStop = await execa('npx', ['tsx', 'src/cli.ts', 'status', '--port', String(port)], {
+          cwd: REPO_ROOT,
+          reject: false,
+        });
+        expect(statusAfterStop.exitCode).toBe(1);
+        expect(statusAfterStop.stdout).toContain('not running');
+      } finally {
+        // Best-effort: cleans up the daemon if an assertion above threw before `stop` ran.
+        await runDetourStop().catch(() => {});
+      }
+    }, 30_000);
+
+    it('rejects being combined with an ephemeral --port 0', async () => {
+      const result = await execa('npx', ['tsx', 'src/cli.ts', 'start', '--port', '0', '--detach'], {
+        cwd: REPO_ROOT,
+        reject: false,
+      });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain('--detach requires an explicit --port');
+    });
+  });
+
+  describe('detour cert export', () => {
+    it('prints the CA certificate PEM to stdout when no path is given', async () => {
+      const result = await execa('npx', ['tsx', 'src/cli.ts', 'cert', 'export'], {
+        cwd: REPO_ROOT,
+        reject: false,
+        timeout: 15_000,
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('-----BEGIN CERTIFICATE-----');
+      expect(result.stdout).toContain('-----END CERTIFICATE-----');
+    });
+
+    it('writes the CA certificate to the given path, creating parent directories as needed', async () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-cert-export-'));
+      const dest = path.join(tmpDir, 'nested', 'ca.pem');
+
+      const result = await execa('npx', ['tsx', 'src/cli.ts', 'cert', 'export', dest], {
+        cwd: REPO_ROOT,
+        reject: false,
+        timeout: 15_000,
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain(`Exported CA certificate to ${dest}`);
+      expect(fs.readFileSync(dest, 'utf8')).toContain('-----BEGIN CERTIFICATE-----');
+    });
+  });
+});
