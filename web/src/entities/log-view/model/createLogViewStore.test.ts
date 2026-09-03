@@ -59,9 +59,23 @@ describe('createLogViewStore', () => {
       vi.stubGlobal('localStorage', fakeLocalStorage());
     });
 
-    it('persists a resized column for the next store instance (e.g. a page reload)', () => {
+    // `setColumnWidth` alone must NOT touch localStorage — it's called on
+    // every `pointermove` while dragging a resize handle, and a synchronous
+    // write per move event is a real jank risk on that hot path (a review
+    // finding on the PR that introduced this). Only `persistColumnWidths`
+    // (called once on `pointerup`) writes.
+    it('setColumnWidth alone does not persist', () => {
       const first = createLogViewStore();
       first.getState().setColumnWidth('method', 120);
+
+      const second = createLogViewStore();
+      expect(second.getState().columnWidths.method).toBe(DEFAULT_COLUMN_WIDTHS.method);
+    });
+
+    it('persistColumnWidths writes the current widths for the next store instance (e.g. a page reload)', () => {
+      const first = createLogViewStore();
+      first.getState().setColumnWidth('method', 120);
+      first.getState().persistColumnWidths();
 
       const second = createLogViewStore();
       expect(second.getState().columnWidths.method).toBe(120);

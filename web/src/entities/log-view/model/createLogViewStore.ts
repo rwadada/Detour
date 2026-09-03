@@ -42,7 +42,10 @@ export interface LogViewState {
   toggleGroupByHost: () => void;
   /** Clicking the currently-sorted column flips direction; clicking a different one switches to it ascending. */
   setSort: (column: SortColumn) => void;
+  /** Updates in-memory width only — called on every `pointermove` while dragging a resize handle, so it deliberately does *not* touch localStorage (a synchronous write per move event is a real jank risk on that hot path). See `persistColumnWidths`. */
   setColumnWidth: (column: ResizableColumn, width: number) => void;
+  /** Writes the current `columnWidths` to localStorage — called once on `pointerup`, after a resize drag finishes. */
+  persistColumnWidths: () => void;
 }
 
 /**
@@ -54,7 +57,7 @@ export interface LogViewState {
  * an entity below them).
  */
 export function createLogViewStore() {
-  return create<LogViewState>((set) => ({
+  return create<LogViewState>((set, get) => ({
     groupByHost: false,
     sort: { column: 'time', direction: 'asc' },
     columnWidths: loadColumnWidths(),
@@ -67,10 +70,9 @@ export function createLogViewStore() {
             : { column, direction: 'asc' },
       })),
     setColumnWidth: (column, width) =>
-      set((state) => {
-        const columnWidths = { ...state.columnWidths, [column]: Math.max(MIN_COLUMN_WIDTH, Math.round(width)) };
-        writePersistedState(COLUMN_WIDTHS_STORAGE_KEY, columnWidths);
-        return { columnWidths };
-      }),
+      set((state) => ({
+        columnWidths: { ...state.columnWidths, [column]: Math.max(MIN_COLUMN_WIDTH, Math.round(width)) },
+      })),
+    persistColumnWidths: () => writePersistedState(COLUMN_WIDTHS_STORAGE_KEY, get().columnWidths),
   }));
 }

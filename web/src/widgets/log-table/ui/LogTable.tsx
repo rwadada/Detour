@@ -196,6 +196,7 @@ function SortableHeaderCell({
 /** Drag handle at a resizable column's right edge (issue #24's column resize). */
 function ResizeHandle({ column }: { column: ResizableColumn }) {
   const setColumnWidth = useLogViewStore((s) => s.setColumnWidth);
+  const persistColumnWidths = useLogViewStore((s) => s.persistColumnWidths);
   const width = useLogViewStore((s) => s.columnWidths[column]);
 
   const onPointerDown = (event: ReactPointerEvent) => {
@@ -203,10 +204,15 @@ function ResizeHandle({ column }: { column: ResizableColumn }) {
     event.stopPropagation();
     const startX = event.clientX;
     const startWidth = width;
+    // `setColumnWidth` alone only updates in-memory state — persisting to
+    // localStorage on every `pointermove` here would mean a synchronous
+    // write per pixel dragged. `persistColumnWidths` writes once, on
+    // `pointerup`, after the drag actually finishes.
     const onMove = (moveEvent: PointerEvent) => setColumnWidth(column, startWidth + (moveEvent.clientX - startX));
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      persistColumnWidths();
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
