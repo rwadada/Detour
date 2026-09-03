@@ -5,7 +5,7 @@ import { Proxy } from 'http-mitm-proxy';
 import type { ErrorCallback, IContext, IWebSocketContext } from 'http-mitm-proxy';
 import { isHostBlocked, normalizeBlockHosts } from '../../domain/blockHosts/blockHostsPolicy';
 import { BodyCapture } from '../../domain/exchange/bodyCapture';
-import { compactHeaders, flattenHeaders } from '../../domain/exchange/headers';
+import { compactHeaders, deleteHeader, flattenHeaders } from '../../domain/exchange/headers';
 import type {
   BlockHostsState,
   BreakpointRequestPayload,
@@ -240,6 +240,14 @@ export async function startProxyServer(
   // exact instance that decided whether `beforeResponse` even exists, rather
   // than loading (and re-checking mtime) a second time.
   const scriptModules = new Map<string, ScriptModule>();
+  // Keyed by ctx.uuid: the full (uncapped) request body actually forwarded
+  // upstream for a `script` rule, set by `handleScriptRequestHook` and read
+  // back by `handleScriptResponseHook` so a `beforeResponse` hook's `req`
+  // argument is never the dashboard's capped display copy — see
+  // `ScriptRequestInfo.body`'s doc comment ("always the full body"). Cleared
+  // once the response phase either consumes or determines it doesn't need it
+  // (see the `onResponse` handler below), or on a proxy-level error.
+  const scriptRequestBodies = new Map<string, Buffer>();
   // Keyed by ctx.uuid (a WebSocket context's own, stable for its whole
   // lifecycle — see `_onWebSocketServerConnect` in http-mitm-proxy), so the
   // frame/close/error hooks below (which fire as separate callbacks over
@@ -501,6 +509,7 @@ export async function startProxyServer(
       inFlight.delete(ctx.uuid);
       ruleContexts.delete(ctx.uuid);
       scriptModules.delete(ctx.uuid);
+      scriptRequestBodies.delete(ctx.uuid);
       breakpoints.resolve({ id: ctx.uuid, phase: 'request', action: 'abort' });
       breakpoints.resolve({ id: ctx.uuid, phase: 'response', action: 'abort' });
     }
@@ -598,17 +607,22 @@ export async function startProxyServer(
   }
 
   /**
-   * Runs a `script` rule's `beforeRequest` hook (issue #9) before the
-   * request is forwarded upstream. Mirrors `handleRequestBreakpoint`'s
-   * shape (capture the full body directly off `clientToProxyRequest`, then
-   * decide) rather than the `rewrite` action's onRequestData/onRequestEnd
-   * streaming style: the hook needs the full request — headers *and*
-   * body — before it can decide what, if anything, to change, and any
-   * header/method change it makes must land on `proxyToServerRequestOptions`
-   * before the outer `callback` runs — http-mitm-proxy creates the actual
-   * upstream request right after that (see `makeProxyToServerRequest` in
-   * the library), so a change applied any later would silently miss the
-   * request that already went out.
+   * Runs for every `script` rule at the request phase (issue #9), whether
+   * or not its module actually defines `beforeRequest` — see the doc
+   * comment on `scriptRequestBodies` for why: a `beforeResponse` hook must
+   * always see the *real* request body, so the full body has to be
+   * captured here unconditionally rather than only when there's a
+   * transform to apply. Mirrors `handleRequestBreakpoint`'s shape (capture
+   * the full body directly off `clientToProxyRequest`, then decide) rather
+   * than the `rewrite` action's onRequestData/onRequestEnd streaming style:
+   * a header/method change from the hook must land on
+   * `proxyToServerRequestOptions` before the outer `callback` runs —
+   * http-mitm-proxy creates the actual upstream request right after that
+   * (see `makeProxyToServerRequest` in the library), so a change applied
+   * any later would silently miss the request that already went out. One
+   * consequence: unlike a plain forwarded request, a `script` rule's
+   * (fully-buffered) upload never participates in Throttle's upload
+   * simulation — the same trade-off `mock`/`breakpoint` already make.
    *
    * Deliberately does NOT reuse `captureClientRequestBody`/`BodyCapture` for
    * the body actually handed to the hook (and forwarded upstream): that
@@ -637,6 +651,9 @@ export async function startProxyServer(
     ctx.clientToProxyRequest.resume();
 
     const forwardBody = (body: Buffer) => {
+      // Handed to `beforeResponse` (if this rule also defines one) as its
+      // `req.body` — see `scriptRequestBodies`' doc comment.
+      scriptRequestBodies.set(ctx.uuid, body);
       ctx.onRequestData((_dataCtx, _chunk, cb) => cb(undefined, Buffer.alloc(0)));
       ctx.onRequestEnd((_endCtx, cb) => {
         if (body.length > 0) ctx.proxyToServerRequest?.write(body);
@@ -665,9 +682,11 @@ export async function startProxyServer(
       const applyResult = (result: ScriptRequestInfo) => {
         opts.method = result.method;
         opts.headers = { ...result.headers };
-        // The (possibly rewritten) body's length is unknown up front —
-        // send chunked instead, same as installRequestBodyRewrite.
-        delete opts.headers['content-length'];
+        // The (possibly rewritten) body's length is unknown up front — send
+        // chunked instead, same as installRequestBodyRewrite. Case-
+        // insensitive: a hook can spell it any way it likes, unlike headers
+        // straight off the wire (always lowercased by Node).
+        deleteHeader(opts.headers, 'content-length');
         exchange.method = result.method;
         exchange.requestHeaders = result.headers;
         exchange.requestBodySize = result.body.length;
@@ -833,7 +852,8 @@ export async function startProxyServer(
       res.headers = { ...result.headers };
       // The final body's length may differ from upstream's — drop
       // content-length and let it go out chunked, same as elsewhere.
-      delete res.headers['content-length'];
+      // Case-insensitive: see the request-phase hook's identical fix.
+      deleteHeader(res.headers, 'content-length');
 
       exchange.statusCode = result.status;
       exchange.statusMessage = result.statusMessage;
@@ -855,14 +875,20 @@ export async function startProxyServer(
     };
 
     const run = () => {
+      // The exact body `handleScriptRequestHook` forwarded upstream for
+      // this same exchange — see `scriptRequestBodies`' doc comment. Falls
+      // back to the dashboard's own (possibly truncated) display copy only
+      // in the rare case that path never ran at all, e.g. the module
+      // failed to load at the request phase but a fixed version loads
+      // successfully by the time this (independent) response-phase load
+      // runs — see the `onRequest` handler's script branch.
+      const requestBody = scriptRequestBodies.get(ctx.uuid);
+      scriptRequestBodies.delete(ctx.uuid);
       const reqInfo: ScriptRequestInfo = {
         method: exchange.method,
         url: exchange.url,
         headers: flattenHeaders(exchange.requestHeaders),
-        // Reconstructed from the same (possibly truncated at
-        // MAX_CAPTURED_BODY_BYTES) capture the dashboard's body inspector
-        // uses — see BodyCapture's doc comment.
-        body: exchange.requestBody ? Buffer.from(exchange.requestBody, 'base64') : Buffer.alloc(0),
+        body: requestBody ?? (exchange.requestBody ? Buffer.from(exchange.requestBody, 'base64') : Buffer.alloc(0)),
       };
       const resInfo: ScriptResponseInfo = {
         status: res.statusCode ?? 200,
@@ -1080,13 +1106,18 @@ export async function startProxyServer(
         const module = tryLoadScriptModule(rule, ruleEngine!.basePath, (message) =>
           eventBus.emit('error', { id: ctx.uuid, errorKind: 'RULE_SCRIPT_ERROR', message }),
         );
-        if (module?.beforeRequest) {
+        // Always runs (not just when `beforeRequest` is defined) — a
+        // `beforeResponse` hook (checked separately at the response phase)
+        // needs the real, full request body as its `req` argument, which
+        // only this path captures; see `scriptRequestBodies`' doc comment.
+        if (module) {
           handleScriptRequestHook(ctx, { rule, module }, exchange, callback);
           return;
         }
-        // No `beforeRequest` hook (or the module failed to load) — fall
-        // through and forward unchanged; `beforeResponse` (if any) is
-        // handled from `onResponse`/`onResponseHeaders` below.
+        // The module failed to load — forward unchanged; `onResponse`/
+        // `onResponseHeaders` below independently try loading it again for
+        // `beforeResponse` (see `tryLoadScriptModule`'s mtime-based cache —
+        // this is cheap, and lets a fixed script recover without a restart).
       }
 
       if (rule) ruleContexts.set(ctx.uuid, rule);
@@ -1174,6 +1205,11 @@ export async function startProxyServer(
         // its doc comment), mirroring the breakpoint skip just above.
         return callback();
       }
+      // No `beforeResponse` (or the module failed to load) — nothing will
+      // consume the full request body `handleScriptRequestHook` stashed
+      // for it (see `scriptRequestBodies`' doc comment); drop it here
+      // rather than leak it until `onError`.
+      scriptRequestBodies.delete(ctx.uuid);
     }
 
     if (exchange && ctx.serverToProxyResponse) {

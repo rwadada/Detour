@@ -826,6 +826,99 @@ describe('detour start (CLI, end-to-end)', () => {
     }
   });
 
+  it("gives a beforeResponse-only script rule's hook the full, untruncated request body as `req.body`", async () => {
+    // A rule with only `beforeResponse` (no `beforeRequest`) still needs an
+    // accurate `req.body` — the response hook must see what was actually
+    // sent, not the dashboard's own capped display copy.
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'rules.script.js'),
+      `module.exports = {
+        beforeResponse(req, res) {
+          return { headers: { ...res.headers, 'x-observed-req-body-length': String(req.body.length) } };
+        },
+      };`,
+    );
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-script-response-only-sees-full-request',
+            match: { url: `http://127.0.0.1:${echo.port}/scripted` },
+            action: { type: 'script', path: 'rules.script.js' },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const bigBody = 'x'.repeat(300 * 1024); // > MAX_CAPTURED_BODY_BYTES
+    const observedLength = await new Promise<string | string[] | undefined>((resolve, reject) => {
+      const req = http.request(
+        { host: 'localhost', port: cli!.port, path: `http://127.0.0.1:${echo!.port}/scripted`, method: 'POST' },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.headers['x-observed-req-body-length']));
+        },
+      );
+      req.on('error', reject);
+      req.end(bigBody);
+    });
+
+    expect(observedLength).toBe(String(bigBody.length));
+  });
+
+  it('ignores a case-differently-spelled Content-Length a script hook returns, so a rewritten body is never mis-framed', async () => {
+    // If `beforeResponse` returns e.g. `Content-Length` (capitalized) along
+    // with a rewritten body, that stale header must not survive — Node
+    // would otherwise frame the response by that (now-wrong) byte count
+    // and either truncate what the client reads or hang the connection.
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'rules.script.js'),
+      `module.exports = {
+        beforeResponse(req, res) {
+          const newBody = 'this-is-the-real-rewritten-body-and-it-is-longer-than-3-bytes';
+          return { body: newBody, headers: { ...res.headers, 'Content-Length': '3' } };
+        },
+      };`,
+    );
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-script-mismatched-content-length',
+            match: { url: `http://127.0.0.1:${echo.port}/scripted` },
+            action: { type: 'script', path: 'rules.script.js' },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = http.request(
+        { host: 'localhost', port: cli!.port, path: `http://127.0.0.1:${echo!.port}/scripted`, method: 'GET' },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.body).toBe('this-is-the-real-rewritten-body-and-it-is-longer-than-3-bytes');
+  });
+
   describe('intercept on/off (issue #11)', () => {
     it('skips a mock rule while intercept is off, reaching the real upstream instead', async () => {
       echo = await startEchoServer();
