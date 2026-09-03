@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { readPersistedState, writePersistedState } from '@/shared/lib/persistedState';
 
 /** Columns a user can sort the log table by (issue #24). `url` sorts lexicographically; the rest numerically. */
 export type SortColumn = 'time' | 'method' | 'status' | 'url' | 'duration' | 'size';
@@ -24,6 +25,14 @@ export const DEFAULT_COLUMN_WIDTHS: Record<ResizableColumn, number> = {
 /** Below this, a column's own label/value starts truncating illegibly. */
 export const MIN_COLUMN_WIDTH = 40;
 
+const COLUMN_WIDTHS_STORAGE_KEY = 'detour-log-view-column-widths';
+
+/** Merges persisted widths over the defaults — a column added by a later release (not present in an older saved value) still gets its default rather than `undefined`. */
+function loadColumnWidths(): Record<ResizableColumn, number> {
+  const stored = readPersistedState<Partial<Record<ResizableColumn, number>>>(COLUMN_WIDTHS_STORAGE_KEY, {});
+  return { ...DEFAULT_COLUMN_WIDTHS, ...stored };
+}
+
 export interface LogViewState {
   /** Groups the log table's rows under collapsible per-host headers instead of one flat list (issue #24's toolbar "Group by host"). */
   groupByHost: boolean;
@@ -48,7 +57,7 @@ export function createLogViewStore() {
   return create<LogViewState>((set) => ({
     groupByHost: false,
     sort: { column: 'time', direction: 'asc' },
-    columnWidths: { ...DEFAULT_COLUMN_WIDTHS },
+    columnWidths: loadColumnWidths(),
     toggleGroupByHost: () => set((state) => ({ groupByHost: !state.groupByHost })),
     setSort: (column) =>
       set((state) => ({
@@ -58,8 +67,10 @@ export function createLogViewStore() {
             : { column, direction: 'asc' },
       })),
     setColumnWidth: (column, width) =>
-      set((state) => ({
-        columnWidths: { ...state.columnWidths, [column]: Math.max(MIN_COLUMN_WIDTH, Math.round(width)) },
-      })),
+      set((state) => {
+        const columnWidths = { ...state.columnWidths, [column]: Math.max(MIN_COLUMN_WIDTH, Math.round(width)) };
+        writePersistedState(COLUMN_WIDTHS_STORAGE_KEY, columnWidths);
+        return { columnWidths };
+      }),
   }));
 }

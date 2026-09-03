@@ -1,10 +1,11 @@
-import { BookOpen, Check, ChevronLeft, ChevronRight, Copy, QrCode as QrCodeIcon, Route } from 'lucide-react';
+import { BookOpen, Check, ChevronLeft, ChevronRight, Copy, QrCode as QrCodeIcon } from 'lucide-react';
 import { useState } from 'react';
 import { RulesEditorButton } from '@/features/rules-editor';
 import { RuleProfilesControl } from '@/features/rules-profiles';
 import { SettingsButton } from '@/features/settings-panel';
 import { getDashboardConnection, useConnectionStatus } from '@/shared/api';
 import { cn } from '@/shared/lib/utils';
+import { DetourLogo } from '@/shared/ui';
 import { createProxyInfoStore } from '../model/createProxyInfoStore';
 import { COLLAPSED_WIDTH, EXPANDED_WIDTH, useSidebarStore } from '../model/createSidebarStore';
 import { QrCode } from './QrCode';
@@ -38,7 +39,7 @@ export function Sidebar() {
       className="flex h-full shrink-0 flex-col overflow-hidden border-r border-[var(--border)] bg-[var(--sidebar)] transition-[width] duration-150"
     >
       <div className={cn('flex items-center gap-2 border-b border-[var(--border)] p-3', collapsed && 'justify-center')}>
-        <Route className="h-5 w-5 shrink-0 text-[var(--accent)]" />
+        <DetourLogo className="h-6 w-6 shrink-0 rounded-[5px]" />
         {!collapsed && (
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold tracking-tight">Detour</div>

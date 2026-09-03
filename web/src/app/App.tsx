@@ -21,7 +21,8 @@ export default function App() {
         <Toolbar />
         <ContextBar />
         <ImportedBanner />
-        <PanelGroup direction="horizontal" className="flex-1 overflow-hidden">
+        {/* `autoSaveId` persists the split (the inspector panel's width/height) to localStorage itself — issue #24 Phase 5's panel-size persistence. */}
+        <PanelGroup autoSaveId="detour-main-panels" direction="horizontal" className="flex-1 overflow-hidden">
           <Panel defaultSize={62} minSize={30} className="flex flex-col overflow-hidden">
             <LogTable />
           </Panel>

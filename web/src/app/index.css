@@ -83,9 +83,65 @@ body {
   *::before,
   *::after {
     animation-duration: 0.001ms !important;
+    animation-delay: 0ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
+    transition-delay: 0ms !important;
   }
+}
+
+/*
+ * SplashScreen (issue #24's design guide): the route-drawing logo, the
+ * title fading in after it, then the whole overlay fading out — each a
+ * separate keyframe so `SplashScreen` can key its "done" callback off the
+ * last one's `animationend` rather than a hardcoded duration, which would
+ * be wrong the instant `prefers-reduced-motion` collapses every duration/
+ * delay above to ~0.
+ */
+@keyframes detour-route-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.detour-logo-route {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: detour-route-draw 900ms ease-out forwards;
+}
+
+@keyframes detour-fade-in {
+  to {
+    opacity: 1;
+  }
+}
+.detour-splash-title {
+  opacity: 0;
+  animation: detour-fade-in 500ms ease-out 600ms forwards;
+}
+
+@keyframes detour-splash-out {
+  to {
+    opacity: 0;
+  }
+}
+.detour-splash-overlay {
+  pointer-events: none;
+  animation: detour-splash-out 400ms ease-in 1400ms forwards;
+}
+
+/* Subtle entrance once the splash (or its skip) reveals the app underneath. */
+@keyframes app-float-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.app-float-in {
+  animation: app-float-in 350ms ease-out;
 }
 
 ::-webkit-scrollbar {

@@ -1,11 +1,14 @@
 import { create } from 'zustand';
+import { readPersistedState, writePersistedState } from '@/shared/lib/persistedState';
 
 /** Expanded/collapsed widths (issue #24's design guide, Section 5.1). */
 export const EXPANDED_WIDTH = 360;
 export const COLLAPSED_WIDTH = 52;
 
+const COLLAPSED_STORAGE_KEY = 'detour-sidebar-collapsed';
+
 export interface SidebarState {
-  /** True collapses the sidebar to a narrow icon rail (issue #24: 360px ⇔ 52px). Not persisted yet — see issue #24's Phase 5 for localStorage persistence of this and other layout preferences. */
+  /** True collapses the sidebar to a narrow icon rail (issue #24: 360px ⇔ 52px). Persisted to localStorage — see `COLLAPSED_STORAGE_KEY`. */
   collapsed: boolean;
   toggleCollapsed: () => void;
 }
@@ -13,8 +16,13 @@ export interface SidebarState {
 /** Widget-local UI state — only `Sidebar` and `App` (composing the overall layout) need this, so it lives here rather than in an entity. */
 export function createSidebarStore() {
   return create<SidebarState>((set) => ({
-    collapsed: false,
-    toggleCollapsed: () => set((state) => ({ collapsed: !state.collapsed })),
+    collapsed: readPersistedState(COLLAPSED_STORAGE_KEY, false),
+    toggleCollapsed: () =>
+      set((state) => {
+        const collapsed = !state.collapsed;
+        writePersistedState(COLLAPSED_STORAGE_KEY, collapsed);
+        return { collapsed };
+      }),
   }));
 }
 

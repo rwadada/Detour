@@ -1,5 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createLogViewStore, DEFAULT_COLUMN_WIDTHS, MIN_COLUMN_WIDTH } from './createLogViewStore';
+
+function fakeLocalStorage() {
+  const store = new Map<string, string>();
+  return {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      store.set(key, value);
+    },
+  };
+}
 
 describe('createLogViewStore', () => {
   it('starts ungrouped, sorted by time ascending, with the default column widths', () => {
@@ -42,5 +52,25 @@ describe('createLogViewStore', () => {
     const store = createLogViewStore();
     store.getState().setColumnWidth('method', 1);
     expect(store.getState().columnWidths.method).toBe(MIN_COLUMN_WIDTH);
+  });
+
+  describe('column width persistence (issue #24 Phase 5)', () => {
+    beforeEach(() => {
+      vi.stubGlobal('localStorage', fakeLocalStorage());
+    });
+
+    it('persists a resized column for the next store instance (e.g. a page reload)', () => {
+      const first = createLogViewStore();
+      first.getState().setColumnWidth('method', 120);
+
+      const second = createLogViewStore();
+      expect(second.getState().columnWidths.method).toBe(120);
+    });
+
+    it('fills in a column missing from an older persisted value with its default', () => {
+      localStorage.setItem('detour-log-view-column-widths', JSON.stringify({ method: 120 }));
+      const store = createLogViewStore();
+      expect(store.getState().columnWidths).toEqual({ ...DEFAULT_COLUMN_WIDTHS, method: 120 });
+    });
   });
 });
