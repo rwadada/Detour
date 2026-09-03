@@ -145,7 +145,25 @@ export interface BreakpointAction {
   response?: boolean;
 }
 
-export type RuleAction = MockAction | RouteAction | RewriteAction | BreakpointAction;
+/**
+ * Runs a user-authored Node.js module's `beforeRequest`/`beforeResponse`
+ * hooks for transformations the declarative `rewrite` action can't express
+ * (issue #9) — the hooks get the full request/response (headers *and*
+ * body) and can run arbitrary JS to decide what, if anything, to change.
+ * See domain/rules/scriptAction.ts for the exact hook contract.
+ */
+export interface ScriptAction {
+  type: 'script';
+  /**
+   * Path to a CommonJS module (relative to rules.json) exporting
+   * `beforeRequest`/`beforeResponse`, e.g.
+   * `module.exports = { beforeRequest(req) { ... } }`. Reloaded
+   * automatically when the file changes, same as rules.json itself.
+   */
+  path: string;
+}
+
+export type RuleAction = MockAction | RouteAction | RewriteAction | BreakpointAction | ScriptAction;
 
 export interface Rule {
   name: string;

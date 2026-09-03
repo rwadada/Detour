@@ -228,7 +228,7 @@ export function createCli(): Command {
     )
     .option(
       '--rules <path>',
-      `Path to a rules file. When given, mock/route/rewrite rules are applied and reloaded automatically on change (when omitted, ${DEFAULT_RULES_FILENAME} in the current directory is loaded automatically if present)`,
+      `Path to a rules file. When given, mock/route/rewrite/script rules are applied and reloaded automatically on change (when omitted, ${DEFAULT_RULES_FILENAME} in the current directory is loaded automatically if present)`,
     )
     .option(
       '--dump <level>',

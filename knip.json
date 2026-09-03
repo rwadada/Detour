@@ -1,5 +1,5 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "ignore": ["web/steiger.config.ts", "web/src/entities/proxy-error/index.ts"],
+  "ignore": ["web/steiger.config.ts", "web/src/entities/proxy-error/index.ts", "example.script.js"],
   "ignoreDependencies": ["@feature-sliced/steiger-plugin"]
 }

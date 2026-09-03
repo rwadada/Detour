@@ -629,6 +629,59 @@ describe('detour start (CLI, end-to-end)', () => {
     expect(JSON.parse(result.body)).toEqual({ mocked: true });
   });
 
+  it("transforms a request and response via a script rule's beforeRequest/beforeResponse hooks (issue #9)", async () => {
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'rules.script.js'),
+      `module.exports = {
+        beforeRequest(req) {
+          return { body: req.body.toString('utf8') + '-from-script' };
+        },
+        beforeResponse(req, res) {
+          const body = JSON.parse(res.body.toString('utf8'));
+          body.scripted = true;
+          return { body: JSON.stringify(body) };
+        },
+      };`,
+    );
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-script',
+            match: { url: `http://127.0.0.1:${echo.port}/scripted` },
+            action: { type: 'script', path: 'rules.script.js' },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = http.request(
+        { host: 'localhost', port: cli!.port, path: `http://127.0.0.1:${echo!.port}/scripted`, method: 'POST' },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+        },
+      );
+      req.on('error', reject);
+      req.end('original-body');
+    });
+
+    expect(result.status).toBe(200);
+    expect(JSON.parse(result.body)).toEqual({
+      method: 'POST',
+      path: '/scripted',
+      body: 'original-body-from-script',
+      scripted: true,
+    });
+  });
+
   describe('intercept on/off (issue #11)', () => {
     it('skips a mock rule while intercept is off, reaching the real upstream instead', async () => {
       echo = await startEchoServer();

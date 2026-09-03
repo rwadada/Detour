@@ -17,9 +17,9 @@ import { blankRule, describeMatch, parseMethodInput } from '../model/ruleSummary
  *
  * `name`/`enabled`/`method`/`url` are true form fields; a rule's `action`
  * (and `urlRegex` matches, which this form doesn't expose) are edited as
- * JSON — the four action types (`mock`/`route`/`rewrite`/`breakpoint`) have
- * different enough shapes that a dedicated sub-form per type is future work
- * (see PR description) rather than in scope here.
+ * JSON — the five action types (`mock`/`route`/`rewrite`/`breakpoint`/
+ * `script`) have different enough shapes that a dedicated sub-form per type
+ * is future work (see PR description) rather than in scope here.
  */
 export function RulesEditorPanel() {
   const rulesFile = useRuleStore((s) => s.rulesFile);
@@ -215,7 +215,7 @@ function RuleFields({
       <div className="text-xs text-[var(--muted)]">
         Action (JSON — <code className="font-mono-ui">type</code>: <code className="font-mono-ui">mock</code> /{' '}
         <code className="font-mono-ui">route</code> / <code className="font-mono-ui">rewrite</code> /{' '}
-        <code className="font-mono-ui">breakpoint</code>)
+        <code className="font-mono-ui">breakpoint</code> / <code className="font-mono-ui">script</code>)
       </div>
       <CodeMirror
         value={actionText}
