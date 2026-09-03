@@ -32,12 +32,34 @@ export default defineConfig([
     rules: { 'fsd/insignificant-slice': 'off' },
   },
   {
+    // `rules-editor`/`rules-profiles` (issue #19) are two independent
+    // capabilities (form-editing rules.json vs. switching/creating saved
+    // profiles) that happen to share one consumer today (widgets/header) —
+    // kept separate rather than merged for the same reason as the blocks
+    // above, and because a future Settings panel is likely to want them as
+    // distinct sections anyway.
+    files: ['./src/features/rules-editor/**', './src/features/rules-profiles/**'],
+    rules: { 'fsd/insignificant-slice': 'off' },
+  },
+  {
     // `proxy-error` mirrors `ProxyErrorEvent` messages the server already
     // sends, but no UI surfaces them yet (the pre-FSD store had this same
     // capture-but-never-render gap — see git history). Kept ready for
     // #19/#24's planned error surface rather than dropped and re-added
     // later.
     files: ['./src/entities/proxy-error/**'],
+    rules: { 'fsd/insignificant-slice': 'off' },
+  },
+  {
+    // `rule` genuinely has two consumers (`features/rules-editor` and
+    // `features/rules-profiles` both import `useRuleStore` from it —
+    // `grep -rn "@/entities/rule" src` confirms it, and both `tsc` and
+    // `vitest` resolve the imports without error). `fsd/insignificant-slice`
+    // still reports "no references" here regardless — a false negative in
+    // Steiger 0.5's own cross-slice reference tracing (`traceSliceReferences`
+    // in `@feature-sliced/steiger-plugin`), not an actual structural issue.
+    // Silenced rather than misrepresenting the slice's real usage.
+    files: ['./src/entities/rule/**'],
     rules: { 'fsd/insignificant-slice': 'off' },
   },
 ]);

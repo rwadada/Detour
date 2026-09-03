@@ -7,7 +7,8 @@ import { SAMPLE_RULES_FILE } from './domain/rules/sample';
 import { startDashboardServer, WEB_DIST_DIR } from './infra/dashboard/dashboardServer';
 import { DetourEventBus } from './infra/eventBus';
 import { resolveDumpDir, writeExchangeDumpFile, writeWebSocketDumpFile } from './infra/fs/dumpFileWriter';
-import { fsFileWatcher, fsRulesFileReader, loadRulesFile } from './infra/fs/rulesFileSource';
+import { fsRuleProfileStore } from './infra/fs/ruleProfileStore';
+import { fsFileWatcher, fsRulesFileReader, fsRulesFileWriter, loadRulesFile } from './infra/fs/rulesFileSource';
 import { buildGrpcExchangeInfo } from './infra/grpc/grpcExchangeInfo';
 import { ProtoRegistry } from './infra/grpc/protoRegistry';
 import { startProxyServer } from './infra/proxy/proxyServer';
@@ -111,6 +112,7 @@ async function runStart(options: StartOptions): Promise<void> {
     ruleEngine = RuleEngine.load({
       filePath: rulesPath,
       reader: fsRulesFileReader,
+      writer: fsRulesFileWriter,
       watcher: fsFileWatcher,
       onReload: (info) => eventBus.emit('rulesReloaded', { filePath: ruleEngine!.filePath, ruleCount: info.ruleCount }),
       onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
@@ -120,7 +122,10 @@ async function runStart(options: StartOptions): Promise<void> {
   const handle = await startProxyServer({ port, ruleEngine, http2Enabled: options.http2 }, eventBus);
   let dashboardHandle;
   try {
-    dashboardHandle = await startDashboardServer({ port: dashboardPort }, eventBus);
+    dashboardHandle = await startDashboardServer(
+      { port: dashboardPort, ruleEngine, ruleProfileStore: fsRuleProfileStore },
+      eventBus,
+    );
   } catch (err) {
     // The proxy is already up and intercepting traffic at this point — don't
     // leave it running (and the process alive) just because the dashboard

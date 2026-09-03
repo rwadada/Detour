@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadRulesFile } from './rulesFileSource';
+import { loadRulesFile, writeRulesFile } from './rulesFileSource';
 
 describe('loadRulesFile', () => {
   let dir: string;
@@ -55,5 +55,49 @@ describe('loadRulesFile', () => {
     } catch (err) {
       expect((err as Error).message).toMatch(/failed validation/);
     }
+  });
+});
+
+describe('writeRulesFile', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-writer-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('writes a valid rules file, pretty-printed and re-loadable', () => {
+    const filePath = path.join(dir, 'rules.json');
+    const data = {
+      rules: [{ name: 'r1', match: { url: 'https://x/*' }, action: { type: 'route' as const, host: 'y' } }],
+    };
+
+    writeRulesFile(filePath, data);
+
+    expect(fs.readFileSync(filePath, 'utf8')).toContain('\n  "rules"');
+    expect(loadRulesFile(filePath)).toEqual(data);
+  });
+
+  it('throws (without writing anything) for rules that fail validation', () => {
+    const filePath = path.join(dir, 'rules.json');
+
+    expect(() =>
+      writeRulesFile(filePath, { rules: [{ name: 'bad', match: {}, action: { type: 'bogus' as never } }] }),
+    ).toThrow(/failed validation/);
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
+
+  it('overwrites an existing file rather than appending', () => {
+    const filePath = path.join(dir, 'rules.json');
+    writeRulesFile(filePath, {
+      rules: [{ name: 'r1', match: { url: 'https://x/*' }, action: { type: 'route', host: 'y' } }],
+    });
+
+    writeRulesFile(filePath, { rules: [] });
+
+    expect(loadRulesFile(filePath).rules).toEqual([]);
   });
 });

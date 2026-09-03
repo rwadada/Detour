@@ -3,6 +3,7 @@ import { compileRule, findMatchingRule, type CompiledRule, type MatchableRequest
 import type { Rule } from '../domain/rules/types';
 import type { FileWatcher } from './ports/fileWatcher';
 import type { RulesFileReader } from './ports/rulesFileReader';
+import type { RulesFileWriter } from './ports/rulesFileWriter';
 
 export interface RuleEngineOptions {
   /** Path to rules.json. Resolved relative to the current working directory if not absolute. */
@@ -17,6 +18,8 @@ export interface RuleEngineOptions {
   reader: RulesFileReader;
   /** Watches rules.json for changes — injected for the same reason. Required unless `watch` is false. */
   watcher?: FileWatcher;
+  /** Validates/writes rules.json — injected for the same reason. Required to call `write()` (issue #19's Rules editor); omit for a read-only engine. */
+  writer?: RulesFileWriter;
 }
 
 /**
@@ -56,6 +59,19 @@ export class RuleEngine {
 
   getRules(): readonly Rule[] {
     return this.compiledRules.map((c) => c.rule);
+  }
+
+  /**
+   * Validates and saves `rules` to disk (issue #19's Rules editor). Doesn't
+   * update `compiledRules` itself — the write lands back through the same
+   * `fs.watch`-driven reload path a manual edit would (see `reload()`),
+   * keeping "edited from the dashboard" and "edited in a text editor" a
+   * single code path instead of two. Throws (without writing anything) if
+   * `rules` fails validation, or no `writer` was configured.
+   */
+  write(rules: Rule[]): void {
+    if (!this.options.writer) throw new Error('RuleEngine: a `writer` is required to save rule edits');
+    this.options.writer.write(this.filePath, { rules });
   }
 
   private startWatching(): void {

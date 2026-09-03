@@ -4,6 +4,7 @@ import { validateRulesData } from '../../domain/rules/schema';
 import type { RulesFile } from '../../domain/rules/types';
 import type { FileWatcher } from '../../usecase/ports/fileWatcher';
 import type { RulesFileReader } from '../../usecase/ports/rulesFileReader';
+import type { RulesFileWriter } from '../../usecase/ports/rulesFileWriter';
 
 /**
  * Reads and validates a `rules.json` file from disk.
@@ -42,6 +43,27 @@ function describeError(err: unknown): string {
 
 /** `RulesFileReader` (see usecase/ports/rulesFileReader.ts) backed by the real filesystem. */
 export const fsRulesFileReader: RulesFileReader = { read: loadRulesFile };
+
+/**
+ * Validates and writes a `rules.json` file (issue #19's Rules editor —
+ * `RuleEngine.write()` calls this to save edits made from the dashboard).
+ * Throws instead of writing an invalid file — the existing `fsFileWatcher`
+ * would otherwise pick up the change and reject it via `onReloadError`
+ * anyway, but that's the wrong place to surface the mistake to whoever's
+ * mid-edit; failing here means the file (and thus traffic still being
+ * served by the last-known-good rules) is untouched.
+ */
+export function writeRulesFile(filePath: string, data: RulesFile): void {
+  const result = validateRulesData(data);
+  if (!result.valid) {
+    const details = result.errors.map((e) => `  - ${e}`).join('\n');
+    throw new Error(`Rules failed validation, not saved: ${filePath}\n${details}`);
+  }
+  fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+}
+
+/** `RulesFileWriter` (see usecase/ports/rulesFileWriter.ts) backed by the real filesystem. */
+export const fsRulesFileWriter: RulesFileWriter = { write: writeRulesFile };
 
 /**
  * `FileWatcher` (see usecase/ports/fileWatcher.ts) backed by `fs.watch`.

@@ -10,8 +10,12 @@ import type {
   InterceptState,
   ThrottleState,
 } from '../../domain/exchange/types';
+import { SAMPLE_RULES_FILE } from '../../domain/rules/sample';
+import type { RulesFile } from '../../domain/rules/types';
 import { RingBuffer } from '../../domain/shared/ringBuffer';
 import type { DashboardClientMessage, DashboardServerMessage } from '../../domain/dashboard/protocol';
+import type { RuleEngine } from '../../usecase/ruleEngine';
+import type { RuleProfileStore } from '../../usecase/ports/ruleProfileStore';
 import type { DetourEventBus } from '../eventBus';
 import { assertPortAvailable } from '../portCheck';
 import { serveStatic } from './staticServer';
@@ -34,6 +38,16 @@ export interface DashboardServerOptions {
   host?: string;
   /** @default 500 */
   backlogSize?: number;
+  /**
+   * The session's rule engine, if `detour start` was given `--rules` (or
+   * auto-detected one) — powers the Rules editor (issue #19): reading the
+   * active ruleset for `rules`/`setRules`, and saving edits back via
+   * `RuleEngine.write()`. Omitted (dashboard-only, no proxy rules) when
+   * this session has no rules file configured.
+   */
+  ruleEngine?: RuleEngine;
+  /** Powers Rules Profiles (issue #19): listing/creating/applying saved rule profiles, independent of whether `ruleEngine` is configured (profiles can be created even before any is applied). */
+  ruleProfileStore?: RuleProfileStore;
 }
 
 export interface DashboardServerHandle {
@@ -54,6 +68,7 @@ export async function startDashboardServer(
   eventBus: DetourEventBus,
 ): Promise<DashboardServerHandle> {
   const host = options.host ?? 'localhost';
+  const { ruleEngine, ruleProfileStore } = options;
   await assertPortAvailable(options.port, host);
 
   const backlog = new RingBuffer<CapturedExchange>(options.backlogSize ?? DEFAULT_BACKLOG_SIZE, (item) => item.id);
@@ -99,6 +114,29 @@ export async function startDashboardServer(
     broadcast({ type: 'response', exchange });
   };
   const onError: DetourEvents['error'] = (event) => broadcast({ type: 'error', event });
+  // Rules state, unlike intercept/focus/throttle/blockHosts above, isn't
+  // mirrored into a local variable kept in sync via events — `ruleEngine`
+  // (if configured) is already the live source of truth, so these just read
+  // through it on demand, both for a newly-connecting client and for
+  // rebroadcasting after any reload.
+  const rulesMessage = (): DashboardServerMessage => ({
+    type: 'rules',
+    data: ruleEngine ? { rules: [...ruleEngine.getRules()] } : null,
+  });
+  const ruleProfilesMessage = (): DashboardServerMessage => ({
+    type: 'ruleProfiles',
+    profiles: ruleProfileStore?.list() ?? [],
+  });
+  const broadcastError = (errorKind: string, message: string) =>
+    broadcast({ type: 'error', event: { errorKind, message } });
+  // Fires after *any* rules.json reload — whether triggered by `setRules`/
+  // `applyRuleProfile` (which write the file, then wait for the same
+  // fs.watch-driven reload a hand-edit would trigger) or an actual hand-edit
+  // in a text editor. `rulesMessage()` itself only ever produces a non-null
+  // `data` once a `ruleEngine` exists to emit this event in the first place,
+  // so registering the listener unconditionally (like every other listener
+  // in this function) is harmless when there isn't one.
+  const onRulesReloaded: DetourEvents['rulesReloaded'] = () => broadcast(rulesMessage());
   // A `breakpoint` rule paused an exchange — broadcast it to every connected
   // tab so all of them can show/edit it, not just the one that happens to be
   // focused.
@@ -146,6 +184,8 @@ export async function startDashboardServer(
     socket.send(JSON.stringify(throttleMessage));
     const blockHostsMessage: DashboardServerMessage = { type: 'blockHosts', state: blockHostsState };
     socket.send(JSON.stringify(blockHostsMessage));
+    socket.send(JSON.stringify(rulesMessage()));
+    socket.send(JSON.stringify(ruleProfilesMessage()));
 
     // The only browser → server traffic on this socket: resuming/aborting a
     // paused breakpoint, toggling intercept on/off, editing the Focus host
@@ -153,6 +193,10 @@ export async function startDashboardServer(
     // denylist. All are relayed onto the event bus, where the proxy server
     // is waiting on them (see proxyServer.ts's
     // `waitForBreakpoint`/`handleSetIntercept`/`handleSetFocus`/`handleSetThrottle`/`handleSetBlockHosts`).
+    // Rules editing/profiles (issue #19) are the one exception: handled
+    // directly here rather than via the event bus, since they need
+    // synchronous validation and per-attempt error feedback that a fire-and-
+    // forget event emit can't give — see `handleRulesMessage` below.
     socket.on('message', (raw) => {
       try {
         const message = JSON.parse(raw.toString()) as DashboardClientMessage;
@@ -161,11 +205,50 @@ export async function startDashboardServer(
         else if (message.type === 'setFocus') eventBus.emit('setFocus', message.hosts);
         else if (message.type === 'setThrottle') eventBus.emit('setThrottle', message.state);
         else if (message.type === 'setBlockHosts') eventBus.emit('setBlockHosts', message.state);
+        else handleRulesMessage(message);
       } catch {
         // Ignore malformed frames rather than crashing the dashboard.
       }
     });
   });
+
+  function handleRulesMessage(message: DashboardClientMessage): void {
+    if (message.type === 'setRules') {
+      if (!ruleEngine) return broadcastError('RULES_WRITE_ERROR', 'No rules file is configured for this session.');
+      try {
+        ruleEngine.write(message.data.rules);
+      } catch (err) {
+        broadcastError('RULES_WRITE_ERROR', describeError(err));
+      }
+    } else if (message.type === 'createRuleProfile') {
+      if (!ruleProfileStore) return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
+      try {
+        const data: RulesFile =
+          message.template === 'sample' ? (JSON.parse(SAMPLE_RULES_FILE) as RulesFile) : { rules: [] };
+        ruleProfileStore.write(message.name, data);
+        broadcast(ruleProfilesMessage());
+      } catch (err) {
+        broadcastError('RULE_PROFILE_ERROR', describeError(err));
+      }
+    } else if (message.type === 'saveActiveRulesAsProfile') {
+      if (!ruleEngine || !ruleProfileStore)
+        return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
+      try {
+        ruleProfileStore.write(message.name, { rules: [...ruleEngine.getRules()] });
+        broadcast(ruleProfilesMessage());
+      } catch (err) {
+        broadcastError('RULE_PROFILE_ERROR', describeError(err));
+      }
+    } else if (message.type === 'applyRuleProfile') {
+      if (!ruleEngine || !ruleProfileStore)
+        return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
+      try {
+        ruleEngine.write(ruleProfileStore.read(message.name).rules);
+      } catch (err) {
+        broadcastError('RULE_PROFILE_ERROR', describeError(err));
+      }
+    }
+  }
 
   return new Promise((resolve, reject) => {
     httpServer.on('error', reject);
@@ -184,6 +267,7 @@ export async function startDashboardServer(
       eventBus.on('wsOpen', onWsOpen);
       eventBus.on('wsFrame', onWsFrame);
       eventBus.on('wsClose', onWsClose);
+      eventBus.on('rulesReloaded', onRulesReloaded);
 
       const address = httpServer.address();
       const boundPort = typeof address === 'object' && address ? address.port : options.port;
@@ -202,10 +286,15 @@ export async function startDashboardServer(
             eventBus.off('wsOpen', onWsOpen);
             eventBus.off('wsFrame', onWsFrame);
             eventBus.off('wsClose', onWsClose);
+            eventBus.off('rulesReloaded', onRulesReloaded);
             for (const client of wss.clients) client.close();
             wss.close(() => httpServer.close(() => res()));
           }),
       });
     });
   });
+}
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
