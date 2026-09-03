@@ -11,11 +11,13 @@ export default defineConfig([
   ...fsd.configs.recommended,
   {
     // `focus`/`intercept-toggle`/`throttle`/`block-hosts` currently have
-    // only one consumer (widgets/header), which `fsd/insignificant-slice`
-    // flags as "just merge it into Header" — but each is kept as its own
-    // feature slice because issues #24/#19 plan to relocate them
-    // independently (toolbar/sidebar/Settings panel); merging now would
-    // just be undone later.
+    // only one consumer (widgets/toolbar), which `fsd/insignificant-slice`
+    // flags as "just merge it into Toolbar" — but each is kept as its own
+    // feature slice for its quick-access toolbar popover. (Their actual
+    // *state* — `useInterceptStore` etc. — lives in `entities/proxy-config`
+    // instead, precisely because it's shared by more than just this popover:
+    // `features/session` and `features/settings-panel` also read/write it,
+    // and FSD forbids feature→feature imports.)
     files: [
       './src/features/focus/**',
       './src/features/intercept-toggle/**',
@@ -25,20 +27,27 @@ export default defineConfig([
     rules: { 'fsd/insignificant-slice': 'off' },
   },
   {
-    // `log-export` currently has only one consumer (widgets/header) too —
-    // same reasoning as the block above. Kept as its own slice since #19's
-    // planned toolbar/Settings relocation applies here as well.
+    // `log-export` currently has only one consumer (widgets/toolbar) too —
+    // same reasoning as the block above. Kept as its own slice since a
+    // future Settings panel section may want it independently.
     files: ['./src/features/log-export/**'],
     rules: { 'fsd/insignificant-slice': 'off' },
   },
   {
     // `rules-editor`/`rules-profiles` (issue #19) are two independent
     // capabilities (form-editing rules.json vs. switching/creating saved
-    // profiles) that happen to share one consumer today (widgets/header) —
+    // profiles) that happen to share one consumer today (widgets/sidebar) —
     // kept separate rather than merged for the same reason as the blocks
     // above, and because a future Settings panel is likely to want them as
     // distinct sections anyway.
     files: ['./src/features/rules-editor/**', './src/features/rules-profiles/**'],
+    rules: { 'fsd/insignificant-slice': 'off' },
+  },
+  {
+    // `session` (issue #24's toolbar Save/Load) and `settings-panel` (issue
+    // #24's sidebar Settings) each currently have one consumer too — same
+    // reasoning as the blocks above.
+    files: ['./src/features/session/**', './src/features/settings-panel/**'],
     rules: { 'fsd/insignificant-slice': 'off' },
   },
   {
@@ -70,6 +79,19 @@ export default defineConfig([
     // (e.g. Copy as curl / Replay are also natural fits for a future
     // per-row context menu in LogTable).
     files: ['./src/features/compare/**', './src/features/copy-as-curl/**', './src/features/replay/**'],
+    rules: { 'fsd/insignificant-slice': 'off' },
+  },
+  {
+    // `proxy-config` genuinely has six consumers — `grep -rln
+    // "@/entities/proxy-config" src` confirms `features/intercept-toggle`,
+    // `features/focus`, `features/throttle`, `features/block-hosts`,
+    // `features/session`, and `features/settings-panel` all import from it,
+    // and `tsc`/`vitest` resolve every one of those imports without error.
+    // `fsd/insignificant-slice` still reports "no references" here
+    // regardless — the same known Steiger 0.5 cross-slice reference-tracing
+    // false negative documented on `entities/rule` above, not an actual
+    // structural issue. Silenced for the same reason.
+    files: ['./src/entities/proxy-config/**'],
     rules: { 'fsd/insignificant-slice': 'off' },
   },
   {

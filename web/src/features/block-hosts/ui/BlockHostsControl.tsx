@@ -1,9 +1,9 @@
 import { Ban } from 'lucide-react';
 import { useRef, useState } from 'react';
+import { useBlockHostsStore } from '@/entities/proxy-config';
 import type { BlockHostsState } from '@/shared/api';
 import { useDismissablePopover } from '@/shared/lib/useDismissablePopover';
 import { HostChipList, PillToggle, Select } from '@/shared/ui';
-import { useBlockHostsStore } from '../model/store';
 
 const MODE_LABEL: Record<BlockHostsState['mode'], string> = {
   forbidden: '403 Forbidden',

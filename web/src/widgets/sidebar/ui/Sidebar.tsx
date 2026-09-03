@@ -1,11 +1,20 @@
-import { BookOpen, Check, ChevronLeft, ChevronRight, Copy, Route } from 'lucide-react';
+import { BookOpen, Check, ChevronLeft, ChevronRight, Copy, QrCode as QrCodeIcon, Route } from 'lucide-react';
 import { useState } from 'react';
 import { RulesEditorButton } from '@/features/rules-editor';
 import { RuleProfilesControl } from '@/features/rules-profiles';
-import { useConnectionStatus } from '@/shared/api';
+import { SettingsButton } from '@/features/settings-panel';
+import { getDashboardConnection, useConnectionStatus } from '@/shared/api';
 import { cn } from '@/shared/lib/utils';
-import { useProxyInfoStore } from '../model/createProxyInfoStore';
+import { createProxyInfoStore } from '../model/createProxyInfoStore';
 import { COLLAPSED_WIDTH, EXPANDED_WIDTH, useSidebarStore } from '../model/createSidebarStore';
+import { QrCode } from './QrCode';
+
+// The app's real proxy-info store, wired to the real dashboard connection.
+// Defined here (rather than in `model/createProxyInfoStore.ts`) so that
+// module stays a pure factory with no import-time side effect — importing
+// it in a test never opens a real WebSocket. See the factory's own doc
+// comment.
+const useProxyInfoStore = createProxyInfoStore(getDashboardConnection());
 
 const STATUS_LABEL: Record<string, string> = {
   connecting: 'Connecting…',
@@ -54,6 +63,7 @@ export function Sidebar() {
       {collapsed ? (
         <div className="flex flex-col items-center gap-2 py-3">
           <RulesEditorButton />
+          <SettingsButton />
         </div>
       ) : (
         <div className="flex-1 space-y-4 overflow-y-auto p-3">
@@ -64,6 +74,10 @@ export function Sidebar() {
               <RuleProfilesControl />
               <RulesEditorButton />
             </div>
+          </section>
+          <section>
+            <h2 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">Settings</h2>
+            <SettingsButton />
           </section>
           <a
             href="https://github.com/rwadada/Detour#readme"
@@ -84,6 +98,7 @@ export function Sidebar() {
 function ProxyUrlSection() {
   const proxyPort = useProxyInfoStore((s) => s.proxyPort);
   const [copied, setCopied] = useState(false);
+  const [showQr, setShowQr] = useState(false);
 
   if (proxyPort === null) return null; // pre-issue-#24 server, or the message hasn't arrived yet
   const url = `http://${window.location.hostname}:${proxyPort}`;
@@ -97,19 +112,39 @@ function ProxyUrlSection() {
   return (
     <section>
       <h2 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">Proxy URL</h2>
-      <button
-        type="button"
-        onClick={copy}
-        title="Copy proxy URL"
-        className="flex w-full items-center gap-1.5 rounded-md border border-[var(--border)] px-2 py-1.5 text-left font-mono-ui text-xs hover:bg-[var(--row-hover)]"
-      >
-        <span className="min-w-0 flex-1 truncate">{url}</span>
-        {copied ? (
-          <Check className="h-3 w-3 shrink-0 text-[var(--status-2xx)]" />
-        ) : (
-          <Copy className="h-3 w-3 shrink-0 text-[var(--muted)]" />
-        )}
-      </button>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={copy}
+          title="Copy proxy URL"
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 py-1.5 text-left font-mono-ui text-xs hover:bg-[var(--row-hover)]"
+        >
+          <span className="min-w-0 flex-1 truncate">{url}</span>
+          {copied ? (
+            <Check className="h-3 w-3 shrink-0 text-[var(--status-2xx)]" />
+          ) : (
+            <Copy className="h-3 w-3 shrink-0 text-[var(--muted)]" />
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowQr((v) => !v)}
+          title={showQr ? 'Hide QR code' : 'Show QR code — scan with a phone to point its proxy settings here'}
+          className={cn(
+            'shrink-0 rounded-md border p-1.5',
+            showQr
+              ? 'border-[var(--accent)] text-[var(--accent)]'
+              : 'border-[var(--border)] text-[var(--muted)] hover:bg-[var(--row-hover)]',
+          )}
+        >
+          <QrCodeIcon className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      {showQr && (
+        <div className="mt-2 flex justify-center">
+          <QrCode value={url} />
+        </div>
+      )}
     </section>
   );
 }

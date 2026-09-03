@@ -7,6 +7,7 @@ import { InterceptToggle } from '@/features/intercept-toggle';
 import { ExportMenu } from '@/features/log-export';
 import { ImportButton } from '@/features/log-viewer';
 import { PauseTailToggle } from '@/features/pause-tail';
+import { SessionControl } from '@/features/session';
 import { ThrottleControl } from '@/features/throttle';
 import { setTheme, useTheme } from '@/shared/lib/theme';
 import { Button, Input, Select } from '@/shared/ui';
@@ -67,6 +68,7 @@ export function Toolbar() {
 
       <ImportButton />
       <ExportMenu />
+      <SessionControl />
       <Button variant="outline" size="sm" onClick={clear} disabled={exchanges.length === 0} title="Clear log">
         <Trash2 className="h-3.5 w-3.5" />
         Clear
