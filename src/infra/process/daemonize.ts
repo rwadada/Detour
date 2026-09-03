@@ -33,6 +33,26 @@ function isChildMessage(value: unknown): value is ChildMessage {
 }
 
 /**
+ * Disconnects an IPC channel (either side: the parent's `ChildProcess`
+ * handle in `spawnDaemonChild` below, or the child's own `process` in
+ * `signalDaemonReady`/`signalDaemonError`) without throwing if the other
+ * end already tore it down first — both sides race to disconnect right
+ * after the ready/error handshake, and `disconnect()` throws ("IPC channel
+ * is already disconnected") if it loses that race. The `connected` check
+ * alone would be enough in a single-threaded JS callback (nothing else can
+ * run between it and the call), but guarding with try/catch too costs
+ * nothing and doesn't depend on that reasoning staying true.
+ */
+function safeDisconnect(target: { connected: boolean; disconnect(): void }): void {
+  if (!target.connected) return;
+  try {
+    target.disconnect();
+  } catch {
+    // Already disconnected — nothing more to do.
+  }
+}
+
+/**
  * Spawns `scriptPath args` as a detached background process (daemon mode,
  * issue #20's `--detach`) and waits for it to report readiness over IPC
  * before resolving — so by the time `detour start --detach` itself returns,
@@ -99,13 +119,7 @@ export function spawnDaemonChild(options: SpawnDaemonChildOptions): Promise<Daem
     const onMessage = (raw: unknown): void => {
       if (!isChildMessage(raw)) return;
       cleanup();
-      // The child disconnects its own end of the IPC channel right after
-      // sending this message (see `signalDaemonReady`/`signalDaemonError`'s
-      // callback) — if that race already tore the channel down before this
-      // side gets to it, `disconnect()` throws ("IPC channel is already
-      // disconnected"), which would incorrectly reject this promise despite
-      // the child having signaled successfully.
-      if (child.connected) child.disconnect();
+      safeDisconnect(child);
       child.unref();
       if (raw.type === 'ready') {
         resolve({ pid: child.pid!, proxyPort: raw.proxyPort, dashboardPort: raw.dashboardPort });
@@ -142,11 +156,11 @@ export function isDaemonChild(): boolean {
  */
 export function signalDaemonReady(info: { proxyPort: number; dashboardPort?: number }): void {
   if (typeof process.send !== 'function') return;
-  process.send({ type: 'ready', ...info } satisfies ChildMessage, () => process.disconnect());
+  process.send({ type: 'ready', ...info } satisfies ChildMessage, () => safeDisconnect(process));
 }
 
 /** Same as `signalDaemonReady`, for a startup failure — `exitCode` propagates to the parent's own exit code (see `CliExitError`). */
 export function signalDaemonError(message: string, exitCode: number): void {
   if (typeof process.send !== 'function') return;
-  process.send({ type: 'error', message, exitCode } satisfies ChildMessage, () => process.disconnect());
+  process.send({ type: 'error', message, exitCode } satisfies ChildMessage, () => safeDisconnect(process));
 }

@@ -229,16 +229,27 @@ async function runStart(options: StartOptions): Promise<void> {
   }
 
   if (trackRunState) {
-    writeRunState({
-      pid: process.pid,
-      requestedPort: port,
-      proxyPort: handle.port,
-      dashboardPort: dashboardHandle?.port,
-      headless,
-      detached: isDaemonChild(),
-      startedAt: Date.now(),
-      logFile: process.env.DETOUR_LOG_FILE,
-    });
+    try {
+      writeRunState({
+        pid: process.pid,
+        requestedPort: port,
+        proxyPort: handle.port,
+        dashboardPort: dashboardHandle?.port,
+        headless,
+        detached: isDaemonChild(),
+        startedAt: Date.now(),
+        logFile: process.env.DETOUR_LOG_FILE,
+      });
+    } catch (err) {
+      // The proxy (and dashboard) are already up at this point — an
+      // unwritable ~/.detour/run (e.g. disk full, permissions) shouldn't
+      // leave them running with no corresponding run-state entry: `detour
+      // status`/`stop`/`--fail-on-running` would then have no way to find
+      // this process at all. Same shutdown-before-rethrow shape as the
+      // dashboard bind failure above.
+      await Promise.all([handle.stop(), dashboardHandle?.stop()]);
+      throw err;
+    }
   }
 
   printStartupBanner({
