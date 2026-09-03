@@ -60,12 +60,54 @@ export function sessionFileName(when: Date = new Date()): string {
 /** Thrown by `parseSessionFile` with a message specific enough to show the user directly (mirrors `parseImportedLog`'s error style). */
 export class SessionFileError extends Error {}
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/**
+ * Validates just enough of `settings`'s nested shape that reading
+ * `session.settings.intercept.enabled`, `.focus.hosts`, etc. (as
+ * `SessionControl` does immediately after parsing, to apply them to the
+ * live proxy) can't throw a raw, unhandled `TypeError` instead of this
+ * function's own `SessionFileError` — field *values* (a host pattern with
+ * odd characters, an out-of-range Kbps) aren't checked here, since those
+ * reach the server as normal `set*` client messages that already validate
+ * themselves.
+ */
+function assertValidSettings(settings: Record<string, unknown>): void {
+  const { intercept, focus, throttle, blockHosts } = settings;
+  if (!isRecord(intercept) || typeof intercept.enabled !== 'boolean') {
+    throw new SessionFileError('Missing or invalid "settings.intercept".');
+  }
+  if (!isRecord(focus) || !Array.isArray(focus.hosts)) {
+    throw new SessionFileError('Missing or invalid "settings.focus".');
+  }
+  if (
+    !isRecord(throttle) ||
+    typeof throttle.enabled !== 'boolean' ||
+    typeof throttle.downKbps !== 'number' ||
+    typeof throttle.upKbps !== 'number' ||
+    typeof throttle.latencyMs !== 'number' ||
+    typeof throttle.packetLossPct !== 'number'
+  ) {
+    throw new SessionFileError('Missing or invalid "settings.throttle".');
+  }
+  if (
+    !isRecord(blockHosts) ||
+    !Array.isArray(blockHosts.hosts) ||
+    (blockHosts.mode !== 'forbidden' && blockHosts.mode !== 'reset')
+  ) {
+    throw new SessionFileError('Missing or invalid "settings.blockHosts".');
+  }
+}
+
 /**
  * Parses and validates a saved session file. Deliberately strict on
- * `detourSession` (see its doc comment) but otherwise only checks shape,
- * not exchange/state field-level correctness — a subtly-wrong `settings`
- * value just gets sent to the server as-is, which already validates its
- * own client messages.
+ * `detourSession` (see its doc comment) and on `settings`'s nested shape
+ * (see `assertValidSettings`) — everything else (individual exchange
+ * fields, filter values) is only checked at the top level, since a
+ * subtly-wrong value there just gets sent to the server as-is, which
+ * already validates its own client messages.
  */
 export function parseSessionFile(raw: string): DetourSessionFile {
   let data: unknown;
@@ -74,19 +116,15 @@ export function parseSessionFile(raw: string): DetourSessionFile {
   } catch {
     throw new SessionFileError('Not valid JSON.');
   }
-  if (typeof data !== 'object' || data === null) throw new SessionFileError('Not a Detour session file.');
-  const file = data as Partial<DetourSessionFile>;
-  if (file.detourSession !== SESSION_FILE_VERSION) {
+  if (!isRecord(data)) throw new SessionFileError('Not a Detour session file.');
+  if (data.detourSession !== SESSION_FILE_VERSION) {
     throw new SessionFileError(
-      `Unsupported session file version (expected ${SESSION_FILE_VERSION}, got ${String(file.detourSession)}).`,
+      `Unsupported session file version (expected ${SESSION_FILE_VERSION}, got ${String(data.detourSession)}).`,
     );
   }
-  if (!Array.isArray(file.exchanges)) throw new SessionFileError('Missing or invalid "exchanges".');
-  if (typeof file.settings !== 'object' || file.settings === null) {
-    throw new SessionFileError('Missing or invalid "settings".');
-  }
-  if (typeof file.filters !== 'object' || file.filters === null) {
-    throw new SessionFileError('Missing or invalid "filters".');
-  }
-  return file as DetourSessionFile;
+  if (!Array.isArray(data.exchanges)) throw new SessionFileError('Missing or invalid "exchanges".');
+  if (!isRecord(data.settings)) throw new SessionFileError('Missing or invalid "settings".');
+  assertValidSettings(data.settings);
+  if (!isRecord(data.filters)) throw new SessionFileError('Missing or invalid "filters".');
+  return data as unknown as DetourSessionFile;
 }

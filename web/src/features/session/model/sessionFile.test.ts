@@ -15,6 +15,7 @@ import {
   parseSessionFile,
   SESSION_FILE_VERSION,
   serializeSessionFile,
+  SessionFileError,
   sessionFileName,
   type SessionSettings,
 } from './sessionFile';
@@ -99,5 +100,31 @@ describe('parseSessionFile', () => {
   it('rejects a missing "filters"', () => {
     const missing = JSON.stringify({ detourSession: SESSION_FILE_VERSION, exchanges: [], settings: SETTINGS });
     expect(() => parseSessionFile(missing)).toThrow(/filters/);
+  });
+
+  // Regression coverage for a real review finding: `SessionControl` reads
+  // `session.settings.intercept.enabled`, `.focus.hosts`, etc. immediately
+  // after parsing, to apply them to the live proxy — a `settings` object
+  // present but missing (or wrongly-shaped) nested fields must be rejected
+  // here with a `SessionFileError`, not left to throw a raw `TypeError`
+  // deeper in that caller.
+  it.each([
+    ['settings.intercept', { ...SETTINGS, intercept: {} }],
+    ['settings.intercept', { ...SETTINGS, intercept: { enabled: 'yes' } }],
+    ['settings.focus', { ...SETTINGS, focus: {} }],
+    ['settings.focus', { ...SETTINGS, focus: { hosts: 'not-an-array' } }],
+    ['settings.throttle', { ...SETTINGS, throttle: { enabled: false } }],
+    ['settings.throttle', { ...SETTINGS, throttle: { ...SETTINGS.throttle, downKbps: '8' } }],
+    ['settings.blockHosts', { ...SETTINGS, blockHosts: { hosts: [] } }],
+    ['settings.blockHosts', { ...SETTINGS, blockHosts: { hosts: [], mode: 'bogus' } }],
+  ])('rejects a malformed %s', (fieldPath, settings) => {
+    const malformed = JSON.stringify({
+      detourSession: SESSION_FILE_VERSION,
+      exchanges: [],
+      settings,
+      filters: DEFAULT_FILTERS,
+    });
+    expect(() => parseSessionFile(malformed)).toThrow(SessionFileError);
+    expect(() => parseSessionFile(malformed)).toThrow(new RegExp(fieldPath.replace('.', '\\.')));
   });
 });
