@@ -28,4 +28,17 @@ describe('createSidebarStore', () => {
     const second = createSidebarStore();
     expect(second.getState().collapsed).toBe(true);
   });
+
+  // A review finding: a hand-edited or stale-schema persisted value that's
+  // valid JSON but not a boolean (`null` in particular — it parses without
+  // error, so a bare try/catch around JSON.parse can't catch it) must not
+  // flow into `!state.collapsed` and the sidebar's width/layout
+  // conditionals as-is.
+  it.each([
+    ['null', 'null'],
+    ['a string', '"yes"'],
+  ])('starts expanded when the persisted value is %s (not a boolean)', (_label, raw) => {
+    vi.stubGlobal('localStorage', { getItem: () => raw, setItem: () => {} });
+    expect(createSidebarStore().getState().collapsed).toBe(false);
+  });
 });

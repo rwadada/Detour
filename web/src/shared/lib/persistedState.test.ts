@@ -49,4 +49,37 @@ describe('readPersistedState / writePersistedState', () => {
     });
     expect(() => writePersistedState('k', 'v')).not.toThrow();
   });
+
+  describe('isValid', () => {
+    const isBoolean = (v: unknown): v is boolean => typeof v === 'boolean';
+
+    it('returns the parsed value when it passes isValid', () => {
+      writePersistedState('k', true);
+      expect(readPersistedState('k', false, isBoolean)).toBe(true);
+    });
+
+    // A review finding: the JSON literal `null` parses without error, so a
+    // plain try/catch around JSON.parse alone can't reject it — only an
+    // explicit shape check can. Same for any other well-formed-but-wrong-
+    // type value (a string, a number, an object where a caller expects a
+    // primitive, …).
+    it.each([
+      ['null', 'null'],
+      ['a string', '"not-a-boolean"'],
+      ['a number', '1'],
+    ])('falls back to the default when the parsed value is %s but isValid rejects it', (_label, raw) => {
+      vi.stubGlobal('localStorage', { getItem: () => raw, setItem: () => {} });
+      expect(readPersistedState('k', false, isBoolean)).toBe(false);
+    });
+
+    it('is not consulted when the key was never written (fallback path short-circuits first)', () => {
+      let calls = 0;
+      const isValid = (v: unknown): v is boolean => {
+        calls++;
+        return isBoolean(v);
+      };
+      readPersistedState<boolean>('missing', false, isValid);
+      expect(calls).toBe(0);
+    });
+  });
 });

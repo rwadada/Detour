@@ -34,9 +34,21 @@ function sanitizeColumnWidth(value: unknown): number | undefined {
     : undefined;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 /** Merges persisted widths over the defaults — a column added by a later release (not present in an older saved value), or one whose persisted value fails `sanitizeColumnWidth`, still gets its default rather than `undefined`/garbage. */
 function loadColumnWidths(): Record<ResizableColumn, number> {
-  const stored = readPersistedState<Partial<Record<ResizableColumn, unknown>>>(COLUMN_WIDTHS_STORAGE_KEY, {});
+  // `isRecord` rejects a hand-edited or stale-schema persisted value that
+  // parses as valid JSON but isn't an object — the literal `null` in
+  // particular parses fine and, without this check, would throw indexing
+  // into it below (`null[column]`).
+  const stored = readPersistedState<Record<ResizableColumn, unknown>>(
+    COLUMN_WIDTHS_STORAGE_KEY,
+    {} as Record<ResizableColumn, unknown>,
+    isRecord,
+  );
   const widths = { ...DEFAULT_COLUMN_WIDTHS };
   for (const column of Object.keys(widths) as ResizableColumn[]) {
     const sanitized = sanitizeColumnWidth(stored[column]);

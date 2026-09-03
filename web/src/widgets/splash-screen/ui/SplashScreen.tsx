@@ -36,7 +36,8 @@ export function SplashScreen({ onDone }: { onDone: () => void }) {
         if (event.animationName === 'detour-splash-out') onDone();
       }}
     >
-      <DetourLogo className="h-16 w-16 rounded-2xl" animated />
+      {/* decorative: the "Detour" title right below it already announces the name — an aria-labeled logo on top would repeat it. */}
+      <DetourLogo className="h-16 w-16 rounded-2xl" animated decorative />
       <div className="detour-splash-title text-base font-semibold tracking-tight">Detour</div>
     </div>
   );

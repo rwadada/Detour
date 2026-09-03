@@ -9,10 +9,30 @@
  * `pathLength="1"` on the stroked path lets `SplashScreen` animate its
  * `stroke-dashoffset` in normalized 0–1 units regardless of the path's
  * actual geometric length.
+ *
+ * `decorative`: pass `true` when adjacent visible text already says
+ * "Detour" (the expanded sidebar header, the splash title) — otherwise a
+ * screen reader announces "Detour" twice in a row for the same mark.
+ * Defaults to `false` (an accessible `role="img"`/`aria-label`) for a
+ * standalone use with no such text nearby.
  */
-export function DetourLogo({ className, animated = false }: { className?: string; animated?: boolean }) {
+export function DetourLogo({
+  className,
+  animated = false,
+  decorative = false,
+}: {
+  className?: string;
+  animated?: boolean;
+  decorative?: boolean;
+}) {
   return (
-    <svg viewBox="0 0 64 64" className={className} role="img" aria-label="Detour">
+    <svg
+      viewBox="0 0 64 64"
+      className={className}
+      role={decorative ? undefined : 'img'}
+      aria-label={decorative ? undefined : 'Detour'}
+      aria-hidden={decorative ? 'true' : undefined}
+    >
       <rect width="64" height="64" rx="14" fill="#0f1117" />
       <path
         d="M32 54 L32 36 L16 14 M32 36 L48 14"

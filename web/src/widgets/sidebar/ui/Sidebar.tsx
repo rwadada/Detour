@@ -39,7 +39,8 @@ export function Sidebar() {
       className="flex h-full shrink-0 flex-col overflow-hidden border-r border-[var(--border)] bg-[var(--sidebar)] transition-[width] duration-150"
     >
       <div className={cn('flex items-center gap-2 border-b border-[var(--border)] p-3', collapsed && 'justify-center')}>
-        <DetourLogo className="h-6 w-6 shrink-0 rounded-[5px]" />
+        {/* decorative only when expanded — collapsed, the icon rail has no adjacent "Detour" text, so it stays the accessible label for the whole sidebar. */}
+        <DetourLogo className="h-6 w-6 shrink-0 rounded-[5px]" decorative={!collapsed} />
         {!collapsed && (
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold tracking-tight">Detour</div>

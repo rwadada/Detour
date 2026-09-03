@@ -7,6 +7,10 @@ export const COLLAPSED_WIDTH = 52;
 
 const COLLAPSED_STORAGE_KEY = 'detour-sidebar-collapsed';
 
+function isBoolean(value: unknown): value is boolean {
+  return typeof value === 'boolean';
+}
+
 export interface SidebarState {
   /** True collapses the sidebar to a narrow icon rail (issue #24: 360px ⇔ 52px). Persisted to localStorage — see `COLLAPSED_STORAGE_KEY`. */
   collapsed: boolean;
@@ -16,7 +20,10 @@ export interface SidebarState {
 /** Widget-local UI state — only `Sidebar` and `App` (composing the overall layout) need this, so it lives here rather than in an entity. */
 export function createSidebarStore() {
   return create<SidebarState>((set) => ({
-    collapsed: readPersistedState(COLLAPSED_STORAGE_KEY, false),
+    // `isBoolean` rejects a hand-edited or stale-schema persisted value
+    // (`null`, a string, …) that would otherwise flow straight into
+    // `!state.collapsed` and the sidebar's width/layout conditionals.
+    collapsed: readPersistedState(COLLAPSED_STORAGE_KEY, false, isBoolean),
     toggleCollapsed: () =>
       set((state) => {
         const collapsed = !state.collapsed;

@@ -87,6 +87,16 @@ describe('createLogViewStore', () => {
       expect(store.getState().columnWidths).toEqual({ ...DEFAULT_COLUMN_WIDTHS, method: 120 });
     });
 
+    // A review finding: the JSON literal `null` parses without error, so a
+    // bare try/catch around JSON.parse can't reject it — without an
+    // explicit object-shape check, indexing into it (`null['method']`)
+    // would throw and break dashboard startup.
+    it('falls back to all defaults, without throwing, when the persisted value is the literal null', () => {
+      vi.stubGlobal('localStorage', { getItem: () => 'null', setItem: () => {} });
+      expect(() => createLogViewStore()).not.toThrow();
+      expect(createLogViewStore().getState().columnWidths).toEqual(DEFAULT_COLUMN_WIDTHS);
+    });
+
     // A review finding: a hand-edited or stale-schema localStorage value
     // (a wrong type, `null`, …) must not flow straight into a React
     // `style={{ width }}` — anything that isn't a finite number falls back
