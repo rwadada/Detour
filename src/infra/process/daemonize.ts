@@ -105,6 +105,14 @@ export function spawnDaemonChild(options: SpawnDaemonChildOptions): Promise<Daem
     const timeout = setTimeout(() => {
       cleanup();
       child.kill();
+      // Same reasoning as the ready/error paths below: don't let a
+      // straggling child (e.g. one that ignores SIGTERM, or is just slow to
+      // exit) keep this process alive via the still-referenced ChildProcess
+      // handle, or leave the IPC channel dangling — `detour start --detach`
+      // must actually be able to exit after reporting this timeout, not
+      // hang waiting for a child it's already given up on.
+      safeDisconnect(child);
+      child.unref();
       reject(
         new Error(`timed out after ${timeoutMs}ms waiting for the daemon to become ready — check ${options.logFile}`),
       );

@@ -281,8 +281,21 @@ async function runStart(options: StartOptions): Promise<void> {
         : `\nReceived ${reason}. Stopping the proxy…`,
     );
     idleWatcher?.stop();
+    let stopError: unknown;
+    try {
+      await Promise.all([handle.stop(), dashboardHandle?.stop()]);
+    } catch (err) {
+      stopError = err;
+    }
+    // Removed only once the stop attempt has actually settled (success or
+    // failure), not before — removing it first would let a concurrent
+    // `detour status`/`--fail-on-running` briefly see "not running" while
+    // the servers (and this process) are still very much alive.
     if (trackRunState) removeRunState(port);
-    await Promise.all([handle.stop(), dashboardHandle?.stop()]);
+    if (stopError) {
+      console.error(`✖ ${stopError instanceof Error ? stopError.message : String(stopError)}`);
+      process.exit(1);
+    }
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown('SIGINT'));
