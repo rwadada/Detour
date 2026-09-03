@@ -5,6 +5,8 @@ import { FocusControl } from '@/features/focus';
 import { InterceptToggle } from '@/features/intercept-toggle';
 import { ExportMenu } from '@/features/log-export';
 import { ImportButton } from '@/features/log-viewer';
+import { RulesEditorButton } from '@/features/rules-editor';
+import { RuleProfilesControl } from '@/features/rules-profiles';
 import { ThrottleControl } from '@/features/throttle';
 import { useConnectionStatus } from '@/shared/api';
 import { setTheme, useTheme } from '@/shared/lib/theme';
@@ -43,6 +45,8 @@ export function Header() {
         <FocusControl />
         <ThrottleControl />
         <BlockHostsControl />
+        <RulesEditorButton />
+        <RuleProfilesControl />
         <ImportButton />
         <ExportMenu />
         <Button

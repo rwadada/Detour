@@ -9,6 +9,8 @@ import type {
   ProxyErrorEvent,
   ThrottleState,
 } from '../exchange/types';
+import type { RuleProfileSummary } from '../rules/profile';
+import type { RulesFile } from '../rules/types';
 
 /**
  * Messages sent from the dashboard server to a connected browser client over
@@ -67,7 +69,22 @@ export type DashboardServerMessage =
   /** A WebSocket frame was relayed — `connection` is the full up-to-date record (see `DetourEvents['wsFrame']`'s doc comment), not just the new frame. */
   | { type: 'wsFrame'; connection: CapturedWebSocketConnection }
   /** A proxied WebSocket connection closed, cleanly or via error. */
-  | { type: 'wsClose'; connection: CapturedWebSocketConnection };
+  | { type: 'wsClose'; connection: CapturedWebSocketConnection }
+  /**
+   * The currently active rules.json contents (issue #19's Rules editor) —
+   * sent once right after connecting and again after every reload, whether
+   * triggered by a `setRules`/`applyRuleProfile` edit from the dashboard or
+   * an external hand-edit of the file. `null` when this session has no
+   * rules file configured (`detour start` without `--rules`, and no
+   * `rules.json` auto-detected in the working directory).
+   */
+  | { type: 'rules'; data: RulesFile | null }
+  /**
+   * The saved rule profiles available to switch to or apply (issue #19's
+   * Rules Profiles) — sent once right after connecting and again after any
+   * profile is created or overwritten.
+   */
+  | { type: 'ruleProfiles'; profiles: RuleProfileSummary[] };
 
 /**
  * Messages sent from a connected browser client to the dashboard server over
@@ -84,4 +101,21 @@ export type DashboardClientMessage =
   /** Replaces the Throttle profile wholesale (see `ThrottleState`). */
   | { type: 'setThrottle'; state: ThrottleState }
   /** Replaces the Block Hosts denylist wholesale (see `BlockHostsState`). */
-  | { type: 'setBlockHosts'; state: BlockHostsState };
+  | { type: 'setBlockHosts'; state: BlockHostsState }
+  /**
+   * Saves edits to the currently active rules.json (issue #19's Rules
+   * editor). Rejected — via an `error` broadcast — if `data` fails
+   * validation or no rules file is configured for this session.
+   */
+  | { type: 'setRules'; data: RulesFile }
+  /**
+   * Creates a new saved rule profile (issue #19's Rules Profiles) seeded
+   * from a template: `'blank'` (no rules) or `'sample'` (the same starter
+   * set `detour rules init` scaffolds). Rejected if `name` is already
+   * taken or invalid.
+   */
+  | { type: 'createRuleProfile'; name: string; template: 'blank' | 'sample' }
+  /** Saves the currently active rules.json as a named profile, creating it or overwriting it if it already exists. */
+  | { type: 'saveActiveRulesAsProfile'; name: string }
+  /** Loads a saved profile's rules and writes them into the currently active rules.json — equivalent to pasting its contents into the Rules editor and saving. */
+  | { type: 'applyRuleProfile'; name: string };

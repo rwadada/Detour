@@ -2,14 +2,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { fsFileWatcher, fsRulesFileReader } from '../infra/fs/rulesFileSource';
+import { fsFileWatcher, fsRulesFileReader, fsRulesFileWriter } from '../infra/fs/rulesFileSource';
+import type { Rule } from '../domain/rules/types';
 import { RuleEngine } from './ruleEngine';
 
 function writeRules(filePath: string, rules: unknown[]): void {
   fs.writeFileSync(filePath, JSON.stringify({ rules }));
 }
 
-const routeRule = (name: string) => ({
+const routeRule = (name: string): Rule => ({
   name,
   match: { url: 'https://api.example.com/*' },
   action: { type: 'route', host: 'x' },
@@ -131,6 +132,39 @@ describe('RuleEngine', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(reloadCount).toBe(1);
     expect(engine.getRules()).toHaveLength(3);
+  });
+
+  it('write() saves rules to disk and, once reloaded, serves them', () => {
+    writeRules(filePath, [routeRule('a')]);
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader, writer: fsRulesFileWriter });
+
+    engine.write([routeRule('a'), routeRule('b')]);
+
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8')).rules).toHaveLength(2);
+    // write() itself doesn't hot-swap compiledRules — it lands back through
+    // the same reload path a manual file edit would (see RuleEngine.write's
+    // doc comment).
+    expect(engine.getRules()).toHaveLength(1);
+    triggerReload(engine);
+    expect(engine.getRules()).toHaveLength(2);
+  });
+
+  it('write() throws (without touching the file) when no writer was configured', () => {
+    writeRules(filePath, [routeRule('a')]);
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });
+    const before = fs.readFileSync(filePath, 'utf8');
+
+    expect(() => engine?.write([routeRule('a'), routeRule('b')])).toThrow(/writer/);
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(before);
+  });
+
+  it('write() throws (without touching the file) on rules that fail validation', () => {
+    writeRules(filePath, [routeRule('a')]);
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader, writer: fsRulesFileWriter });
+    const before = fs.readFileSync(filePath, 'utf8');
+
+    expect(() => engine?.write([{ name: 'bad', match: {}, action: { type: 'bogus' } } as never])).toThrow();
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(before);
   });
 
   it('watches for changes by default and stops once closed', async () => {

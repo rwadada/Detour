@@ -140,6 +140,88 @@ export interface CapturedWebSocketConnection {
   error?: string;
 }
 
+/** Mirrors `src/domain/rules/types.ts`'s `Rule`/`RulesFile` (issue #19's Rules editor). */
+export interface RuleMatch {
+  method?: string | string[];
+  url?: string;
+  urlRegex?: string;
+  urlRegexFlags?: string;
+}
+
+export interface HeaderRewrite {
+  set?: Record<string, string>;
+  remove?: string[];
+}
+
+export interface QueryRewrite {
+  set?: Record<string, string>;
+  remove?: string[];
+}
+
+export interface BodyReplace {
+  find: string;
+  replacement: string;
+  regex?: boolean;
+  flags?: string;
+}
+
+export interface BodyRewrite {
+  set?: unknown;
+  replace?: BodyReplace[];
+  merge?: unknown;
+}
+
+export interface MockAction {
+  type: 'mock';
+  status?: number;
+  statusMessage?: string;
+  headers?: Record<string, string>;
+  body?: unknown;
+  bodyFile?: string;
+  delayMs?: number;
+  simulate?: 'timeout' | 'close';
+}
+
+export interface RouteAction {
+  type: 'route';
+  host: string;
+  port?: number;
+  preserveHostHeader?: boolean;
+}
+
+export interface RewriteAction {
+  type: 'rewrite';
+  request?: { query?: QueryRewrite; headers?: HeaderRewrite; body?: BodyRewrite };
+  response?: { status?: number; headers?: HeaderRewrite; body?: BodyRewrite };
+}
+
+export interface BreakpointAction {
+  type: 'breakpoint';
+  request?: boolean;
+  response?: boolean;
+}
+
+export type RuleAction = MockAction | RouteAction | RewriteAction | BreakpointAction;
+
+export interface Rule {
+  name: string;
+  enabled?: boolean;
+  match: RuleMatch;
+  action: RuleAction;
+}
+
+export interface RulesFile {
+  $schema?: string;
+  rules: Rule[];
+}
+
+/** Mirrors `src/domain/rules/profile.ts`'s `RuleProfileSummary` (issue #19's Rules Profiles). */
+export interface RuleProfileSummary {
+  name: string;
+  ruleCount: number;
+  updatedAt: number;
+}
+
 export type DashboardServerMessage =
   | { type: 'backlog'; items: CapturedExchange[] }
   | { type: 'wsBacklog'; items: CapturedWebSocketConnection[] }
@@ -153,11 +235,23 @@ export type DashboardServerMessage =
   | { type: 'blockHosts'; state: BlockHostsState }
   | { type: 'wsOpen'; connection: CapturedWebSocketConnection }
   | { type: 'wsFrame'; connection: CapturedWebSocketConnection }
-  | { type: 'wsClose'; connection: CapturedWebSocketConnection };
+  | { type: 'wsClose'; connection: CapturedWebSocketConnection }
+  /** The currently active rules.json contents — `null` when no rules file is configured for this session. */
+  | { type: 'rules'; data: RulesFile | null }
+  /** The saved rule profiles available to switch to or apply. */
+  | { type: 'ruleProfiles'; profiles: RuleProfileSummary[] };
 
 export type DashboardClientMessage =
   | { type: 'breakpointResume'; command: BreakpointResumeCommand }
   | { type: 'setIntercept'; enabled: boolean }
   | { type: 'setFocus'; hosts: string[] }
   | { type: 'setThrottle'; state: ThrottleState }
-  | { type: 'setBlockHosts'; state: BlockHostsState };
+  | { type: 'setBlockHosts'; state: BlockHostsState }
+  /** Saves edits to the currently active rules.json (Rules editor). */
+  | { type: 'setRules'; data: RulesFile }
+  /** Creates a new saved rule profile from a template. */
+  | { type: 'createRuleProfile'; name: string; template: 'blank' | 'sample' }
+  /** Saves the currently active rules.json as a named profile. */
+  | { type: 'saveActiveRulesAsProfile'; name: string }
+  /** Loads a saved profile's rules into the currently active rules.json. */
+  | { type: 'applyRuleProfile'; name: string };
