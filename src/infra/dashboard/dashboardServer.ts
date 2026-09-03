@@ -32,9 +32,15 @@ import { serveStatic } from './staticServer';
 const DEFAULT_BACKLOG_SIZE = 500;
 
 // Built dashboard SPA (see web/), copied here as `web-dist/` by `npm run
-// build`. Two directories up from this file in both dev (src/dashboard →
-// repo root) and prod (dist/dashboard → package root) layouts.
-export const WEB_DIST_DIR = path.resolve(__dirname, '..', '..', 'web-dist');
+// build`. Three directories up from this file in both dev (src/infra/dashboard
+// → repo root) and prod (dist/infra/dashboard → package root) layouts —
+// `tsconfig.json`'s `rootDir: "src"`/`outDir: "dist"` mirror this file's
+// nesting exactly, so the same relative path resolves correctly under both
+// `tsx src/cli.ts` and the compiled `dist/cli.js`. (Was two levels up before
+// the Clean Architecture move from `src/dashboard/` to `src/infra/dashboard/`
+// — issue #29 — which added a nesting level here without updating this path,
+// making `detour start` unable to find a build that genuinely exists.)
+export const WEB_DIST_DIR = path.resolve(__dirname, '..', '..', '..', 'web-dist');
 
 export interface DashboardServerOptions {
   port: number;
