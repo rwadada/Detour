@@ -9,7 +9,13 @@ import { SAMPLE_RULES_FILE } from './domain/rules/sample';
 import { startDashboardServer, WEB_DIST_DIR } from './infra/dashboard/dashboardServer';
 import { DetourEventBus } from './infra/eventBus';
 import { resolveDumpDir, writeExchangeDumpFile, writeWebSocketDumpFile } from './infra/fs/dumpFileWriter';
-import { findLiveRunState, isProcessAlive, removeRunState, writeRunState } from './infra/fs/runStateStore';
+import {
+  findLiveRunState,
+  isProcessAlive,
+  removeRunState,
+  reserveRunState,
+  writeRunState,
+} from './infra/fs/runStateStore';
 import { fsRuleProfileStore } from './infra/fs/ruleProfileStore';
 import { fsFileWatcher, fsRulesFileReader, fsRulesFileWriter, loadRulesFile } from './infra/fs/rulesFileSource';
 import { buildGrpcExchangeInfo } from './infra/grpc/grpcExchangeInfo';
@@ -66,7 +72,7 @@ function parseIdleMs(value: string): number {
   return ms;
 }
 
-/** Where a `--detach` daemon's stdout/stderr are appended (~/.detour/logs/<port>.log — one file per tracked port, overwritten across restarts of the same port isn't attempted; it just keeps growing, same as the console output a foreground run would otherwise produce). */
+/** Where a `--detach` daemon's stdout/stderr are appended (~/.detour/logs/<port>.log — one file per tracked port, overwritten across restarts of the same port isn't attempted; it just keeps growing, same as the console output a foreground run would otherwise produce). Mirrors `certStore.ts`'s `resolveCertDir`/`dumpFileWriter.ts`'s `resolveDumpDir`/`runStateStore.ts`'s `resolveRunDir`. */
 function resolveLogFilePath(port: number): string {
   const dir = path.join(os.homedir(), '.detour', 'logs');
   fs.mkdirSync(dir, { recursive: true });
@@ -129,11 +135,18 @@ export function resolveDashboardPort(proxyPort: number, explicit: string | undef
   return derived;
 }
 
+/**
+ * Validates flags, then — for `--fail-on-running` — atomically reserves the
+ * run-state slot before any of the slower work in `runStartBody` (proto/
+ * rules loading, the real port bind, the dashboard bind) so the check stays
+ * reliable under two concurrent `--fail-on-running` starts (see
+ * `reserveRunState`'s doc comment). If `runStartBody` fails for any other
+ * reason after that reservation, it's released here before rethrowing —
+ * this process never actually finished starting, so nothing should be left
+ * looking like it's running on this port.
+ */
 async function runStart(options: StartOptions): Promise<void> {
   const port = parsePort(options.port, '--port');
-  const dashboardPort = resolveDashboardPort(port, options.dashboardPort);
-  const dumpLevel = parseDumpLevel(options.dump);
-  const dumpDir = dumpLevel === 'file' ? resolveDumpDir() : undefined;
   const headless = options.headless ?? false;
   const exitOnIdleMs = options.exitOnIdle !== undefined ? parseIdleMs(options.exitOnIdle) : undefined;
 
@@ -148,15 +161,58 @@ async function runStart(options: StartOptions): Promise<void> {
       '--fail-on-running requires an explicit --port (an ephemeral "--port 0" has no stable port to check)',
     );
   }
-  if (trackRunState && options.failOnRunning) {
-    const existing = findLiveRunState(port);
-    if (existing) {
+
+  const reservedRunState = trackRunState && options.failOnRunning === true;
+  if (reservedRunState) {
+    const reserved = reserveRunState({
+      pid: process.pid,
+      requestedPort: port,
+      // Placeholder until the real bind below resolves it (relevant if
+      // --port were ever ephemeral here, which trackRunState rules out) —
+      // overwritten by the unconditional `writeRunState` in `runStartBody`
+      // once the actual proxy/dashboard ports are known.
+      proxyPort: port,
+      dashboardPort: undefined,
+      headless,
+      detached: isDaemonChild(),
+      startedAt: Date.now(),
+      logFile: process.env.DETOUR_LOG_FILE,
+    });
+    if (!reserved) {
+      const existing = findLiveRunState(port);
+      const detail = existing ? ` (pid ${existing.pid}, started ${new Date(existing.startedAt).toISOString()})` : '';
       throw new CliExitError(
-        `detour is already running on port ${port} (pid ${existing.pid}, started ${new Date(existing.startedAt).toISOString()}). Stop it first with \`detour stop --port ${port}\`.`,
+        `detour is already running on port ${port}${detail}. Stop it first with \`detour stop --port ${port}\`.`,
         3,
       );
     }
   }
+
+  try {
+    await runStartBody({ port, headless, exitOnIdleMs, trackRunState, options });
+  } catch (err) {
+    if (reservedRunState) removeRunState(port);
+    throw err;
+  }
+}
+
+interface RunStartBodyContext {
+  port: number;
+  headless: boolean;
+  exitOnIdleMs: number | undefined;
+  trackRunState: boolean;
+  options: StartOptions;
+}
+
+async function runStartBody({
+  port,
+  headless,
+  exitOnIdleMs,
+  trackRunState,
+  options,
+}: RunStartBodyContext): Promise<void> {
+  const dumpLevel = parseDumpLevel(options.dump);
+  const dumpDir = dumpLevel === 'file' ? resolveDumpDir() : undefined;
 
   // Loaded eagerly (like rules.json below) so a broken .proto schema fails
   // CLI startup with a clear error, rather than every gRPC exchange
@@ -214,6 +270,11 @@ async function runStart(options: StartOptions): Promise<void> {
   // yet either way).
   let dashboardHandle: Awaited<ReturnType<typeof startDashboardServer>> | undefined;
   if (!headless) {
+    // Resolved only when actually needed: computed eagerly (outside this
+    // `if`), a `--port` close enough to 65535 that only its +1000 offset
+    // would overflow could fail this validation even under `--headless`,
+    // where no dashboard port is ever bound at all.
+    const dashboardPort = resolveDashboardPort(port, options.dashboardPort);
     try {
       dashboardHandle = await startDashboardServer(
         { port: dashboardPort, proxyPort: handle.port, ruleEngine, ruleProfileStore: fsRuleProfileStore },
@@ -439,23 +500,28 @@ export function createCli(): Command {
     .description('Shows whether a detour instance (--detach or foreground) is running on the given --port (issue #20)')
     .option('-p, --port <port>', 'Port to check (matches the --port a `detour start` was given)', '8080')
     .action((options: { port: string }) => {
-      const port = parsePort(options.port, '--port');
-      const state = findLiveRunState(port);
-      if (!state) {
-        reportNotRunning(port);
-        return;
+      try {
+        const port = parsePort(options.port, '--port');
+        const state = findLiveRunState(port);
+        if (!state) {
+          reportNotRunning(port);
+          return;
+        }
+        console.log(
+          `✔ detour is running on port ${port} (pid ${state.pid}${state.detached ? ', detached' : ', foreground'})`,
+        );
+        console.log(`  Proxy     → http://localhost:${state.proxyPort}`);
+        console.log(
+          state.dashboardPort !== undefined
+            ? `  Dashboard → http://localhost:${state.dashboardPort}`
+            : '  Dashboard → disabled (--headless)',
+        );
+        console.log(`  Started   → ${new Date(state.startedAt).toISOString()}`);
+        if (state.logFile) console.log(`  Logs      → ${state.logFile}`);
+      } catch (err) {
+        console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
       }
-      console.log(
-        `✔ detour is running on port ${port} (pid ${state.pid}${state.detached ? ', detached' : ', foreground'})`,
-      );
-      console.log(`  Proxy     → http://localhost:${state.proxyPort}`);
-      console.log(
-        state.dashboardPort !== undefined
-          ? `  Dashboard → http://localhost:${state.dashboardPort}`
-          : '  Dashboard → disabled (--headless)',
-      );
-      console.log(`  Started   → ${new Date(state.startedAt).toISOString()}`);
-      if (state.logFile) console.log(`  Logs      → ${state.logFile}`);
     });
 
   program
@@ -463,33 +529,38 @@ export function createCli(): Command {
     .description('Stops a detour instance (--detach or foreground) running on the given --port (issue #20)')
     .option('-p, --port <port>', 'Port of the instance to stop (matches the --port it was given)', '8080')
     .action(async (options: { port: string }) => {
-      const port = parsePort(options.port, '--port');
-      const state = findLiveRunState(port);
-      if (!state) {
-        reportNotRunning(port);
-        return;
-      }
       try {
-        process.kill(state.pid, 'SIGTERM');
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'ESRCH') throw err;
-      }
-      const deadline = Date.now() + STOP_GRACE_PERIOD_MS;
-      while (isProcessAlive(state.pid) && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      if (isProcessAlive(state.pid)) {
+        const port = parsePort(options.port, '--port');
+        const state = findLiveRunState(port);
+        if (!state) {
+          reportNotRunning(port);
+          return;
+        }
         try {
-          process.kill(state.pid, 'SIGKILL');
+          process.kill(state.pid, 'SIGTERM');
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== 'ESRCH') throw err;
         }
+        const deadline = Date.now() + STOP_GRACE_PERIOD_MS;
+        while (isProcessAlive(state.pid) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        if (isProcessAlive(state.pid)) {
+          try {
+            process.kill(state.pid, 'SIGKILL');
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== 'ESRCH') throw err;
+          }
+        }
+        // Self-healing (see findLiveRunState): normally the process removes
+        // its own state file as part of graceful shutdown, but a SIGKILL after
+        // the grace period skips that — clean it up here either way.
+        removeRunState(port);
+        console.log(`✔ Stopped detour (pid ${state.pid}) on port ${port}.`);
+      } catch (err) {
+        console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
       }
-      // Self-healing (see findLiveRunState): normally the process removes
-      // its own state file as part of graceful shutdown, but a SIGKILL after
-      // the grace period skips that — clean it up here either way.
-      removeRunState(port);
-      console.log(`✔ Stopped detour (pid ${state.pid}) on port ${port}.`);
     });
 
   const cert = program

@@ -28,14 +28,23 @@ export interface IdleWatcherHandle {
  * `wsClose` too.) It's armed immediately on start as well, as a grace
  * period counted from startup rather than from the first request.
  *
- * One known, deliberately unaddressed gap: a `mock` rule's
- * `simulate: "timeout"` action emits `request` but — by design — neither
- * `response` nor an `error`; there's no signal for when (if ever) the
- * client on the other end gives up. Matching such a rule leaves that one
- * exchange's id tracked forever, disabling `--exit-on-idle` for the rest of
- * the process's life. Accepted as a narrow trade-off rather than adding a
- * second "give up waiting" timer purely for that one deliberately-hung-
- * connection testing feature.
+ * Two known, deliberately unaddressed gaps:
+ *
+ * - A `mock` rule's `simulate: "timeout"` action emits `request` but — by
+ *   design — neither `response` nor an `error`; there's no signal for when
+ *   (if ever) the client on the other end gives up. Matching such a rule
+ *   leaves that one exchange's id tracked forever, disabling
+ *   `--exit-on-idle` for the rest of the process's life. Accepted as a
+ *   narrow trade-off rather than adding a second "give up waiting" timer
+ *   purely for that one deliberately-hung-connection testing feature.
+ * - `request` (see `handleRequest` below) only fires once the client's
+ *   entire request body has finished arriving (`proxyServer.ts`'s
+ *   `onRequestEnd`), so a slow/throttled upload is invisible to this
+ *   watcher for its whole duration — the idle timer can elapse mid-upload
+ *   if nothing else is in flight. Accepted rather than adding a new
+ *   "upload started" event purely for this watcher's benefit; a
+ *   `--exit-on-idle` value comfortably longer than any expected upload
+ *   sidesteps it in practice.
  */
 export function startIdleWatcher(eventBus: DetourEventBus, idleMs: number, onIdle: () => void): IdleWatcherHandle {
   // Undefined whenever no timer is currently pending (before the first arm,
@@ -77,6 +86,15 @@ export function startIdleWatcher(eventBus: DetourEventBus, idleMs: number, onIdl
   };
   const handleError = (event: ProxyErrorEvent): void => {
     if (event.id === undefined) return;
+    // `RULE_MOCK_ERROR`/`RULE_SCRIPT_ERROR` (see proxyServer.ts's
+    // `tryResolveMock`/`tryLoadScriptModule` callers) are informational —
+    // the rule failed, but the exchange itself keeps going (a fallback 500,
+    // or the request/response forwarded unrewritten) and a real `response`
+    // still follows for this same id. Every other `errorKind` reaching here
+    // (the proxy-level `onError` catch-all — connection reset, TLS failure
+    // mid-request, etc.) means the exchange is genuinely over with no
+    // `response` coming, per this file's doc comment.
+    if (event.errorKind === 'RULE_MOCK_ERROR' || event.errorKind === 'RULE_SCRIPT_ERROR') return;
     activeHttp.delete(event.id);
     activeWs.delete(event.id);
     arm();

@@ -1963,6 +1963,89 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       expect(result.exitCode).not.toBe(0);
       expect(result.stderr).toContain('--fail-on-running requires an explicit --port');
     });
+
+    it('reserves the port atomically: exactly one of two truly concurrent starts wins the race', async () => {
+      // Regression test for a TOCTOU race (found in local review before this
+      // ever reached a real reviewer): two `--fail-on-running` starts
+      // launched close enough together could previously both pass the
+      // early `findLiveRunState` check (nothing tracked yet) and both
+      // proceed, since the actual run-state write happened much later —
+      // reserveRunState (an atomic exclusive-create) is what closes that
+      // window. Launches both processes at once (not sequentially, unlike
+      // the test above) so they genuinely race for the same reservation.
+      const port = await findFreePort();
+      const spawnArgs = [
+        'tsx',
+        'src/cli.ts',
+        'start',
+        '--port',
+        String(port),
+        '--dashboard-port',
+        '0',
+        '--fail-on-running',
+      ];
+      const procA = execa('npx', spawnArgs, { cwd: REPO_ROOT, reject: false });
+      const procB = execa('npx', spawnArgs, { cwd: REPO_ROOT, reject: false });
+
+      let resultA: Awaited<typeof procA> | undefined;
+      let resultB: Awaited<typeof procB> | undefined;
+      void procA.then((r) => {
+        resultA = r;
+      });
+      void procB.then((r) => {
+        resultB = r;
+      });
+
+      let stdoutA = '';
+      procA.stdout?.on('data', (c: Buffer) => {
+        stdoutA += c.toString();
+      });
+      let stdoutB = '';
+      procB.stdout?.on('data', (c: Buffer) => {
+        stdoutB += c.toString();
+      });
+      let stderrA = '';
+      procA.stderr?.on('data', (c: Buffer) => {
+        stderrA += c.toString();
+      });
+      let stderrB = '';
+      procB.stderr?.on('data', (c: Buffer) => {
+        stderrB += c.toString();
+      });
+
+      try {
+        // The loser exits almost immediately (CliExitError(3), well before
+        // ever binding a port); the winner is a real, long-running `detour
+        // start` that only exits once killed below — so "one of the two
+        // execa promises settles" is exactly the signal that exactly one
+        // process lost the race, without waiting on the winner to exit.
+        const start = Date.now();
+        while (!resultA && !resultB) {
+          if (Date.now() - start > 15_000) {
+            throw new Error(
+              `neither concurrent start exited within 15s — expected exactly one to lose the reservation race.\nstdout A: ${stdoutA}\nstdout B: ${stdoutB}`,
+            );
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+
+        const [loserResult, loserStderr, winnerStdoutRef] = resultA
+          ? [resultA, stderrA, () => stdoutB]
+          : [resultB!, stderrB, () => stdoutA];
+
+        expect(loserResult.exitCode).toBe(3);
+        expect(loserStderr).toContain('already running');
+        expect(loserStderr).toContain(`port ${port}`);
+
+        // The winner should be a genuine, successful start — not also a
+        // reservation failure that happened to resolve slower.
+        await waitForStdout({ stdout: winnerStdoutRef }, /DETOUR_READY/);
+      } finally {
+        procA.kill('SIGTERM');
+        procB.kill('SIGTERM');
+        await Promise.all([procA.catch(() => {}), procB.catch(() => {})]);
+      }
+    }, 30_000);
   });
 
   describe('--detach / detour status / detour stop', () => {

@@ -26,39 +26,46 @@ const ENSURE_CA_TIMEOUT_MS = 20_000;
  */
 export async function ensureCaCert(): Promise<string> {
   const certPath = caCertPath();
-  if (!fs.existsSync(certPath)) {
-    const proxy = new Proxy();
-    try {
-      await new Promise<void>((resolve, reject) => {
-        // A safety net, not the expected path — `listen()`'s callback not
-        // firing would otherwise hang this (and `detour cert export`)
-        // forever instead of failing with a clear error.
-        const timeout = setTimeout(
-          () => reject(new Error(`timed out after ${ENSURE_CA_TIMEOUT_MS}ms generating the CA certificate`)),
-          ENSURE_CA_TIMEOUT_MS,
-        );
-        timeout.unref();
-        try {
-          proxy.listen({ port: 0, host: 'localhost', sslCaDir: resolveCertDir() }, () => {
-            clearTimeout(timeout);
-            resolve();
-          });
-        } catch (err) {
-          clearTimeout(timeout);
-          reject(err instanceof Error ? err : new Error(String(err)));
-        }
-      });
-    } finally {
-      // Best-effort: on the timeout/throw paths above, `listen()` may not
-      // have gotten far enough to actually create its internal servers yet,
-      // in which case `close()` itself throws — nothing more to clean up
-      // either way, and that shouldn't mask the real error above it.
+  if (fs.existsSync(certPath)) return certPath;
+
+  const proxy = new Proxy();
+  // Overwritten with `proxy.ca.getCACertPath()` below once `listen()`
+  // actually finishes generating the CA — the library's own canonical
+  // source for this path (`proxyServer.ts`'s startup banner uses the same
+  // call), rather than trusting our own `caCertPath()` formula to still
+  // match it after the fact.
+  let generatedPath = certPath;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      // A safety net, not the expected path — `listen()`'s callback not
+      // firing would otherwise hang this (and `detour cert export`)
+      // forever instead of failing with a clear error.
+      const timeout = setTimeout(
+        () => reject(new Error(`timed out after ${ENSURE_CA_TIMEOUT_MS}ms generating the CA certificate`)),
+        ENSURE_CA_TIMEOUT_MS,
+      );
+      timeout.unref();
       try {
-        proxy.close();
-      } catch {
-        // Nothing to close.
+        proxy.listen({ port: 0, host: 'localhost', sslCaDir: resolveCertDir() }, () => {
+          clearTimeout(timeout);
+          generatedPath = proxy.ca.getCACertPath();
+          resolve();
+        });
+      } catch (err) {
+        clearTimeout(timeout);
+        reject(err instanceof Error ? err : new Error(String(err)));
       }
+    });
+  } finally {
+    // Best-effort: on the timeout/throw paths above, `listen()` may not
+    // have gotten far enough to actually create its internal servers yet,
+    // in which case `close()` itself throws — nothing more to clean up
+    // either way, and that shouldn't mask the real error above it.
+    try {
+      proxy.close();
+    } catch {
+      // Nothing to close.
     }
   }
-  return certPath;
+  return generatedPath;
 }
