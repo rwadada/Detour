@@ -201,7 +201,12 @@ export interface BreakpointAction {
   response?: boolean;
 }
 
-export type RuleAction = MockAction | RouteAction | RewriteAction | BreakpointAction;
+export interface ScriptAction {
+  type: 'script';
+  path: string;
+}
+
+export type RuleAction = MockAction | RouteAction | RewriteAction | BreakpointAction | ScriptAction;
 
 export interface Rule {
   name: string;

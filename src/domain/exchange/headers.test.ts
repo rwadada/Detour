@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findHeader, flattenHeaders } from './headers';
+import { compactHeaders, deleteHeader, findHeader, flattenHeaders } from './headers';
 
 describe('flattenHeaders', () => {
   it('joins a multi-value header with a comma', () => {
@@ -12,6 +12,46 @@ describe('flattenHeaders', () => {
 
   it('passes a single string value through unchanged', () => {
     expect(flattenHeaders({ 'content-type': 'text/plain' })).toEqual({ 'content-type': 'text/plain' });
+  });
+});
+
+describe('compactHeaders', () => {
+  it('keeps a multi-value header as an array instead of joining it', () => {
+    expect(compactHeaders({ 'set-cookie': ['a=1', 'b=2'] })).toEqual({ 'set-cookie': ['a=1', 'b=2'] });
+  });
+
+  it('drops undefined values', () => {
+    expect(compactHeaders({ 'x-a': '1', 'x-b': undefined })).toEqual({ 'x-a': '1' });
+  });
+
+  it('passes a single string value through unchanged', () => {
+    expect(compactHeaders({ 'content-type': 'text/plain' })).toEqual({ 'content-type': 'text/plain' });
+  });
+});
+
+describe('deleteHeader', () => {
+  it('deletes a header regardless of the stored casing', () => {
+    const headers: Record<string, string> = { 'Content-Length': '42' };
+    deleteHeader(headers, 'content-length');
+    expect(headers).toEqual({});
+  });
+
+  it('deletes a header regardless of the name it is called with', () => {
+    const headers: Record<string, string> = { 'content-length': '42' };
+    deleteHeader(headers, 'Content-Length');
+    expect(headers).toEqual({});
+  });
+
+  it('leaves other headers untouched', () => {
+    const headers: Record<string, string> = { 'content-length': '42', 'x-a': '1' };
+    deleteHeader(headers, 'content-length');
+    expect(headers).toEqual({ 'x-a': '1' });
+  });
+
+  it('is a no-op when the header is absent', () => {
+    const headers: Record<string, string> = { 'x-a': '1' };
+    deleteHeader(headers, 'content-length');
+    expect(headers).toEqual({ 'x-a': '1' });
   });
 });
 

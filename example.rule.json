@@ -118,6 +118,17 @@
         "request": true,
         "response": true
       }
+    },
+    {
+      "name": "script-transform-orders",
+      "enabled": false,
+      "match": {
+        "url": "https://api.example.com/orders*"
+      },
+      "action": {
+        "type": "script",
+        "path": "example.script.js"
+      }
     }
   ]
 }

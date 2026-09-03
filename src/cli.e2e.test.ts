@@ -479,6 +479,47 @@ function setBlockHosts(dashboardPort: number, state: BlockHostsProfile): Promise
   });
 }
 
+/** The subset of `CapturedExchange` (see domain/exchange/types.ts) these tests inspect. */
+interface DashboardExchange {
+  url: string;
+  requestHeaders?: Record<string, string | string[]>;
+  responseHeaders?: Record<string, string | string[]>;
+}
+
+/**
+ * Opens a dashboard `/ws` connection and resolves with the first
+ * `request`/`response` broadcast (see dashboardServer.ts's `onRequest`/
+ * `onResponse`) whose exchange matches `url` and `phase` — used to inspect
+ * exactly what the dashboard would show a user, as opposed to what a test's
+ * own HTTP client observes on the wire (`requestThroughProxy` et al.).
+ * Connects and resolves its `open` promise before the caller does anything
+ * that might trigger the broadcast, so there's no race with a broadcast
+ * firing before this is listening.
+ */
+function waitForExchange(
+  dashboardPort: number,
+  phase: 'request' | 'response',
+  url: string,
+): Promise<{
+  socket: WebSocket;
+  exchange: Promise<DashboardExchange>;
+}> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+    const exchange = new Promise<DashboardExchange>((resolveExchange) => {
+      socket.on('message', (raw) => {
+        const message = JSON.parse(raw.toString()) as { type: string; exchange?: DashboardExchange };
+        if (message.type === phase && message.exchange?.url === url) {
+          socket.close();
+          resolveExchange(message.exchange);
+        }
+      });
+    });
+    socket.on('open', () => resolve({ socket, exchange }));
+    socket.on('error', reject);
+  });
+}
+
 /** Requests `path` through the given HTTP proxy, to `http://127.0.0.1:targetPort`. */
 function requestThroughProxy(
   proxyPort: number,
@@ -627,6 +668,346 @@ describe('detour start (CLI, end-to-end)', () => {
     const result = await requestThroughProxy(cli.port, echo.port, '/mocked');
     expect(result.status).toBe(200);
     expect(JSON.parse(result.body)).toEqual({ mocked: true });
+  });
+
+  it("transforms a request and response via a script rule's beforeRequest/beforeResponse hooks (issue #9)", async () => {
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'rules.script.js'),
+      `module.exports = {
+        beforeRequest(req) {
+          return { body: req.body.toString('utf8') + '-from-script' };
+        },
+        beforeResponse(req, res) {
+          const body = JSON.parse(res.body.toString('utf8'));
+          body.scripted = true;
+          return { body: JSON.stringify(body) };
+        },
+      };`,
+    );
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-script',
+            match: { url: `http://127.0.0.1:${echo.port}/scripted` },
+            action: { type: 'script', path: 'rules.script.js' },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = http.request(
+        { host: 'localhost', port: cli!.port, path: `http://127.0.0.1:${echo!.port}/scripted`, method: 'POST' },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+        },
+      );
+      req.on('error', reject);
+      req.end('original-body');
+    });
+
+    expect(result.status).toBe(200);
+    expect(JSON.parse(result.body)).toEqual({
+      method: 'POST',
+      path: '/scripted',
+      body: 'original-body-from-script',
+      scripted: true,
+    });
+  });
+
+  it('forwards a request body larger than the dashboard capture cap unmodified through a script rule', async () => {
+    // MAX_CAPTURED_BODY_BYTES (see domain/exchange/bodyCapture.ts) is
+    // 256 KiB — the request body a script rule's `beforeRequest` hook sees
+    // (and what's actually forwarded upstream) must never be silently
+    // truncated to that cap, even though the dashboard's own display copy
+    // of the exchange still is.
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'rules.script.js'),
+      `module.exports = {
+        beforeRequest(req) {
+          return { headers: { ...req.headers, 'x-req-body-length': String(req.body.length) } };
+        },
+      };`,
+    );
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-script-big-request',
+            match: { url: `http://127.0.0.1:${echo.port}/scripted` },
+            action: { type: 'script', path: 'rules.script.js' },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const bigBody = 'x'.repeat(300 * 1024); // > MAX_CAPTURED_BODY_BYTES
+    const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = http.request(
+        { host: 'localhost', port: cli!.port, path: `http://127.0.0.1:${echo!.port}/scripted`, method: 'POST' },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+        },
+      );
+      req.on('error', reject);
+      req.end(bigBody);
+    });
+
+    expect(result.status).toBe(200);
+    // The upstream echo server's own report of what it actually received —
+    // if the hook's `req.body` (and thus what got forwarded) had been
+    // truncated at the cap, this would come back short.
+    expect(JSON.parse(result.body).body).toHaveLength(bigBody.length);
+  });
+
+  it('forwards a response body larger than the dashboard capture cap unmodified through a script rule', async () => {
+    const bodyBytes = 300 * 1024; // > MAX_CAPTURED_BODY_BYTES
+    const fixed = await startFixedBodyServer(bodyBytes);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'rules.script.js'),
+      `module.exports = {
+        beforeResponse(req, res) {
+          return { headers: { ...res.headers, 'x-res-body-length': String(res.body.length) } };
+        },
+      };`,
+    );
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-script-big-response',
+            match: { url: `http://127.0.0.1:${fixed.port}/*` },
+            action: { type: 'script', path: 'rules.script.js' },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    try {
+      const result = await requestThroughProxy(cli.port, fixed.port, '/big');
+      expect(result.status).toBe(200);
+      // The hook never touched `body` — this proves what the client
+      // actually received (not just what the hook read) was the full,
+      // untruncated response.
+      expect(result.body).toHaveLength(bodyBytes);
+    } finally {
+      await fixed.close();
+    }
+  });
+
+  it("preserves multiple Set-Cookie response headers (as an array, not comma-joined) through a script rule's beforeResponse", async () => {
+    const cookieServer = await new Promise<{ port: number; close: () => Promise<void> }>((resolve, reject) => {
+      const server = http.createServer((_req, res) => {
+        res.writeHead(200, { 'Set-Cookie': ['a=1; Path=/', 'b=2; Path=/'] });
+        res.end('ok');
+      });
+      server.on('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        const address = server.address();
+        if (!address || typeof address === 'string') return reject(new Error('failed to bind cookie server'));
+        resolve({ port: address.port, close: () => new Promise((res) => server.close(() => res())) });
+      });
+    });
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'rules.script.js'),
+      // Tags the status only — leaves `headers` untouched, so the merge
+      // falls back to the original (captured) response headers.
+      `module.exports = { beforeResponse() { return { status: 200 }; } };`,
+    );
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-script-cookies',
+            match: { url: `http://127.0.0.1:${cookieServer.port}/*` },
+            action: { type: 'script', path: 'rules.script.js' },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    try {
+      const setCookie = await new Promise<string[] | undefined>((resolve, reject) => {
+        const req = http.request(
+          { host: 'localhost', port: cli!.port, path: `http://127.0.0.1:${cookieServer.port}/x`, method: 'GET' },
+          (res) => {
+            res.resume();
+            res.on('end', () => resolve(res.headers['set-cookie']));
+          },
+        );
+        req.on('error', reject);
+        req.end();
+      });
+      expect(setCookie).toEqual(['a=1; Path=/', 'b=2; Path=/']);
+    } finally {
+      await cookieServer.close();
+    }
+  });
+
+  it("gives a beforeResponse-only script rule's hook the full, untruncated request body as `req.body`", async () => {
+    // A rule with only `beforeResponse` (no `beforeRequest`) still needs an
+    // accurate `req.body` — the response hook must see what was actually
+    // sent, not the dashboard's own capped display copy.
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'rules.script.js'),
+      `module.exports = {
+        beforeResponse(req, res) {
+          return { headers: { ...res.headers, 'x-observed-req-body-length': String(req.body.length) } };
+        },
+      };`,
+    );
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-script-response-only-sees-full-request',
+            match: { url: `http://127.0.0.1:${echo.port}/scripted` },
+            action: { type: 'script', path: 'rules.script.js' },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const bigBody = 'x'.repeat(300 * 1024); // > MAX_CAPTURED_BODY_BYTES
+    const observedLength = await new Promise<string | string[] | undefined>((resolve, reject) => {
+      const req = http.request(
+        { host: 'localhost', port: cli!.port, path: `http://127.0.0.1:${echo!.port}/scripted`, method: 'POST' },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.headers['x-observed-req-body-length']));
+        },
+      );
+      req.on('error', reject);
+      req.end(bigBody);
+    });
+
+    expect(observedLength).toBe(String(bigBody.length));
+  });
+
+  it('ignores a case-differently-spelled Content-Length a script hook returns, so a rewritten body is never mis-framed', async () => {
+    // If `beforeResponse` returns e.g. `Content-Length` (capitalized) along
+    // with a rewritten body, that stale header must not survive — Node
+    // would otherwise frame the response by that (now-wrong) byte count
+    // and either truncate what the client reads or hang the connection.
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'rules.script.js'),
+      `module.exports = {
+        beforeResponse(req, res) {
+          const newBody = 'this-is-the-real-rewritten-body-and-it-is-longer-than-3-bytes';
+          return { body: newBody, headers: { ...res.headers, 'Content-Length': '3' } };
+        },
+      };`,
+    );
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-script-mismatched-content-length',
+            match: { url: `http://127.0.0.1:${echo.port}/scripted` },
+            action: { type: 'script', path: 'rules.script.js' },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = http.request(
+        { host: 'localhost', port: cli!.port, path: `http://127.0.0.1:${echo!.port}/scripted`, method: 'GET' },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.body).toBe('this-is-the-real-rewritten-body-and-it-is-longer-than-3-bytes');
+  });
+
+  it('never shows the dashboard a stale Content-Length a script hook returned but that was stripped before actually sending', async () => {
+    // The wire fix (deleteHeader) only touches what's forwarded — the
+    // exchange the dashboard displays is built from a *separate* copy, so
+    // it needs the exact same case-insensitive strip or it can show a
+    // header that was never actually sent to the client/server.
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'rules.script.js'),
+      `module.exports = {
+        beforeRequest(req) {
+          return { headers: { ...req.headers, 'Content-Length': '999' } };
+        },
+        beforeResponse(req, res) {
+          return { body: 'rewritten', headers: { ...res.headers, 'Content-Length': '999' } };
+        },
+      };`,
+    );
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    const url = `http://127.0.0.1:${echo.port}/scripted`;
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          { name: 'e2e-script-dashboard-headers', match: { url }, action: { type: 'script', path: 'rules.script.js' } },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const { socket, exchange: requestExchange } = await waitForExchange(cli.dashboardPort, 'request', url);
+    const responseExchange = (await waitForExchange(cli.dashboardPort, 'response', url)).exchange;
+
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request({ host: 'localhost', port: cli!.port, path: url, method: 'POST' }, (res) => {
+        res.resume();
+        res.on('end', resolve);
+      });
+      req.on('error', reject);
+      req.end('hi');
+    });
+
+    const hasContentLength = (headers: Record<string, string | string[]> | undefined) =>
+      Object.keys(headers ?? {}).some((k) => k.toLowerCase() === 'content-length');
+
+    expect(hasContentLength((await requestExchange).requestHeaders)).toBe(false);
+    expect(hasContentLength((await responseExchange).responseHeaders)).toBe(false);
+    socket.close();
   });
 
   describe('intercept on/off (issue #11)', () => {

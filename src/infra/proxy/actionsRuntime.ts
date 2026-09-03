@@ -1,12 +1,15 @@
+import path from 'node:path';
 import type { IContext } from 'http-mitm-proxy';
 import { applyBodyRewrite } from '../../domain/rules/bodyRewrite';
 import { applyHeaderRewrite } from '../../domain/rules/headerRewrite';
 import { type MockResponse } from '../../domain/rules/mockResponse';
 import { applyQueryRewrite } from '../../domain/rules/queryRewrite';
 import { computeRouteTarget } from '../../domain/rules/routeAction';
-import type { BodyRewrite, MockAction, RewriteAction, RouteAction } from '../../domain/rules/types';
+import type { ScriptModule } from '../../domain/rules/scriptAction';
+import type { BodyRewrite, MockAction, RewriteAction, RouteAction, ScriptAction } from '../../domain/rules/types';
 import { resolveMockAction } from '../../usecase/resolveMockAction';
 import { fsMockBodyFileReader } from '../fs/mockBodyFileReader';
+import { fsScriptModuleLoader } from '../fs/scriptModuleLoader';
 
 export type { MockResponse };
 
@@ -48,6 +51,11 @@ export function sendMockSimulate(ctx: IContext, simulate: 'timeout' | 'close'): 
     ctx.proxyToClientResponse.destroy();
   }
   // 'timeout': no-op — the connection is intentionally left hanging.
+}
+
+/** Resolves a `script` action's `path` (relative to rules.json) and loads the module — see `fsScriptModuleLoader` for the loading/caching mechanics. */
+export function loadScriptModule(action: ScriptAction, basePath: string): ScriptModule {
+  return fsScriptModuleLoader.load(path.resolve(basePath, action.path));
 }
 
 /** Redirects the outbound connection to a different host/port than the one the client addressed — see `computeRouteTarget` for the underlying decision. */

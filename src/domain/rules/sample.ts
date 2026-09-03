@@ -68,6 +68,17 @@ export const SAMPLE_RULES_FILE = `{
       "action": {
         "type": "breakpoint"
       }
+    },
+    {
+      "name": "script-example",
+      "enabled": false,
+      "match": {
+        "url": "https://api.example.com/*"
+      },
+      "action": {
+        "type": "script",
+        "path": "./example.script.js"
+      }
     }
   ]
 }

@@ -3,11 +3,13 @@ import os from 'node:os';
 import path from 'node:path';
 import type { IContext, OnRequestDataParams, OnRequestParams } from 'http-mitm-proxy';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { __resetScriptModuleCacheForTests } from '../fs/scriptModuleLoader';
 import {
   applyRequestRewrite,
   applyResponseHeaderRewrite,
   applyRouteAction,
   installResponseBodyRewrite,
+  loadScriptModule,
   resolveMockResponse,
   sendMockResponse,
   sendMockSimulate,
@@ -76,6 +78,29 @@ describe('resolveMockResponse', () => {
       const res = resolveMockResponse({ type: 'mock', bodyFile: 'body.txt' }, dir);
       expect(res.headers['Content-Type']).toBeUndefined();
     });
+  });
+});
+
+describe('loadScriptModule', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-script-action-test-'));
+    __resetScriptModuleCacheForTests();
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('resolves `path` relative to basePath and loads the module', () => {
+    fs.writeFileSync(path.join(dir, 'rules.script.js'), 'module.exports = { beforeRequest() {} };');
+    const module = loadScriptModule({ type: 'script', path: './rules.script.js' }, dir);
+    expect(typeof module.beforeRequest).toBe('function');
+  });
+
+  it('throws a descriptive error for a missing script file', () => {
+    expect(() => loadScriptModule({ type: 'script', path: './nope.js' }, dir)).toThrow();
   });
 });
 

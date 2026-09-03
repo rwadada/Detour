@@ -69,6 +69,7 @@ export const RULES_JSON_SCHEMA = {
             { $ref: '#/definitions/routeAction' },
             { $ref: '#/definitions/rewriteAction' },
             { $ref: '#/definitions/breakpointAction' },
+            { $ref: '#/definitions/scriptAction' },
           ],
         },
       },
@@ -142,6 +143,15 @@ export const RULES_JSON_SCHEMA = {
         type: { const: 'breakpoint' },
         request: { type: 'boolean' },
         response: { type: 'boolean' },
+      },
+    },
+    scriptAction: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['type', 'path'],
+      properties: {
+        type: { const: 'script' },
+        path: { type: 'string', minLength: 1 },
       },
     },
   },

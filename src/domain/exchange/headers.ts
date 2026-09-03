@@ -12,6 +12,39 @@ export function flattenHeaders(headers: RawHeaders): Record<string, string> {
 }
 
 /**
+ * Drops `undefined` values from a Node headers object but — unlike
+ * `flattenHeaders` — keeps a multi-value header (e.g. `set-cookie`) as an
+ * array instead of comma-joining it. Comma-joining loses information for a
+ * header whose semantics forbid it (each `Set-Cookie` must stay on its own
+ * line; a value can itself legally contain a comma, e.g. its `Expires`
+ * attribute), so anything that re-emits headers onto real traffic (as
+ * opposed to `flattenHeaders`' callers, which only ever display them) needs
+ * this instead.
+ */
+export function compactHeaders(headers: RawHeaders): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (value === undefined) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Deletes a header by name, case-insensitively — a hook/edit's headers
+ * object (unlike headers straight off the wire, which Node always
+ * lowercases) can spell a name with any casing, so a plain `delete
+ * headers['content-length']` silently no-ops against e.g. `Content-Length`
+ * and leaves a stale value in place.
+ */
+export function deleteHeader(headers: RawHeaders, name: string): void {
+  const lower = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === lower) delete headers[key];
+  }
+}
+
+/**
  * Case-insensitively looks up a header value by name. Node's own HTTP/1.1
  * parser always lowercases `IncomingMessage.headers` keys, so a direct
  * `headers[name]` lookup works for any exchange captured straight off the

@@ -80,6 +80,30 @@ describe('validateRulesData', () => {
     expect(result.valid).toBe(true);
   });
 
+  it('accepts a script action', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'script', path: './rules.script.js' } })],
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects a script action missing path', () => {
+    const result = validateRulesData({ rules: [baseRule({ action: { type: 'script' } })] });
+    expect(result.valid).toBe(false);
+  });
+
+  it('rejects a script action with an empty path', () => {
+    const result = validateRulesData({ rules: [baseRule({ action: { type: 'script', path: '' } })] });
+    expect(result.valid).toBe(false);
+  });
+
+  it('rejects a script action with unknown extra properties', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'script', path: './x.js', bogus: true } })],
+    });
+    expect(result.valid).toBe(false);
+  });
+
   it('accepts a breakpoint action with only one phase enabled', () => {
     const result = validateRulesData({ rules: [baseRule({ action: { type: 'breakpoint', response: false } })] });
     expect(result.valid).toBe(true);

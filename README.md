@@ -81,13 +81,31 @@ A rules file is an array of rules, evaluated in order for each request. The firs
 - `action.type: "route"`: redirects the request's destination host/port (`preserveHostHeader: false` also rewrites the Host header)
 - `action.type: "rewrite"`: for `request`/`response` independently, adds/removes headers (`headers.set`/`headers.remove`) and rewrites the body (`body.set` replaces it wholesale; `body.replace` does sequential string/regex substitution; `body.merge` applies a JSON Merge Patch, RFC 7396 — a `null` value deletes a key, everything else deep-merges). `request.query` (`query.set`/`query.remove`) additionally adds/removes URL query string parameters — there's no `response.query` since a response has no URL
 - `action.type: "breakpoint"`: pauses a matching exchange instead of letting it flow straight through, so it can be inspected and edited live from the dashboard before continuing (or aborting it outright). `request`/`response` (both default `true`) independently control which phase(s) pause — a request-phase pause exposes method/path/headers/body for editing before it's sent upstream; a response-phase pause exposes status/headers/body for editing before it's returned to the client. A pause waits indefinitely for the dashboard (there's no timeout), so only enable it on rules you're actively debugging with the dashboard open
+- `action.type: "script"`: runs a `beforeRequest`/`beforeResponse` hook from a CommonJS module at `path` (resolved relative to rules.json) for transformations the declarative actions above can't express. Each hook is optional — a module with only one of them leaves the other phase untouched — and may be `async`:
+  ```js
+  // rules.script.js
+  module.exports = {
+    beforeRequest(req) {
+      // req: { method, url, headers, body: Buffer }. Return a partial
+      // { method?, headers?, body? } — omitted fields keep their original
+      // value; return undefined/null (or nothing) to leave the request as-is.
+      return { headers: { ...req.headers, 'X-Detour': '1' } };
+    },
+    async beforeResponse(req, res) {
+      // res: { status, statusMessage, headers, body: Buffer }. Return a
+      // partial { status?, statusMessage?, headers?, body? }, same rule.
+      return { body: res.body.toString('utf8').replace('"pending"', '"confirmed"') };
+    },
+  };
+  ```
+  `body` may be returned as a `Buffer` or a `string` either way, and is always the full, untruncated body — unlike the dashboard's own display copy of an exchange, it's never cut off at the 256 KiB capture cap. Response `headers` values may be a `string` or a `string[]` (a repeated header like `Set-Cookie` is kept as an array — set one back the same way rather than joining it with commas, which would corrupt it). A hook that throws (or whose returned promise rejects) leaves that phase forwarded untouched and logs the error, rather than dropping the exchange. The script itself is reloaded automatically when its file changes, the same as rules.json. See [`example.script.js`](./example.script.js) for a complete, runnable example.
 
 Editing a rules file while the proxy is running triggers an automatic reload (if validation fails, the previous rules keep serving traffic and the error is printed to the console).
 
 The repository ships two rules files for different purposes at its root:
 
 - [`passthrough.rule.json`](./passthrough.rule.json): has no rules at all — a true no-op. `detour start` (without `--rules`) auto-detects it in the current directory, guaranteeing the proxy behaves as a plain passthrough by default
-- [`example.rule.json`](./example.rule.json) (plus the [`example.mock-body.json`](./example.mock-body.json) it references): a reference implementation touching every mock/route/rewrite/breakpoint option. All rules are `enabled: false`, so it's safe to copy and adapt. Try it with `detour start --rules example.rule.json` (after enabling the rule(s) you want)
+- [`example.rule.json`](./example.rule.json) (plus the [`example.mock-body.json`](./example.mock-body.json) and [`example.script.js`](./example.script.js) it references): a reference implementation touching every mock/route/rewrite/breakpoint/script option. All rules are `enabled: false`, so it's safe to copy and adapt. Try it with `detour start --rules example.rule.json` (after enabling the rule(s) you want)
 
 ### Known issues
 - `http-mitm-proxy@1.1.0` has a bug on macOS/BSD where the HTTPS (CONNECT) tunnel fails with `ECONNREFUSED` (it hardcodes the destination host to `0.0.0.0` internally). This is fixed via `patches/http-mitm-proxy+1.1.0.patch` (applied automatically on `npm install` via `patch-package`).

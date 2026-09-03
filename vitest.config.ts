@@ -36,6 +36,7 @@ export default defineConfig({
         'src/domain/**/*.ts',
         'src/usecase/**/*.ts',
         'src/infra/fs/rulesFileSource.ts',
+        'src/infra/fs/scriptModuleLoader.ts',
         'src/infra/proxy/actionsRuntime.ts',
       ],
       exclude: ['src/**/*.test.ts', 'src/domain/rules/sample.ts'],
