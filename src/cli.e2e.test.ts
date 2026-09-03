@@ -1887,6 +1887,56 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       expect(result.exitCode).not.toBe(0);
       expect(result.stderr).toContain('--exit-on-idle must be a positive integer');
     });
+
+    it('does not exit while a request is still in flight, even past the idle window', async () => {
+      // Responds only after `delayMs` — long enough to outlast --exit-on-idle
+      // below, so the idle timer would (incorrectly) fire mid-request if the
+      // watcher only rearmed on `response` instead of tracking in-flight
+      // requests (see idleWatcher.ts's doc comment).
+      const delayMs = 900;
+      const slow = await new Promise<{ port: number; close: () => Promise<void> }>((resolve, reject) => {
+        const server = http.createServer((_req, res) => {
+          setTimeout(() => {
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.end('done');
+          }, delayMs);
+        });
+        server.on('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+          const address = server.address();
+          if (!address || typeof address === 'string') {
+            reject(new Error('failed to bind slow server'));
+            return;
+          }
+          resolve({ port: address.port, close: () => new Promise((res) => server.close(() => res())) });
+        });
+      });
+
+      try {
+        cli = await startDetourCliReady(['--port', '0', '--dashboard-port', '0', '--exit-on-idle', '300']);
+        const requestPromise = requestThroughProxy(cli.proxyPort, slow.port, '/slow');
+
+        // Past the 300ms idle window, but the request above is still in
+        // flight (the slow server won't respond for `delayMs`) — the
+        // process must still be alive here.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        expect(cli.exitCode()).toBeNull();
+
+        const result = await requestPromise;
+        expect(result.status).toBe(200);
+
+        // Now genuinely idle — it should exit on its own shortly after.
+        const start = Date.now();
+        while (cli.exitCode() === null) {
+          if (Date.now() - start > 10_000)
+            throw new Error(`process never exited after going idle.\nstdout: ${cli.stdout()}`);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        expect(cli.exitCode()).toBe(0);
+      } finally {
+        await slow.close();
+      }
+    });
   });
 
   describe('--fail-on-running', () => {

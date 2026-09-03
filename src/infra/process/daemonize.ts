@@ -48,31 +48,37 @@ function isChildMessage(value: unknown): value is ChildMessage {
  */
 export function spawnDaemonChild(options: SpawnDaemonChildOptions): Promise<DaemonReadyInfo> {
   const logFd = fs.openSync(options.logFile, 'a');
-  const child = spawn(
-    process.execPath,
-    // `process.execArgv` carries whatever Node-level flags launched *this*
-    // process — critically, in dev, `tsx`'s own `--require .../preflight.cjs
-    // --import .../loader.mjs` (registered as real argv flags, not
-    // `NODE_OPTIONS`, so they wouldn't otherwise survive a fresh `node`
-    // invocation). Without re-passing these, the child would try to load
-    // `src/cli.ts`'s TypeScript/ESM source as plain CommonJS and fail
-    // immediately. In prod (`bin/detour.js` running the built `dist/cli.js`
-    // under plain `node`), this is simply `[]` — a no-op.
-    [...process.execArgv, options.scriptPath, ...options.args],
-    {
-      detached: true,
-      stdio: ['ignore', logFd, logFd, 'ipc'],
-      // Lets the child report its own log file back in its `RunState` (see
-      // `runStateStore.ts`) for `detour status` to display, without adding a
-      // CLI flag purely for that — the child never chose this path itself.
-      env: { ...process.env, DETOUR_LOG_FILE: options.logFile },
-    },
-  );
-  // `spawn` duplicates `logFd` into the child's own fd table synchronously
-  // as part of the underlying OS spawn call — this process's copy is safe
-  // to close right away rather than leaking it for as long as this process
-  // (which, being the `--detach` parent, outlives the handshake below) runs.
-  fs.closeSync(logFd);
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(
+      process.execPath,
+      // `process.execArgv` carries whatever Node-level flags launched *this*
+      // process — critically, in dev, `tsx`'s own `--require .../preflight.cjs
+      // --import .../loader.mjs` (registered as real argv flags, not
+      // `NODE_OPTIONS`, so they wouldn't otherwise survive a fresh `node`
+      // invocation). Without re-passing these, the child would try to load
+      // `src/cli.ts`'s TypeScript/ESM source as plain CommonJS and fail
+      // immediately. In prod (`bin/detour.js` running the built `dist/cli.js`
+      // under plain `node`), this is simply `[]` — a no-op.
+      [...process.execArgv, options.scriptPath, ...options.args],
+      {
+        detached: true,
+        stdio: ['ignore', logFd, logFd, 'ipc'],
+        // Lets the child report its own log file back in its `RunState` (see
+        // `runStateStore.ts`) for `detour status` to display, without adding a
+        // CLI flag purely for that — the child never chose this path itself.
+        env: { ...process.env, DETOUR_LOG_FILE: options.logFile },
+      },
+    );
+  } finally {
+    // Safe to close in every case: on success, `spawn` has already
+    // duplicated `logFd` into the child's own fd table synchronously as
+    // part of the underlying OS spawn call, so this process's copy is no
+    // longer needed; on a synchronous throw from `spawn` itself (e.g. an
+    // invalid `process.execPath`), nothing else needs it either — without
+    // this `finally`, that throw would skip the close and leak the fd.
+    fs.closeSync(logFd);
+  }
 
   return new Promise((resolve, reject) => {
     const timeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
