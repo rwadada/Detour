@@ -26,16 +26,21 @@ export function removeRunState(requestedPort: number): void {
 
 /**
  * Whether a process with this PID is currently alive. `process.kill(pid, 0)`
- * sends no actual signal — it only probes for `ESRCH` (no such process,
- * false) vs success/`EPERM` (exists, true) per POSIX `kill(2)`, which Node
- * mirrors on Windows too (see the Node docs for `process.kill`).
+ * sends no actual signal — it only probes for `ESRCH` (no such process) vs
+ * success/`EPERM` (exists) per POSIX `kill(2)`, which Node mirrors on
+ * Windows too (see the Node docs for `process.kill`). Only `EPERM` counts as
+ * "alive but we lack permission to signal it" — anything else, including a
+ * non-`ESRCH` `TypeError` from an invalid/corrupt `pid` (e.g. a stale
+ * `RunState` file with a non-numeric `pid`), is treated as not alive so
+ * `findLiveRunState`'s self-healing cleanup still kicks in rather than
+ * getting stuck on a PID that was never valid to begin with.
  */
 export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
   } catch (err) {
-    return (err as NodeJS.ErrnoException).code !== 'ESRCH';
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 

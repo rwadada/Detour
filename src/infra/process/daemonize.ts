@@ -68,6 +68,11 @@ export function spawnDaemonChild(options: SpawnDaemonChildOptions): Promise<Daem
       env: { ...process.env, DETOUR_LOG_FILE: options.logFile },
     },
   );
+  // `spawn` duplicates `logFd` into the child's own fd table synchronously
+  // as part of the underlying OS spawn call — this process's copy is safe
+  // to close right away rather than leaking it for as long as this process
+  // (which, being the `--detach` parent, outlives the handshake below) runs.
+  fs.closeSync(logFd);
 
   return new Promise((resolve, reject) => {
     const timeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;

@@ -19,14 +19,19 @@ export interface IdleWatcherHandle {
  * the moment it started.
  */
 export function startIdleWatcher(eventBus: DetourEventBus, idleMs: number, onIdle: () => void): IdleWatcherHandle {
-  let timer: ReturnType<typeof setTimeout>;
+  // Optional — undefined until the first `arm()` call below (not yet the
+  // case when `stop()` is called before that ever happens). `clearTimeout`
+  // is a safe no-op on `undefined`, so every call site below can clear it
+  // unconditionally.
+  let timer: ReturnType<typeof setTimeout> | undefined;
 
   const arm = (): void => {
     clearTimeout(timer);
-    timer = setTimeout(onIdle, idleMs);
+    const next = setTimeout(onIdle, idleMs);
     // Never keeps the process alive by itself — a real shutdown path
     // (SIGINT/SIGTERM/this same idle timer) is what should decide that.
-    timer.unref();
+    next.unref();
+    timer = next;
   };
 
   const handleResponse = (): void => arm();
