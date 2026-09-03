@@ -5,9 +5,13 @@ import { useState } from 'react';
 import { useRuleStore } from '@/entities/rule';
 import { useTheme } from '@/shared/lib/theme';
 import { cn } from '@/shared/lib/utils';
-import type { Rule, RulesFile } from '@/shared/api';
-import { Button, Input } from '@/shared/ui';
+import type { Rule, RuleAction, RulesFile } from '@/shared/api';
+import { Button, Input, Select } from '@/shared/ui';
+import { blankAction } from '../model/actionFields';
 import { blankRule, describeMatch, parseMethodInput } from '../model/ruleSummary';
+import { ActionFields } from './ActionFields';
+
+const ACTION_TYPES: RuleAction['type'][] = ['mock', 'route', 'rewrite', 'breakpoint', 'script'];
 
 /**
  * The Rules editor's body (issue #19), rendered inside a `Dialog` by
@@ -15,11 +19,12 @@ import { blankRule, describeMatch, parseMethodInput } from '../model/ruleSummary
  * sent to the server (`setRules`) when "Save" is clicked — the file itself,
  * and the traffic it's actively matching, are untouched until then.
  *
- * `name`/`enabled`/`method`/`url` are true form fields; a rule's `action`
- * (and `urlRegex` matches, which this form doesn't expose) are edited as
- * JSON — the five action types (`mock`/`route`/`rewrite`/`breakpoint`/
- * `script`) have different enough shapes that a dedicated sub-form per type
- * is future work (see PR description) rather than in scope here.
+ * `name`/`enabled`/`method`/`url` are true form fields. A rule's `action`
+ * gets a dedicated structured form per type via `ActionFields` (issue #9's
+ * follow-up — non-engineers shouldn't have to hand-write JSON for the
+ * common cases) with a raw-JSON view still available behind an "Edit as
+ * JSON" toggle for anything the form doesn't cover (a `urlRegex` match,
+ * which this form doesn't expose either, is the other main example).
  */
 export function RulesEditorPanel() {
   const rulesFile = useRuleStore((s) => s.rulesFile);
@@ -155,32 +160,7 @@ function RuleFields({
   onChange: (patch: Partial<Rule>) => void;
   onClose: () => void;
 }) {
-  const dark = useTheme() === 'dark';
-  const [actionText, setActionText] = useState(() => JSON.stringify(rule.action, null, 2));
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [seededFor, setSeededFor] = useState(rule.name);
-
-  // Re-seeds the action textarea when a different rule is opened for
-  // editing — not on every keystroke of the rule currently open (hence
-  // keying off `rule.name` rather than `rule`/`rule.action`, and adjusting
-  // during render rather than in a `useEffect` — see the draft-sync comment
-  // above for why).
-  if (rule.name !== seededFor) {
-    setSeededFor(rule.name);
-    setActionText(JSON.stringify(rule.action, null, 2));
-    setActionError(null);
-  }
-
-  const commitAction = (text: string) => {
-    setActionText(text);
-    try {
-      const parsed = JSON.parse(text);
-      setActionError(null);
-      onChange({ action: parsed });
-    } catch {
-      setActionError('Invalid JSON — not saved to the draft yet.');
-    }
-  };
+  const [showJson, setShowJson] = useState(false);
 
   return (
     <div className="flex flex-col gap-2 rounded-md border border-[var(--border)] p-3">
@@ -212,20 +192,67 @@ function RuleFields({
           />
         </label>
       </div>
-      <div className="text-xs text-[var(--muted)]">
-        Action (JSON — <code className="font-mono-ui">type</code>: <code className="font-mono-ui">mock</code> /{' '}
-        <code className="font-mono-ui">route</code> / <code className="font-mono-ui">rewrite</code> /{' '}
-        <code className="font-mono-ui">breakpoint</code> / <code className="font-mono-ui">script</code>)
+
+      <div className="flex items-center justify-between">
+        <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
+          Action type
+          <Select
+            value={rule.action.type}
+            onChange={(e) => onChange({ action: blankAction(e.target.value as RuleAction['type']) })}
+          >
+            {ACTION_TYPES.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <button
+          type="button"
+          onClick={() => setShowJson((v) => !v)}
+          className="text-xs text-[var(--muted)] underline decoration-dotted hover:text-[var(--foreground)]"
+        >
+          {showJson ? 'Use form' : 'Edit as JSON'}
+        </button>
       </div>
+
+      {showJson ? (
+        <JsonActionField key={rule.name} action={rule.action} onChange={(action) => onChange({ action })} />
+      ) : (
+        <ActionFields key={rule.name} action={rule.action} onChange={(action) => onChange({ action })} />
+      )}
+    </div>
+  );
+}
+
+/** The raw-JSON fallback for a rule's `action` — the same CodeMirror editor the Rules editor originally shipped with, kept as an escape hatch for anything `ActionFields` doesn't cover. */
+function JsonActionField({ action, onChange }: { action: RuleAction; onChange: (action: RuleAction) => void }) {
+  const dark = useTheme() === 'dark';
+  const [text, setText] = useState(() => JSON.stringify(action, null, 2));
+  const [error, setError] = useState<string | null>(null);
+
+  const commit = (nextText: string) => {
+    setText(nextText);
+    try {
+      const parsed = JSON.parse(nextText);
+      setError(null);
+      onChange(parsed);
+    } catch {
+      setError('Invalid JSON — not saved to the draft yet.');
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-1">
       <CodeMirror
-        value={actionText}
+        value={text}
         extensions={[json()]}
         theme={dark ? 'dark' : 'light'}
         basicSetup={{ lineNumbers: true, foldGutter: true }}
-        onChange={commitAction}
+        onChange={commit}
         className="h-40 rounded border border-[var(--border)] text-xs"
       />
-      {actionError && <p className="text-xs text-[var(--status-5xx)]">{actionError}</p>}
+      {error && <p className="text-xs text-[var(--status-5xx)]">{error}</p>}
     </div>
   );
 }
