@@ -99,7 +99,13 @@ export function spawnDaemonChild(options: SpawnDaemonChildOptions): Promise<Daem
     const onMessage = (raw: unknown): void => {
       if (!isChildMessage(raw)) return;
       cleanup();
-      child.disconnect();
+      // The child disconnects its own end of the IPC channel right after
+      // sending this message (see `signalDaemonReady`/`signalDaemonError`'s
+      // callback) — if that race already tore the channel down before this
+      // side gets to it, `disconnect()` throws ("IPC channel is already
+      // disconnected"), which would incorrectly reject this promise despite
+      // the child having signaled successfully.
+      if (child.connected) child.disconnect();
       child.unref();
       if (raw.type === 'ready') {
         resolve({ pid: child.pid!, proxyPort: raw.proxyPort, dashboardPort: raw.dashboardPort });
