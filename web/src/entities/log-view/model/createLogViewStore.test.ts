@@ -86,5 +86,32 @@ describe('createLogViewStore', () => {
       const store = createLogViewStore();
       expect(store.getState().columnWidths).toEqual({ ...DEFAULT_COLUMN_WIDTHS, method: 120 });
     });
+
+    // A review finding: a hand-edited or stale-schema localStorage value
+    // (a wrong type, `null`, …) must not flow straight into a React
+    // `style={{ width }}` — anything that isn't a finite number falls back
+    // to that column's default instead.
+    it.each([
+      ['a string', 'not-a-number'],
+      ['null', null],
+      ['an array', [1, 2]],
+    ])('falls back to the default when the persisted value is %s', (_label, badValue) => {
+      localStorage.setItem('detour-log-view-column-widths', JSON.stringify({ method: badValue }));
+      const store = createLogViewStore();
+      expect(store.getState().columnWidths.method).toBe(DEFAULT_COLUMN_WIDTHS.method);
+    });
+
+    it.each([
+      ['a negative number', -50],
+      ['zero', 0],
+      ['a too-small positive number', 5],
+    ])(
+      'clamps a valid-but-too-small persisted value (%s) up to MIN_COLUMN_WIDTH rather than discarding it',
+      (_label, smallValue) => {
+        localStorage.setItem('detour-log-view-column-widths', JSON.stringify({ method: smallValue }));
+        const store = createLogViewStore();
+        expect(store.getState().columnWidths.method).toBe(MIN_COLUMN_WIDTH);
+      },
+    );
   });
 });

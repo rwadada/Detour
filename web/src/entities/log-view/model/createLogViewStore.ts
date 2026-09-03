@@ -27,10 +27,22 @@ export const MIN_COLUMN_WIDTH = 40;
 
 const COLUMN_WIDTHS_STORAGE_KEY = 'detour-log-view-column-widths';
 
-/** Merges persisted widths over the defaults — a column added by a later release (not present in an older saved value) still gets its default rather than `undefined`. */
+/** A finite number clamped to `MIN_COLUMN_WIDTH`, or `undefined` for anything else — guards `loadColumnWidths` against a hand-edited or stale-schema localStorage value (a string, `NaN`, a negative number, …) reaching a React `style={{ width }}` as-is. */
+function sanitizeColumnWidth(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(MIN_COLUMN_WIDTH, Math.round(value))
+    : undefined;
+}
+
+/** Merges persisted widths over the defaults — a column added by a later release (not present in an older saved value), or one whose persisted value fails `sanitizeColumnWidth`, still gets its default rather than `undefined`/garbage. */
 function loadColumnWidths(): Record<ResizableColumn, number> {
-  const stored = readPersistedState<Partial<Record<ResizableColumn, number>>>(COLUMN_WIDTHS_STORAGE_KEY, {});
-  return { ...DEFAULT_COLUMN_WIDTHS, ...stored };
+  const stored = readPersistedState<Partial<Record<ResizableColumn, unknown>>>(COLUMN_WIDTHS_STORAGE_KEY, {});
+  const widths = { ...DEFAULT_COLUMN_WIDTHS };
+  for (const column of Object.keys(widths) as ResizableColumn[]) {
+    const sanitized = sanitizeColumnWidth(stored[column]);
+    if (sanitized !== undefined) widths[column] = sanitized;
+  }
+  return widths;
 }
 
 export interface LogViewState {

@@ -125,7 +125,10 @@ body {
   }
 }
 .detour-splash-overlay {
-  pointer-events: none;
+  /* Deliberately NOT pointer-events: none — the overlay is fully opaque
+     while visible, and letting clicks/taps pass through to the app
+     underneath it would let a user trigger real actions (Clear, a toolbar
+     toggle, …) on controls they can't see yet. */
   animation: detour-splash-out 400ms ease-in 1400ms forwards;
 }
 
