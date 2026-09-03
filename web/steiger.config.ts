@@ -63,13 +63,35 @@ export default defineConfig([
     rules: { 'fsd/insignificant-slice': 'off' },
   },
   {
-    // `compare` (widgets/filter-bar), `copy-as-curl`/`replay`
+    // `compare` (widgets/context-bar), `copy-as-curl`/`replay`
     // (widgets/inspector-panel) — issue #19 — each currently have one
     // consumer widget too, same reasoning as the blocks above: kept as
     // their own slices since they're independently reusable capabilities
     // (e.g. Copy as curl / Replay are also natural fits for a future
     // per-row context menu in LogTable).
     files: ['./src/features/compare/**', './src/features/copy-as-curl/**', './src/features/replay/**'],
+    rules: { 'fsd/insignificant-slice': 'off' },
+  },
+  {
+    // `log-view` genuinely has two consumers — `widgets/log-table` (reads
+    // sort/group/columnWidths to render) and `features/group-by-host`
+    // (toggles `groupByHost`); `grep -rn "@/entities/log-view" src`
+    // confirms both, and `tsc`/`vitest` resolve them without error.
+    // `fsd/insignificant-slice` still reports only one reference here
+    // regardless — the same known Steiger 0.5 cross-slice reference-tracing
+    // false negative documented on `entities/rule` above, not an actual
+    // structural issue. Silenced for the same reason.
+    files: ['./src/entities/log-view/**'],
+    rules: { 'fsd/insignificant-slice': 'off' },
+  },
+  {
+    // `group-by-host`/`pause-tail` (issue #24's toolbar) — same reasoning
+    // as the blocks above: each is its own toggle-able capability with a
+    // single consumer today (widgets/toolbar), kept separate rather than
+    // inlined there since Phase 4/5 of issue #24 (Settings panel,
+    // localStorage-persisted view preferences) are likely to want each as
+    // an independent unit again.
+    files: ['./src/features/group-by-host/**', './src/features/pause-tail/**'],
     rules: { 'fsd/insignificant-slice': 'off' },
   },
 ]);

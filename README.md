@@ -6,13 +6,13 @@ A terminal-first, lightweight HTTP debugging proxy for mobile and web. A modern 
 ```bash
 npm install
 npm run build
-npm start -- start --port 8080 --dashboard-port 4040
+npm start -- start --port 8080
 ```
 
 `npm start --` runs the `detour` command (`bin/detour.js`). If installed globally, `detour start` does the same thing.
 
 - `--port <number>`: Port the proxy listens on (default: `8080`)
-- `--dashboard-port <number>`: Port the web dashboard listens on (default: `4040`)
+- `--dashboard-port <number>`: Port the web dashboard listens on (default: `--port` + `1000`, e.g. `9080` for the default proxy port `8080`)
 - `--rules <path>`: Path to a rules file. When given, mock/route/rewrite rules are applied to matching requests (see below). Changes to the file are detected and reloaded automatically. When omitted, `passthrough.rule.json` in the current directory is loaded automatically if present
 - `--dump <level>`: Verbosity of the request/response log (default: `summary`, one line per exchange, as today). `full` additionally prints each exchange's headers and body to the console; `file` skips the console spam and instead writes that same dump to its own file under `~/.detour/dumps`, one file per exchange (overwritten as it moves from request to response). Both `full` and `file` redact sensitive headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Auth-Token`) as `[REDACTED]`; a JSON body is pretty-printed, anything else is shown as raw text
 - `--no-http2`: Disables HTTP/2 (ALPN) on MITM'd HTTPS connections, falling back to HTTP/1.1 only. HTTP/2 is negotiated with the client by default — shown as `HTTP/2: on`/`off` in the startup banner, and tagged `[h2]` in the log/dashboard for exchanges that negotiated it. The connection to the real upstream server is always HTTP/1.1 either way
@@ -38,7 +38,7 @@ During development, run `npm run dev` to watch and run the TypeScript sources di
 
 ## Web dashboard
 
-`detour start` serves a real-time dashboard at `http://localhost:4040` (or whatever `--dashboard-port` is set to) for browsing captured traffic without leaving the browser.
+`detour start` serves a real-time dashboard at `http://localhost:9080` by default (`--port` + `1000`; or whatever `--dashboard-port` is set to) for browsing captured traffic without leaving the browser.
 
 - Every request/response streams into the log table live over a WebSocket as it passes through the proxy; a bounded backlog (last 500 exchanges) is replayed on connect so refreshing the page doesn't lose recent history
 - The table is virtualized (`@tanstack/react-virtual`), so it stays smooth with thousands of rows

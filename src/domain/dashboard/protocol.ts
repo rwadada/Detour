@@ -19,6 +19,15 @@ import type { RulesFile } from '../rules/types';
  * by hand since it's built as a separate, standalone package.
  */
 export type DashboardServerMessage =
+  /**
+   * Sent once, right after connecting: the proxy port this dashboard session
+   * is fronting (issue #24's sidebar Proxy URL / QR code). The dashboard
+   * itself is served on `proxyPort + 1000` by default (see `cli.ts`'s
+   * `--dashboard-port`), but sent explicitly rather than left for the
+   * client to back-compute — `--dashboard-port` can still be overridden
+   * independently of that default.
+   */
+  | { type: 'proxyInfo'; proxyPort: number }
   /** Sent once, right after connecting: the recent-history backlog so a client that (re)connects mid-session isn't starting from a blank table. */
   | { type: 'backlog'; items: CapturedExchange[] }
   /** Sent once, right after connecting: the recent WebSocket connection backlog (see `backlog` above; issue #17). */
