@@ -479,6 +479,47 @@ function setBlockHosts(dashboardPort: number, state: BlockHostsProfile): Promise
   });
 }
 
+/** The subset of `CapturedExchange` (see domain/exchange/types.ts) these tests inspect. */
+interface DashboardExchange {
+  url: string;
+  requestHeaders?: Record<string, string | string[]>;
+  responseHeaders?: Record<string, string | string[]>;
+}
+
+/**
+ * Opens a dashboard `/ws` connection and resolves with the first
+ * `request`/`response` broadcast (see dashboardServer.ts's `onRequest`/
+ * `onResponse`) whose exchange matches `url` and `phase` — used to inspect
+ * exactly what the dashboard would show a user, as opposed to what a test's
+ * own HTTP client observes on the wire (`requestThroughProxy` et al.).
+ * Connects and resolves its `open` promise before the caller does anything
+ * that might trigger the broadcast, so there's no race with a broadcast
+ * firing before this is listening.
+ */
+function waitForExchange(
+  dashboardPort: number,
+  phase: 'request' | 'response',
+  url: string,
+): Promise<{
+  socket: WebSocket;
+  exchange: Promise<DashboardExchange>;
+}> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+    const exchange = new Promise<DashboardExchange>((resolveExchange) => {
+      socket.on('message', (raw) => {
+        const message = JSON.parse(raw.toString()) as { type: string; exchange?: DashboardExchange };
+        if (message.type === phase && message.exchange?.url === url) {
+          socket.close();
+          resolveExchange(message.exchange);
+        }
+      });
+    });
+    socket.on('open', () => resolve({ socket, exchange }));
+    socket.on('error', reject);
+  });
+}
+
 /** Requests `path` through the given HTTP proxy, to `http://127.0.0.1:targetPort`. */
 function requestThroughProxy(
   proxyPort: number,
@@ -917,6 +958,56 @@ describe('detour start (CLI, end-to-end)', () => {
 
     expect(result.status).toBe(200);
     expect(result.body).toBe('this-is-the-real-rewritten-body-and-it-is-longer-than-3-bytes');
+  });
+
+  it('never shows the dashboard a stale Content-Length a script hook returned but that was stripped before actually sending', async () => {
+    // The wire fix (deleteHeader) only touches what's forwarded — the
+    // exchange the dashboard displays is built from a *separate* copy, so
+    // it needs the exact same case-insensitive strip or it can show a
+    // header that was never actually sent to the client/server.
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'rules.script.js'),
+      `module.exports = {
+        beforeRequest(req) {
+          return { headers: { ...req.headers, 'Content-Length': '999' } };
+        },
+        beforeResponse(req, res) {
+          return { body: 'rewritten', headers: { ...res.headers, 'Content-Length': '999' } };
+        },
+      };`,
+    );
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    const url = `http://127.0.0.1:${echo.port}/scripted`;
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          { name: 'e2e-script-dashboard-headers', match: { url }, action: { type: 'script', path: 'rules.script.js' } },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const { socket, exchange: requestExchange } = await waitForExchange(cli.dashboardPort, 'request', url);
+    const responseExchange = (await waitForExchange(cli.dashboardPort, 'response', url)).exchange;
+
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request({ host: 'localhost', port: cli!.port, path: url, method: 'POST' }, (res) => {
+        res.resume();
+        res.on('end', resolve);
+      });
+      req.on('error', reject);
+      req.end('hi');
+    });
+
+    const hasContentLength = (headers: Record<string, string | string[]> | undefined) =>
+      Object.keys(headers ?? {}).some((k) => k.toLowerCase() === 'content-length');
+
+    expect(hasContentLength((await requestExchange).requestHeaders)).toBe(false);
+    expect(hasContentLength((await responseExchange).responseHeaders)).toBe(false);
+    socket.close();
   });
 
   describe('intercept on/off (issue #11)', () => {

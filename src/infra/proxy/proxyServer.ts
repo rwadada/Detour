@@ -688,7 +688,10 @@ export async function startProxyServer(
         // straight off the wire (always lowercased by Node).
         deleteHeader(opts.headers, 'content-length');
         exchange.method = result.method;
-        exchange.requestHeaders = result.headers;
+        // From `opts.headers` (post-delete), not `result.headers` — the
+        // dashboard's own copy of what was sent must not show a
+        // content-length that was actually stripped before forwarding.
+        exchange.requestHeaders = opts.headers;
         exchange.requestBodySize = result.body.length;
         BodyCapture.of(result.body).applyTo(exchange, 'request');
         forwardBody(result.body);
@@ -857,7 +860,9 @@ export async function startProxyServer(
 
       exchange.statusCode = result.status;
       exchange.statusMessage = result.statusMessage;
-      exchange.responseHeaders = { ...result.headers };
+      // From `res.headers` (post-delete), not `result.headers` — same
+      // reasoning as the request-phase hook's identical fix.
+      exchange.responseHeaders = { ...res.headers };
       exchange.responseBodySize = result.body.length;
       BodyCapture.of(result.body).applyTo(exchange, 'response');
       exchange.finishedAt = Date.now();
