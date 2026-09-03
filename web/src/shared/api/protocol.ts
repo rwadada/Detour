@@ -254,4 +254,6 @@ export type DashboardClientMessage =
   /** Saves the currently active rules.json as a named profile. */
   | { type: 'saveActiveRulesAsProfile'; name: string }
   /** Loads a saved profile's rules into the currently active rules.json. */
-  | { type: 'applyRuleProfile'; name: string };
+  | { type: 'applyRuleProfile'; name: string }
+  /** Re-sends a previously captured exchange for real (Replay). The result appears as a normal new `request`/`response` pair, not a dedicated message type. */
+  | { type: 'replay'; exchange: CapturedExchange };

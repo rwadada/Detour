@@ -22,6 +22,8 @@ export function LogTable() {
   const filters = useExchangeStore((s) => s.filters);
   const selectedId = useExchangeStore((s) => s.selectedId);
   const select = useExchangeStore((s) => s.select);
+  const compareIds = useExchangeStore((s) => s.compareIds);
+  const toggleCompare = useExchangeStore((s) => s.toggleCompare);
 
   const filtered = useMemo(() => exchanges.filter((e) => matchesFilters(e, filters)), [exchanges, filters]);
 
@@ -80,7 +82,10 @@ export function LogTable() {
                 key={exchange.id}
                 exchange={exchange}
                 selected={exchange.id === selectedId}
-                onSelect={() => select(exchange.id)}
+                compareOrder={compareIds.indexOf(exchange.id)}
+                onSelect={(event) =>
+                  event.metaKey || event.ctrlKey ? toggleCompare(exchange.id) : select(exchange.id)
+                }
                 style={{
                   position: 'absolute',
                   top: 0,
@@ -101,26 +106,37 @@ export function LogTable() {
 function LogRow({
   exchange,
   selected,
+  compareOrder,
   onSelect,
   style,
 }: {
   exchange: CapturedExchange;
   selected: boolean;
-  onSelect: () => void;
+  /** Index in the compare set (0/1), or -1 if not marked for compare (issue #19 — ctrl/cmd-click a row to mark it). */
+  compareOrder: number;
+  onSelect: (event: { metaKey: boolean; ctrlKey: boolean }) => void;
   style: CSSProperties;
 }) {
   const pending = exchange.statusCode === undefined && !exchange.error;
+  const inCompare = compareOrder >= 0;
   return (
     <button
       type="button"
       onClick={onSelect}
       style={style}
+      title={inCompare ? undefined : 'Click to inspect — ctrl/cmd-click to mark for Compare'}
       className={cn(
         'flex w-full items-center border-b border-[var(--border)]/50 px-3 text-left text-xs font-mono-ui transition-colors',
         selected ? 'bg-[var(--row-selected)]' : 'hover:bg-[var(--row-hover)]',
+        inCompare && 'border-l-2 border-l-[var(--accent)]',
         pending && 'opacity-60',
       )}
     >
+      {inCompare && (
+        <span className="mr-1.5 shrink-0 rounded bg-[var(--accent)] px-1 text-[10px] font-semibold text-[var(--accent-foreground)]">
+          {compareOrder + 1}
+        </span>
+      )}
       <span className="w-20 shrink-0 text-[var(--muted)]">{formatTime(exchange.startedAt)}</span>
       <span className="w-16 shrink-0">
         <MethodBadge method={exchange.method} />

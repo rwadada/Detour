@@ -14,10 +14,13 @@ import { SAMPLE_RULES_FILE } from '../../domain/rules/sample';
 import type { RulesFile } from '../../domain/rules/types';
 import { RingBuffer } from '../../domain/shared/ringBuffer';
 import type { DashboardClientMessage, DashboardServerMessage } from '../../domain/dashboard/protocol';
-import type { RuleEngine } from '../../usecase/ruleEngine';
+import type { HttpRequester } from '../../usecase/ports/httpRequester';
 import type { RuleProfileStore } from '../../usecase/ports/ruleProfileStore';
+import { replayExchange } from '../../usecase/replayExchange';
+import type { RuleEngine } from '../../usecase/ruleEngine';
 import type { DetourEventBus } from '../eventBus';
 import { assertPortAvailable } from '../portCheck';
+import { nodeHttpRequester } from '../proxy/nodeHttpRequester';
 import { serveStatic } from './staticServer';
 
 /**
@@ -48,6 +51,8 @@ export interface DashboardServerOptions {
   ruleEngine?: RuleEngine;
   /** Powers Rules Profiles (issue #19): listing/creating/applying saved rule profiles, independent of whether `ruleEngine` is configured (profiles can be created even before any is applied). */
   ruleProfileStore?: RuleProfileStore;
+  /** Performs the real outbound request for `replay` (issue #19). Injectable for tests; defaults to a real `node:http`/`node:https` request. */
+  httpRequester?: HttpRequester;
 }
 
 export interface DashboardServerHandle {
@@ -69,6 +74,7 @@ export async function startDashboardServer(
 ): Promise<DashboardServerHandle> {
   const host = options.host ?? 'localhost';
   const { ruleEngine, ruleProfileStore } = options;
+  const httpRequester = options.httpRequester ?? nodeHttpRequester;
   await assertPortAvailable(options.port, host);
 
   const backlog = new RingBuffer<CapturedExchange>(options.backlogSize ?? DEFAULT_BACKLOG_SIZE, (item) => item.id);
@@ -205,7 +211,14 @@ export async function startDashboardServer(
         else if (message.type === 'setFocus') eventBus.emit('setFocus', message.hosts);
         else if (message.type === 'setThrottle') eventBus.emit('setThrottle', message.state);
         else if (message.type === 'setBlockHosts') eventBus.emit('setBlockHosts', message.state);
-        else handleRulesMessage(message);
+        else if (message.type === 'replay') {
+          // Fire-and-forget: `replayExchange` never rejects (network
+          // failures land in the replayed exchange's own `error` field, see
+          // its doc comment) — this catch only guards against a genuine bug.
+          void replayExchange(message.exchange, eventBus, httpRequester).catch((err) =>
+            broadcastError('REPLAY_ERROR', describeError(err)),
+          );
+        } else handleRulesMessage(message);
       } catch {
         // Ignore malformed frames rather than crashing the dashboard.
       }

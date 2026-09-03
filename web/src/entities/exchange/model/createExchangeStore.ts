@@ -24,8 +24,14 @@ export interface ExchangeState {
   source: 'live' | 'imported';
   /** The imported file's name, for display in the "viewing a saved log" banner. Null outside imported mode. */
   importedFileName: string | null;
+  /** Ids marked for Compare (issue #19), oldest first, capped at 2 — toggling a 3rd id drops the oldest. */
+  compareIds: string[];
   select: (id: string | null) => void;
   setFilters: (patch: Partial<Filters>) => void;
+  /** Adds/removes `id` from the compare set. */
+  toggleCompare: (id: string) => void;
+  /** Empties the compare set. */
+  clearCompare: () => void;
   /** Empties the log table. Selection is cleared too; other entities/features (e.g. a still-paused breakpoint) are untouched — they reflect state that's still genuinely true server-side. */
   clear: () => void;
   /**
@@ -103,13 +109,16 @@ export function createExchangeStore(connection: DashboardConnection) {
       filters: DEFAULT_FILTERS,
       source: 'live',
       importedFileName: null,
+      compareIds: [],
       select: (id) => set({ selectedId: id }),
       setFilters: (patch) => set((state) => ({ filters: { ...state.filters, ...patch } })),
+      toggleCompare: (id) => set((state) => ({ compareIds: nextCompareIds(state.compareIds, id) })),
+      clearCompare: () => set({ compareIds: [] }),
       clear: () => {
         buffer.clear();
         pendingUpserts = [];
         importedExchanges = null;
-        set({ exchanges: [], selectedId: null, source: 'live', importedFileName: null });
+        set({ exchanges: [], selectedId: null, source: 'live', importedFileName: null, compareIds: [] });
       },
       importExchanges: (exchanges, fileName) => {
         importedExchanges = exchanges;
@@ -121,6 +130,13 @@ export function createExchangeStore(connection: DashboardConnection) {
       },
     };
   });
+}
+
+/** Toggles `id` in/out of a compare set, capping it at 2 by dropping the oldest entry. */
+function nextCompareIds(current: string[], id: string): string[] {
+  if (current.includes(id)) return current.filter((x) => x !== id);
+  const next = [...current, id];
+  return next.length > 2 ? next.slice(next.length - 2) : next;
 }
 
 function statusClass(status?: number): string {

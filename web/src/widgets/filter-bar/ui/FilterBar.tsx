@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { Search, Trash2 } from 'lucide-react';
 import { matchesFilters, useExchangeStore } from '@/entities/exchange';
+import { CompareBar } from '@/features/compare';
 import { Button, Input, Select } from '@/shared/ui';
 
 const METHODS = ['ALL', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
@@ -45,6 +46,7 @@ export function FilterBar() {
       <span className="whitespace-nowrap text-xs text-[var(--muted)] font-mono-ui">
         {isFiltered ? `${shownCount} of ${exchanges.length} shown` : `${exchanges.length} shown`}
       </span>
+      <CompareBar />
       <Button variant="outline" size="sm" onClick={clear} title="Clear log">
         <Trash2 className="h-3.5 w-3.5" />
         Clear

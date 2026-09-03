@@ -118,4 +118,12 @@ export type DashboardClientMessage =
   /** Saves the currently active rules.json as a named profile, creating it or overwriting it if it already exists. */
   | { type: 'saveActiveRulesAsProfile'; name: string }
   /** Loads a saved profile's rules and writes them into the currently active rules.json — equivalent to pasting its contents into the Rules editor and saving. */
-  | { type: 'applyRuleProfile'; name: string };
+  | { type: 'applyRuleProfile'; name: string }
+  /**
+   * Re-sends a previously captured exchange for real (issue #19's Replay).
+   * The dashboard sends the full exchange it already has rather than just
+   * an id — the server has no independent way to look up an id that may
+   * have already fallen out of its own backlog. The result appears as a
+   * normal new `request`/`response` pair, not a dedicated message type.
+   */
+  | { type: 'replay'; exchange: CapturedExchange };
