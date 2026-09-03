@@ -18,7 +18,20 @@ export interface ScriptRequestInfo {
   method: string;
   /** Fully-qualified URL, e.g. `https://api.example.com/users/1?x=2`. Read-only — a script can't redirect the request (use a `route` rule for that). */
   url: string;
+  /**
+   * A request never legitimately carries a multi-value header (Node/
+   * http-mitm-proxy already fold request headers down to plain strings by
+   * the time they reach here — the well-known multi-value case, `Set-Cookie`,
+   * is response-only), so this is always plain strings, unlike
+   * `ScriptResponseInfo.headers`.
+   */
   headers: Record<string, string>;
+  /**
+   * The full, untruncated request body — unlike `CapturedExchange`'s own
+   * `requestBody` (shown in the dashboard), this is never capped at
+   * `MAX_CAPTURED_BODY_BYTES`, since a hook that appends to/transforms it
+   * must never silently corrupt a large upload.
+   */
   body: Buffer;
 }
 
@@ -36,7 +49,20 @@ export interface ScriptRequestResult {
 export interface ScriptResponseInfo {
   status: number;
   statusMessage?: string;
-  headers: Record<string, string>;
+  /**
+   * A multi-value header (most notably `Set-Cookie`, which legitimately
+   * repeats) is kept as a `string[]` rather than comma-joined — joining it
+   * would produce a value no client can correctly split back apart (a
+   * cookie's own `Expires` attribute routinely contains a comma). Set a
+   * `string[]` for such a header if a hook needs to add/replace one.
+   */
+  headers: Record<string, string | string[]>;
+  /**
+   * The full, untruncated response body — unlike `CapturedExchange`'s own
+   * `responseBody` (shown in the dashboard), this is never capped at
+   * `MAX_CAPTURED_BODY_BYTES`, since a hook that appends to/transforms it
+   * must never silently corrupt what's actually sent to the client.
+   */
   body: Buffer;
 }
 
@@ -44,7 +70,7 @@ export interface ScriptResponseInfo {
 export interface ScriptResponseResult {
   status?: number;
   statusMessage?: string;
-  headers?: Record<string, string>;
+  headers?: Record<string, string | string[]>;
   body?: Buffer | string;
 }
 

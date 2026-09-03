@@ -13,9 +13,11 @@
  */
 module.exports = {
   /**
-   * `req`: { method, url, headers, body } — `body` is a `Buffer`.
-   * Return a partial `{ method?, headers?, body? }`; any field you omit
-   * keeps its original value. `body` may be a `Buffer` or a `string`.
+   * `req`: { method, url, headers, body } — `body` is the full,
+   * untruncated request `Buffer` (never cut off at the dashboard's 256 KiB
+   * capture cap). Return a partial `{ method?, headers?, body? }`; any
+   * field you omit keeps its original value. `body` may be a `Buffer` or a
+   * `string`.
    */
   beforeRequest(req) {
     return {
@@ -25,7 +27,10 @@ module.exports = {
 
   /**
    * `req`: same shape as above. `res`: { status, statusMessage, headers,
-   * body } for the upstream response — `body` is a `Buffer`.
+   * body } for the upstream response — `body` is likewise the full
+   * response, and `headers` values may be a `string` or `string[]` (a
+   * repeated header like `Set-Cookie` stays an array; spreading it, as
+   * below, preserves that — never comma-join it back into a string).
    * Return a partial `{ status?, statusMessage?, headers?, body? }`.
    */
   beforeResponse(req, res) {

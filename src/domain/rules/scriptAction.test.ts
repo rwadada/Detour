@@ -93,4 +93,15 @@ describe('applyScriptResponseResult', () => {
     const result = applyScriptResponseResult(res, { headers: { 'content-type': 'text/plain' } });
     expect(result.headers).toEqual({ 'content-type': 'text/plain' });
   });
+
+  it('keeps a multi-value header (e.g. set-cookie) as an array, untouched, when the hook leaves headers alone', () => {
+    const res = baseResponse({ headers: { 'set-cookie': ['a=1', 'b=2'] } });
+    const result = applyScriptResponseResult(res, { status: 201 });
+    expect(result.headers).toEqual({ 'set-cookie': ['a=1', 'b=2'] });
+  });
+
+  it('lets a hook set a multi-value header as an array', () => {
+    const result = applyScriptResponseResult(baseResponse(), { headers: { 'set-cookie': ['a=1', 'b=2'] } });
+    expect(result.headers).toEqual({ 'set-cookie': ['a=1', 'b=2'] });
+  });
 });

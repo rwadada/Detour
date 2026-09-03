@@ -17,7 +17,7 @@ describe('runBeforeRequest', () => {
     expect(result).toEqual(req);
   });
 
-  it('applies the hook`s partial result', async () => {
+  it("applies the hook's partial result", async () => {
     const module: ScriptModule = { beforeRequest: () => ({ headers: { 'x-detour': '1' } }) };
     const result = await runBeforeRequest(module, baseRequest());
     expect(result.headers).toEqual({ 'x-detour': '1' });
@@ -34,7 +34,7 @@ describe('runBeforeRequest', () => {
     expect(result.body.toString()).toBe('hi!');
   });
 
-  it('gives the hook a fresh headers object rather than the caller`s own', async () => {
+  it("gives the hook a fresh headers object rather than the caller's own", async () => {
     let seenHeaders: Record<string, string> | undefined;
     const module: ScriptModule = {
       beforeRequest: (req) => {
@@ -49,7 +49,7 @@ describe('runBeforeRequest', () => {
     expect(original).toEqual({ accept: 'json' });
   });
 
-  it('propagates a hook`s thrown error to the caller', async () => {
+  it("propagates a hook's thrown error to the caller", async () => {
     const module: ScriptModule = {
       beforeRequest: () => {
         throw new Error('boom');
@@ -66,7 +66,7 @@ describe('runBeforeResponse', () => {
     expect(result).toEqual(res);
   });
 
-  it('applies the hook`s partial result, given both req and res', async () => {
+  it("applies the hook's partial result, given both req and res", async () => {
     const module: ScriptModule = {
       beforeResponse: (req, res) => ({ status: 200, body: `${req.method} ${res.body.toString()}` }),
     };

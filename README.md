@@ -98,7 +98,7 @@ A rules file is an array of rules, evaluated in order for each request. The firs
     },
   };
   ```
-  `body` may be returned as a `Buffer` or a `string` either way. A hook that throws (or whose returned promise rejects) leaves that phase forwarded untouched and logs the error, rather than dropping the exchange. The script itself is reloaded automatically when its file changes, the same as rules.json. See [`example.script.js`](./example.script.js) for a complete, runnable example.
+  `body` may be returned as a `Buffer` or a `string` either way, and is always the full, untruncated body — unlike the dashboard's own display copy of an exchange, it's never cut off at the 256 KiB capture cap. Response `headers` values may be a `string` or a `string[]` (a repeated header like `Set-Cookie` is kept as an array — set one back the same way rather than joining it with commas, which would corrupt it). A hook that throws (or whose returned promise rejects) leaves that phase forwarded untouched and logs the error, rather than dropping the exchange. The script itself is reloaded automatically when its file changes, the same as rules.json. See [`example.script.js`](./example.script.js) for a complete, runnable example.
 
 Editing a rules file while the proxy is running triggers an automatic reload (if validation fails, the previous rules keep serving traffic and the error is printed to the console).
 

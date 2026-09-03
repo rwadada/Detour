@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findHeader, flattenHeaders } from './headers';
+import { compactHeaders, findHeader, flattenHeaders } from './headers';
 
 describe('flattenHeaders', () => {
   it('joins a multi-value header with a comma', () => {
@@ -12,6 +12,20 @@ describe('flattenHeaders', () => {
 
   it('passes a single string value through unchanged', () => {
     expect(flattenHeaders({ 'content-type': 'text/plain' })).toEqual({ 'content-type': 'text/plain' });
+  });
+});
+
+describe('compactHeaders', () => {
+  it('keeps a multi-value header as an array instead of joining it', () => {
+    expect(compactHeaders({ 'set-cookie': ['a=1', 'b=2'] })).toEqual({ 'set-cookie': ['a=1', 'b=2'] });
+  });
+
+  it('drops undefined values', () => {
+    expect(compactHeaders({ 'x-a': '1', 'x-b': undefined })).toEqual({ 'x-a': '1' });
+  });
+
+  it('passes a single string value through unchanged', () => {
+    expect(compactHeaders({ 'content-type': 'text/plain' })).toEqual({ 'content-type': 'text/plain' });
   });
 });
 

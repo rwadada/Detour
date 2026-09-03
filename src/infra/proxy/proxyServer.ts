@@ -5,7 +5,7 @@ import { Proxy } from 'http-mitm-proxy';
 import type { ErrorCallback, IContext, IWebSocketContext } from 'http-mitm-proxy';
 import { isHostBlocked, normalizeBlockHosts } from '../../domain/blockHosts/blockHostsPolicy';
 import { BodyCapture } from '../../domain/exchange/bodyCapture';
-import { flattenHeaders } from '../../domain/exchange/headers';
+import { compactHeaders, flattenHeaders } from '../../domain/exchange/headers';
 import type {
   BlockHostsState,
   BreakpointRequestPayload,
@@ -609,6 +609,14 @@ export async function startProxyServer(
    * upstream request right after that (see `makeProxyToServerRequest` in
    * the library), so a change applied any later would silently miss the
    * request that already went out.
+   *
+   * Deliberately does NOT reuse `captureClientRequestBody`/`BodyCapture` for
+   * the body actually handed to the hook (and forwarded upstream): that
+   * capture is capped at `MAX_CAPTURED_BODY_BYTES` for the dashboard's own
+   * display copy, and per its doc comment the cap must never affect what's
+   * actually proxied — silently truncating a large upload here would be
+   * exactly that. `chunks` below is the real (uncapped) body; `displayCapture`
+   * is a second, capped copy purely for `exchange.requestBody`.
    */
   function handleScriptRequestHook(
     ctx: IContext,
@@ -617,7 +625,16 @@ export async function startProxyServer(
     callback: ErrorCallback,
   ): void {
     const { rule, module } = matched;
-    const requestCapture = captureClientRequestBody(ctx, exchange);
+    const displayCapture = new BodyCapture();
+    const chunks: Buffer[] = [];
+    ctx.clientToProxyRequest.on('data', (chunk: Buffer) => {
+      exchange.requestBodySize += chunk.length;
+      displayCapture.add(chunk);
+      chunks.push(chunk);
+    });
+    // See captureClientRequestBody's doc comment: without resuming the
+    // (pre-paused) stream here, it never emits 'data'/'end' at all.
+    ctx.clientToProxyRequest.resume();
 
     const forwardBody = (body: Buffer) => {
       ctx.onRequestData((_dataCtx, _chunk, cb) => cb(undefined, Buffer.alloc(0)));
@@ -630,9 +647,9 @@ export async function startProxyServer(
     };
 
     const run = () => {
-      requestCapture.applyTo(exchange, 'request');
+      displayCapture.applyTo(exchange, 'request');
       const opts = ctx.proxyToServerRequestOptions;
-      const body = requestCapture.toBuffer();
+      const body = Buffer.concat(chunks);
       if (!opts) {
         forwardBody(body);
         return;
@@ -645,19 +662,21 @@ export async function startProxyServer(
         body,
       };
 
+      const applyResult = (result: ScriptRequestInfo) => {
+        opts.method = result.method;
+        opts.headers = { ...result.headers };
+        // The (possibly rewritten) body's length is unknown up front —
+        // send chunked instead, same as installRequestBodyRewrite.
+        delete opts.headers['content-length'];
+        exchange.method = result.method;
+        exchange.requestHeaders = result.headers;
+        exchange.requestBodySize = result.body.length;
+        BodyCapture.of(result.body).applyTo(exchange, 'request');
+        forwardBody(result.body);
+      };
+
       runBeforeRequest(module, req)
-        .then((result) => {
-          opts.method = result.method;
-          opts.headers = { ...result.headers };
-          // The (possibly rewritten) body's length is unknown up front —
-          // send chunked instead, same as installRequestBodyRewrite.
-          delete opts.headers['content-length'];
-          exchange.method = result.method;
-          exchange.requestHeaders = result.headers;
-          exchange.requestBodySize = result.body.length;
-          BodyCapture.of(result.body).applyTo(exchange, 'request');
-          forwardBody(result.body);
-        })
+        .then(applyResult)
         .catch((err) => {
           const message = err instanceof Error ? err.message : String(err);
           eventBus.emit('error', {
@@ -665,8 +684,7 @@ export async function startProxyServer(
             errorKind: 'RULE_SCRIPT_ERROR',
             message: `rule "${rule.name}": beforeRequest failed: ${message}`,
           });
-          // Forward the original, untouched request rather than drop it.
-          forwardBody(body);
+          forwardBody(body); // Forward the original, untouched request rather than drop it.
         });
     };
 
@@ -786,6 +804,13 @@ export async function startProxyServer(
    * `installResponseBodyRewrite`. `module` is passed in already-loaded (see
    * the `onResponse` handler below, which decided to route here in the
    * first place based on whether it defines `beforeResponse`).
+   *
+   * Deliberately accumulates the raw upstream body into a plain (uncapped)
+   * `chunks` array rather than a capped `BodyCapture` — same reasoning as
+   * `handleScriptRequestHook`: what's captured here is what's actually sent
+   * back to the client, so it must never be silently truncated the way the
+   * dashboard's own display copy is (see `finish`'s `BodyCapture.of` call,
+   * which caps *that* copy on purpose).
    */
   function handleScriptResponseHook(ctx: IContext, rule: Rule, module: ScriptModule, callback: ErrorCallback): void {
     const exchange = inFlight.get(ctx.uuid);
@@ -795,8 +820,8 @@ export async function startProxyServer(
       return;
     }
 
-    const capture = new BodyCapture();
-    res.on('data', (chunk: Buffer) => capture.add(chunk));
+    const chunks: Buffer[] = [];
+    res.on('data', (chunk: Buffer) => chunks.push(chunk));
     res.resume();
 
     // Applies a (possibly hook-rewritten) response and releases `callback`,
@@ -842,8 +867,11 @@ export async function startProxyServer(
       const resInfo: ScriptResponseInfo = {
         status: res.statusCode ?? 200,
         statusMessage: res.statusMessage,
-        headers: flattenHeaders(res.headers),
-        body: capture.toBuffer(),
+        // Preserves a multi-value header (e.g. `set-cookie`) as an array —
+        // see `compactHeaders`' doc comment for why `flattenHeaders`
+        // (comma-joining) would corrupt it.
+        headers: compactHeaders(res.headers),
+        body: Buffer.concat(chunks),
       };
 
       runBeforeResponse(module, reqInfo, resInfo)
