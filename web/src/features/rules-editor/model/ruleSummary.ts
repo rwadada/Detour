@@ -1,4 +1,5 @@
 import type { Rule } from '@/shared/api';
+import { blankAction } from './actionFields';
 
 /** A short, human-readable summary of what a rule matches, for the rule list row (e.g. `"GET https://api.example.com/*"`). */
 export function describeMatch(rule: Rule): string {
@@ -10,7 +11,7 @@ export function describeMatch(rule: Rule): string {
 
 /** A fresh rule for the "+ Add rule" button — name is a placeholder the user is expected to change. */
 export function blankRule(): Rule {
-  return { name: 'new-rule', enabled: true, match: { url: '*' }, action: { type: 'mock', status: 200 } };
+  return { name: 'new-rule', enabled: true, match: { url: '*' }, action: blankAction('mock') };
 }
 
 /** Parses the Method field's free-text input into `RuleMatch['method']`: blank means "any method", a comma splits into a list. */
