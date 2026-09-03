@@ -87,16 +87,53 @@ describe('createExchangeStore', () => {
     expect(store.getState().filters).toEqual({ ...DEFAULT_FILTERS, method: 'GET' });
   });
 
+  it('toggleCompare() adds and removes ids from the compare set', () => {
+    const fake = fakeConnection();
+    const store = createExchangeStore(fake.connection);
+
+    store.getState().toggleCompare('a');
+    expect(store.getState().compareIds).toEqual(['a']);
+
+    store.getState().toggleCompare('b');
+    expect(store.getState().compareIds).toEqual(['a', 'b']);
+
+    store.getState().toggleCompare('a');
+    expect(store.getState().compareIds).toEqual(['b']);
+  });
+
+  it('toggleCompare() drops the oldest id once a 3rd is toggled on', () => {
+    const fake = fakeConnection();
+    const store = createExchangeStore(fake.connection);
+
+    store.getState().toggleCompare('a');
+    store.getState().toggleCompare('b');
+    store.getState().toggleCompare('c');
+
+    expect(store.getState().compareIds).toEqual(['b', 'c']);
+  });
+
+  it('clearCompare() empties the compare set', () => {
+    const fake = fakeConnection();
+    const store = createExchangeStore(fake.connection);
+    store.getState().toggleCompare('a');
+
+    store.getState().clearCompare();
+
+    expect(store.getState().compareIds).toEqual([]);
+  });
+
   it('clear() empties exchanges and selection', () => {
     const fake = fakeConnection();
     const store = createExchangeStore(fake.connection);
     fake.emit({ type: 'backlog', items: [exchange({ id: 'a' })] });
     store.getState().select('a');
+    store.getState().toggleCompare('a');
 
     store.getState().clear();
 
     expect(store.getState().exchanges).toEqual([]);
     expect(store.getState().selectedId).toBeNull();
+    expect(store.getState().compareIds).toEqual([]);
   });
 
   it('importExchanges() switches to imported mode, showing the given exchanges', () => {

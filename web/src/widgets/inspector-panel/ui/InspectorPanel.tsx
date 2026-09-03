@@ -2,6 +2,8 @@ import { lazy, Suspense, useMemo, useState } from 'react';
 import { X } from 'lucide-react';
 import { MethodBadge, StatusBadge, useExchangeStore } from '@/entities/exchange';
 import { BreakpointEditor, useBreakpointResumeStore } from '@/features/breakpoint-resume';
+import { CopyAsCurlButton } from '@/features/copy-as-curl';
+import { ReplayButton } from '@/features/replay';
 import { cn, formatBytes, formatDuration, headerRows, parseQueryParams } from '@/shared/lib/utils';
 import { Button, Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui';
 
@@ -58,9 +60,13 @@ export function InspectorPanel() {
           </p>
           {exchange.error && <p className="mt-1 text-xs text-[var(--status-5xx)]">{exchange.error}</p>}
         </div>
-        <Button variant="ghost" size="icon" onClick={() => select(null)} title="Close">
-          <X className="h-4 w-4" />
-        </Button>
+        <div className="flex shrink-0 items-center">
+          <CopyAsCurlButton exchange={exchange} />
+          <ReplayButton exchange={exchange} />
+          <Button variant="ghost" size="icon" onClick={() => select(null)} title="Close">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
       <Tabs defaultValue="headers" className="flex flex-1 flex-col overflow-hidden">

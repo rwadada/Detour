@@ -62,4 +62,14 @@ export default defineConfig([
     files: ['./src/entities/rule/**'],
     rules: { 'fsd/insignificant-slice': 'off' },
   },
+  {
+    // `compare` (widgets/filter-bar), `copy-as-curl`/`replay`
+    // (widgets/inspector-panel) — issue #19 — each currently have one
+    // consumer widget too, same reasoning as the blocks above: kept as
+    // their own slices since they're independently reusable capabilities
+    // (e.g. Copy as curl / Replay are also natural fits for a future
+    // per-row context menu in LogTable).
+    files: ['./src/features/compare/**', './src/features/copy-as-curl/**', './src/features/replay/**'],
+    rules: { 'fsd/insignificant-slice': 'off' },
+  },
 ]);
