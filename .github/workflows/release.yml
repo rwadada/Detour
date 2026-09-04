@@ -19,7 +19,13 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 18
+          # The CLI's own `engines.node` stays >=18 (esbuild targets node18,
+          # and that's all end users need to *run* the release build) — but
+          # building the dashboard SPA needs Vite 7, which requires Node
+          # 20.19+/22.12+. Node 18 here also tripped npm's optional-deps bug
+          # (npm/cli#4828), leaving native rollup/lightningcss bindings
+          # unresolved and failing the build outright.
+          node-version: 22
           cache: npm
 
       - name: Verify tag matches package.json version
