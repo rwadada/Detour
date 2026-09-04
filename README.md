@@ -3,6 +3,17 @@ A terminal-first, lightweight HTTP debugging proxy for mobile and web. A modern 
 
 ## Getting Started
 
+### Homebrew (recommended)
+
+```bash
+brew install rwadada/detour/detour
+detour start --port 8080
+```
+
+This installs from [rwadada/homebrew-detour](https://github.com/rwadada/homebrew-detour), a tap that ships a self-contained release build — no `npm install` or Node toolchain setup required beyond Node itself (pulled in automatically as the formula's dependency).
+
+### From source
+
 ```bash
 npm install
 npm run build
@@ -35,6 +46,7 @@ During development, run `npm run dev` to watch and run the TypeScript sources di
 - `npm run knip`: finds unused files/exports/dependencies. Not part of `verify` — it's repo-wide and can surface pre-existing issues unrelated to the current change, so it's a periodic/manual check rather than a per-turn gate
 - `npm run test:mutation`: Stryker Mutator — checks whether the unit suite actually *catches* bugs (mutates a condition/operator/literal, expects a test to fail) rather than just executing lines. Also not part of `verify`: it re-runs the suite once per mutant, so it's minutes rather than seconds — run it periodically or in CI
 - `npm run verify`: format:check + typecheck + lint + dep-cruise + dup-check + test:coverage + test:e2e, in order — this is what `.claude/hooks/verify-stop.sh` runs automatically after every Claude Code turn (see `.claude/settings.json`)
+- `npm run build:release`: builds the self-contained tarball published to GitHub Releases and consumed by the Homebrew formula (issue #52, see `scripts/build-release.mjs`) — bundles the CLI into a single file with esbuild alongside the built dashboard, so installing needs nothing beyond a `node` binary. `.github/workflows/release.yml` runs this on every `vX.Y.Z` tag push
 
 ## Web dashboard
 
