@@ -209,6 +209,17 @@ export class ProxyEngine {
   }
 
   static parseHost(hostString: string, defaultPort?: number): { host: string; port: number | undefined } {
+    // A bracketed IPv6 literal (`[::1]`, `[::1]:8443`) is RFC 3986's own way
+    // to pair one with an explicit port — required precisely because a bare
+    // "::1:8443" would otherwise be ambiguous with a literal ending in
+    // ":8443". Unwrap the brackets and read the port (if any) from after them.
+    const bracketed = hostString.match(/^\[([^\]]+)\](?::(\d+))?$/);
+    if (bracketed) return { host: bracketed[1]!, port: bracketed[2] ? Number(bracketed[2]) : defaultPort };
+    // More than one colon with no brackets is an unbracketed IPv6 literal
+    // (e.g. a bare "::1", as a Host header without a port) — per RFC 3986 a
+    // client pairing one with an explicit port must bracket it, so treat the
+    // whole string as the host rather than mis-splitting on the last colon.
+    if ((hostString.match(/:/g) ?? []).length > 1) return { host: hostString, port: defaultPort };
     const lastColon = hostString.lastIndexOf(':');
     if (lastColon === -1) return { host: hostString, port: defaultPort };
     return { host: hostString.slice(0, lastColon), port: Number(hostString.slice(lastColon + 1)) };
@@ -424,6 +435,13 @@ export class ProxyEngine {
           upstream.end();
         });
       },
+      onAbort: (err) => {
+        // The client is gone — sending the rest of an already-started
+        // upstream request would just hang it waiting for a body that will
+        // never arrive.
+        upstream.destroy();
+        this.emitError('CLIENT_TO_PROXY_REQUEST_ERROR', ctx, err);
+      },
     });
     client.resume();
   }
@@ -436,30 +454,43 @@ export class ProxyEngine {
    * throttling/streaming `http-mitm-proxy` couldn't do (see issue #42 and
    * `throttleTransform.ts`'s doc comment). Shared by `pumpRequestBody`/
    * `pumpResponseBody`, identical apart from which stream is the source and
-   * which hook/error-kind/finish behavior applies.
+   * which hook/error-kind/finish/abort behavior applies.
    *
    * `readableEnded` (not `.complete`, which the HTTP parser can flip before
    * the stream has actually been drained — see e.g. `handleRequestBreakpoint`
    * in proxyServer.ts) is the precise signal that `source` already fully
-   * emitted 'end' and no further `'data'`/`'end'` will ever come, in which
-   * case `finish` runs immediately with no listeners attached.
+   * emitted 'end' and no further `'data'`/`'end'`/`'aborted'`/`'close'` will
+   * ever come, in which case `finish` runs immediately with no listeners
+   * attached.
    *
    * `ended`/`processing` below track whether `source`'s 'end' arrived while
    * a chunk was still being processed (e.g. delayed by Throttle's
    * `setTimeout`) — if it did, `finish` must NOT run until that chunk's
    * callback actually resolves and its data is written, or the tail of the
    * body would be silently dropped.
+   *
+   * A connection that drops mid-body (client disconnects, or the upstream
+   * server's own connection resets) never fires 'end' at all — `IncomingMessage`
+   * emits `'aborted'` (still supported, if legacy, as of the Node versions
+   * `engines.node` targets) and/or `'close'` instead, either of which would
+   * otherwise leave this pump waiting forever, hanging the other leg and
+   * leaking the exchange (never reaching `finish`, so `proxyServer.ts` never
+   * gets to publish `'response'`/clean up `inFlight`/resolve a breakpoint for
+   * it). `settled` guards `onAbort` from running twice (once from
+   * `'aborted'`, again from the `'close'` that follows it) and from firing
+   * at all once the body genuinely completed normally.
    */
   private pumpChunks(opts: {
     ctx: Context;
-    source: NodeJS.ReadableStream & { readableEnded: boolean; pause(): void; resume(): void };
+    source: IncomingMessage;
     handlers: OnRequestDataParams[];
     dataErrorKind: string;
     write: (chunk: Buffer) => boolean;
     onDrain: (cb: () => void) => void;
     finish: () => void;
+    onAbort: (err: Error) => void;
   }): void {
-    const { ctx, source, handlers, dataErrorKind, write, onDrain, finish } = opts;
+    const { ctx, source, handlers, dataErrorKind, write, onDrain, finish, onAbort } = opts;
 
     if (source.readableEnded) {
       finish();
@@ -468,8 +499,9 @@ export class ProxyEngine {
 
     let ended = false;
     let processing = false;
+    let settled = false;
     const maybeFinish = (): void => {
-      if (ended && !processing) finish();
+      if (ended && !processing && !settled) finish();
     };
 
     const onData = (chunk: Buffer): void => {
@@ -477,6 +509,7 @@ export class ProxyEngine {
       processing = true;
       runDataChain(handlers, ctx, chunk, (err, newChunk) => {
         processing = false;
+        if (settled) return; // aborted while this chunk was in flight — nothing more to do.
         if (err) {
           this.emitError(dataErrorKind, ctx, err);
           return;
@@ -489,11 +522,23 @@ export class ProxyEngine {
         else onDrain(afterWrite);
       });
     };
+    const abort = (err: Error): void => {
+      if (settled) return;
+      settled = true;
+      source.off('data', onData);
+      onAbort(err);
+    };
     source.on('data', onData);
     source.once('end', () => {
       source.off('data', onData);
       ended = true;
       maybeFinish();
+    });
+    source.once('aborted', () => abort(new Error('connection aborted before the body finished')));
+    // 'close' always follows a normal 'end' too — only treat it as an abort
+    // if the body never actually finished.
+    source.once('close', () => {
+      if (!ended) abort(new Error('connection closed before the body finished'));
     });
   }
 
@@ -568,6 +613,13 @@ export class ProxyEngine {
           client.end();
         });
       },
+      onAbort: (err) => {
+        // Upstream dropped mid-response — headers are already flushed to the
+        // client by this point, so there's no clean status to fall back to;
+        // emitError's own guards (`!headersSent`/`!writableEnded`) make this
+        // just tear the connection down instead.
+        this.emitError('SERVER_TO_PROXY_RESPONSE_ERROR', ctx, err);
+      },
     });
   }
 
@@ -592,7 +644,12 @@ export class ProxyEngine {
   }
 
   private handleWebSocketConnection(clientWs: WebSocket, upgradeReq: IncomingMessage, isSSL: boolean): void {
-    const ctx: WsContext = { uuid: crypto.randomUUID(), isSSL };
+    // Set immediately (not just once `connectUpstreamWebSocket` runs) so
+    // that a rejection from `onWebSocketConnectionHandlers` below — which
+    // skips `connectUpstreamWebSocket` entirely — still has a `clientWs` to
+    // resume/close; otherwise the socket paused just below would stay
+    // paused forever.
+    const ctx: WsContext = { uuid: crypto.randomUUID(), isSSL, clientWs };
     underlyingSocket(clientWs)?.pause();
 
     const reqUrl = upgradeReq.url ?? '';
@@ -613,6 +670,11 @@ export class ProxyEngine {
     runChain(this.onWebSocketConnectionHandlers, ctx, (err) => {
       if (err) {
         this.wsError(ctx, err);
+        // No `serverWs` exists yet for `closeStillOpenLeg` (called from
+        // `wsError`) to cross-signal against — resume and close the client
+        // side directly instead, or it stays paused forever.
+        underlyingSocket(clientWs)?.resume();
+        clientWs.close();
         return;
       }
       this.connectUpstreamWebSocket(ctx, clientWs);
@@ -622,7 +684,6 @@ export class ProxyEngine {
   private connectUpstreamWebSocket(ctx: WsContext, clientWs: WebSocket): void {
     const { url, headers } = ctx.proxyToServerWebSocketOptions!;
     const serverWs = new WebSocket(url, { headers });
-    ctx.clientWs = clientWs;
     ctx.serverWs = serverWs;
 
     clientWs.on('message', (data, isBinary) => this.relayFrame(ctx, 'message', false, data, isBinary));
@@ -689,26 +750,40 @@ export class ProxyEngine {
           this.wsError(ctx, err);
           return;
         }
-        const client = ctx.clientWs!;
-        const server = ctx.serverWs!;
-        if (client.readyState === server.readyState) return;
-        let stillOpen: WebSocket | undefined;
-        if (client.readyState === WebSocket.OPEN) stillOpen = client;
-        else if (server.readyState === WebSocket.OPEN) stillOpen = server;
-        try {
-          if (stillOpen) {
-            if (code === 1005) stillOpen.close();
-            else stillOpen.close(code, message);
-          }
-        } catch (err2) {
-          this.wsError(ctx, err2 instanceof Error ? err2 : new Error(String(err2)));
-        }
+        this.closeStillOpenLeg(ctx, code, message);
       },
     );
   }
 
   private wsError(ctx: WsContext, err: Error): void {
     for (const handler of this.onWebSocketErrorHandlers) handler(ctx, err);
+    this.closeStillOpenLeg(ctx);
+  }
+
+  /**
+   * Closes whichever leg (client/server) is still OPEN once the other has
+   * already CLOSED — mirrors the pre-issue-#42 engine's own close/error
+   * cross-signaling, so one side dropping (cleanly via `wsClose`, or via an
+   * error through `wsError`) doesn't leave the other hanging open forever.
+   * A no-op if either leg doesn't exist yet (e.g. an error before
+   * `connectUpstreamWebSocket` ever created `serverWs` — see
+   * `handleWebSocketConnection`'s own direct cleanup for that case) or both
+   * are already in the same state.
+   */
+  private closeStillOpenLeg(ctx: WsContext, code?: number, message?: Buffer): void {
+    const client = ctx.clientWs;
+    const server = ctx.serverWs;
+    if (!client || !server || client.readyState === server.readyState) return;
+    let stillOpen: WebSocket | undefined;
+    if (client.readyState === WebSocket.OPEN) stillOpen = client;
+    else if (server.readyState === WebSocket.OPEN) stillOpen = server;
+    if (!stillOpen) return;
+    try {
+      if (code === undefined || code === 1005) stillOpen.close();
+      else stillOpen.close(code, message);
+    } catch {
+      // Best-effort — the connection is already in a broken state either way.
+    }
   }
 }
 

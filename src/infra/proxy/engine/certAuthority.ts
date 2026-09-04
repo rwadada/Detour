@@ -24,7 +24,7 @@ function randomSerialNumber(): string {
   return `00${forge.util.bytesToHex(forge.random.getBytesSync(15))}`;
 }
 
-/** IPv6 detection is deliberately loose (just "contains a colon") — SANs for a bracketed IPv6 CONNECT target are out of scope today (no test exercises one), so this only needs to not misclassify a plain hostname as an IP. */
+/** IPv6 detection is deliberately loose (just "contains a colon") — good enough given `host` always arrives already bracket-stripped (see `ProxyEngine.parseHost`), so this only needs to not misclassify a plain hostname as an IP. */
 function isIpAddress(host: string): boolean {
   return /^[\d.]+$/.test(host) || host.includes(':');
 }
