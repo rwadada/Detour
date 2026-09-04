@@ -2,10 +2,10 @@ import net from 'node:net';
 
 /**
  * Probe whether `port` is free on `host` before handing it to
- * http-mitm-proxy. The underlying library doesn't surface listen
- * errors (e.g. EADDRINUSE) through its callback, so without this
- * check a port collision would crash the process with an unhandled
- * 'error' event instead of a clean CLI error message.
+ * `ProxyEngine.listen`. A bare `http.Server.listen()` doesn't surface a
+ * clean error through its callback on EADDRINUSE, so without this check a
+ * port collision would crash the process with an unhandled 'error' event
+ * instead of a clean CLI error message.
  */
 export function assertPortAvailable(port: number, host: string): Promise<void> {
   return new Promise((resolve, reject) => {

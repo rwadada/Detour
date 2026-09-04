@@ -224,7 +224,7 @@ function startWsEchoServer(): Promise<{ port: number; close: () => Promise<void>
  * proxy at `proxyPort`, the same way a browser configured to use `detour
  * start` as its HTTP proxy would: the TCP socket dials the proxy, while the
  * upgrade request's own `Host`/path still name the real target, so
- * http-mitm-proxy's `Proxy.parseHostAndPort` resolves it correctly (see
+ * `ProxyEngine.parseHostAndPort` resolves it correctly (see
  * proxyServer.ts's `resolveWsUrl`). A custom `http.Agent` is the standard
  * way to split "where the socket connects" from "what the request asks
  * for" — the same trick a real HTTP-proxy-aware `ws` client library uses.
@@ -360,9 +360,9 @@ function h2Get(
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     // `:authority` isn't auto-filled from the session's own connect target
-    // — set explicitly, since it's what http-mitm-proxy's
-    // `Proxy.parseHostAndPort` needs (the HTTP/2 equivalent of the `Host`
-    // header) to know which upstream to forward this request to.
+    // — set explicitly, since it's what `ProxyEngine.parseHostAndPort`
+    // needs (the HTTP/2 equivalent of the `Host` header) to know which
+    // upstream to forward this request to.
     const req = session.request({ ':path': reqPath, ':method': 'GET', ':authority': authority });
     let status = 0;
     const chunks: Buffer[] = [];
@@ -1551,9 +1551,9 @@ describe('detour start (CLI, end-to-end)', () => {
       }
     });
 
-    // The http-mitm-proxy patch's behavioral changes are all gated on the
-    // client having negotiated HTTP/2 (see patches/http-mitm-proxy+1.1.0.patch's
-    // `clientIsHttp2` checks) — this proves the original HTTP/1.1 HTTPS
+    // ProxyEngine's HTTP/2-specific behavior (see `clientIsHttp2` in
+    // engine/proxyEngine.ts) is all gated on the client having negotiated
+    // HTTP/2 — this proves the original HTTP/1.1 HTTPS
     // interception path (what every other exchange in this suite already
     // exercises over a raw CONNECT tunnel, just never through a real TLS
     // handshake against Detour's own leaf cert) is still bit-for-bit intact

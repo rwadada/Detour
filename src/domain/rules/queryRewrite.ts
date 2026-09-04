@@ -2,8 +2,8 @@ import type { QueryRewrite } from './types';
 
 /**
  * Rewrites a request's outgoing query string in place, on `opts.path`
- * (which http-mitm-proxy populates with the path *and* query together,
- * e.g. `/users/1?x=2`). `remove` runs before `set`, matching
+ * (which ProxyEngine populates with the path *and* query together, e.g.
+ * `/users/1?x=2`). `remove` runs before `set`, matching
  * `applyHeaderRewrite`'s ordering. Pure — takes a plain `{path}` holder
  * rather than an `IContext`, so it has no transport dependency.
  */

@@ -1,5 +1,4 @@
 import path from 'node:path';
-import type { IContext } from 'http-mitm-proxy';
 import { applyBodyRewrite } from '../../domain/rules/bodyRewrite';
 import { applyHeaderRewrite } from '../../domain/rules/headerRewrite';
 import { type MockResponse } from '../../domain/rules/mockResponse';
@@ -10,6 +9,7 @@ import type { BodyRewrite, MockAction, RewriteAction, RouteAction, ScriptAction 
 import { resolveMockAction } from '../../usecase/resolveMockAction';
 import { fsMockBodyFileReader } from '../fs/mockBodyFileReader';
 import { fsScriptModuleLoader } from '../fs/scriptModuleLoader';
+import type { IContext } from './engine/types';
 
 export type { MockResponse };
 
@@ -20,15 +20,17 @@ export function resolveMockResponse(action: MockAction, basePath: string): MockR
 
 /**
  * Responds to the client directly, without ever contacting the upstream
- * server. Callers must not call the `onRequest` callback afterwards — per
- * http-mitm-proxy's own convention (see its `preventRequest` example),
- * leaving it uncalled is what stops the request from being forwarded.
+ * server. Callers must not call the `onRequest` callback afterwards —
+ * per `ProxyEngine`'s convention, leaving it uncalled is what stops the
+ * request from being forwarded.
  */
 export function sendMockResponse(ctx: IContext, mock: MockResponse): void {
   // Drain (and discard) any request body still in flight so the client
   // socket isn't left waiting on us before it can be reused.
   ctx.clientToProxyRequest.resume();
-  if (mock.statusMessage !== undefined) {
+  // HTTP/2 has no status-line reason phrase — Node's h2 compat
+  // `Http2ServerResponse.writeHead` only accepts the 2-arg form.
+  if (mock.statusMessage !== undefined && ctx.clientToProxyRequest.httpVersionMajor !== 2) {
     ctx.proxyToClientResponse.writeHead(mock.status, mock.statusMessage, mock.headers);
   } else {
     ctx.proxyToClientResponse.writeHead(mock.status, mock.headers);
@@ -125,10 +127,9 @@ export function applyRequestRewrite(ctx: IContext, rewrite: NonNullable<RewriteA
 
 /**
  * Applies a rewrite rule's response status/header changes. Must run from
- * the proxy-level `onResponseHeaders` hook (see proxyServer.ts), before
- * headers are flushed to the client — http-mitm-proxy only invokes
- * per-context `onResponseHeaders` registrations for request headers, not
- * response ones, so this can't be wired through `ctx.onResponseHeaders`.
+ * the proxy-level `onResponseHeaders` hook (see proxyServer.ts) — the only
+ * point at which status/headers can still be edited, since ProxyEngine
+ * flushes them to the client as soon as that hook's callback fires.
  */
 export function applyResponseHeaderRewrite(ctx: IContext, rewrite: NonNullable<RewriteAction['response']>): void {
   const res = ctx.serverToProxyResponse;

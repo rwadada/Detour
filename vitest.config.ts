@@ -27,7 +27,7 @@ export default defineConfig({
       // direct behavioral tests of their own. The rest of Infrastructure
       // (proxyServer.ts, dashboardServer.ts, certStore.ts, portCheck.ts,
       // eventBus.ts) and Presentation (logger.ts) plus the cli.ts composition
-      // root are callback-driven glue around http-mitm-proxy/ws/fs — exercised
+      // root are callback-driven glue around ProxyEngine/ws/fs — exercised
       // by the CLI E2E test (vitest.e2e.config.ts) instead of unit tests, and
       // holding them to a unit-test branch-coverage gate would either be
       // unenforceable or force low-value tests built entirely out of mocks.

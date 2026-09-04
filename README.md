@@ -122,9 +122,10 @@ The repository ships two rules files for different purposes at its root:
 - [`example.rule.json`](./example.rule.json) (plus the [`example.mock-body.json`](./example.mock-body.json) and [`example.script.js`](./example.script.js) it references): a reference implementation touching every mock/route/rewrite/breakpoint/script option. All rules are `enabled: false`, so it's safe to copy and adapt. Try it with `detour start --rules example.rule.json` (after enabling the rule(s) you want)
 
 ### Known issues
-- `http-mitm-proxy@1.1.0` has a bug on macOS/BSD where the HTTPS (CONNECT) tunnel fails with `ECONNREFUSED` (it hardcodes the destination host to `0.0.0.0` internally). This is fixed via `patches/http-mitm-proxy+1.1.0.patch` (applied automatically on `npm install` via `patch-package`).
-- That same patch also adds HTTP/2 support (the `--no-http2` flag above): `http-mitm-proxy` only ever creates plain HTTP/1.1 servers per intercepted host, has no hook to swap that out, and has a couple of its own HTTP/1-only assumptions (a `Host`-header-only lookup, and always setting `Connection`/`Transfer-Encoding` on responses) that break once a client actually negotiates HTTP/2 against it. The connection to the real upstream server is unaffected either way — it's always plain HTTP/1.1, patched or not.
 - WebSocket-over-HTTP/2 ([RFC 8441](https://datatracker.ietf.org/doc/html/rfc8441) extended CONNECT) isn't supported — a WebSocket connection to a host also using HTTP/2 for its regular traffic still works, but negotiates plain HTTP/1.1 for the WebSocket connection itself (as browsers typically do anyway).
+
+### Proxy core
+The MITM proxy engine (CONNECT tunneling, on-the-fly per-host TLS certs, HTTP/1.1 and HTTP/2 forwarding — [`src/infra/proxy/engine/`](./src/infra/proxy/engine/)) is a from-scratch implementation on top of Node's own `http`/`https`/`http2`/`tls`/`net` modules and `node-forge` for certificate signing, rather than a third-party MITM library (issue #42) — this avoids depending on a library patched for macOS support and HTTP/2, and allows the request/response pipeline to genuinely stream/throttle chunk-by-chunk instead of buffering whole bodies.
 
 # Scratch notes
 ## Planned command set

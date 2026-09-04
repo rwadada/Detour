@@ -4,12 +4,10 @@ import { BandwidthState, transferDelayMs } from '../../domain/throttle/bandwidth
 /**
  * A `Transform` that re-emits each chunk after `transferDelayMs`'s delay,
  * spliced into a raw `Duplex.pipe()` chain (the intercept-off CONNECT
- * tunnel). Real Node stream backpressure applies here — piping through a
- * Transform correctly holds the source until this delay elapses — unlike
- * http-mitm-proxy's own onRequestData/onResponseData hooks, whose internal
- * filter doesn't honor a delayed per-chunk callback the same way (see the
- * buffer-then-flush comment on the MITM'd request/response paths in
- * proxyServer.ts).
+ * tunnel — raw bytes below any HTTP parsing, so `ctx.onRequestData`/
+ * `onResponseData` in proxyServer.ts's MITM'd request/response paths don't
+ * apply here). Real Node stream backpressure applies — piping through a
+ * Transform correctly holds the source until this delay elapses.
  */
 export function createThrottleTransform(kbps: number, packetLossPct: number): Transform {
   const bandwidth = new BandwidthState();
