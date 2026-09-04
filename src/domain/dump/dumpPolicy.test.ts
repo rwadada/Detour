@@ -1,3 +1,4 @@
+import type { IncomingHttpHeaders } from 'node:http';
 import { describe, expect, it } from 'vitest';
 import type { CapturedExchange, CapturedWebSocketConnection } from '../exchange/types';
 import { formatExchangeDump, formatWebSocketDump, isDumpLevel, redactHeaders } from './dumpPolicy';
@@ -104,7 +105,9 @@ describe('formatExchangeDump', () => {
   });
 
   it('joins a non-sensitive multi-value header (e.g. "vary") with commas', () => {
-    const dump = formatExchangeDump(baseExchange({ requestHeaders: { vary: ['accept', 'origin'] } }));
+    const dump = formatExchangeDump(
+      baseExchange({ requestHeaders: { vary: ['accept', 'origin'] } as unknown as IncomingHttpHeaders }),
+    );
     expect(dump).toContain('vary: accept, origin');
   });
 

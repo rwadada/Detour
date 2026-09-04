@@ -1,0 +1,40 @@
+name: PR
+
+# Runs the full local `verify` pipeline (format, typecheck, lint, FSD/dep-cruise
+# boundaries, dup-check, unit+coverage, dashboard tests, CLI e2e) against every
+# push and pull request — see issue #53.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+# Cancels a still-running verify for an earlier push to the same branch/PR
+# once a newer one lands — its result is moot anyway, and this suite runs
+# a genuinely slow e2e pass, so letting superseded runs pile up wastes real
+# minutes rather than a few seconds.
+concurrency:
+  group: pr-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches release.yml: the CLI's own engines.node stays >=18, but
+          # the dashboard workspace's Vite 7 needs 20.19+/22.12+. Pinned to
+          # the exact floor of that range so a resolver change can't
+          # silently pick an early-22.x that predates it.
+          node-version: "22.12.0"
+          cache: "npm"
+
+      - run: npm ci
+
+      - run: npm run verify

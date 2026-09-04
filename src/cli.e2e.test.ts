@@ -6,13 +6,38 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
-import { execa } from 'execa';
+import { execa, type Options } from 'execa';
 import forge from 'node-forge';
 import protobuf from 'protobufjs';
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket, { WebSocketServer } from 'ws';
 
 const REPO_ROOT = path.resolve(__dirname, '..');
+
+/** tsx's own CLI entry point (resolved via its `exports` map, so this works the same however tsx is installed). */
+const TSX_CLI = require.resolve('tsx/cli');
+
+/**
+ * Runs `detour`'s CLI under tsx by spawning `node <tsx's cli.mjs> src/cli.ts
+ * ...args` directly, rather than `npx tsx ...` or a `node_modules/.bin/tsx`
+ * shim:
+ *  - `npx` spawns its target as a grandchild of a wrapper process, and on
+ *    Linux CI runners that wrapper doesn't reliably forward `SIGTERM` down
+ *    to the real process — every `subprocess.kill()` below then hung until
+ *    `afterEach`'s hook timeout, even though the CLI itself started and ran
+ *    fine (only ever seen on GitHub Actions' ubuntu-latest, never
+ *    reproduced locally on macOS).
+ *  - `node_modules/.bin/tsx` fixes that (this suite becomes the direct
+ *    parent, so signals land immediately) but isn't portable: npm installs
+ *    a `.cmd`/`.ps1` shim there on Windows, not a plain `tsx` file.
+ * `process.execPath` + tsx's resolved entry script sidesteps both: this
+ * process spawns `node` directly (its own binary, always the right one) and
+ * async-loads `tsx/cli`'s script, an exports-mapped path resolved by Node
+ * itself rather than a hand-built OS-specific one.
+ */
+function runTsx(args: string[], options?: Options) {
+  return execa(process.execPath, [TSX_CLI, ...args], options);
+}
 
 /**
  * Starts a plain HTTP server (the "real" upstream a proxied request should
@@ -569,7 +594,7 @@ async function startDetourCli(
   stderr: () => string;
   kill: () => Promise<void>;
 }> {
-  const subprocess = execa('npx', ['tsx', 'src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', ...args], {
+  const subprocess = runTsx(['src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', ...args], {
     cwd: REPO_ROOT,
     reject: false,
     env: env ? { ...process.env, ...env } : undefined,
@@ -1132,6 +1157,7 @@ describe('detour start (CLI, end-to-end)', () => {
           rules: [
             {
               name: 'e2e-mock',
+              // eslint-disable-next-line sonarjs/no-clear-text-protocols -- rule-matcher glob string, never used as an outbound request URL
               match: { url: 'http://*/mocked' },
               action: { type: 'mock', status: 200, body: { mocked: true } },
             },
@@ -1250,6 +1276,7 @@ describe('detour start (CLI, end-to-end)', () => {
           rules: [
             {
               name: 'e2e-mock',
+              // eslint-disable-next-line sonarjs/no-clear-text-protocols -- rule-matcher glob string, never used as an outbound request URL
               match: { url: 'http://*/mocked' },
               action: { type: 'mock', status: 200, body: { mocked: true } },
             },
@@ -1434,11 +1461,10 @@ describe('detour start (CLI, end-to-end)', () => {
     });
 
     it('rejects an invalid --dump level without starting the proxy', async () => {
-      const result = await execa(
-        'npx',
-        ['tsx', 'src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', '--dump', 'bogus'],
-        { cwd: REPO_ROOT, reject: false },
-      );
+      const result = await runTsx(['src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', '--dump', 'bogus'], {
+        cwd: REPO_ROOT,
+        reject: false,
+      });
       expect(result.exitCode).not.toBe(0);
       expect(result.stderr).toContain('--dump must be one of');
     });
@@ -1646,9 +1672,8 @@ describe('detour start (CLI, end-to-end)', () => {
       const protoPath = path.join(dir, 'broken.proto');
       fs.writeFileSync(protoPath, 'this is not a valid .proto file', 'utf8');
       try {
-        const result = await execa(
-          'npx',
-          ['tsx', 'src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', '--proto', protoPath],
+        const result = await runTsx(
+          ['src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', '--proto', protoPath],
           { cwd: REPO_ROOT, reject: false },
         );
         expect(result.exitCode).not.toBe(0);
@@ -1778,7 +1803,7 @@ async function startDetourCliReady(
   exitCode: () => number | null;
   kill: () => Promise<void>;
 }> {
-  const subprocess = execa('npx', ['tsx', 'src/cli.ts', 'start', ...args], {
+  const subprocess = runTsx(['src/cli.ts', 'start', ...args], {
     cwd: REPO_ROOT,
     reject: false,
     env: env ? { ...process.env, ...env } : undefined,
@@ -1879,9 +1904,8 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
     });
 
     it('rejects a non-positive value without starting the proxy', async () => {
-      const result = await execa(
-        'npx',
-        ['tsx', 'src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', '--exit-on-idle', '0'],
+      const result = await runTsx(
+        ['src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', '--exit-on-idle', '0'],
         { cwd: REPO_ROOT, reject: false },
       );
       expect(result.exitCode).not.toBe(0);
@@ -1944,9 +1968,8 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       const port = await findFreePort();
       cli = await startDetourCliReady(['--port', String(port), '--dashboard-port', '0', '--fail-on-running']);
 
-      const second = await execa(
-        'npx',
-        ['tsx', 'src/cli.ts', 'start', '--port', String(port), '--dashboard-port', '0', '--fail-on-running'],
+      const second = await runTsx(
+        ['src/cli.ts', 'start', '--port', String(port), '--dashboard-port', '0', '--fail-on-running'],
         { cwd: REPO_ROOT, reject: false },
       );
       expect(second.exitCode).toBe(3);
@@ -1955,9 +1978,8 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
     });
 
     it('rejects being combined with an ephemeral --port 0', async () => {
-      const result = await execa(
-        'npx',
-        ['tsx', 'src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', '--fail-on-running'],
+      const result = await runTsx(
+        ['src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', '--fail-on-running'],
         { cwd: REPO_ROOT, reject: false },
       );
       expect(result.exitCode).not.toBe(0);
@@ -1974,18 +1996,9 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       // window. Launches both processes at once (not sequentially, unlike
       // the test above) so they genuinely race for the same reservation.
       const port = await findFreePort();
-      const spawnArgs = [
-        'tsx',
-        'src/cli.ts',
-        'start',
-        '--port',
-        String(port),
-        '--dashboard-port',
-        '0',
-        '--fail-on-running',
-      ];
-      const procA = execa('npx', spawnArgs, { cwd: REPO_ROOT, reject: false });
-      const procB = execa('npx', spawnArgs, { cwd: REPO_ROOT, reject: false });
+      const spawnArgs = ['src/cli.ts', 'start', '--port', String(port), '--dashboard-port', '0', '--fail-on-running'];
+      const procA = runTsx(spawnArgs, { cwd: REPO_ROOT, reject: false });
+      const procB = runTsx(spawnArgs, { cwd: REPO_ROOT, reject: false });
 
       let resultA: Awaited<typeof procA> | undefined;
       let resultB: Awaited<typeof procB> | undefined;
@@ -2052,19 +2065,18 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
     it('starts detached, is visible via status, and can be stopped', async () => {
       const port = await findFreePort();
       const runDetourStop = () =>
-        execa('npx', ['tsx', 'src/cli.ts', 'stop', '--port', String(port)], { cwd: REPO_ROOT, reject: false });
+        runTsx(['src/cli.ts', 'stop', '--port', String(port)], { cwd: REPO_ROOT, reject: false });
 
       try {
-        const detach = await execa(
-          'npx',
-          ['tsx', 'src/cli.ts', 'start', '--port', String(port), '--dashboard-port', '0', '--detach'],
+        const detach = await runTsx(
+          ['src/cli.ts', 'start', '--port', String(port), '--dashboard-port', '0', '--detach'],
           { cwd: REPO_ROOT, reject: false, timeout: 20_000 },
         );
         expect(detach.exitCode).toBe(0);
         expect(detach.stdout).toContain('started in the background');
         expect(detach.stdout).toContain(`detour stop --port ${port}`);
 
-        const status = await execa('npx', ['tsx', 'src/cli.ts', 'status', '--port', String(port)], {
+        const status = await runTsx(['src/cli.ts', 'status', '--port', String(port)], {
           cwd: REPO_ROOT,
           reject: false,
         });
@@ -2076,7 +2088,7 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
         expect(stop.exitCode).toBe(0);
         expect(stop.stdout).toContain('Stopped detour');
 
-        const statusAfterStop = await execa('npx', ['tsx', 'src/cli.ts', 'status', '--port', String(port)], {
+        const statusAfterStop = await runTsx(['src/cli.ts', 'status', '--port', String(port)], {
           cwd: REPO_ROOT,
           reject: false,
         });
@@ -2089,7 +2101,7 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
     }, 30_000);
 
     it('rejects being combined with an ephemeral --port 0', async () => {
-      const result = await execa('npx', ['tsx', 'src/cli.ts', 'start', '--port', '0', '--detach'], {
+      const result = await runTsx(['src/cli.ts', 'start', '--port', '0', '--detach'], {
         cwd: REPO_ROOT,
         reject: false,
       });
@@ -2100,7 +2112,7 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
 
   describe('detour cert export', () => {
     it('prints the CA certificate PEM to stdout when no path is given', async () => {
-      const result = await execa('npx', ['tsx', 'src/cli.ts', 'cert', 'export'], {
+      const result = await runTsx(['src/cli.ts', 'cert', 'export'], {
         cwd: REPO_ROOT,
         reject: false,
         timeout: 15_000,
@@ -2114,7 +2126,7 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-cert-export-'));
       const dest = path.join(tmpDir, 'nested', 'ca.pem');
 
-      const result = await execa('npx', ['tsx', 'src/cli.ts', 'cert', 'export', dest], {
+      const result = await runTsx(['src/cli.ts', 'cert', 'export', dest], {
         cwd: REPO_ROOT,
         reject: false,
         timeout: 15_000,
