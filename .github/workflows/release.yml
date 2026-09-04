@@ -64,7 +64,13 @@ jobs:
           if [ ! -d "node_modules/$pkg" ]; then
             version="$(node -p "require('@tailwindcss/oxide/package.json').version")"
             echo "Missing node_modules/$pkg — force-installing $pkg@$version"
-            npm install --no-save --no-package-lock "$pkg@$version"
+            # --no-package-lock here (on top of an npm-ci-built tree) trips
+            # a different npm crash — "Cannot read properties of null
+            # (reading 'edgesOut')" in npm's arborist — confirmed by
+            # actually running it in CI. --no-save alone is sufficient: this
+            # job never commits its checkout back, so an incidental
+            # package-lock.json rewrite here has no effect either way.
+            npm install --no-save "$pkg@$version"
           else
             echo "node_modules/$pkg already present"
           fi
