@@ -34,29 +34,26 @@ jobs:
             exit 1
           fi
 
-      # This runner has repeatedly hit npm's optional-dependencies bug
-      # (npm/cli#4828: "Cannot find native binding") across `npm ci`,
-      # `npm install`, with and without actions/setup-node's cache, a
-      # from-scratch reinstall, and npm pinned to 10.8.2 — npm's resolver
-      # just doesn't install Rollup/lightningcss's linux-x64-gnu package for
-      # this npm-workspaces layout, even though package-lock.json lists it
-      # (these hoist to the root node_modules/, not web/node_modules/ —
-      # confirmed by grepping package-lock.json's `packages` keys). Stop
-      # trying to make npm's resolver behave and just force the two
-      # known-missing packages in afterwards, at the exact version the
-      # lockfile already pins.
       - run: npm install
-      - name: Work around npm optional-deps bug (npm/cli#4828)
+
+      # This runner has repeatedly hit npm's optional-dependencies bug
+      # (npm/cli#4828: "Cannot find native binding") — `node_modules/
+      # @rollup/rollup-linux-x64-gnu` and `node_modules/lightningcss-linux-
+      # x64-gnu` DO get created (confirmed: a prior run's "already present"
+      # check passed for both), so this isn't a missing-directory problem;
+      # something inside one or both is incomplete or unloadable. Dump
+      # exactly what's there before the build step so a further failure
+      # comes with real data instead of another guess.
+      - name: Diagnose native binding packages
         run: |
           for pkg in "@rollup/rollup-linux-x64-gnu" "lightningcss-linux-x64-gnu"; do
-            if [ ! -d "node_modules/$pkg" ]; then
-              version="$(node -p "require('./package-lock.json').packages['node_modules/$pkg'].version")"
-              echo "Missing node_modules/$pkg — force-installing $pkg@$version"
-              npm install --no-save "$pkg@$version"
-            else
-              echo "node_modules/$pkg already present, skipping"
-            fi
+            echo "=== node_modules/$pkg ==="
+            ls -la "node_modules/$pkg" 2>&1 || echo "(missing)"
           done
+          echo "=== node -e \"require('lightningcss')\" ==="
+          node -e "console.log(require('lightningcss'))" 2>&1 || true
+          echo "=== node -e \"require('@rollup/rollup-linux-x64-gnu')\" ==="
+          node -e "console.log(require('@rollup/rollup-linux-x64-gnu'))" 2>&1 || true
 
       - name: Build release tarball
         run: npm run build:release
