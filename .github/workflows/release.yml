@@ -42,13 +42,21 @@ jobs:
       # from lightningcss or Rollup (both `require()` fine standalone; oxide
       # is what `web/postcss.config.js`'s `@tailwindcss/postcss` plugin pulls
       # in). `@tailwindcss/oxide-linux-x64-gnu` is what it needs on this
-      # runner. Force it in if npm didn't already put it there, at the exact
-      # version package-lock.json pins.
+      # runner, and it really is missing here — turns out package-lock.json
+      # never gets a top-level `packages` entry for it at all, because every
+      # `npm install` that touched this lockfile ran on macOS (this repo's
+      # dev machine), and npm only records resolved-package entries for
+      # optional deps matching the platform that ran the install (the actual
+      # shape of npm/cli#4828 here). Read the version off the *main*
+      # `@tailwindcss/oxide` package instead — that one installs and resolves
+      # on every platform, and platform variants are always released in
+      # lockstep with it — rather than off this platform package's own
+      # (absent) lockfile entry.
       - name: Ensure @tailwindcss/oxide-linux-x64-gnu is installed
         run: |
           pkg="@tailwindcss/oxide-linux-x64-gnu"
           if [ ! -d "node_modules/$pkg" ]; then
-            version="$(node -p "require('./package-lock.json').packages['node_modules/$pkg'].version")"
+            version="$(node -p "require('@tailwindcss/oxide/package.json').version")"
             echo "Missing node_modules/$pkg — force-installing $pkg@$version"
             npm install --no-save "$pkg@$version"
           else
