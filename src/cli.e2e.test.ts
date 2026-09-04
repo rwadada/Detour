@@ -1132,6 +1132,7 @@ describe('detour start (CLI, end-to-end)', () => {
           rules: [
             {
               name: 'e2e-mock',
+              // eslint-disable-next-line sonarjs/no-clear-text-protocols -- rule-matcher glob against the local echo server, not a real network call
               match: { url: 'http://*/mocked' },
               action: { type: 'mock', status: 200, body: { mocked: true } },
             },
@@ -1250,6 +1251,7 @@ describe('detour start (CLI, end-to-end)', () => {
           rules: [
             {
               name: 'e2e-mock',
+              // eslint-disable-next-line sonarjs/no-clear-text-protocols -- rule-matcher glob against the local echo server, not a real network call
               match: { url: 'http://*/mocked' },
               action: { type: 'mock', status: 200, body: { mocked: true } },
             },

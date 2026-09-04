@@ -49,8 +49,10 @@ export default tseslint.config(
   {
     // The published CLI entry point, and root-level tool configs: plain
     // CommonJS (matches the root package.json's `"type": "commonjs"`), not
-    // compiled from TypeScript.
-    files: ['bin/**/*.js', '*.cjs'],
+    // compiled from TypeScript. `example.script.js` is the documented
+    // `script` rule action example (issue #9) — meant to be copied/edited
+    // by users as-is, so it's plain CommonJS too, not compiled.
+    files: ['bin/**/*.js', 'example.script.js', '*.cjs'],
     languageOptions: {
       sourceType: 'commonjs',
       globals: globals.node,
