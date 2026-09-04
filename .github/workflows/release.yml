@@ -37,17 +37,25 @@ jobs:
             exit 1
           fi
 
-      # `npm ci` on Linux CI hits npm's optional-dependencies bug
-      # (npm/cli#4828) here — it fails to select the linux-x64-gnu native
-      # binding for Rollup/lightningcss even though the lockfile lists it
-      # (`grep linux-x64-gnu package-lock.json` shows the entries are there).
-      # `npm install` re-resolves for the current platform instead of
-      # strictly trusting the lockfile's already-resolved tree, which avoids
-      # it — same workaround the npm error message itself suggests.
+      # `npm ci` — and even a plain `npm install` reusing the committed
+      # lockfile — hit npm's optional-dependencies bug on this runner
+      # (npm/cli#4828): it fails to select the linux-x64-gnu native binding
+      # for Rollup/lightningcss even though package-lock.json lists it
+      # (`grep linux-x64-gnu package-lock.json` shows the entries are
+      # there). The reliable fix is the one npm's own error message
+      # suggests: install with no pre-existing lockfile/node_modules so npm
+      # re-resolves optionals for the current platform from scratch, rather
+      # than reusing a resolved tree it computed wrong. This CI-only
+      # lockfile regeneration is never committed back.
       - run: npm install
 
       - name: Build release tarball
-        run: npm run build:release
+        run: |
+          npm run build:release && exit 0
+          echo "::warning::build:release failed — retrying with a from-scratch npm install (npm/cli#4828 workaround)"
+          rm -rf node_modules web/node_modules package-lock.json
+          npm install
+          npm run build:release
 
       - name: Publish GitHub Release
         env:
