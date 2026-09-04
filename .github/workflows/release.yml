@@ -35,23 +35,28 @@ jobs:
           fi
 
       # This runner has repeatedly hit npm's optional-dependencies bug
-      # (npm/cli#4828: "Cannot find native binding" — Rollup/lightningcss's
-      # linux-x64-gnu package doesn't get installed even though
-      # package-lock.json lists it), across `npm ci`, `npm install`, with
-      # and without actions/setup-node's cache, and even after a from-scratch
-      # reinstall. Multiple reports trace this to a regression in npm 11's
-      # workspace optional-dependency resolution; pin to 10.8.2, one of the
-      # last versions before it, as the next attempt.
-      - run: npm install -g npm@10.8.2
-      - run: npm -v
+      # (npm/cli#4828: "Cannot find native binding") across `npm ci`,
+      # `npm install`, with and without actions/setup-node's cache, a
+      # from-scratch reinstall, and npm pinned to 10.8.2 — npm's resolver
+      # just doesn't install Rollup/lightningcss's linux-x64-gnu package for
+      # this npm-workspaces layout, even though package-lock.json lists it
+      # (these hoist to the root node_modules/, not web/node_modules/ —
+      # confirmed by grepping package-lock.json's `packages` keys). Stop
+      # trying to make npm's resolver behave and just force the two
+      # known-missing packages in afterwards, at the exact version the
+      # lockfile already pins.
       - run: npm install
-
-      - name: Diagnose optional native deps
+      - name: Work around npm optional-deps bug (npm/cli#4828)
         run: |
-          echo "--- @rollup/rollup-linux-* ---"
-          ls web/node_modules/@rollup 2>&1 || true
-          echo "--- lightningcss-linux-* ---"
-          ls web/node_modules | grep lightningcss 2>&1 || true
+          for pkg in "@rollup/rollup-linux-x64-gnu" "lightningcss-linux-x64-gnu"; do
+            if [ ! -d "node_modules/$pkg" ]; then
+              version="$(node -p "require('./package-lock.json').packages['node_modules/$pkg'].version")"
+              echo "Missing node_modules/$pkg — force-installing $pkg@$version"
+              npm install --no-save "$pkg@$version"
+            else
+              echo "node_modules/$pkg already present, skipping"
+            fi
+          done
 
       - name: Build release tarball
         run: npm run build:release
