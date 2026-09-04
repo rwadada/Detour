@@ -5,12 +5,20 @@ A terminal-first, lightweight HTTP debugging proxy for mobile and web. A modern 
 
 ### Homebrew (recommended)
 
+This repo is private, so the formula's release-asset download needs a GitHub token (`repo` scope) — set this once, e.g. in your shell profile:
+
+```bash
+export HOMEBREW_GITHUB_API_TOKEN="$(gh auth token)"  # or any token with `repo` scope
+```
+
+Then:
+
 ```bash
 brew install rwadada/detour/detour
 detour start --port 8080
 ```
 
-This installs from [rwadada/homebrew-detour](https://github.com/rwadada/homebrew-detour), a tap that ships a self-contained release build — no `npm install` or Node toolchain setup required beyond Node itself (pulled in automatically as the formula's dependency).
+This installs from [rwadada/homebrew-detour](https://github.com/rwadada/homebrew-detour) (public tap, private source repo), which ships a self-contained release build — no `npm install` or Node toolchain setup required beyond Node itself (pulled in automatically as the formula's dependency).
 
 ### From source
 
