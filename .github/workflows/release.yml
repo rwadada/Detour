@@ -19,8 +19,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 18
-          cache: npm
+          # The CLI's own `engines.node` stays >=18 (esbuild targets node18,
+          # and that's all end users need to *run* the release build) — but
+          # building the dashboard SPA needs Vite 7, which requires Node
+          # 20.19+/22.12+.
+          node-version: 22
 
       - name: Verify tag matches package.json version
         run: |
@@ -31,7 +34,35 @@ jobs:
             exit 1
           fi
 
-      - run: npm ci
+      - run: npm install
+
+      # Found it (issue #52 PR history has the full trail): the "Cannot find
+      # native binding" error — despite citing npm/cli#4828 in its own text —
+      # actually comes from `@tailwindcss/oxide/index.js`'s own loader, not
+      # from lightningcss or Rollup (both `require()` fine standalone; oxide
+      # is what `web/postcss.config.js`'s `@tailwindcss/postcss` plugin pulls
+      # in). `@tailwindcss/oxide-linux-x64-gnu` is what it needs on this
+      # runner, and it really is missing here — turns out package-lock.json
+      # never gets a top-level `packages` entry for it at all, because every
+      # `npm install` that touched this lockfile ran on macOS (this repo's
+      # dev machine), and npm only records resolved-package entries for
+      # optional deps matching the platform that ran the install (the actual
+      # shape of npm/cli#4828 here). Read the version off the *main*
+      # `@tailwindcss/oxide` package instead — that one installs and resolves
+      # on every platform, and platform variants are always released in
+      # lockstep with it — rather than off this platform package's own
+      # (absent) lockfile entry.
+      - name: Ensure @tailwindcss/oxide-linux-x64-gnu is installed
+        run: |
+          pkg="@tailwindcss/oxide-linux-x64-gnu"
+          if [ ! -d "node_modules/$pkg" ]; then
+            version="$(node -p "require('@tailwindcss/oxide/package.json').version")"
+            echo "Missing node_modules/$pkg — force-installing $pkg@$version"
+            npm install --no-save "$pkg@$version"
+          else
+            echo "node_modules/$pkg already present"
+          fi
+          node -e "require('@tailwindcss/oxide')" && echo "@tailwindcss/oxide loads OK"
 
       - name: Build release tarball
         run: npm run build:release
@@ -44,9 +75,15 @@ jobs:
           tarball="release/detour-${version}.tar.gz"
           sha256="$(shasum -a 256 "$tarball" | cut -d' ' -f1)"
           echo "sha256=$sha256" >> "$GITHUB_STEP_SUMMARY"
+
+          notes_file="$(mktemp)"
+          {
+            echo "sha256: \`$sha256\`"
+            echo ""
+            echo "Homebrew: \`brew install rwadada/detour/detour\` (bump \`Formula/detour.rb\` in [homebrew-detour](https://github.com/rwadada/homebrew-detour) to this version/sha256 first)."
+          } > "$notes_file"
+
           gh release create "${GITHUB_REF_NAME}" "$tarball" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
-            --notes "sha256: \`$sha256\`
-
-Homebrew: \`brew install rwadada/detour/detour\` (bump \`Formula/detour.rb\` in [homebrew-detour](https://github.com/rwadada/homebrew-detour) to this version/sha256 first)."
+            --notes-file "$notes_file"
