@@ -44,9 +44,15 @@ jobs:
           tarball="release/detour-${version}.tar.gz"
           sha256="$(shasum -a 256 "$tarball" | cut -d' ' -f1)"
           echo "sha256=$sha256" >> "$GITHUB_STEP_SUMMARY"
+
+          notes_file="$(mktemp)"
+          {
+            echo "sha256: \`$sha256\`"
+            echo ""
+            echo "Homebrew: \`brew install rwadada/detour/detour\` (bump \`Formula/detour.rb\` in [homebrew-detour](https://github.com/rwadada/homebrew-detour) to this version/sha256 first)."
+          } > "$notes_file"
+
           gh release create "${GITHUB_REF_NAME}" "$tarball" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
-            --notes "sha256: \`$sha256\`
-
-Homebrew: \`brew install rwadada/detour/detour\` (bump \`Formula/detour.rb\` in [homebrew-detour](https://github.com/rwadada/homebrew-detour) to this version/sha256 first)."
+            --notes-file "$notes_file"
