@@ -22,8 +22,10 @@ jobs:
           # The CLI's own `engines.node` stays >=18 (esbuild targets node18,
           # and that's all end users need to *run* the release build) — but
           # building the dashboard SPA needs Vite 7, which requires Node
-          # 20.19+/22.12+.
-          node-version: 22
+          # 20.19+/22.12+. Pinned to the exact floor of that range (rather
+          # than a bare "22") so a resolver change can't silently pick an
+          # early-22.x that predates it.
+          node-version: "22.12.0"
 
       - name: Verify tag matches package.json version
         run: |
@@ -34,7 +36,11 @@ jobs:
             exit 1
           fi
 
-      - run: npm install
+      # `npm ci` for a deterministic install matching the committed lockfile
+      # exactly — the one package it doesn't get right (the next step) is
+      # handled explicitly below rather than by loosening this to `npm
+      # install`.
+      - run: npm ci
 
       # Found it (issue #52 PR history has the full trail): the "Cannot find
       # native binding" error — despite citing npm/cli#4828 in its own text —
@@ -58,7 +64,7 @@ jobs:
           if [ ! -d "node_modules/$pkg" ]; then
             version="$(node -p "require('@tailwindcss/oxide/package.json').version")"
             echo "Missing node_modules/$pkg — force-installing $pkg@$version"
-            npm install --no-save "$pkg@$version"
+            npm install --no-save --no-package-lock "$pkg@$version"
           else
             echo "node_modules/$pkg already present"
           fi
