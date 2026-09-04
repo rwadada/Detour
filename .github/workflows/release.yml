@@ -36,24 +36,25 @@ jobs:
 
       - run: npm install
 
-      # This runner has repeatedly hit npm's optional-dependencies bug
-      # (npm/cli#4828: "Cannot find native binding") — `node_modules/
-      # @rollup/rollup-linux-x64-gnu` and `node_modules/lightningcss-linux-
-      # x64-gnu` DO get created (confirmed: a prior run's "already present"
-      # check passed for both), so this isn't a missing-directory problem;
-      # something inside one or both is incomplete or unloadable. Dump
-      # exactly what's there before the build step so a further failure
-      # comes with real data instead of another guess.
-      - name: Diagnose native binding packages
+      # Found it (issue #52 PR history has the full trail): the "Cannot find
+      # native binding" error — despite citing npm/cli#4828 in its own text —
+      # actually comes from `@tailwindcss/oxide/index.js`'s own loader, not
+      # from lightningcss or Rollup (both `require()` fine standalone; oxide
+      # is what `web/postcss.config.js`'s `@tailwindcss/postcss` plugin pulls
+      # in). `@tailwindcss/oxide-linux-x64-gnu` is what it needs on this
+      # runner. Force it in if npm didn't already put it there, at the exact
+      # version package-lock.json pins.
+      - name: Ensure @tailwindcss/oxide-linux-x64-gnu is installed
         run: |
-          for pkg in "@rollup/rollup-linux-x64-gnu" "lightningcss-linux-x64-gnu"; do
-            echo "=== node_modules/$pkg ==="
-            ls -la "node_modules/$pkg" 2>&1 || echo "(missing)"
-          done
-          echo "=== node -e \"require('lightningcss')\" ==="
-          node -e "console.log(require('lightningcss'))" 2>&1 || true
-          echo "=== node -e \"require('@rollup/rollup-linux-x64-gnu')\" ==="
-          node -e "console.log(require('@rollup/rollup-linux-x64-gnu'))" 2>&1 || true
+          pkg="@tailwindcss/oxide-linux-x64-gnu"
+          if [ ! -d "node_modules/$pkg" ]; then
+            version="$(node -p "require('./package-lock.json').packages['node_modules/$pkg'].version")"
+            echo "Missing node_modules/$pkg — force-installing $pkg@$version"
+            npm install --no-save "$pkg@$version"
+          else
+            echo "node_modules/$pkg already present"
+          fi
+          node -e "require('@tailwindcss/oxide')" && echo "@tailwindcss/oxide loads OK"
 
       - name: Build release tarball
         run: npm run build:release
