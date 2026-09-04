@@ -40,7 +40,14 @@ const DEFAULT_BACKLOG_SIZE = 500;
 // the Clean Architecture move from `src/dashboard/` to `src/infra/dashboard/`
 // — issue #29 — which added a nesting level here without updating this path,
 // making `detour start` unable to find a build that genuinely exists.)
-export const WEB_DIST_DIR = path.resolve(__dirname, '..', '..', '..', 'web-dist');
+//
+// `DETOUR_WEB_DIST_DIR` overrides this for the single-file release bundle
+// (issue #52 — esbuild flattens this module into one file, so `__dirname` no
+// longer sits three levels below the package root; the bin shim that ships
+// with the release tarball sets this env var instead of relying on depth).
+export const WEB_DIST_DIR = process.env.DETOUR_WEB_DIST_DIR
+  ? path.resolve(process.env.DETOUR_WEB_DIST_DIR)
+  : path.resolve(__dirname, '..', '..', '..', 'web-dist');
 
 export interface DashboardServerOptions {
   port: number;

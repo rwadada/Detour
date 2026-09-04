@@ -29,6 +29,7 @@ export default tseslint.config(
       'node_modules/**',
       'web/node_modules/**',
       'coverage/**',
+      'release/**',
       '**/__*',
     ],
   },
@@ -56,6 +57,15 @@ export default tseslint.config(
     },
     rules: {
       '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
+  {
+    // Build/tooling scripts (e.g. the release-tarball builder, issue #52):
+    // plain Node ESM, not compiled from TypeScript.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      sourceType: 'module',
+      globals: globals.node,
     },
   },
   {

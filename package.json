@@ -21,6 +21,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && npm run build --workspace web",
     "build:cli": "tsc -p tsconfig.json",
+    "build:release": "node scripts/build-release.mjs",
     "dev": "tsx watch src/cli.ts",
     "dev:dashboard": "npm run dev --workspace web",
     "start": "node bin/detour.js",
@@ -57,6 +58,7 @@
     "@vitest/coverage-v8": "^4.1.11",
     "@vitest/eslint-plugin": "^1.6.27",
     "dependency-cruiser": "^16.10.4",
+    "esbuild": "^0.28.2",
     "eslint": "^10.9.1",
     "eslint-import-resolver-typescript": "^4.4.5",
     "eslint-plugin-boundaries": "^7.2.0",

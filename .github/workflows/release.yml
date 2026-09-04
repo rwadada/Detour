@@ -1,0 +1,52 @@
+name: Release
+
+# Publishes the self-contained release tarball Homebrew (and anyone else)
+# installs from — see scripts/build-release.mjs and issue #52. Triggered by
+# pushing a `vX.Y.Z` tag matching package.json's version.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+
+      - name: Verify tag matches package.json version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag v$tag does not match package.json version $pkg"
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - name: Build release tarball
+        run: npm run build:release
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          tarball="release/detour-${version}.tar.gz"
+          sha256="$(shasum -a 256 "$tarball" | cut -d' ' -f1)"
+          echo "sha256=$sha256" >> "$GITHUB_STEP_SUMMARY"
+          gh release create "${GITHUB_REF_NAME}" "$tarball" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --notes "sha256: \`$sha256\`
+
+Homebrew: \`brew install rwadada/detour/detour\` (bump \`Formula/detour.rb\` in [homebrew-detour](https://github.com/rwadada/homebrew-detour) to this version/sha256 first)."

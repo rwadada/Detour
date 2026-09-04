@@ -1,6 +1,7 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WEB_DIST_DIR } from './dashboardServer';
 
 describe('WEB_DIST_DIR', () => {
@@ -20,5 +21,24 @@ describe('WEB_DIST_DIR', () => {
     const packageRoot = path.dirname(WEB_DIST_DIR);
     const pkg = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
     expect(pkg.name).toBe('detour');
+  });
+
+  describe('DETOUR_WEB_DIST_DIR override', () => {
+    afterEach(() => {
+      delete process.env.DETOUR_WEB_DIST_DIR;
+      vi.resetModules();
+    });
+
+    it('takes precedence over the __dirname-relative default (issue #52 release bundle)', async () => {
+      // The single-file esbuild release bundle flattens away the
+      // `dist/infra/dashboard` nesting the default path depends on (see the
+      // comment above `WEB_DIST_DIR`), so its entry file sets this env var
+      // itself instead of relying on directory depth.
+      const overridePath = path.join(os.tmpdir(), 'some-other-web-dist');
+      process.env.DETOUR_WEB_DIST_DIR = overridePath;
+      vi.resetModules();
+      const { WEB_DIST_DIR: overridden } = await import('./dashboardServer');
+      expect(overridden).toBe(path.resolve(overridePath));
+    });
   });
 });
