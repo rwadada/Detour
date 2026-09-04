@@ -1,8 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import net from 'node:net';
 import type { Duplex } from 'node:stream';
-import { Proxy } from 'http-mitm-proxy';
-import type { ErrorCallback, IContext, IWebSocketContext } from 'http-mitm-proxy';
 import { isHostBlocked, normalizeBlockHosts } from '../../domain/blockHosts/blockHostsPolicy';
 import { BodyCapture } from '../../domain/exchange/bodyCapture';
 import { compactHeaders, deleteHeader, flattenHeaders } from '../../domain/exchange/headers';
@@ -20,7 +18,7 @@ import { recordWebSocketFrame } from '../../domain/exchange/webSocketCapture';
 import { formatHostPort, isHostFocused, normalizeFocusHosts } from '../../domain/focus/focusPolicy';
 import type { ScriptModule, ScriptRequestInfo, ScriptResponseInfo } from '../../domain/rules/scriptAction';
 import type { Rule } from '../../domain/rules/types';
-import { BandwidthState, flushThrottledBody, transferDelayMs } from '../../domain/throttle/bandwidth';
+import { BandwidthState, transferDelayMs } from '../../domain/throttle/bandwidth';
 import { DEFAULT_THROTTLE_STATE, normalizeThrottleState } from '../../domain/throttle/throttlePolicy';
 import { BreakpointCoordinator } from '../../usecase/breakpointCoordinator';
 import { resolveConnectRoute } from '../../usecase/resolveConnectRoute';
@@ -41,6 +39,8 @@ import {
   sendMockSimulate,
   type MockResponse,
 } from './actionsRuntime';
+import { ProxyEngine } from './engine/proxyEngine';
+import type { ErrorCallback, IContext, IWebSocketContext } from './engine/types';
 import { createThrottleTransform } from './throttleTransform';
 
 /**
@@ -58,9 +58,9 @@ function captureClientRequestBody(ctx: IContext, exchange: CapturedExchange): Bo
     exchange.requestBodySize += chunk.length;
     requestCapture.add(chunk);
   });
-  // http-mitm-proxy calls ctx.clientToProxyRequest.pause() before onRequest
-  // runs; adding a 'data' listener alone does NOT auto-resume a stream that
-  // was explicitly paused (see Readable.prototype.on in Node's stream
+  // ProxyEngine pauses ctx.clientToProxyRequest before onRequest runs; adding
+  // a 'data' listener alone does NOT auto-resume a stream that was
+  // explicitly paused (see Readable.prototype.on in Node's stream
   // internals), so without this, the request stream never emits 'data'/'end'
   // and a caller waiting on it would deadlock forever.
   ctx.clientToProxyRequest.resume();
@@ -73,14 +73,11 @@ export interface ProxyServerOptions {
   /** When set, requests are matched against rules.json (mock/route/rewrite/script) before/while proxying. */
   ruleEngine?: RuleEngine;
   /**
-   * Whether each per-host MITM'd TLS server negotiates HTTP/2 via ALPN
-   * (falling back to HTTP/1.1 for clients that don't offer it) — issue
-   * #16's `listen.http2`. Implemented as a small patch to `http-mitm-proxy`
-   * itself (see patches/http-mitm-proxy+1.1.0.patch), since the library
-   * doesn't expose a hook to swap in `http2.createSecureServer`. Plain
-   * (non-CONNECT) `http://` traffic and the proxy→upstream leg are
-   * unaffected either way — only the client-facing HTTPS side can
-   * negotiate HTTP/2.
+   * Whether the internal MITM'd TLS server negotiates HTTP/2 via ALPN
+   * (falling back to HTTP/1.1 for clients that don't offer it) — issue #16's
+   * `ProxyEngine.listen`'s `http2` option. Plain (non-CONNECT) `http://`
+   * traffic and the proxy→upstream leg are unaffected either way — only the
+   * client-facing HTTPS side can negotiate HTTP/2.
    * @default true
    */
   http2Enabled?: boolean;
@@ -97,7 +94,7 @@ export interface ProxyServerHandle {
 /**
  * Builds a fully-qualified URL for the captured exchange.
  *
- * By the time our onRequest handler runs, http-mitm-proxy has already
+ * By the time our onRequest handler runs, ProxyEngine has already
  * parsed the target host/port into `proxyToServerRequestOptions` and
  * rewritten `clientToProxyRequest.url` down to a bare path (it strips
  * the `http://host` prefix for plain forward-proxy requests, and
@@ -120,10 +117,10 @@ function resolveUrl(ctx: IContext): { url: string; host: string } {
 /**
  * Extracts the target `ws://`/`wss://` URL and bare host from a WebSocket
  * context. `ctx.proxyToServerWebSocketOptions.url` is already fully
- * resolved by http-mitm-proxy by the time `onWebSocketConnection` fires
- * (from either the upgrade request's absolute URL, or its `Host` header —
- * see the library's `_onWebSocketServerConnect`), so unlike `resolveUrl`
- * above there's no host/port reassembly to do here.
+ * resolved by ProxyEngine by the time `onWebSocketConnection` fires (from
+ * either the upgrade request's absolute URL, or its `Host` header — see
+ * `handleWebSocketConnection` in engine/proxyEngine.ts), so unlike
+ * `resolveUrl` above there's no host/port reassembly to do here.
  */
 function resolveWsUrl(ctx: IWebSocketContext): { url: string; host: string } {
   const url = ctx.proxyToServerWebSocketOptions?.url ?? '';
@@ -159,10 +156,9 @@ function buildBaseExchange(
     host: info.host,
     isSSL: ctx.isSSL,
     // Set by Node itself on the client-facing request: `2` when the client
-    // ALPN-negotiated HTTP/2 against the (patched, http2-enabled) per-host
-    // MITM'd TLS server — see patches/http-mitm-proxy+1.1.0.patch — `1`
-    // otherwise. The proxy→upstream leg is unaffected either way (see
-    // `makeProxyToServerRequest` in http-mitm-proxy, always plain HTTP/1.1).
+    // ALPN-negotiated HTTP/2 against ProxyEngine's internal MITM'd TLS
+    // server, `1` otherwise. The proxy→upstream leg is unaffected either
+    // way — ProxyEngine always forwards as plain HTTP/1.1.
     protocol: ctx.clientToProxyRequest.httpVersionMajor === 2 ? 'HTTP/2' : 'HTTP/1.1',
     requestHeaders: { ...ctx.clientToProxyRequest.headers },
     requestBodySize: 0,
@@ -225,7 +221,7 @@ export async function startProxyServer(
   const host = options.host ?? 'localhost';
   await assertPortAvailable(options.port, host);
 
-  const proxy = new Proxy();
+  const proxy = new ProxyEngine();
   const sslCaDir = resolveCertDir();
   const ruleEngine = options.ruleEngine;
   // Keyed by ctx.uuid so the request-phase and response-phase handlers
@@ -249,10 +245,10 @@ export async function startProxyServer(
   // (see the `onResponse` handler below), or on a proxy-level error.
   const scriptRequestBodies = new Map<string, Buffer>();
   // Keyed by ctx.uuid (a WebSocket context's own, stable for its whole
-  // lifecycle — see `_onWebSocketServerConnect` in http-mitm-proxy), so the
-  // frame/close/error hooks below (which fire as separate callbacks over
-  // the life of one connection) can keep accumulating into the same record
-  // (issue #17).
+  // lifecycle — see `handleWebSocketConnection` in engine/proxyEngine.ts),
+  // so the frame/close/error hooks below (which fire as separate callbacks
+  // over the life of one connection) can keep accumulating into the same
+  // record (issue #17).
   const wsConnections = new Map<string, CapturedWebSocketConnection>();
 
   // Master on/off switch, toggled at runtime from the dashboard (see
@@ -327,7 +323,7 @@ export async function startProxyServer(
    * or editable.
    */
   function handleInterceptOffConnect(req: IncomingMessage, socket: Duplex, head: Buffer): void {
-    const target = Proxy.parseHostAndPort(req, 443);
+    const target = ProxyEngine.parseHostAndPort(req, 443);
     if (!target?.host) {
       socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
       return;
@@ -387,7 +383,7 @@ export async function startProxyServer(
     // An unparseable target can't be checked against Block Hosts/Focus —
     // fall through to the normal intercept-enabled path (same as before
     // this feature), rather than treating "can't tell" as blocked/unfocused.
-    const target = Proxy.parseHostAndPort(req, 443);
+    const target = ProxyEngine.parseHostAndPort(req, 443);
     const formatted = target?.host ? formatHostPort(target.host, target.port ?? 443, 443) : undefined;
     if (formatted && isHostBlocked(blockHostsState.hosts, formatted)) {
       eventBus.emit('error', {
@@ -412,7 +408,7 @@ export async function startProxyServer(
   });
 
   /**
-   * WebSocket support (issue #17): http-mitm-proxy relays `ws://`/`wss://`
+   * WebSocket support (issue #17): ProxyEngine relays `ws://`/`wss://`
    * traffic transparently on its own (a `wss://` tunnel only ever reaches
    * these hooks once intercept has already MITM-decrypted it — see
    * `handleInterceptOffConnect` above; a passthrough tunnel's WS frames are
@@ -432,8 +428,8 @@ export async function startProxyServer(
       isSSL: ctx.isSSL,
       // `sec-websocket-*` headers are handshake plumbing (key/version/
       // extensions), not application data — already stripped out by
-      // http-mitm-proxy when it built this options object, so what's left
-      // is exactly what's worth showing in a debug dump.
+      // ProxyEngine when it built this options object, so what's left is
+      // exactly what's worth showing in a debug dump.
       requestHeaders: { ...(ctx.proxyToServerWebSocketOptions?.headers as Record<string, string> | undefined) },
       openedAt: Date.now(),
       frames: [],
@@ -451,11 +447,10 @@ export async function startProxyServer(
       recordWebSocketFrame(connection, {
         type: type as WebSocketFrameRecord['type'],
         direction: fromServer ? 'toClient' : 'toServer',
-        // For a `message` frame, http-mitm-proxy forwards the underlying
-        // `ws` library's `isBinary` event argument through as `flags`
-        // (despite the type declaring it `any` — see the library's
-        // `_onWebSocketFrame`, which itself does `.send(data, {binary:
-        // flags})`); `ping`/`pong` frames carry no such flag.
+        // For a `message` frame, ProxyEngine forwards the underlying `ws`
+        // library's `isBinary` event argument through as `flags` (despite
+        // the type declaring it `unknown` — see `relayFrame` in
+        // engine/proxyEngine.ts); `ping`/`pong` frames carry no such flag.
         binary: typeof flags === 'boolean' ? flags : false,
         payload: toBuffer(data),
         at: Date.now(),
@@ -485,8 +480,8 @@ export async function startProxyServer(
   proxy.onWebSocketError((ctx, err) => {
     // A connection already closed (and thus already reported via
     // `wsClose` above) is removed from `wsConnections`, so a follow-up
-    // error on its other leg — see http-mitm-proxy's own close/error
-    // cross-signaling in `_onWebSocketClose`/`_onWebSocketError` — is a
+    // error on its other leg — see ProxyEngine's own close/error
+    // cross-signaling in `wsClose`/`wsError` (engine/proxyEngine.ts) — is a
     // harmless no-op here rather than a second `wsClose` for the same
     // connection.
     const connection = wsConnections.get(ctx.uuid);
@@ -533,7 +528,7 @@ export async function startProxyServer(
    * (possibly edited) body is written directly to `proxyToServerRequest`
    * from `onRequestEnd` — mirroring `installRequestBodyRewrite` — since the
    * client stream was already fully drained here and carries no more data
-   * for http-mitm-proxy's own pipeline to forward.
+   * for ProxyEngine's own pipeline to forward.
    */
   function handleRequestBreakpoint(
     ctx: IContext,
@@ -569,7 +564,7 @@ export async function startProxyServer(
           ctx.proxyToClientResponse.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
           ctx.proxyToClientResponse.end(`detour: request aborted via breakpoint rule "${rule.name}"`);
           // Deliberately never calls `callback`: leaving it uncalled is how
-          // http-mitm-proxy is designed to skip forwarding to upstream.
+          // ProxyEngine is designed to skip forwarding to upstream.
           return;
         }
 
@@ -617,11 +612,11 @@ export async function startProxyServer(
    * than the `rewrite` action's onRequestData/onRequestEnd streaming style:
    * a header/method change from the hook must land on
    * `proxyToServerRequestOptions` before the outer `callback` runs —
-   * http-mitm-proxy creates the actual upstream request right after that
-   * (see `makeProxyToServerRequest` in the library), so a change applied
-   * any later would silently miss the request that already went out. One
-   * consequence: unlike a plain forwarded request, a `script` rule's
-   * (fully-buffered) upload never participates in Throttle's upload
+   * ProxyEngine creates the actual upstream request right after that (see
+   * `makeProxyToServerRequest` in engine/proxyEngine.ts), so a change
+   * applied any later would silently miss the request that already went
+   * out. One consequence: unlike a plain forwarded request, a `script`
+   * rule's (fully-buffered) upload never participates in Throttle's upload
    * simulation — the same trade-off `mock`/`breakpoint` already make.
    *
    * Deliberately does NOT reuse `captureClientRequestBody`/`BodyCapture` for
@@ -721,7 +716,7 @@ export async function startProxyServer(
    *
    * Must run from the proxy-level `onResponseHeaders` hook (see
    * applyResponseHeaderRewrite's doc comment for why) — which is also the
-   * only point status/headers can still be edited, since http-mitm-proxy
+   * only point status/headers can still be edited, since ProxyEngine
    * flushes them to the client immediately once this hook's callback fires.
    * Reads the upstream body directly off `serverToProxyResponse` (mirroring
    * handleRequestBreakpoint) so the full body is available before that
@@ -740,7 +735,7 @@ export async function startProxyServer(
 
     const capture = new BodyCapture();
     res.on('data', (chunk: Buffer) => capture.add(chunk));
-    // `serverToProxyResponse` is paused by http-mitm-proxy before this hook
+    // `serverToProxyResponse` is paused by ProxyEngine before this hook
     // runs; without resuming it here, it never emits 'data'/'end' and the
     // wait below deadlocks forever (same reasoning as the mock branch above).
     res.resume();
@@ -818,7 +813,7 @@ export async function startProxyServer(
    * Runs a `script` rule's `beforeResponse` hook (issue #9), invoked from
    * `onResponseHeaders` — same reasoning as `applyResponseHeaderRewrite`/
    * `handleResponseBreakpoint`: status/headers can only still be edited
-   * there, since http-mitm-proxy flushes them to the client the moment its
+   * there, since ProxyEngine flushes them to the client the moment its
    * callback fires. Reads the upstream body directly off
    * `serverToProxyResponse` (mirroring `handleResponseBreakpoint`) so the
    * hook sees the full response before that callback is released; the
@@ -922,10 +917,8 @@ export async function startProxyServer(
     else res.once('end', run);
   }
 
-  // Response header/status rewrites must run before http-mitm-proxy
-  // flushes them to the client. This has to be registered at the proxy
-  // level (not via `ctx.onResponseHeaders`, which the library never
-  // actually invokes) — see applyResponseHeaderRewrite's doc comment.
+  // Response header/status rewrites must run before ProxyEngine flushes
+  // them to the client — see applyResponseHeaderRewrite's doc comment.
   proxy.onResponseHeaders((ctx, callback) => {
     const rule = ruleContexts.get(ctx.uuid);
     if (rule?.action.type === 'breakpoint' && rule.action.response !== false) {
@@ -1005,7 +998,7 @@ export async function startProxyServer(
           ctx.clientToProxyRequest.once('end', respondBlocked);
         }
         // Deliberately does not call `callback()`: leaving it uncalled is how
-        // http-mitm-proxy is designed to skip forwarding to upstream.
+        // ProxyEngine is designed to skip forwarding to upstream.
         return;
       }
 
@@ -1096,7 +1089,7 @@ export async function startProxyServer(
           ctx.clientToProxyRequest.once('end', sendMockAfterDelay);
         }
         // Deliberately does not call `callback()`: leaving it uncalled is
-        // how http-mitm-proxy is designed to skip forwarding to upstream.
+        // how ProxyEngine is designed to skip forwarding to upstream.
         return;
       }
 
@@ -1133,19 +1126,13 @@ export async function startProxyServer(
       }
 
       const requestCapture = new BodyCapture();
-      // Throttle's upload bandwidth cap/packet-loss simulation. A per-chunk
-      // delayed forward (`cb(undefined, chunk)` called late) doesn't work
-      // here: http-mitm-proxy's internal request filter finalizes the
-      // upstream request as soon as the client's own stream ends, without
-      // waiting for an outstanding onRequestData callback from an earlier
-      // chunk (see `ProxyFinalRequestFilter.end()` in http-mitm-proxy) — a
-      // delayed chunk can be silently dropped instead of just arriving
-      // late. So instead the whole body is buffered here and flushed as one
-      // write from onRequestEnd below (whose callback IS properly awaited
-      // before the request is finalized), after a delay proportional to its
-      // total size — the same buffer-then-flush shape
-      // infra/proxy/actionsRuntime.ts's installRequestBodyRewrite uses, for
-      // the same reason. Skipped when a `rewrite` rule is also rewriting
+      // Throttle's upload bandwidth cap/packet-loss simulation, applied
+      // per-chunk as it streams through — ProxyEngine (unlike
+      // http-mitm-proxy, issue #42) genuinely awaits a delayed
+      // onRequestData callback before forwarding the next chunk, so a real
+      // `setTimeout` here holds up the whole pipe exactly like
+      // `throttleTransform.ts`'s Transform does for the CONNECT-tunnel
+      // passthrough path. Skipped when a `rewrite` rule is also rewriting
       // this body: that rule's own onRequestData hook (registered earlier,
       // see `applyRequestRewrite` above) already reduces every chunk this
       // hook sees to empty, so there'd be nothing left to throttle anyway.
@@ -1154,13 +1141,13 @@ export async function startProxyServer(
         (throttleState.upKbps > 0 || throttleState.packetLossPct > 0) &&
         !(rule?.action.type === 'rewrite' && rule.action.request?.body);
       const upBandwidth = new BandwidthState();
-      const uploadChunks: Buffer[] = [];
       ctx.onRequestData((_dataCtx, chunk, cb) => {
         exchange.requestBodySize += chunk.length;
         requestCapture.add(chunk);
         if (!throttleUpload) return cb(undefined, chunk);
-        uploadChunks.push(chunk);
-        return cb(undefined, Buffer.alloc(0));
+        const delay = transferDelayMs(chunk.length, throttleState.upKbps, throttleState.packetLossPct, upBandwidth);
+        if (delay > 0) setTimeout(() => cb(undefined, chunk), delay);
+        else cb(undefined, chunk);
       });
 
       ctx.onRequestEnd((_endCtx, cb) => {
@@ -1169,10 +1156,7 @@ export async function startProxyServer(
         // response arrives — lets consumers (e.g. the dashboard) show a
         // request as "pending" while it's in flight.
         eventBus.emit('request', exchange);
-        if (!throttleUpload || uploadChunks.length === 0) return cb();
-        const body = Buffer.concat(uploadChunks);
-        const delay = transferDelayMs(body.length, throttleState.upKbps, throttleState.packetLossPct, upBandwidth);
-        flushThrottledBody(body, delay, (b) => ctx.proxyToServerRequest?.write(b), cb);
+        cb();
       });
 
       return callback();
@@ -1224,11 +1208,10 @@ export async function startProxyServer(
     }
 
     const responseCapture = new BodyCapture();
-    // Throttle's download bandwidth cap/packet-loss simulation — same
-    // buffer-then-flush shape as the upload side in onRequest above (see
-    // its comment for why per-chunk delayed forwarding doesn't work with
-    // this library), flushed from onResponseEnd below instead. Skipped when
-    // a `rewrite` rule is also rewriting this body: its own onResponseData
+    // Throttle's download bandwidth cap/packet-loss simulation, applied
+    // per-chunk as it streams to the client — see the upload side's
+    // identical comment in `proxy.onRequest` above. Skipped when a
+    // `rewrite` rule is also rewriting this body: its own onResponseData
     // hook is registered *after* this one (right below), so if this hook
     // reduced every chunk to empty first, the rewrite would see nothing to
     // rewrite.
@@ -1237,15 +1220,15 @@ export async function startProxyServer(
       (throttleState.downKbps > 0 || throttleState.packetLossPct > 0) &&
       !(rule?.action.type === 'rewrite' && rule.action.response?.body);
     const downBandwidth = new BandwidthState();
-    const downloadChunks: Buffer[] = [];
     ctx.onResponseData((_dataCtx, chunk, cb) => {
       if (exchange) {
         exchange.responseBodySize += chunk.length;
         responseCapture.add(chunk);
       }
       if (!throttleDownload) return cb(undefined, chunk);
-      downloadChunks.push(chunk);
-      return cb(undefined, Buffer.alloc(0));
+      const delay = transferDelayMs(chunk.length, throttleState.downKbps, throttleState.packetLossPct, downBandwidth);
+      if (delay > 0) setTimeout(() => cb(undefined, chunk), delay);
+      else cb(undefined, chunk);
     });
 
     if (rule?.action.type === 'rewrite' && rule.action.response?.body) {
@@ -1268,10 +1251,7 @@ export async function startProxyServer(
         inFlight.delete(ctx.uuid);
       }
       ruleContexts.delete(ctx.uuid);
-      if (!throttleDownload || downloadChunks.length === 0) return cb();
-      const body = Buffer.concat(downloadChunks);
-      const delay = transferDelayMs(body.length, throttleState.downKbps, throttleState.packetLossPct, downBandwidth);
-      flushThrottledBody(body, delay, (b) => ctx.proxyToClientResponse.write(b), cb);
+      cb();
     });
 
     return callback();

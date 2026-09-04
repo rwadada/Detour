@@ -20,7 +20,7 @@ export interface ScriptRequestInfo {
   url: string;
   /**
    * A request never legitimately carries a multi-value header (Node/
-   * http-mitm-proxy already fold request headers down to plain strings by
+   * ProxyEngine already fold request headers down to plain strings by
    * the time they reach here — the well-known multi-value case, `Set-Cookie`,
    * is response-only), so this is always plain strings, unlike
    * `ScriptResponseInfo.headers`.

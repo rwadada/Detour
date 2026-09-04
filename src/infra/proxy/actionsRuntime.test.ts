@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { IContext, OnRequestDataParams, OnRequestParams } from 'http-mitm-proxy';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { __resetScriptModuleCacheForTests } from '../fs/scriptModuleLoader';
 import {
@@ -14,6 +13,7 @@ import {
   sendMockResponse,
   sendMockSimulate,
 } from './actionsRuntime';
+import type { IContext, OnRequestDataParams, OnRequestParams } from './engine/types';
 
 describe('resolveMockResponse', () => {
   it('defaults to an empty 200 body when neither body nor bodyFile is set', () => {
@@ -191,7 +191,7 @@ describe('applyRequestRewrite: query edge case', () => {
   });
 });
 
-/** Builds a fake IContext that captures what a body-rewrite installer writes, by manually driving the onRequestData/onRequestEnd (or onResponseData/onResponseEnd) callbacks it registers — mirroring how http-mitm-proxy's real pipeline would call them. */
+/** Builds a fake IContext that captures what a body-rewrite installer writes, by manually driving the onRequestData/onRequestEnd (or onResponseData/onResponseEnd) callbacks it registers — mirroring how ProxyEngine's real pipeline would call them. */
 function fakeRequestBodyContext() {
   const written: Buffer[] = [];
   let dataHandler: OnRequestDataParams | undefined;
@@ -350,6 +350,13 @@ describe('sendMockResponse', () => {
     const { ctx, calls } = fakeMockContext();
     sendMockResponse(ctx, { status: 404, statusMessage: 'Not Found', headers: {}, body: Buffer.alloc(0) });
     expect(calls.writeHead).toEqual([404, 'Not Found', {}]);
+  });
+
+  it('omits statusMessage for an HTTP/2 client, since Http2ServerResponse.writeHead has no reason-phrase overload', () => {
+    const { ctx, calls } = fakeMockContext();
+    (ctx.clientToProxyRequest as { httpVersionMajor?: number }).httpVersionMajor = 2;
+    sendMockResponse(ctx, { status: 404, statusMessage: 'Not Found', headers: {}, body: Buffer.alloc(0) });
+    expect(calls.writeHead).toEqual([404, {}]);
   });
 });
 

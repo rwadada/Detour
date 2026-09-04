@@ -36,7 +36,7 @@ import { RuleEngine } from './usecase/ruleEngine';
 
 // This file is Detour's composition root: the one place allowed to import
 // across every layer (domain/usecase/infra/presentation) to wire concrete
-// Infrastructure adapters (the real filesystem, http-mitm-proxy, ws) into
+// Infrastructure adapters (the real filesystem, ProxyEngine, ws) into
 // the UseCases that only depend on their ports. Everything under
 // domain/usecase/infra/presentation is checked by
 // `boundaries/element-types` (see eslint.config.mjs); this file — and

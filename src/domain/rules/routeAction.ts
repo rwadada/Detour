@@ -10,8 +10,8 @@ export interface RouteTarget {
 /**
  * Decides the outbound host/port (and, if requested, the Host header
  * override) for a `route` action. Pure — applying it to a live connection
- * (an `http-mitm-proxy` `IContext`, or a raw CONNECT tunnel) is
- * Infrastructure's job.
+ * (a `ProxyEngine` `IContext`, or a raw CONNECT tunnel) is Infrastructure's
+ * job.
  */
 export function computeRouteTarget(
   action: RouteAction,

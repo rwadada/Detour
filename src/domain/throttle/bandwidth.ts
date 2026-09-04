@@ -52,18 +52,3 @@ export function transferDelayMs(
   if (packetLossPct > 0 && Math.random() * 100 < packetLossPct) delay += RETRANSMIT_DELAY_MS;
   return delay;
 }
-
-/**
- * Writes a Throttle-buffered request/response body via `write` after
- * `delayMs`, then calls `cb` — shared by the upload (onRequestEnd) and
- * download (onResponseEnd) finalization in infra/proxy/proxyServer.ts,
- * which are otherwise identical apart from which stream they write to.
- */
-export function flushThrottledBody(body: Buffer, delayMs: number, write: (body: Buffer) => void, cb: () => void): void {
-  const flush = () => {
-    if (body.length > 0) write(body);
-    cb();
-  };
-  if (delayMs > 0) setTimeout(flush, delayMs);
-  else flush();
-}

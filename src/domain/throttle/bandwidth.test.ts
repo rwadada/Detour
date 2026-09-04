@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BandwidthState, RETRANSMIT_DELAY_MS, flushThrottledBody, transferDelayMs } from './bandwidth';
+import { BandwidthState, RETRANSMIT_DELAY_MS, transferDelayMs } from './bandwidth';
 
 describe('BandwidthState', () => {
   it('returns 0 delay when unlimited (kbps <= 0)', () => {
@@ -26,46 +26,5 @@ describe('transferDelayMs', () => {
     const bandwidth = new BandwidthState();
     expect(transferDelayMs(0, 0, 100, bandwidth)).toBe(RETRANSMIT_DELAY_MS);
     vi.restoreAllMocks();
-  });
-});
-
-describe('flushThrottledBody', () => {
-  it('writes immediately and calls back when delayMs is 0', () => {
-    const written: Buffer[] = [];
-    let called = false;
-    flushThrottledBody(
-      Buffer.from('hi'),
-      0,
-      (b) => written.push(b),
-      () => (called = true),
-    );
-    expect(written).toEqual([Buffer.from('hi')]);
-    expect(called).toBe(true);
-  });
-
-  it('does not write an empty body', () => {
-    const written: Buffer[] = [];
-    flushThrottledBody(
-      Buffer.alloc(0),
-      0,
-      (b) => written.push(b),
-      () => {},
-    );
-    expect(written).toHaveLength(0);
-  });
-
-  it('delays the write when delayMs > 0', async () => {
-    const written: Buffer[] = [];
-    let called = false;
-    flushThrottledBody(
-      Buffer.from('hi'),
-      5,
-      (b) => written.push(b),
-      () => (called = true),
-    );
-    expect(written).toHaveLength(0);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(written).toEqual([Buffer.from('hi')]);
-    expect(called).toBe(true);
   });
 });
