@@ -22,11 +22,17 @@ jobs:
           # The CLI's own `engines.node` stays >=18 (esbuild targets node18,
           # and that's all end users need to *run* the release build) — but
           # building the dashboard SPA needs Vite 7, which requires Node
-          # 20.19+/22.12+. Node 18 here also tripped npm's optional-deps bug
-          # (npm/cli#4828), leaving native rollup/lightningcss bindings
-          # unresolved and failing the build outright.
+          # 20.19+/22.12+.
           node-version: 22
-          cache: npm
+          # No `cache: npm` here deliberately: this runner repeatedly hit
+          # npm's optional-dependencies bug (npm/cli#4828, "Cannot find
+          # native binding" for Rollup/lightningcss's linux-x64-gnu package
+          # even though package-lock.json lists it), including once *after*
+          # deleting node_modules/package-lock.json and reinstalling —
+          # pointing at actions/setup-node's restored `~/.npm` cache as the
+          # actual culprit rather than the lockfile itself. This job runs
+          # once per release, so the extra ~1min of cache-less install time
+          # isn't worth the risk of reintroducing it.
 
       - name: Verify tag matches package.json version
         run: |
@@ -37,25 +43,10 @@ jobs:
             exit 1
           fi
 
-      # `npm ci` — and even a plain `npm install` reusing the committed
-      # lockfile — hit npm's optional-dependencies bug on this runner
-      # (npm/cli#4828): it fails to select the linux-x64-gnu native binding
-      # for Rollup/lightningcss even though package-lock.json lists it
-      # (`grep linux-x64-gnu package-lock.json` shows the entries are
-      # there). The reliable fix is the one npm's own error message
-      # suggests: install with no pre-existing lockfile/node_modules so npm
-      # re-resolves optionals for the current platform from scratch, rather
-      # than reusing a resolved tree it computed wrong. This CI-only
-      # lockfile regeneration is never committed back.
       - run: npm install
 
       - name: Build release tarball
-        run: |
-          npm run build:release && exit 0
-          echo "::warning::build:release failed — retrying with a from-scratch npm install (npm/cli#4828 workaround)"
-          rm -rf node_modules web/node_modules package-lock.json
-          npm install
-          npm run build:release
+        run: npm run build:release
 
       - name: Publish GitHub Release
         env:
