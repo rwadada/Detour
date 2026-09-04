@@ -24,15 +24,6 @@ jobs:
           # building the dashboard SPA needs Vite 7, which requires Node
           # 20.19+/22.12+.
           node-version: 22
-          # No `cache: npm` here deliberately: this runner repeatedly hit
-          # npm's optional-dependencies bug (npm/cli#4828, "Cannot find
-          # native binding" for Rollup/lightningcss's linux-x64-gnu package
-          # even though package-lock.json lists it), including once *after*
-          # deleting node_modules/package-lock.json and reinstalling —
-          # pointing at actions/setup-node's restored `~/.npm` cache as the
-          # actual culprit rather than the lockfile itself. This job runs
-          # once per release, so the extra ~1min of cache-less install time
-          # isn't worth the risk of reintroducing it.
 
       - name: Verify tag matches package.json version
         run: |
@@ -43,7 +34,24 @@ jobs:
             exit 1
           fi
 
+      # This runner has repeatedly hit npm's optional-dependencies bug
+      # (npm/cli#4828: "Cannot find native binding" — Rollup/lightningcss's
+      # linux-x64-gnu package doesn't get installed even though
+      # package-lock.json lists it), across `npm ci`, `npm install`, with
+      # and without actions/setup-node's cache, and even after a from-scratch
+      # reinstall. Multiple reports trace this to a regression in npm 11's
+      # workspace optional-dependency resolution; pin to 10.8.2, one of the
+      # last versions before it, as the next attempt.
+      - run: npm install -g npm@10.8.2
+      - run: npm -v
       - run: npm install
+
+      - name: Diagnose optional native deps
+        run: |
+          echo "--- @rollup/rollup-linux-* ---"
+          ls web/node_modules/@rollup 2>&1 || true
+          echo "--- lightningcss-linux-* ---"
+          ls web/node_modules | grep lightningcss 2>&1 || true
 
       - name: Build release tarball
         run: npm run build:release
