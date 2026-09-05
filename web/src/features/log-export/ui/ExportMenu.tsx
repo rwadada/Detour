@@ -74,7 +74,13 @@ export function ExportMenu() {
 }
 
 function exportButtonTitle(filteredCount: number, totalCount: number): string {
-  if (filteredCount === 0) return 'No captured requests to export';
+  if (filteredCount === 0) {
+    // Distinguish "nothing captured yet" from "the current filter matches
+    // nothing" — the fix for the latter is to clear/adjust the filter, not
+    // to wait for traffic, and the button's disabled title is the only
+    // place that's said since the button itself gives no other clue.
+    return totalCount === 0 ? 'No captured requests to export' : 'No requests match the current filter';
+  }
   if (filteredCount === totalCount) return 'Export the captured log';
   return `Export the ${filteredCount} request(s) matching the current filter`;
 }

@@ -113,7 +113,7 @@ export function LogTable() {
           <a
             href="https://github.com/rwadada/Detour#readme"
             target="_blank"
-            rel="noreferrer"
+            rel="noopener noreferrer"
             className="underline decoration-dotted hover:text-[var(--accent)]"
           >
             Setup &amp; docs

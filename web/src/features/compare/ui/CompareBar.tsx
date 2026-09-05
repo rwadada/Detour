@@ -5,17 +5,18 @@ import { Button } from '@/shared/ui';
 import { CompareDialog } from './CompareDialog';
 
 /**
- * Shown in `FilterBar` once at least one row is marked for Compare (issue
- * #19: ctrl/cmd-click a row in `LogTable` to mark it). Opens `CompareDialog`
- * once two are marked.
+ * Shown in `FilterBar` once traffic exists (issue #19: ctrl/cmd-click a row
+ * in `LogTable` to mark it for Compare). Renders a static discoverability
+ * hint until something's marked, then the selection state, then opens
+ * `CompareDialog` once two rows are marked.
  *
- * Before anything is marked, this rendered nothing at all — the only way to
- * learn ctrl/cmd-click marks a row for Compare was a native `title` tooltip
- * on the row itself, which needs a multi-second hover on the exact row to
- * ever surface (QA/design review: the feature was effectively undiscoverable
- * without already knowing it existed). A short static hint here — cheap,
- * always in the same spot rows are clicked from — replaces that reliance on
- * a tooltip nobody hovers long enough to see.
+ * Before anything was marked, this used to render nothing at all — the only
+ * way to learn ctrl/cmd-click marks a row for Compare was a native `title`
+ * tooltip on the row itself, which needs a multi-second hover on the exact
+ * row to ever surface (QA/design review: the feature was effectively
+ * undiscoverable without already knowing it existed). The static hint below
+ * — cheap, always in the same spot rows are clicked from — replaces that
+ * reliance on a tooltip nobody hovers long enough to see.
  */
 export function CompareBar() {
   const compareIds = useExchangeStore((s) => s.compareIds);
