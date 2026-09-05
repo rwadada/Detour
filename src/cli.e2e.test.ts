@@ -2192,6 +2192,19 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
         fs.rmSync(home, { recursive: true, force: true });
       }
     }, 20_000);
+
+    it('rejects --foreground combined with --detach rather than silently preferring one', async () => {
+      const port = await findFreePort();
+      const result = await runTsx(
+        ['src/cli.ts', 'start', '--port', String(port), '--dashboard-port', '0', '--foreground', '--detach'],
+        {
+          cwd: REPO_ROOT,
+          reject: false,
+        },
+      );
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain('--foreground and --detach cannot be combined');
+    });
   });
 
   describe('detour cert export', () => {

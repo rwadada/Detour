@@ -36,12 +36,21 @@ export function browserCommandFor(platform: NodeJS.Platform, url: string): { com
   switch (platform) {
     case 'darwin':
       return { command: 'open', args: [url] };
-    case 'win32':
+    case 'win32': {
       // `cmd /c start "" <url>`: `start`'s first quoted argument is taken as
       // the new window's title, so an empty one is required — passing the
       // URL there directly makes `start` treat it as the title instead of
-      // something to open when the URL contains characters like `&`.
-      return { command: 'cmd', args: ['/c', 'start', '""', url] };
+      // something to open.
+      //
+      // cmd.exe additionally treats `&` (a command separator) and `^` (its
+      // own escape character) specially even inside one spawn() argument —
+      // a dashboard URL with a query string (e.g. `?a=1&b=2`) would
+      // otherwise get split into separate commands at the `&`. Escaping
+      // both with a leading `^` (same fix the `open` npm package applies)
+      // makes cmd.exe treat them as literal characters instead.
+      const escapedUrl = url.replace(/[&^]/g, '^$&');
+      return { command: 'cmd', args: ['/c', 'start', '""', escapedUrl] };
+    }
     default:
       return { command: 'xdg-open', args: [url] };
   }

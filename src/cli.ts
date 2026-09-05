@@ -65,10 +65,10 @@ function parseDumpLevel(value: string): DumpLevel {
   return value;
 }
 
-/** Validates `detour config --default-detach <on|off>` (and any future on/off config flag). */
+/** Validates `detour config --default-detach <on|off>` (and any future on/off config flag). Deliberately just "on"/"off" — not also "true"/"false" — so the accepted values and this error message never drift apart. */
 function parseOnOff(value: string, flag: string): boolean {
-  if (value === 'on' || value === 'true') return true;
-  if (value === 'off' || value === 'false') return false;
+  if (value === 'on') return true;
+  if (value === 'off') return false;
   throw new Error(`${flag} must be "on" or "off" (got: ${value})`);
 }
 
@@ -129,10 +129,10 @@ interface StartOptions {
 
 /**
  * Whether this `start` invocation should run detached, folding together
- * three sources in priority order: an explicit `--foreground` or `--detach`
- * on the command line (checked in that order so the two can never
- * contradict each other silently), then `~/.detour/config.json`'s
- * `defaultDetach`, then plain foreground.
+ * three sources in priority order: an explicit `--foreground`/`--detach` on
+ * the command line (rejected outright if both are given — there's no
+ * sensible way to silently prefer one over the other), then
+ * `~/.detour/config.json`'s `defaultDetach`, then plain foreground.
  *
  * Guarded by `isDaemonChild()` first: `runDetached` re-invokes this same
  * `start` command in a child process with `--detach` stripped from its argv
@@ -143,6 +143,9 @@ interface StartOptions {
  */
 function resolveShouldDetach(options: StartOptions): boolean {
   if (isDaemonChild()) return false;
+  if (options.foreground && options.detach) {
+    throw new Error('--foreground and --detach cannot be combined');
+  }
   if (options.foreground) return false;
   if (options.detach) return true;
   return loadUserConfig().defaultDetach ?? false;
