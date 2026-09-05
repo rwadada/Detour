@@ -31,6 +31,13 @@ export default tseslint.config(
       'coverage/**',
       'release/**',
       '**/__*',
+      // Claude Code's EnterWorktree tool checks out full nested copies of
+      // this repo (their own tsconfig.json included) under here. Without
+      // this, `eslint .` from the repo root walks into them too, and the
+      // import-resolver's tsconfig auto-discovery trips over two candidate
+      // root dirs (this repo's and the nested one's) and fails on every
+      // single file in the run — not just the ones under this path.
+      '.claude/worktrees/**',
     ],
   },
   js.configs.recommended,
