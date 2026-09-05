@@ -3,6 +3,14 @@
     "target": "ES2022",
     "module": "CommonJS",
     "moduleResolution": "Node10",
+    // node10 (formerly "node") is itself deprecated and slated for removal
+    // in TS 7.0 — the tsc-recommended way to keep using it for now. A real
+    // migration off it means moduleResolution/module: "Node16"/"NodeNext",
+    // which requires explicit file extensions on every relative import
+    // across the whole src/ tree (Node's actual ESM resolution rules) —
+    // out of scope for this housekeeping fix; do that as its own deliberate
+    // migration.
+    "ignoreDeprecations": "5.0",
     "lib": ["ES2022"],
     "outDir": "dist",
     "rootDir": "src",
