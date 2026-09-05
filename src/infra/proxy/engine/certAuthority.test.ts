@@ -69,7 +69,10 @@ describe('CertAuthority', () => {
     const leafX509 = new X509Certificate(leafPem);
     expect(leafX509.checkIssued(caCertX509)).toBe(true);
     expect(leafX509.verify(caCertX509.publicKey)).toBe(true);
-    expect(leafX509.subjectAltName).toContain('DNS:localhost');
+    // subjectAltName is OpenSSL's free-form rendering, not a stable format —
+    // match loosely (optional whitespace after the colon) rather than the
+    // exact "DNS:localhost" substring, which could vary across builds.
+    expect(leafX509.subjectAltName).toMatch(/DNS:\s*localhost\b/);
   });
 
   it('an IP-address hostname gets an IP-type (not DNS-type) subjectAltName entry', () => {
