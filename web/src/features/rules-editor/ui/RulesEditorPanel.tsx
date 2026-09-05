@@ -29,10 +29,11 @@ const ACTION_TYPES: RuleAction['type'][] = ['mock', 'route', 'rewrite', 'breakpo
 export function RulesEditorPanel() {
   const rulesFile = useRuleStore((s) => s.rulesFile);
   const setRules = useRuleStore((s) => s.setRules);
+  const dirty = useRuleStore((s) => s.dirtyDraft);
+  const setDirty = useRuleStore((s) => s.setDirtyDraft);
   const [draft, setDraft] = useState<RulesFile>(rulesFile ?? { rules: [] });
   const [syncedFrom, setSyncedFrom] = useState(rulesFile);
   const [selected, setSelected] = useState<number | null>(null);
-  const [dirty, setDirty] = useState(false);
 
   // Re-syncs the draft from the server whenever a fresh `rulesFile` arrives
   // while nothing is unsaved — covers both the initial load (draft starts

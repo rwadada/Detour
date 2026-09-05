@@ -1,6 +1,6 @@
 import { Download } from 'lucide-react';
 import { useRef, useState } from 'react';
-import { exchangesToHar, useExchangeStore } from '@/entities/exchange';
+import { exchangesToHar, matchesFilters, useExchangeStore } from '@/entities/exchange';
 import { downloadTextFile } from '@/shared/lib/downloadTextFile';
 import { useDismissablePopover } from '@/shared/lib/useDismissablePopover';
 import { Button } from '@/shared/ui';
@@ -10,15 +10,27 @@ import { exportFileName, serializeExchangesAsJson, serializeHar, type ExportForm
  * Header control for exporting the captured log (issue #19): HAR 1.2 for
  * other HTTP-debugging tools, or Detour's own JSON export (re-importable by
  * `LogViewer`'s `ImportButton`). Mirrors `ThrottleControl`'s popover pattern.
+ *
+ * Exports whatever the toolbar's filter (method/status/URL substring) is
+ * currently narrowing the log table down to, not the full unfiltered
+ * capture — the common case this exists for is grabbing the one failing
+ * request for a bug report, and silently attaching every unrelated exchange
+ * alongside it (including whatever's in their headers/bodies) defeats that.
+ * `SessionControl`'s "Save session" is the full-snapshot counterpart when
+ * every captured exchange plus the live proxy environment is wanted instead.
  */
 export function ExportMenu() {
   const exchanges = useExchangeStore((s) => s.exchanges);
+  const filters = useExchangeStore((s) => s.filters);
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   useDismissablePopover(open, containerRef, () => setOpen(false));
 
+  const filtered = exchanges.filter((e) => matchesFilters(e, filters));
+  const buttonTitle = exportButtonTitle(filtered.length, exchanges.length);
+
   const handleExport = (format: ExportFormat) => {
-    const content = format === 'har' ? serializeHar(exchangesToHar(exchanges)) : serializeExchangesAsJson(exchanges);
+    const content = format === 'har' ? serializeHar(exchangesToHar(filtered)) : serializeExchangesAsJson(filtered);
     downloadTextFile(exportFileName(format), content);
     setOpen(false);
   };
@@ -29,13 +41,18 @@ export function ExportMenu() {
         variant="ghost"
         size="icon"
         onClick={() => setOpen((v) => !v)}
-        disabled={exchanges.length === 0}
-        title={exchanges.length === 0 ? 'No captured requests to export' : 'Export the captured log'}
+        disabled={filtered.length === 0}
+        title={buttonTitle}
       >
         <Download className="h-3.5 w-3.5" />
       </Button>
       {open && (
         <div className="absolute right-0 top-full z-10 mt-2 w-44 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-lg">
+          {filtered.length !== exchanges.length && (
+            <p className="px-2 py-1 text-[10px] text-[var(--muted)]">
+              Exporting {filtered.length} of {exchanges.length} (current filter)
+            </p>
+          )}
           <button
             type="button"
             onClick={() => handleExport('har')}
@@ -54,4 +71,10 @@ export function ExportMenu() {
       )}
     </div>
   );
+}
+
+function exportButtonTitle(filteredCount: number, totalCount: number): string {
+  if (filteredCount === 0) return 'No captured requests to export';
+  if (filteredCount === totalCount) return 'Export the captured log';
+  return `Export the ${filteredCount} request(s) matching the current filter`;
 }

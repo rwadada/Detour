@@ -15,6 +15,8 @@ export function RuleProfilesControl() {
   const applyProfile = useRuleStore((s) => s.applyProfile);
   const saveActiveAsProfile = useRuleStore((s) => s.saveActiveAsProfile);
   const createProfile = useRuleStore((s) => s.createProfile);
+  const dirtyDraft = useRuleStore((s) => s.dirtyDraft);
+  const setDirtyDraft = useRuleStore((s) => s.setDirtyDraft);
   const [open, setOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [template, setTemplate] = useState<'blank' | 'sample'>('sample');
@@ -25,6 +27,22 @@ export function RuleProfilesControl() {
     if (!newName.trim()) return;
     createProfile(newName.trim(), template);
     setNewName('');
+  };
+
+  // A dirty Rules editor draft ignores the next `rules` broadcast (see its
+  // sync-from-server guard) so it can't be silently discarded by someone
+  // else's change — but that means applying a profile here would otherwise
+  // go through, the editor would keep showing the old draft as if nothing
+  // happened, and a later "Save to rules.json" would clobber the
+  // just-applied profile with that stale draft. Confirm and clear the
+  // dirty flag first so the editor picks up the newly applied profile
+  // instead.
+  const applyWithDirtyGuard = (name: string) => {
+    if (dirtyDraft && !window.confirm('Applying this profile will discard your unsaved rules.json edits. Continue?')) {
+      return;
+    }
+    setDirtyDraft(false);
+    applyProfile(name);
   };
 
   return (
@@ -55,7 +73,7 @@ export function RuleProfilesControl() {
                   <span className="truncate">
                     {profile.name} <span className="text-[var(--muted)]">({profile.ruleCount})</span>
                   </span>
-                  <Button variant="outline" size="sm" onClick={() => applyProfile(profile.name)}>
+                  <Button variant="outline" size="sm" onClick={() => applyWithDirtyGuard(profile.name)}>
                     Apply
                   </Button>
                 </li>

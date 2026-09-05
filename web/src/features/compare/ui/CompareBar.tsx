@@ -7,15 +7,26 @@ import { CompareDialog } from './CompareDialog';
 /**
  * Shown in `FilterBar` once at least one row is marked for Compare (issue
  * #19: ctrl/cmd-click a row in `LogTable` to mark it). Opens `CompareDialog`
- * once two are marked; renders nothing otherwise, so it costs no space in
- * the common case where nothing is marked.
+ * once two are marked.
+ *
+ * Before anything is marked, this rendered nothing at all — the only way to
+ * learn ctrl/cmd-click marks a row for Compare was a native `title` tooltip
+ * on the row itself, which needs a multi-second hover on the exact row to
+ * ever surface (QA/design review: the feature was effectively undiscoverable
+ * without already knowing it existed). A short static hint here — cheap,
+ * always in the same spot rows are clicked from — replaces that reliance on
+ * a tooltip nobody hovers long enough to see.
  */
 export function CompareBar() {
   const compareIds = useExchangeStore((s) => s.compareIds);
   const clearCompare = useExchangeStore((s) => s.clearCompare);
+  const hasExchanges = useExchangeStore((s) => s.exchanges.length > 0);
   const [open, setOpen] = useState(false);
 
-  if (compareIds.length === 0) return null;
+  if (compareIds.length === 0) {
+    if (!hasExchanges) return null;
+    return <span className="text-[10px] text-[var(--muted)]">⌘/Ctrl-click two rows to compare</span>;
+  }
 
   const ready = compareIds.length === 2;
 

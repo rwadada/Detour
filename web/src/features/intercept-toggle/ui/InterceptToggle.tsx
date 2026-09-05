@@ -12,9 +12,10 @@ export function InterceptToggle() {
       onClick={() => setIntercept(!interceptEnabled)}
       className={cn(
         'flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium transition-colors',
-        interceptEnabled
-          ? 'border-[var(--status-2xx)] text-[var(--status-2xx)]'
-          : 'border-[var(--muted)] text-[var(--muted)]',
+        // `--accent`, not `--status-2xx`: that token means "2xx response" everywhere else this app
+        // uses it (StatusBadge, the log table) — reusing it here for "feature is on" taught the
+        // opposite lesson at a glance once the two shared a color in the same UI.
+        interceptEnabled ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-[var(--muted)] text-[var(--muted)]',
       )}
       title={
         interceptEnabled
