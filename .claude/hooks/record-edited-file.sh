@@ -1,0 +1,14 @@
+#!/bin/sh
+# Runs on PostToolUse for Write|Edit. Appends the touched file's path to a
+# per-session state file so the Stop hook (verify-stop.sh) can tell whether
+# this turn actually changed an implementation file before paying for a full
+# `npm run verify`. Cheap and silent: never blocks, never prints.
+input=$(cat)
+session_id=$(echo "$input" | jq -r '.session_id // empty')
+file=$(echo "$input" | jq -r '.tool_response.filePath // .tool_input.file_path // empty')
+[ -n "$session_id" ] && [ -n "$file" ] || exit 0
+
+state_dir="$CLAUDE_PROJECT_DIR/.claude/hooks/.stop-state"
+mkdir -p "$state_dir" 2>/dev/null || exit 0
+echo "$file" >> "$state_dir/edited-files-$session_id.txt"
+exit 0

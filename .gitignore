@@ -10,3 +10,4 @@ reports/
 .claude-job-tmp-*
 __*
 **/__*
+.claude/hooks/.stop-state/
