@@ -6,7 +6,11 @@
 # file. Doc-only, config-only, or no-edit turns skip verify entirely.
 # Exits 2 (Claude Code's "blocking error" signal for a Stop hook) with the
 # failure output on stderr when verify fails, so Claude sees it and can act
-# on it before truly stopping. Exits 0 silently otherwise.
+# on it before truly stopping — the state file is left untouched on
+# failure, so the next Stop re-runs verify again (picking up any further
+# edits made in response) until it passes and the state is cleared. Exits 0
+# silently otherwise.
+[ -n "$CLAUDE_PROJECT_DIR" ] || exit 0
 cd "$CLAUDE_PROJECT_DIR" || exit 2
 
 state_dir="$CLAUDE_PROJECT_DIR/.claude/hooks/.stop-state"

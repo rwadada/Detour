@@ -3,6 +3,7 @@
 # per-session state file so the Stop hook (verify-stop.sh) can tell whether
 # this turn actually changed an implementation file before paying for a full
 # `npm run verify`. Cheap and silent: never blocks, never prints.
+[ -n "$CLAUDE_PROJECT_DIR" ] || exit 0
 input=$(cat)
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
 file=$(printf '%s' "$input" | jq -r '.tool_response.filePath // .tool_input.file_path // empty' 2>/dev/null)
