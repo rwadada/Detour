@@ -7,6 +7,12 @@ input=$(cat)
 session_id=$(echo "$input" | jq -r '.session_id // empty')
 file=$(echo "$input" | jq -r '.tool_response.filePath // .tool_input.file_path // empty')
 [ -n "$session_id" ] && [ -n "$file" ] || exit 0
+# session_id ends up as part of a file path below; reject anything but the
+# safe charset so a crafted/unexpected value can't escape .stop-state/ or
+# collide with an unintended path (e.g. "../", "/").
+case "$session_id" in
+  *[!A-Za-z0-9_-]*) exit 0 ;;
+esac
 
 state_dir="$CLAUDE_PROJECT_DIR/.claude/hooks/.stop-state"
 mkdir -p "$state_dir" 2>/dev/null || exit 0

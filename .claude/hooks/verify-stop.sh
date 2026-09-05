@@ -15,6 +15,10 @@ find "$state_dir" -type f -mtime +1 -delete 2>/dev/null
 
 session_id=$(cat | jq -r '.session_id // empty')
 [ -n "$session_id" ] || exit 0
+# Same charset guard as record-edited-file.sh: session_id feeds a file path.
+case "$session_id" in
+  *[!A-Za-z0-9_-]*) exit 0 ;;
+esac
 state_file="$state_dir/edited-files-$session_id.txt"
 [ -f "$state_file" ] || exit 0
 
