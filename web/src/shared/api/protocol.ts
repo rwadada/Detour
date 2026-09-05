@@ -227,6 +227,15 @@ export interface RuleProfileSummary {
   updatedAt: number;
 }
 
+/**
+ * The persistent `detour start` defaults — see `src/domain/dashboard/protocol.ts`'s `UserConfigState`.
+ * Both fields take effect on the *next* `detour start`, never this running instance.
+ */
+export interface UserConfigState {
+  defaultDetach: boolean;
+  lanAccess: boolean;
+}
+
 export type DashboardServerMessage =
   /** Sent once, right after connecting: the proxy port this dashboard session is fronting (issue #24's sidebar Proxy URL / QR code). */
   | { type: 'proxyInfo'; proxyPort: number }
@@ -246,7 +255,9 @@ export type DashboardServerMessage =
   /** The currently active rules.json contents — `null` when no rules file is configured for this session. */
   | { type: 'rules'; data: RulesFile | null }
   /** The saved rule profiles available to switch to or apply. */
-  | { type: 'ruleProfiles'; profiles: RuleProfileSummary[] };
+  | { type: 'ruleProfiles'; profiles: RuleProfileSummary[] }
+  /** The current persistent `detour start` defaults — sent once on connect and again after every `setUserConfig`. */
+  | { type: 'userConfig'; state: UserConfigState };
 
 export type DashboardClientMessage =
   | { type: 'breakpointResume'; command: BreakpointResumeCommand }
@@ -263,4 +274,6 @@ export type DashboardClientMessage =
   /** Loads a saved profile's rules into the currently active rules.json. */
   | { type: 'applyRuleProfile'; name: string }
   /** Re-sends a previously captured exchange for real (Replay). The result appears as a normal new `request`/`response` pair, not a dedicated message type. */
-  | { type: 'replay'; exchange: CapturedExchange };
+  | { type: 'replay'; exchange: CapturedExchange }
+  /** Persists a change to `~/.detour/config.json`, merged into the existing file (setting one field never clobbers the other). */
+  | { type: 'setUserConfig'; state: Partial<UserConfigState> };

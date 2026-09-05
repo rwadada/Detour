@@ -13,6 +13,22 @@ import type { RuleProfileSummary } from '../rules/profile';
 import type { RulesFile } from '../rules/types';
 
 /**
+ * The persistent `detour start` defaults a dashboard client can view/edit —
+ * mirrors `~/.detour/config.json` (see `src/infra/fs/userConfigStore.ts` and
+ * `detour config`). Unlike `InterceptState`/`FocusState`/etc. below, this
+ * isn't live proxy behavior: both fields take effect on the *next* `detour
+ * start`, never this running instance — a process's foreground/detached mode
+ * and a bound TCP server's address are both fixed at spawn time and can't be
+ * changed out from under it.
+ */
+export interface UserConfigState {
+  /** Whether `detour start` runs detached by default (as if `--detach` were always passed) — `detour config --default-detach`. */
+  defaultDetach: boolean;
+  /** Whether `detour start` binds the proxy and dashboard to every network interface (`0.0.0.0`) instead of just `localhost` — `detour config --lan`. Security-sensitive: LAN access has no authentication of its own, so anything on the network can reach the dashboard (and, from there, decrypted HTTPS traffic and rule edits) or use the proxy. */
+  lanAccess: boolean;
+}
+
+/**
  * Messages sent from the dashboard server to a connected browser client over
  * the `/ws` WebSocket. Kept in one place so the wire format has a single
  * source of truth; the frontend (web/src/lib/protocol.ts) mirrors this shape
@@ -93,7 +109,13 @@ export type DashboardServerMessage =
    * Rules Profiles) — sent once right after connecting and again after any
    * profile is created or overwritten.
    */
-  | { type: 'ruleProfiles'; profiles: RuleProfileSummary[] };
+  | { type: 'ruleProfiles'; profiles: RuleProfileSummary[] }
+  /**
+   * The current persistent `detour start` defaults (see `UserConfigState`) —
+   * sent once right after connecting and again after every `setUserConfig`
+   * (whether from this client or another connected tab).
+   */
+  | { type: 'userConfig'; state: UserConfigState };
 
 /**
  * Messages sent from a connected browser client to the dashboard server over
@@ -135,4 +157,12 @@ export type DashboardClientMessage =
    * have already fallen out of its own backlog. The result appears as a
    * normal new `request`/`response` pair, not a dedicated message type.
    */
-  | { type: 'replay'; exchange: CapturedExchange };
+  | { type: 'replay'; exchange: CapturedExchange }
+  /**
+   * Persists a change to `~/.detour/config.json` (see `UserConfigState`) —
+   * merged into the existing file the same way `detour config` does, so
+   * setting one field never clobbers the other. Broadcast back to every
+   * connected tab (via `userConfig`) once written, same as every other
+   * `set*` message here.
+   */
+  | { type: 'setUserConfig'; state: Partial<UserConfigState> };

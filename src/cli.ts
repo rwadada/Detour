@@ -18,6 +18,7 @@ import {
 } from './infra/fs/runStateStore';
 import { fsRuleProfileStore } from './infra/fs/ruleProfileStore';
 import { fsFileWatcher, fsRulesFileReader, fsRulesFileWriter, loadRulesFile } from './infra/fs/rulesFileSource';
+import type { UserConfig } from './infra/fs/userConfigStore';
 import { loadUserConfig, resolveUserConfigPath, writeUserConfig } from './infra/fs/userConfigStore';
 import { buildGrpcExchangeInfo } from './infra/grpc/grpcExchangeInfo';
 import { ProtoRegistry } from './infra/grpc/protoRegistry';
@@ -96,6 +97,21 @@ function collectProtoPath(value: string, previous: string[]): string[] {
 /** Dashboard defaults to this many ports above the proxy (e.g. proxy 8080 → dashboard 9080) when `--dashboard-port` isn't given explicitly. */
 const DEFAULT_DASHBOARD_PORT_OFFSET = 1000;
 
+/**
+ * The core LAN-access security fact, worded once and reused everywhere
+ * `--lan`/`lanAccess` is surfaced to the user: `--lan`'s own help text,
+ * `detour config --lan`'s help text, and the startup banner's warning. One
+ * shared string so refining the wording (or the security posture it
+ * describes) can't drift between three independently hand-edited copies.
+ *
+ * `web/src/features/settings-panel/ui/SettingsPanel.tsx`'s dashboard-side
+ * warning says the same thing in its own words — that's a separate,
+ * standalone-built package with no access to this constant, so it's worded
+ * to match by hand instead. Update both together.
+ */
+const LAN_ACCESS_WARNING =
+  'there is no authentication of any kind — anyone on your network can reach the dashboard (and decrypted HTTPS traffic through it), edit rules, or use the proxy';
+
 /** How long `detour stop` waits for a SIGTERM'd process to exit on its own before escalating to SIGKILL. */
 const STOP_GRACE_PERIOD_MS = 10_000;
 
@@ -125,6 +141,8 @@ interface StartOptions {
   foreground?: boolean;
   /** `--no-open`: skip auto-opening the dashboard in a browser after startup. Defaults to `true` (auto-open on) via commander's `--no-<flag>` convention. */
   open: boolean;
+  /** `--lan`/`--no-lan`: bind the proxy and dashboard to every network interface (`0.0.0.0`) instead of just `localhost`, for this invocation. Undefined when neither flag is passed — `resolveHost` then falls back to `~/.detour/config.json`'s `lanAccess`. Security-sensitive: see `UserConfigState.lanAccess`'s doc comment. */
+  lan?: boolean;
 }
 
 /**
@@ -149,6 +167,22 @@ function resolveShouldDetach(options: StartOptions): boolean {
   if (options.foreground) return false;
   if (options.detach) return true;
   return loadUserConfig().defaultDetach ?? false;
+}
+
+/**
+ * Resolves the host the proxy and dashboard bind to for this `start`
+ * invocation: `0.0.0.0` (every network interface) or `localhost`-only.
+ * Folds together two sources, same priority as `resolveShouldDetach`'s
+ * `--detach`/`--foreground`: an explicit `--lan`/`--no-lan` on the command
+ * line, then `~/.detour/config.json`'s `lanAccess`, then `localhost`-only.
+ *
+ * Security-sensitive: LAN access has no authentication of its own, so
+ * `0.0.0.0` means anything on the network can reach the dashboard (and,
+ * from there, decrypted HTTPS traffic and rule edits) or use the proxy.
+ */
+function resolveHost(options: StartOptions): string {
+  const lan = options.lan ?? loadUserConfig().lanAccess ?? false;
+  return lan ? '0.0.0.0' : 'localhost';
 }
 
 /**
@@ -315,7 +349,8 @@ async function runStartBody({
     });
   }
 
-  const handle = await startProxyServer({ port, ruleEngine, http2Enabled: options.http2 }, eventBus);
+  const host = resolveHost(options);
+  const handle = await startProxyServer({ port, host, ruleEngine, http2Enabled: options.http2 }, eventBus);
   // `--headless` (issue #20): CI/scripted use has no need for the web
   // dashboard — skip starting it entirely rather than starting it and just
   // not opening a browser to it.
@@ -334,7 +369,13 @@ async function runStartBody({
     requestedDashboardPort = resolveDashboardPort(port, options.dashboardPort);
     try {
       dashboardHandle = await startDashboardServer(
-        { port: requestedDashboardPort, proxyPort: handle.port, ruleEngine, ruleProfileStore: fsRuleProfileStore },
+        {
+          port: requestedDashboardPort,
+          host,
+          proxyPort: handle.port,
+          ruleEngine,
+          ruleProfileStore: fsRuleProfileStore,
+        },
         eventBus,
       );
     } catch (err) {
@@ -383,6 +424,7 @@ async function runStartBody({
   }
 
   printStartupBanner({
+    host,
     proxyPort: handle.port,
     caCertPath: handle.caCertPath,
     dashboardPort: dashboardHandle?.port,
@@ -441,7 +483,28 @@ function isDashboardBuilt(): boolean {
   return fs.existsSync(path.join(WEB_DIST_DIR, 'index.html'));
 }
 
+/**
+ * Every non-internal IPv4 address this machine currently has — used by the
+ * `--lan`/`lanAccess` startup banner to print an address another device on
+ * the network can actually reach, since `localhost` (what the banner prints
+ * for everything else) resolves to whatever device is asking, not this one.
+ * Order matches `os.networkInterfaces()`'s own (insertion order of the
+ * underlying OS call) — not sorted or deduped further, since a machine
+ * legitimately reachable at more than one address (Wi-Fi + Ethernet, a VPN)
+ * should have every one of them printed.
+ */
+function lanAddresses(): string[] {
+  const addresses: string[] = [];
+  for (const iface of Object.values(os.networkInterfaces())) {
+    for (const info of iface ?? []) {
+      if (info.family === 'IPv4' && !info.internal) addresses.push(info.address);
+    }
+  }
+  return addresses;
+}
+
 function printStartupBanner(info: {
+  host: string;
   proxyPort: number;
   caCertPath: string;
   /** Undefined when started with `--headless`. */
@@ -463,6 +526,27 @@ function printStartupBanner(info: {
   } else {
     console.log(
       `Dashboard → http://localhost:${info.dashboardPort} (not built yet — run \`npm run build\`, or use \`npm run dev:dashboard\` for a dev server with hot reload)`,
+    );
+  }
+  // `--lan`/`detour config --lan on`: called out loudly rather than folded
+  // quietly into the URLs above — LAN access has no authentication of its
+  // own, so anyone on the network can reach the dashboard (and from there,
+  // decrypted HTTPS traffic and rule edits) or use the proxy.
+  if (info.host !== 'localhost') {
+    // `localhost` on a *different* device resolves to that device, not this
+    // machine — the URLs printed above are useless to whoever's supposed to
+    // reach this from elsewhere on the network. Print every real address
+    // this machine actually has instead.
+    const addresses = lanAddresses();
+    if (addresses.length > 0) {
+      console.log('Reachable on your network at:');
+      for (const address of addresses) {
+        console.log(`  Proxy     → http://${address}:${info.proxyPort}`);
+        if (info.dashboardPort !== undefined) console.log(`  Dashboard → http://${address}:${info.dashboardPort}`);
+      }
+    }
+    console.log(
+      `⚠ Bound to every network interface (${info.host}), not just this machine — SECURITY: ${LAN_ACCESS_WARNING}. Only do this on a network you trust.`,
     );
   }
   if (info.ruleEngine) {
@@ -558,6 +642,14 @@ export function createCli(): Command {
       '--foreground',
       'Run in the foreground for this invocation even if `defaultDetach` is enabled via `detour config` — the opposite of --detach.',
     )
+    .option(
+      '--lan',
+      `Bind the proxy and dashboard to every network interface (0.0.0.0) instead of just this machine, for this invocation. SECURITY: ${LAN_ACCESS_WARNING}. On by default if \`lanAccess\` is set via \`detour config\`.`,
+    )
+    .option(
+      '--no-lan',
+      'Force localhost-only for this invocation even if `lanAccess` is enabled via `detour config` — the opposite of --lan.',
+    )
     .action(async (options: StartOptions) => {
       try {
         if (resolveShouldDetach(options)) {
@@ -652,15 +744,25 @@ export function createCli(): Command {
       '--default-detach <on|off>',
       'When "on", `detour start` runs detached by default (as if --detach were always passed) — override per-invocation with --detach/--foreground.',
     )
-    .action((options: { defaultDetach?: string }) => {
+    .option(
+      '--lan <on|off>',
+      `When "on", \`detour start\` binds the proxy and dashboard to every network interface (0.0.0.0) by default — override per-invocation with --lan/--no-lan. SECURITY: ${LAN_ACCESS_WARNING}.`,
+    )
+    .action((options: { defaultDetach?: string; lan?: string }) => {
       try {
-        if (options.defaultDetach !== undefined) {
-          const defaultDetach = parseOnOff(options.defaultDetach, '--default-detach');
-          writeUserConfig({ defaultDetach });
-          console.log(`✔ defaultDetach = ${defaultDetach} (${resolveUserConfigPath()})`);
+        const patch: UserConfig = {};
+        if (options.defaultDetach !== undefined)
+          patch.defaultDetach = parseOnOff(options.defaultDetach, '--default-detach');
+        if (options.lan !== undefined) patch.lanAccess = parseOnOff(options.lan, '--lan');
+
+        if (Object.keys(patch).length > 0) {
+          const written = writeUserConfig(patch);
+          for (const key of Object.keys(patch)) console.log(`✔ ${key} = ${written[key]} (${resolveUserConfigPath()})`);
           return;
         }
-        console.log(`defaultDetach = ${loadUserConfig().defaultDetach ?? false}`);
+        const config = loadUserConfig();
+        console.log(`defaultDetach = ${config.defaultDetach ?? false}`);
+        console.log(`lanAccess = ${config.lanAccess ?? false}`);
         console.log(`Config file: ${resolveUserConfigPath()}`);
       } catch (err) {
         console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);

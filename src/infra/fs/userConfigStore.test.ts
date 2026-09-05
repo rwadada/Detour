@@ -26,6 +26,17 @@ describe('userConfigStore (fs-backed)', () => {
     expect(loadUserConfig(configPath)).toEqual({ defaultDetach: true });
   });
 
+  it('writes and reads lanAccess back unchanged', () => {
+    writeUserConfig({ lanAccess: true }, configPath);
+    expect(loadUserConfig(configPath)).toEqual({ lanAccess: true });
+  });
+
+  it('throws when lanAccess is not a boolean', () => {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ lanAccess: 'yes' }));
+    expect(() => loadUserConfig(configPath)).toThrow(/must be a boolean/);
+  });
+
   it('creates ~/.detour itself on first write', () => {
     expect(fs.existsSync(path.dirname(configPath))).toBe(false);
     writeUserConfig({ defaultDetach: true }, configPath);
@@ -60,5 +71,42 @@ describe('userConfigStore (fs-backed)', () => {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, JSON.stringify([1, 2, 3]));
     expect(() => loadUserConfig(configPath)).toThrow(/must contain a JSON object/);
+  });
+
+  // A `setUserConfig` WebSocket message reaches `writeUserConfig` with only a
+  // compile-time `Partial<UserConfigState>` guarantee — `JSON.parse`d input
+  // (a frontend bug, a hand-crafted frame, or anything else on the network
+  // once `--lan` is on) can defeat that entirely. `as never` below simulates
+  // exactly that: a value the type system would normally reject.
+  it('rejects a malformed patch rather than writing it to disk', () => {
+    expect(() => writeUserConfig({ lanAccess: 'yes' as never }, configPath)).toThrow(/must be a boolean/);
+    expect(fs.existsSync(configPath)).toBe(false);
+  });
+
+  it('rejects a malformed patch even when it would merge with an already-valid file', () => {
+    writeUserConfig({ defaultDetach: true }, configPath);
+    expect(() => writeUserConfig({ lanAccess: 'yes' as never }, configPath)).toThrow(/must be a boolean/);
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ defaultDetach: true });
+  });
+
+  // Only WRITABLE_KEYS is ever copied out of a patch — a plain
+  // `{ ...existing, ...patch }` spread would instead persist whatever else
+  // the patch happened to carry, including a key like `__proto__` that a
+  // `setUserConfig` WebSocket message has no business writing at all.
+  it('ignores keys in the patch that are not on the writable-fields whitelist', () => {
+    writeUserConfig({ defaultDetach: true, notAKnownField: 'sneaky' } as never, configPath);
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ defaultDetach: true });
+  });
+
+  it("still preserves the existing file's own unknown keys (only the patch is whitelisted, not what's already on disk)", () => {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ somethingFromAFutureVersion: 'kept' }));
+
+    writeUserConfig({ defaultDetach: true }, configPath);
+
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({
+      defaultDetach: true,
+      somethingFromAFutureVersion: 'kept',
+    });
   });
 });

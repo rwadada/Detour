@@ -107,6 +107,18 @@ export default defineConfig([
     rules: { 'fsd/insignificant-slice': 'off' },
   },
   {
+    // `user-config` (the dashboard Settings panel's `defaultDetach`/
+    // `lanAccess` toggles) is imported by `features/settings-panel` —
+    // `grep -rn "@/entities/user-config" src` confirms it, and `tsc`/
+    // `vitest` resolve the import without error. `fsd/insignificant-slice`
+    // still reports "no references" here regardless — the same known
+    // Steiger 0.5 cross-slice reference-tracing false negative documented
+    // on `entities/rule` above, not an actual structural issue. Silenced
+    // for the same reason.
+    files: ['./src/entities/user-config/**'],
+    rules: { 'fsd/insignificant-slice': 'off' },
+  },
+  {
     // `group-by-host`/`pause-tail` (issue #24's toolbar) — same reasoning
     // as the blocks above: each is its own toggle-able capability with a
     // single consumer today (widgets/toolbar), kept separate rather than

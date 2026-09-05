@@ -19,6 +19,7 @@ import type { RuleProfileStore } from '../../usecase/ports/ruleProfileStore';
 import { replayExchange } from '../../usecase/replayExchange';
 import type { RuleEngine } from '../../usecase/ruleEngine';
 import type { DetourEventBus } from '../eventBus';
+import { loadUserConfig, writeUserConfig } from '../fs/userConfigStore';
 import { assertPortAvailable } from '../portCheck';
 import { nodeHttpRequester } from '../proxy/nodeHttpRequester';
 import { serveStatic } from './staticServer';
@@ -72,6 +73,8 @@ export interface DashboardServerOptions {
   ruleProfileStore?: RuleProfileStore;
   /** Performs the real outbound request for `replay` (issue #19). Injectable for tests; defaults to a real `node:http`/`node:https` request. */
   httpRequester?: HttpRequester;
+  /** Backs `userConfig`/`setUserConfig` (the dashboard Settings panel's `defaultDetach`/`lanAccess` toggles). Injectable for tests; defaults to `~/.detour/config.json` (`resolveUserConfigPath()`). */
+  userConfigPath?: string;
 }
 
 export interface DashboardServerHandle {
@@ -152,6 +155,32 @@ export async function startDashboardServer(
     type: 'ruleProfiles',
     profiles: ruleProfileStore?.list() ?? [],
   });
+  // Unlike rules/ruleProfiles above, this reads straight off disk on every
+  // call rather than through an in-memory mirror kept in sync by an event —
+  // `~/.detour/config.json` is small, read once per connect/change, and has
+  // no other writer this process needs to stay in sync with (contrast
+  // `ruleEngine`, which a hand-edited rules.json can also change).
+  const userConfigMessage = (): DashboardServerMessage => {
+    // Unlike `rulesMessage`/`ruleProfilesMessage` above, this reads a file
+    // that can fail validation (a hand-edited `~/.detour/config.json` with a
+    // typo'd value) — every other message sent right after connecting is a
+    // pure in-memory read that can't throw, and this one running inside
+    // `wss.on('connection', ...)` uncaught would crash that connection
+    // attempt (or worse) instead of just this one feature. Fall back to
+    // defaults; `setUserConfig` below still reports a clear
+    // `USER_CONFIG_WRITE_ERROR` (and refuses to write) if a client tries to
+    // change something while the file's in this state.
+    let config: ReturnType<typeof loadUserConfig>;
+    try {
+      config = loadUserConfig(options.userConfigPath);
+    } catch {
+      config = {};
+    }
+    return {
+      type: 'userConfig',
+      state: { defaultDetach: config.defaultDetach ?? false, lanAccess: config.lanAccess ?? false },
+    };
+  };
   const broadcastError = (errorKind: string, message: string) =>
     broadcast({ type: 'error', event: { errorKind, message } });
   // Fires after *any* rules.json reload — whether triggered by `setRules`/
@@ -215,6 +244,7 @@ export async function startDashboardServer(
     socket.send(JSON.stringify(blockHostsMessage));
     socket.send(JSON.stringify(rulesMessage()));
     socket.send(JSON.stringify(ruleProfilesMessage()));
+    socket.send(JSON.stringify(userConfigMessage()));
 
     // The only browser → server traffic on this socket: resuming/aborting a
     // paused breakpoint, toggling intercept on/off, editing the Focus host
@@ -241,6 +271,13 @@ export async function startDashboardServer(
           void replayExchange(message.exchange, eventBus, httpRequester).catch((err) =>
             broadcastError('REPLAY_ERROR', describeError(err)),
           );
+        } else if (message.type === 'setUserConfig') {
+          try {
+            writeUserConfig(message.state, options.userConfigPath);
+            broadcast(userConfigMessage());
+          } catch (err) {
+            broadcastError('USER_CONFIG_WRITE_ERROR', describeError(err));
+          }
         } else handleRulesMessage(message);
       } catch {
         // Ignore malformed frames rather than crashing the dashboard.
