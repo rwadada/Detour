@@ -1,5 +1,5 @@
 import { Download } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { exchangesToHar, matchesFilters, useExchangeStore } from '@/entities/exchange';
 import { downloadTextFile } from '@/shared/lib/downloadTextFile';
 import { useDismissablePopover } from '@/shared/lib/useDismissablePopover';
@@ -26,7 +26,10 @@ export function ExportMenu() {
   const containerRef = useRef<HTMLDivElement>(null);
   useDismissablePopover(open, containerRef, () => setOpen(false));
 
-  const filtered = exchanges.filter((e) => matchesFilters(e, filters));
+  // Memoized: `open`/local popover state changes re-render this component far
+  // more often than `exchanges`/`filters` actually change, and re-filtering
+  // the whole capture on every one of those is an avoidable O(n) cost.
+  const filtered = useMemo(() => exchanges.filter((e) => matchesFilters(e, filters)), [exchanges, filters]);
   const buttonTitle = exportButtonTitle(filtered.length, exchanges.length);
 
   const handleExport = (format: ExportFormat) => {
