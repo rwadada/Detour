@@ -207,6 +207,8 @@ function StartupDefaultsSection() {
           type="button"
           onClick={() => setUserConfig({ [key]: !on })}
           disabled={!userConfig}
+          aria-pressed={on}
+          aria-label={`${label}: ${on ? 'on' : 'off'}`}
           className={cn(
             'rounded-md border px-3 py-1 text-xs disabled:opacity-50',
             on ? onColor : 'border-[var(--border)] text-[var(--muted)] hover:bg-[var(--row-hover)]',
