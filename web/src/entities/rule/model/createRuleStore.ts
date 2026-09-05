@@ -17,6 +17,18 @@ export interface RuleState {
   /** Loads a saved profile's rules into the active rules.json. */
   applyProfile: (name: string) => void;
   dismissError: () => void;
+  /**
+   * Whether the Rules editor (`RulesEditorPanel`) has unsaved local edits.
+   * Lifted up from the editor itself (rather than kept as its own local
+   * state) so `RuleProfilesControl` and `RulesEditorButton` can guard
+   * against silently discarding/being discarded by it: applying a profile
+   * while a dirty draft sits open would otherwise get quietly clobbered by
+   * a later "Save to rules.json" (the editor's own sync-from-server guard
+   * intentionally leaves a dirty draft alone), and closing the editor would
+   * otherwise drop in-progress edits with no confirmation.
+   */
+  dirtyDraft: boolean;
+  setDirtyDraft: (dirty: boolean) => void;
 }
 
 /**
@@ -55,6 +67,8 @@ export function createRuleStore(connection: DashboardConnection) {
       saveActiveAsProfile: (name) => connection.send({ type: 'saveActiveRulesAsProfile', name }),
       applyProfile: (name) => connection.send({ type: 'applyRuleProfile', name }),
       dismissError: () => set({ lastError: null }),
+      dirtyDraft: false,
+      setDirtyDraft: (dirty) => set({ dirtyDraft: dirty }),
     };
   });
 }

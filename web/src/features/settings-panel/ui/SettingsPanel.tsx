@@ -81,8 +81,10 @@ function InterceptSection() {
         onClick={() => setIntercept(!interceptEnabled)}
         className={cn(
           'rounded-md border px-3 py-1 text-xs',
+          // See InterceptToggle's comment: `--accent`, not `--status-2xx` (that token means "2xx
+          // response" everywhere else it's used).
           interceptEnabled
-            ? 'border-[var(--status-2xx)] text-[var(--status-2xx)]'
+            ? 'border-[var(--accent)] text-[var(--accent)]'
             : 'border-[var(--muted)] text-[var(--muted)]',
         )}
       >
@@ -231,12 +233,19 @@ function StartupDefaultsSection() {
       </p>
       <div className="flex flex-col gap-2">
         {toggle('defaultDetach', 'Run detached by default')}
+        {/* The warning sits between the two toggles, not after both: a reader scanning top-to-bottom
+            reaches it before "Allow LAN access" itself, instead of after already having a chance to
+            flip it on unread. Boxed (border + tinted background) rather than plain paragraph text so
+            it reads as an alert instead of another line of muted help copy easy to skim past. */}
+        <p
+          role="alert"
+          className="rounded-md border border-[var(--status-5xx)] bg-[var(--status-5xx)]/10 px-2.5 py-2 text-xs text-[var(--status-5xx)]"
+        >
+          ⚠ LAN access has no login of any kind — anyone on your network could reach the dashboard, view decrypted HTTPS
+          traffic through it, edit rules, or use the proxy. Only turn this on if you trust every device on your network.
+        </p>
         {toggle('lanAccess', 'Allow LAN access', true)}
       </div>
-      <p className="mt-2 text-xs text-[var(--status-5xx)]">
-        ⚠ LAN access has no login of any kind — anyone on your network could reach the dashboard, view decrypted HTTPS
-        traffic through it, edit rules, or use the proxy. Only turn this on if you trust every device on your network.
-      </p>
     </section>
   );
 }

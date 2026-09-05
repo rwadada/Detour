@@ -15,6 +15,8 @@ export function RuleProfilesControl() {
   const applyProfile = useRuleStore((s) => s.applyProfile);
   const saveActiveAsProfile = useRuleStore((s) => s.saveActiveAsProfile);
   const createProfile = useRuleStore((s) => s.createProfile);
+  const dirtyDraft = useRuleStore((s) => s.dirtyDraft);
+  const setDirtyDraft = useRuleStore((s) => s.setDirtyDraft);
   const [open, setOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [template, setTemplate] = useState<'blank' | 'sample'>('sample');
@@ -24,6 +26,42 @@ export function RuleProfilesControl() {
   const createAndClear = () => {
     if (!newName.trim()) return;
     createProfile(newName.trim(), template);
+    setNewName('');
+  };
+
+  // A dirty Rules editor draft ignores the next `rules` broadcast (see its
+  // sync-from-server guard) so it can't be silently discarded by someone
+  // else's change — but that means applying a profile here would otherwise
+  // go through, the editor would keep showing the old draft as if nothing
+  // happened, and a later "Save to rules.json" would clobber the
+  // just-applied profile with that stale draft. Confirm and clear the
+  // dirty flag first so the editor picks up the newly applied profile
+  // instead.
+  const applyWithDirtyGuard = (name: string) => {
+    if (dirtyDraft && !window.confirm('Applying this profile will discard your unsaved rules.json edits. Continue?')) {
+      return;
+    }
+    setDirtyDraft(false);
+    applyProfile(name);
+  };
+
+  // `saveActiveAsProfile` captures the server's current rules.json (the
+  // last thing actually "Save"d in the Rules editor) — not whatever's sitting
+  // unsaved in the editor's draft. With a dirty draft open, what's on screen
+  // and what this button is about to snapshot as the new profile are two
+  // different things; confirming makes that explicit instead of letting
+  // someone assume it just captured their in-progress edits.
+  const saveActiveWithDirtyGuard = () => {
+    if (!newName.trim()) return;
+    if (
+      dirtyDraft &&
+      !window.confirm(
+        'Your unsaved rules.json edits are not included — this saves what was last saved to rules.json. Continue?',
+      )
+    ) {
+      return;
+    }
+    saveActiveAsProfile(newName.trim());
     setNewName('');
   };
 
@@ -55,7 +93,7 @@ export function RuleProfilesControl() {
                   <span className="truncate">
                     {profile.name} <span className="text-[var(--muted)]">({profile.ruleCount})</span>
                   </span>
-                  <Button variant="outline" size="sm" onClick={() => applyProfile(profile.name)}>
+                  <Button variant="outline" size="sm" onClick={() => applyWithDirtyGuard(profile.name)}>
                     Apply
                   </Button>
                 </li>
@@ -87,11 +125,7 @@ export function RuleProfilesControl() {
               variant="outline"
               size="sm"
               className="flex-1"
-              onClick={() => {
-                if (!newName.trim()) return;
-                saveActiveAsProfile(newName.trim());
-                setNewName('');
-              }}
+              onClick={saveActiveWithDirtyGuard}
               disabled={!newName.trim() || !rulesFile}
               title={!rulesFile ? 'No active rules to save' : undefined}
             >

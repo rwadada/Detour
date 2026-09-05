@@ -36,8 +36,16 @@ npm start -- start --port 8080
 - `--dump <level>`: Verbosity of the request/response log (default: `summary`, one line per exchange, as today). `full` additionally prints each exchange's headers and body to the console; `file` skips the console spam and instead writes that same dump to its own file under `~/.detour/dumps`, one file per exchange (overwritten as it moves from request to response). Both `full` and `file` redact sensitive headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Auth-Token`) as `[REDACTED]`; a JSON body is pretty-printed, anything else is shown as raw text
 - `--no-http2`: Disables HTTP/2 (ALPN) on MITM'd HTTPS connections, falling back to HTTP/1.1 only. HTTP/2 is negotiated with the client by default — shown as `HTTP/2: on`/`off` in the startup banner, and tagged `[h2]` in the log/dashboard for exchanges that negotiated it. The connection to the real upstream server is always HTTP/1.1 either way
 - `--no-open`: skips auto-opening the dashboard in your default browser after startup (on by default; see [Web dashboard](#web-dashboard) below). Has no effect under `--headless`
+- `--proto <path>`: Path to a `.proto` file used to decode gRPC (`application/grpc*`) message bodies in the console/file dump (`--dump full`/`file`), pretty-printing them instead of showing the raw protobuf-encoded bytes. Repeatable for a schema split across multiple files sharing imports. This is a CLI-dump-only feature for now — the web dashboard's body viewer doesn't decode gRPC yet and shows it as raw bytes there
 
 On first run, a local CA root certificate is generated at `~/.detour/certs/certs/ca.pem`. To decrypt HTTPS traffic, install this certificate as a trusted root certificate on your target browser/OS/device. `detour cert export [path]` writes it to `<path>` (or stdout, if omitted) — generating it first if this is the very first time Detour has run on this machine — for scripting that install rather than digging into `~/.detour/certs` by hand.
+
+Where to install it, and the gotchas that specifically bite this step:
+- **macOS**: `detour cert export ~/detour-ca.pem`, then double-click it to add it to Keychain Access, open it there, expand **Trust**, and set **When using this certificate** to **Always Trust**. Just adding it isn't enough — without this step macOS keeps it untrusted and HTTPS traffic through it will fail.
+- **Windows**: export it, then `certmgr.msc` → **Trusted Root Certification Authorities** → **Certificates** → right-click → **All Tasks → Import…** and select the file.
+- **iOS (physical device)**: AirDrop or email the exported file to the device and install the profile via **Settings → General → VPN & Device Management**. This alone isn't enough either — iOS installs it as *un*trusted for TLS until you separately flip it on under **Settings → General → About → Certificate Trust Settings**. Missing this second step is the single most common reason "nothing shows up" for HTTPS on iOS.
+- **Android**: **Settings → Security → Encryption & credentials → Install a certificate → CA certificate**. Since Android 7 (API 24), apps don't trust user-added CAs by default unless they explicitly opt in via a `network_security_config` — so some apps (especially ones with their own certificate pinning) still won't show decrypted traffic even once the cert is installed; a rooted device installing the cert into the *system* store instead is the more reliable path for those.
+- **Simulators/emulators**: usually easiest — most accept a user-installed CA the same way a real device's OS does, without the pinning restrictions some individual apps add.
 
 Once started, point an HTTP/HTTPS client at the `--port` you chose (e.g. `curl -x http://localhost:8080 https://example.com`, or your device's Wi-Fi proxy settings) and requests passing through will be logged to the console — and appear live in the web dashboard.
 
@@ -70,6 +78,12 @@ During development, run `npm run dev` to watch and run the TypeScript sources di
 - The "Focus" control in the header narrows interception down to a host allowlist instead of an all-or-nothing switch: with one or more `*`/`?` glob patterns added (e.g. `*.example.com`, or `localhost:3000` to target a non-default port), only a matching host is MITM-decrypted/intercepted — every other host gets exactly the "Intercept Off" treatment described above, scoped to just that host. Empty (the default) means unrestricted, identical to Focus not existing. Also live for the whole proxy and synced across every connected tab
 - The "Throttle" control in the header simulates degraded network conditions — bandwidth cap, latency, packet loss — on proxied traffic, for testing how a client behaves on a slow/lossy connection. Off by default (a true no-op); pick the "Fast 3G"/"Slow 3G" preset or set Download/Upload (Kbps), Latency (ms), and Packet loss (%) directly (`0` = unlimited/none). Also live for the whole proxy and synced across every connected tab. On the MITM'd HTTP(S) path a throttled body is delivered in one delayed write rather than trickled out progressively (a limitation of the underlying proxy library), and it's bypassed by `mock`/`breakpoint` responses and by a body a `rewrite` rule is also rewriting (only Latency still applies to those) — the raw byte-level CONNECT tunnel used while Intercept/Focus is off throttles genuinely chunk-by-chunk instead
 - The "Block Hosts" control in the header outright denies requests to a set of `*`/`?` glob host patterns (issue #14), for simulating a host being unreachable. Empty by default (a true no-op); add host patterns (e.g. `*.example.com`, or `localhost:3000` for a non-default port — matched the same way as Focus) and pick a mode: `403 Forbidden` responds immediately without ever contacting the real server (a CONNECT tunnel gets a `403` status line before it's ever established), or `Connection reset` drops the connection instead, with no response at all. Checked before every other feature — Intercept off, Focus, and even a `route` rule never get a chance to run for a blocked host. Also live for the whole proxy and synced across every connected tab
+- Export the log as HAR 1.2 (for other HTTP-debugging tools) or as Detour's own JSON (re-importable here) — respects whatever filter is currently narrowing the table down, so grabbing just the one failing request for a bug report doesn't drag along everything else that happened to be captured alongside it
+- "Save session" snapshots the full captured log *and* the live proxy environment (Intercept/Focus/Throttle/Block Hosts) into one file; "Load session…" restores both — reopening it later resumes the exact conditions it was captured under, not just the traffic
+- Ctrl/Cmd-click two rows to mark them for Compare, then diff their headers/bodies side by side
+- Copy any request as a ready-to-run `curl` command, or replay it as-is back through the proxy
+- Rule Profiles (in the sidebar) save the active `rules.json` as a named, switchable ruleset — handy for flipping between e.g. a `staging` and `production` rule set without hand-editing the file each time
+- "Group by host" collapses the log table into per-host sections; the "Tail" toggle pauses auto-scroll so new traffic doesn't yank you away from a row you're reading
 
 The dashboard's source lives in [`web/`](./web) (React 19 + Vite + Tailwind CSS + Zustand) and is built to `web-dist/`, which `npm run build` produces alongside the CLI's `dist/`. To iterate on the UI with `npm run dev:dashboard` (Vite's dev server with hot reload) instead of rebuilding, run `detour start` in one terminal and `npm run dev:dashboard` in another — Vite proxies `/ws` through to the default dashboard port.
 
@@ -150,23 +164,3 @@ The repository ships two rules files for different purposes at its root:
 
 ### Proxy core
 The MITM proxy engine (CONNECT tunneling, on-the-fly per-host TLS certs, HTTP/1.1 and HTTP/2 forwarding — [`src/infra/proxy/engine/`](./src/infra/proxy/engine/)) is a from-scratch implementation on top of Node's own `http`/`https`/`http2`/`tls`/`net` modules and `node-forge` for certificate signing, rather than a third-party MITM library (issue #42) — this avoids depending on a library patched for macOS support and HTTP/2, and allows the request/response pipeline to genuinely stream/throttle chunk-by-chunk instead of buffering whole bodies.
-
-# Scratch notes
-## Planned command set
-
-detour stop --cleanup : stop + undo setup  
-detour view <file> : launch the viewer  
-detour setup  
-detour cleanup  
-detour doctor  
-detour rules edit  
-detour rules use  
-detour session save/load/list  
-
-## Main options for `start`
---ui-port <number>  
---ui-lan : expose the dashboard on the LAN  
---no-ui  
-
-## Setup
-something like `detour setup --target android`

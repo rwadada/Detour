@@ -128,15 +128,23 @@ export default tseslint.config(
       // unclassified above) is allowed to wire both together. `*.test.ts`
       // files (the `test` file category, see `boundaries/files` above) may
       // import anything, for integration-style test setup.
+      //
+      // Policy order matters here: eslint-plugin-boundaries v7 resolves
+      // `policies` with **last-write-wins** semantics (the last entry that
+      // matches a given dependency decides the outcome), not first-match —
+      // see node_modules/eslint-plugin-boundaries/dist/rules/Dependencies.js.
+      // The blanket `test` exemption below is therefore listed LAST: a test
+      // file living under e.g. `src/usecase/**` also matches the `usecase`
+      // element-type policy above it, and without this ordering that later
+      // (well, textually earlier) type-based policy would win instead and
+      // block the exact integration-style imports this exemption exists for
+      // (verified by putting it first, which reintroduced the false
+      // positive on ruleEngine.test.ts / replayExchange.test.ts).
       'boundaries/dependencies': [
         'error',
         {
           default: 'disallow',
           policies: [
-            {
-              from: { file: { categories: 'test' } },
-              allow: { to: { element: { types: { anyOf: ['domain', 'usecase', 'infra', 'presentation'] } } } },
-            },
             { from: { element: { type: 'domain' } }, allow: { to: { element: { type: 'domain' } } } },
             {
               from: { element: { type: 'usecase' } },
@@ -149,6 +157,10 @@ export default tseslint.config(
             {
               from: { element: { type: 'presentation' } },
               allow: { to: { element: { types: { anyOf: ['domain', 'usecase', 'presentation'] } } } },
+            },
+            {
+              from: { file: { categories: 'test' } },
+              allow: { to: { element: { types: { anyOf: ['domain', 'usecase', 'infra', 'presentation'] } } } },
             },
           ],
         },
