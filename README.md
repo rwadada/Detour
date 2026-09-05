@@ -36,6 +36,7 @@ npm start -- start --port 8080
 - `--dump <level>`: Verbosity of the request/response log (default: `summary`, one line per exchange, as today). `full` additionally prints each exchange's headers and body to the console; `file` skips the console spam and instead writes that same dump to its own file under `~/.detour/dumps`, one file per exchange (overwritten as it moves from request to response). Both `full` and `file` redact sensitive headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Auth-Token`) as `[REDACTED]`; a JSON body is pretty-printed, anything else is shown as raw text
 - `--no-http2`: Disables HTTP/2 (ALPN) on MITM'd HTTPS connections, falling back to HTTP/1.1 only. HTTP/2 is negotiated with the client by default — shown as `HTTP/2: on`/`off` in the startup banner, and tagged `[h2]` in the log/dashboard for exchanges that negotiated it. The connection to the real upstream server is always HTTP/1.1 either way
 - `--no-open`: skips auto-opening the dashboard in your default browser after startup (on by default; see [Web dashboard](#web-dashboard) below). Has no effect under `--headless`
+- `--proto <path>`: Path to a `.proto` file used to decode gRPC (`application/grpc*`) message bodies in the console/file dump (`--dump full`/`file`), pretty-printing them instead of showing the raw protobuf-encoded bytes. Repeatable for a schema split across multiple files sharing imports. This is a CLI-dump-only feature for now — the web dashboard's body viewer doesn't decode gRPC yet and shows it as raw bytes there
 
 On first run, a local CA root certificate is generated at `~/.detour/certs/certs/ca.pem`. To decrypt HTTPS traffic, install this certificate as a trusted root certificate on your target browser/OS/device. `detour cert export [path]` writes it to `<path>` (or stdout, if omitted) — generating it first if this is the very first time Detour has run on this machine — for scripting that install rather than digging into `~/.detour/certs` by hand.
 
@@ -156,23 +157,3 @@ The repository ships two rules files for different purposes at its root:
 
 ### Proxy core
 The MITM proxy engine (CONNECT tunneling, on-the-fly per-host TLS certs, HTTP/1.1 and HTTP/2 forwarding — [`src/infra/proxy/engine/`](./src/infra/proxy/engine/)) is a from-scratch implementation on top of Node's own `http`/`https`/`http2`/`tls`/`net` modules and `node-forge` for certificate signing, rather than a third-party MITM library (issue #42) — this avoids depending on a library patched for macOS support and HTTP/2, and allows the request/response pipeline to genuinely stream/throttle chunk-by-chunk instead of buffering whole bodies.
-
-# Scratch notes
-## Planned command set
-
-detour stop --cleanup : stop + undo setup  
-detour view <file> : launch the viewer  
-detour setup  
-detour cleanup  
-detour doctor  
-detour rules edit  
-detour rules use  
-detour session save/load/list  
-
-## Main options for `start`
---ui-port <number>  
---ui-lan : expose the dashboard on the LAN  
---no-ui  
-
-## Setup
-something like `detour setup --target android`

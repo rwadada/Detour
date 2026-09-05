@@ -45,6 +45,26 @@ export function RuleProfilesControl() {
     applyProfile(name);
   };
 
+  // `saveActiveAsProfile` captures the server's current rules.json (the
+  // last thing actually "Save"d in the Rules editor) — not whatever's sitting
+  // unsaved in the editor's draft. With a dirty draft open, what's on screen
+  // and what this button is about to snapshot as the new profile are two
+  // different things; confirming makes that explicit instead of letting
+  // someone assume it just captured their in-progress edits.
+  const saveActiveWithDirtyGuard = () => {
+    if (!newName.trim()) return;
+    if (
+      dirtyDraft &&
+      !window.confirm(
+        'Your unsaved rules.json edits are not included — this saves what was last saved to rules.json. Continue?',
+      )
+    ) {
+      return;
+    }
+    saveActiveAsProfile(newName.trim());
+    setNewName('');
+  };
+
   return (
     <div className="relative" ref={containerRef}>
       <PillToggle
@@ -105,11 +125,7 @@ export function RuleProfilesControl() {
               variant="outline"
               size="sm"
               className="flex-1"
-              onClick={() => {
-                if (!newName.trim()) return;
-                saveActiveAsProfile(newName.trim());
-                setNewName('');
-              }}
+              onClick={saveActiveWithDirtyGuard}
               disabled={!newName.trim() || !rulesFile}
               title={!rulesFile ? 'No active rules to save' : undefined}
             >
