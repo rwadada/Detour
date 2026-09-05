@@ -27,11 +27,23 @@ export function resolveUserConfigPath(): string {
 }
 
 /**
+ * `UserConfig`'s explicitly-typed fields, named separately from `UserConfig`
+ * itself so `WRITABLE_KEYS` below can be checked against them: `UserConfig`
+ * carries a `[key: string]: unknown` index signature (so it can hold keys
+ * this version of detour doesn't know about — see its own doc comment),
+ * and TypeScript collapses `keyof` on any type with an index signature down
+ * to that signature's key type (`string`, here) — so `keyof UserConfig`
+ * can't actually catch a typo'd field name the way `keyof
+ * KnownUserConfigFields` (no index signature to collapse into) can.
+ */
+type KnownUserConfigFields = Required<Pick<UserConfig, 'defaultDetach' | 'lanAccess'>>;
+
+/**
  * Every field `writeUserConfig` will actually apply from a `patch` — see
  * its doc comment for why this is a whitelist rather than a plain object
  * spread of the whole patch.
  */
-const WRITABLE_KEYS = ['defaultDetach', 'lanAccess'] as const satisfies readonly (keyof UserConfig)[];
+const WRITABLE_KEYS = ['defaultDetach', 'lanAccess'] as const satisfies readonly (keyof KnownUserConfigFields)[];
 
 /**
  * Shared by `loadUserConfig` (validating whatever's already on disk) and
