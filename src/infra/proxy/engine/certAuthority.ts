@@ -27,13 +27,16 @@ function randomSerialNumber(): string {
   // even though node-forge's own lenient parser accepts it (and then only
   // intermittently fails signature verification — this bit us as a ~1-in-500
   // flaky `certAuthority.test.ts` failure before the root cause was found).
-  // Clearing the first byte's top bit instead guarantees a single canonical
-  // 16-byte positive INTEGER with no forced or redundant zero, matching
-  // forge's own original CA generator's approach (this class replaced it —
-  // see the module comment).
+  // Just clearing the first byte's top bit isn't quite enough either: that
+  // byte can still land on exactly 0x00 (~1 in 128), which is once again a
+  // redundant leading zero. Forcing it to a fixed non-zero value once
+  // cleared guarantees a single canonical 16-byte positive INTEGER that is
+  // never zero and never redundantly padded, matching forge's own original
+  // CA generator's approach (this class replaced it — see the module
+  // comment) more literally than a bare bitmask does.
   const raw = forge.random.getBytesSync(16);
-  const firstByte = String.fromCharCode(raw.charCodeAt(0) & 0x7f);
-  return forge.util.bytesToHex(firstByte + raw.slice(1));
+  const firstByte = raw.charCodeAt(0) & 0x7f || 0x01;
+  return forge.util.bytesToHex(String.fromCharCode(firstByte) + raw.slice(1));
 }
 
 /** IPv6 detection is deliberately loose (just "contains a colon") — good enough given `host` always arrives already bracket-stripped (see `ProxyEngine.parseHost`), so this only needs to not misclassify a plain hostname as an IP. */
