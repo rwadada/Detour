@@ -38,7 +38,12 @@ export function RuleProfilesControl() {
         Profiles{profiles.length > 0 ? ` (${profiles.length})` : ''}
       </PillToggle>
       {open && (
-        <div className="absolute right-0 top-full z-10 mt-2 w-72 rounded-md border border-[var(--border)] bg-[var(--panel)] p-2.5 shadow-lg">
+        // `left-0`, not `right-0` (which `ThrottleControl`'s popover — living
+        // in the top toolbar, with room to spare on both sides — uses):
+        // this control sits in the narrow sidebar near the left edge of the
+        // viewport, so anchoring the popover's *right* edge to the button
+        // pushed most of its `w-72` off the left side of the screen entirely.
+        <div className="absolute left-0 top-full z-10 mt-2 w-72 rounded-md border border-[var(--border)] bg-[var(--panel)] p-2.5 shadow-lg">
           <p className="mb-2 text-xs text-[var(--muted)]">Switch, save, or create a saved ruleset.</p>
 
           {profiles.length === 0 ? (
