@@ -14,9 +14,13 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "baseUrl": ".",
+    // baseUrl is deprecated (removed in TS 7.0) and unnecessary here: since
+    // TS 4.1, `paths` alone resolves relative to this tsconfig file's own
+    // directory — "." was exactly that directory anyway. Without baseUrl,
+    // TS requires each paths value to be explicitly relative (leading
+    // "./") rather than a bare specifier, hence "./src/*" below.
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src"]
