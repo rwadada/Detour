@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveDashboardPort } from './cli';
+import { resolveDashboardPort, shouldAutoOpenDashboard } from './cli';
 
 /**
  * `resolveDashboardPort` is the one piece of pure, synchronous logic in
@@ -31,5 +31,29 @@ describe('resolveDashboardPort (issue #24)', () => {
 
   it('throws rather than silently overflowing when the derived port would exceed 65535', () => {
     expect(() => resolveDashboardPort(65000, undefined)).toThrow(/65535/);
+  });
+});
+
+/**
+ * `shouldAutoOpenDashboard` decides whether `detour start` fires the
+ * dashboard open in a browser automatically. Pulled out as pure logic so
+ * its three exclusions (see cli.ts's doc comment on it) are each testable
+ * without spawning a real CLI process.
+ */
+describe('shouldAutoOpenDashboard', () => {
+  it('opens when open is requested, the port is real, and the dashboard is built', () => {
+    expect(shouldAutoOpenDashboard({ open: true, dashboardPort: 9080, built: true })).toBe(true);
+  });
+
+  it('skips when --no-open was passed', () => {
+    expect(shouldAutoOpenDashboard({ open: false, dashboardPort: 9080, built: true })).toBe(false);
+  });
+
+  it('skips an ephemeral dashboardPort of 0 (test-only --port 0 / --dashboard-port 0)', () => {
+    expect(shouldAutoOpenDashboard({ open: true, dashboardPort: 0, built: true })).toBe(false);
+  });
+
+  it('skips when the dashboard has not been built yet', () => {
+    expect(shouldAutoOpenDashboard({ open: true, dashboardPort: 9080, built: false })).toBe(false);
   });
 });
