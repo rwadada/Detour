@@ -17,11 +17,23 @@ const CA_ATTRS = [
 const LEAF_ATTRS = [{ name: 'organizationName', value: 'Detour' }];
 
 function randomSerialNumber(): string {
-  // A leading zero byte would make some ASN.1 parsers treat the serial as
-  // negative; forge's own CA generator (which this replaces) works around
-  // the same thing by never emitting a byte ≥ 0x80 in the first position —
-  // simplest fix here is just prefixing a fixed non-zero nibble.
-  return `00${forge.util.bytesToHex(forge.random.getBytesSync(15))}`;
+  // DER requires a positive INTEGER whose leading byte has bit 7 clear (else
+  // it reads as negative) *and* forbids any redundant leading 0x00 beyond
+  // the one needed for that. Unconditionally prefixing "00" (as this used
+  // to) satisfies the first rule but violates the second whenever the next
+  // random byte also happens to land < 0x80 or, worse, is itself 0x00 (~1 in
+  // 256): a double/redundant leading zero that strict ASN.1 parsers (real
+  // TLS stacks, Node's own `X509Certificate`) reject as "illegal padding",
+  // even though node-forge's own lenient parser accepts it (and then only
+  // intermittently fails signature verification — this bit us as a ~1-in-500
+  // flaky `certAuthority.test.ts` failure before the root cause was found).
+  // Clearing the first byte's top bit instead guarantees a single canonical
+  // 16-byte positive INTEGER with no forced or redundant zero, matching
+  // forge's own original CA generator's approach (this class replaced it —
+  // see the module comment).
+  const raw = forge.random.getBytesSync(16);
+  const firstByte = String.fromCharCode(raw.charCodeAt(0) & 0x7f);
+  return forge.util.bytesToHex(firstByte + raw.slice(1));
 }
 
 /** IPv6 detection is deliberately loose (just "contains a colon") — good enough given `host` always arrives already bracket-stripped (see `ProxyEngine.parseHost`), so this only needs to not misclassify a plain hostname as an IP. */

@@ -1,3 +1,4 @@
+import { X509Certificate } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -50,17 +51,25 @@ describe('CertAuthority', () => {
     // getSecureContext only exposes an opaque tls.SecureContext — inspect the
     // underlying PEM (via the CA cert path + a second CertAuthority instance
     // reading the same on-disk CA) isn't feasible without re-deriving the
-    // leaf, so instead verify through node-forge directly against the CA
-    // cert on disk plus a freshly signed leaf for the same host.
-    const caCert = forge.pki.certificateFromPem(fs.readFileSync(ca.getCACertPath(), 'utf8'));
+    // leaf, so instead verify against the CA cert on disk plus a freshly
+    // signed leaf for the same host.
+    //
+    // Deliberately uses node:crypto's X509Certificate (real OpenSSL parsing
+    // and signature verification), not node-forge's own certificate.verify —
+    // forge's ASN.1 layer re-derives the TBSCertificate it hashes at verify
+    // time in a way that isn't always byte-identical to what was actually
+    // signed, so forge's verify() intermittently (~1 in 500-700 runs)
+    // returned false on a perfectly valid signature. Checking through
+    // OpenSSL instead avoids that forge-specific edge case and exercises the
+    // same validation path a real TLS client does.
+    const caCertX509 = new X509Certificate(fs.readFileSync(ca.getCACertPath(), 'utf8'));
     // getDefaultKeyCert() always mints (and caches) the 'localhost' leaf —
     // reusing it here avoids reaching into CertAuthority's private cache.
     const { cert: leafPem } = ca.getDefaultKeyCert();
-    const leaf = forge.pki.certificateFromPem(leafPem);
-    expect(leaf.issuer.getField('CN')?.value).toBe(caCert.subject.getField('CN')?.value);
-    expect(caCert.verify(leaf)).toBe(true);
-    const san = leaf.getExtension('subjectAltName') as { altNames: Array<{ value?: string }> } | undefined;
-    expect(san?.altNames.some((n) => n.value === 'localhost')).toBe(true);
+    const leafX509 = new X509Certificate(leafPem);
+    expect(leafX509.checkIssued(caCertX509)).toBe(true);
+    expect(leafX509.verify(caCertX509.publicKey)).toBe(true);
+    expect(leafX509.subjectAltName).toContain('DNS:localhost');
   });
 
   it('an IP-address hostname gets an IP-type (not DNS-type) subjectAltName entry', () => {
