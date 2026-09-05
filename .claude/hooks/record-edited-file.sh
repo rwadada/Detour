@@ -4,8 +4,8 @@
 # this turn actually changed an implementation file before paying for a full
 # `npm run verify`. Cheap and silent: never blocks, never prints.
 input=$(cat)
-session_id=$(printf '%s' "$input" | jq -r '.session_id // empty')
-file=$(printf '%s' "$input" | jq -r '.tool_response.filePath // .tool_input.file_path // empty')
+session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
+file=$(printf '%s' "$input" | jq -r '.tool_response.filePath // .tool_input.file_path // empty' 2>/dev/null)
 [ -n "$session_id" ] && [ -n "$file" ] || exit 0
 # session_id ends up as part of a file path below; reject anything but the
 # safe charset so a crafted/unexpected value can't escape .stop-state/ or
