@@ -8,6 +8,7 @@ import { RulesEditorPanel } from './RulesEditorPanel';
 export function RulesEditorButton() {
   const [open, setOpen] = useState(false);
   const dirtyDraft = useRuleStore((s) => s.dirtyDraft);
+  const setDirtyDraft = useRuleStore((s) => s.setDirtyDraft);
 
   // Escape, the backdrop, and the dialog's own "X" all funnel through this
   // one `onClose` — guarding it here (rather than in each trigger) confirms
@@ -16,6 +17,13 @@ export function RulesEditorButton() {
   // the modal.
   const requestClose = () => {
     if (dirtyDraft && !window.confirm('Discard unsaved changes to rules.json?')) return;
+    // The confirm above only asks; it doesn't discard. `RulesEditorPanel`
+    // unmounts on close and never runs its own `discard()`/`save()` (the
+    // only two places that otherwise clear this flag), so without this the
+    // store's `dirtyDraft` stays stuck true — the next open shows Save/
+    // Discard enabled with nothing actually unsaved, and blocks the panel's
+    // resync-from-server guard for no reason.
+    setDirtyDraft(false);
     setOpen(false);
   };
 
