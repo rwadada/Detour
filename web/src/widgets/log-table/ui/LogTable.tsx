@@ -98,8 +98,28 @@ export function LogTable() {
 
   if (exchanges.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center text-sm text-[var(--muted)]">
-        Waiting for traffic through the proxy…
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-sm text-[var(--muted)]">
+        <p>Waiting for traffic through the proxy…</p>
+        {/* First-run guidance (design/PO/developer review, round 3): the bare "waiting" message left
+            a first-time visitor with no idea whether anything was wrong or what to do next — point a
+            client at the Proxy URL in the sidebar (the exact value lives in that widget, not here —
+            no cross-widget store reach-in), and flag the one thing that silently blocks HTTPS traffic
+            specifically if it's missing. */}
+        <p className="max-w-sm text-xs">
+          Point an HTTP/HTTPS client at the <span className="font-medium text-[var(--foreground)]">Proxy URL</span>{' '}
+          shown in the sidebar — e.g.{' '}
+          <code className="font-mono-ui text-[var(--foreground)]">curl -x &lt;proxy-url&gt; https://example.com</code> —
+          and it'll show up here. Seeing nothing for HTTPS specifically? Make sure the CA certificate is installed (see{' '}
+          <a
+            href="https://github.com/rwadada/Detour#readme"
+            target="_blank"
+            rel="noreferrer"
+            className="underline decoration-dotted hover:text-[var(--accent)]"
+          >
+            Setup &amp; docs
+          </a>
+          ).
+        </p>
       </div>
     );
   }

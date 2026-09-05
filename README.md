@@ -40,6 +40,13 @@ npm start -- start --port 8080
 
 On first run, a local CA root certificate is generated at `~/.detour/certs/certs/ca.pem`. To decrypt HTTPS traffic, install this certificate as a trusted root certificate on your target browser/OS/device. `detour cert export [path]` writes it to `<path>` (or stdout, if omitted) — generating it first if this is the very first time Detour has run on this machine — for scripting that install rather than digging into `~/.detour/certs` by hand.
 
+Where to install it, and the gotchas that specifically bite this step:
+- **macOS**: `detour cert export ~/detour-ca.pem`, then double-click it to add it to Keychain Access, open it there, expand **Trust**, and set **When using this certificate** to **Always Trust**. Just adding it isn't enough — without this step macOS keeps it untrusted and HTTPS traffic through it will fail.
+- **Windows**: export it, then `certmgr.msc` → **Trusted Root Certification Authorities** → **Certificates** → right-click → **All Tasks → Import…** and select the file.
+- **iOS (physical device)**: AirDrop or email the exported file to the device and install the profile via **Settings → General → VPN & Device Management**. This alone isn't enough either — iOS installs it as *un*trusted for TLS until you separately flip it on under **Settings → General → About → Certificate Trust Settings**. Missing this second step is the single most common reason "nothing shows up" for HTTPS on iOS.
+- **Android**: **Settings → Security → Encryption & credentials → Install a certificate → CA certificate**. Since Android 7 (API 24), apps don't trust user-added CAs by default unless they explicitly opt in via a `network_security_config` — so some apps (especially ones with their own certificate pinning) still won't show decrypted traffic even once the cert is installed; a rooted device installing the cert into the *system* store instead is the more reliable path for those.
+- **Simulators/emulators**: usually easiest — most accept a user-installed CA the same way a real device's OS does, without the pinning restrictions some individual apps add.
+
 Once started, point an HTTP/HTTPS client at the `--port` you chose (e.g. `curl -x http://localhost:8080 https://example.com`, or your device's Wi-Fi proxy settings) and requests passing through will be logged to the console — and appear live in the web dashboard.
 
 During development, run `npm run dev` to watch and run the TypeScript sources directly.
