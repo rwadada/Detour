@@ -49,6 +49,20 @@ Where to install it, and the gotchas that specifically bite this step:
 
 Once started, point an HTTP/HTTPS client at the `--port` you chose (e.g. `curl -x http://localhost:8080 https://example.com`, or your device's Wi-Fi proxy settings) and requests passing through will be logged to the console — and appear live in the web dashboard.
 
+### `detour setup` / `doctor` / `cleanup` (issue #65)
+
+Doing the above by hand for every target gets old fast, so `detour setup [--target <target>]` (`android`, `ios`, `mac`, `linux`, `windows`) automates it where it can:
+
+- **mac**: trusts the CA cert in your login keychain (`security add-trusted-cert`, no `sudo` prompt) and points your active network service's HTTP/HTTPS proxy at it (`networksetup`).
+- **android**: pushes the CA cert to a connected device (`adb push`) and opens Security settings there so you just have to tap through the install (Android won't accept a CA cert without that in-device confirmation), and sets the device's global HTTP proxy (`adb shell settings put global http_proxy`) to this machine's LAN IP.
+- **linux**: sets GNOME's proxy (`gsettings`) to point at it, when `gsettings` is available.
+- **ios**: trusts the CA cert on every booted Simulator (`xcrun simctl keychain <udid> add-root-cert`) — the Simulator shares this Mac's network stack, so it picks up whatever proxy `--target mac` configures with no separate step. A physical device still needs the manual steps above; Apple's device CLI (`devicectl`) has no equivalent to `simctl keychain` or a way to set a device's Wi-Fi proxy.
+- **windows**: prints the manual steps above instead — no automation yet.
+
+Run it with no `--target` to do all five at once (printing manual steps for whatever a target's automation can't reach) and announce the CA cert's path along the way. `-p, --port <port>` picks which port to configure (matches `detour start --port`, default `8080`); `--host <host>` overrides the address advertised to the target if auto-detection (`localhost` for a target that's this machine, this machine's LAN IP for a separate device) guesses wrong.
+
+`detour doctor [--target <target>]` checks the same things without changing anything — whether the cert is trusted, whether the proxy is actually pointed at `detour`, and so on — exiting non-zero if anything's off, so it's scriptable. `detour cleanup [--target <target>]` reverts the proxy configuration `setup` applied (so a target that isn't running `detour` right now doesn't get stuck routing everything through a proxy that's gone) — it leaves the CA cert's trust and `rules.json`/`detour config` alone.
+
 During development, run `npm run dev` to watch and run the TypeScript sources directly.
 
 ### Checks
