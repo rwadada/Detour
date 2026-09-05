@@ -27,6 +27,13 @@ export function resolveUserConfigPath(): string {
 }
 
 /**
+ * Every field `writeUserConfig` will actually apply from a `patch` — see
+ * its doc comment for why this is a whitelist rather than a plain object
+ * spread of the whole patch.
+ */
+const WRITABLE_KEYS = ['defaultDetach', 'lanAccess'] as const satisfies readonly (keyof UserConfig)[];
+
+/**
  * Shared by `loadUserConfig` (validating whatever's already on disk) and
  * `writeUserConfig` (validating the merged result *before* it's written) —
  * without the latter, a `setUserConfig` WebSocket message with a malformed
@@ -85,13 +92,27 @@ export function loadUserConfig(configPath: string = resolveUserConfigPath()): Us
  * under it (unlike `resolveRunDir`/`resolveDumpDir`, there's no earlier
  * guaranteed writer that would have created the parent directory already).
  *
- * Validates the *merged* result before writing — `patch` itself is
- * unvalidated (it's only ever type-checked as `UserConfig` at compile time,
- * which a `JSON.parse`d WebSocket message defeats entirely), so this is the
- * one place a malformed value gets caught before it reaches disk.
+ * Only ever copies `WRITABLE_KEYS` out of `patch` — deliberately not a
+ * plain `{ ...existing, ...patch }` spread. `patch` is only ever
+ * type-checked as `UserConfig` at compile time, which a `JSON.parse`d
+ * `setUserConfig` WebSocket message defeats entirely; spreading it wholesale
+ * would persist whatever extra keys it happened to carry (`__proto__`
+ * included — harmless against *this* object per plain-object spread
+ * semantics, but there's no reason to trust or store it either way).
+ * `existing`'s own unknown keys are still preserved untouched — this only
+ * narrows what's accepted *from the patch*, the same "don't drop what a
+ * future version or a hand-edit left there" contract `UserConfig`'s index
+ * signature documents.
+ *
+ * Validates the merged result before writing, same as `loadUserConfig` does
+ * on read — the one place a malformed value (`lanAccess: 'yes'`, say) gets
+ * caught before it reaches disk.
  */
 export function writeUserConfig(patch: UserConfig, configPath: string = resolveUserConfigPath()): UserConfig {
-  const merged = { ...loadUserConfig(configPath), ...patch };
+  const merged: UserConfig = { ...loadUserConfig(configPath) };
+  for (const key of WRITABLE_KEYS) {
+    if (patch[key] !== undefined) merged[key] = patch[key];
+  }
   validateUserConfig(merged, configPath);
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, `${JSON.stringify(merged, null, 2)}\n`);

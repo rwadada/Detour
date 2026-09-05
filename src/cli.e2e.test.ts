@@ -2250,6 +2250,25 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       }
     }, 20_000);
 
+    it('makes `detour start` bind 0.0.0.0 with no --lan flag once lanAccess is on', async () => {
+      const { home, env } = withTempHome();
+      const port = await findFreePort();
+      let cli: Awaited<ReturnType<typeof startDetourCliReady>> | undefined;
+      try {
+        await runTsx(['src/cli.ts', 'config', '--lan', 'on'], { cwd: REPO_ROOT, reject: false, env });
+
+        // Neither --lan nor --no-lan passed — this is the tri-state resolution
+        // (`options.lan ?? config.lanAccess`) most likely to regress silently,
+        // since commander's own defaulting could just as easily turn "flag
+        // omitted" into `false` instead of `undefined`.
+        cli = await startDetourCliReady(['--port', String(port), '--headless'], env);
+        expect(cli.stdout()).toContain('Bound to every network interface (0.0.0.0)');
+      } finally {
+        await cli?.kill();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    }, 20_000);
+
     it('rejects --foreground combined with --detach rather than silently preferring one', async () => {
       const port = await findFreePort();
       const result = await runTsx(

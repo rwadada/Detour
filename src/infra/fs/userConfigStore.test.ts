@@ -88,4 +88,25 @@ describe('userConfigStore (fs-backed)', () => {
     expect(() => writeUserConfig({ lanAccess: 'yes' as never }, configPath)).toThrow(/must be a boolean/);
     expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ defaultDetach: true });
   });
+
+  // Only WRITABLE_KEYS is ever copied out of a patch — a plain
+  // `{ ...existing, ...patch }` spread would instead persist whatever else
+  // the patch happened to carry, including a key like `__proto__` that a
+  // `setUserConfig` WebSocket message has no business writing at all.
+  it('ignores keys in the patch that are not on the writable-fields whitelist', () => {
+    writeUserConfig({ defaultDetach: true, notAKnownField: 'sneaky' } as never, configPath);
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ defaultDetach: true });
+  });
+
+  it("still preserves the existing file's own unknown keys (only the patch is whitelisted, not what's already on disk)", () => {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ somethingFromAFutureVersion: 'kept' }));
+
+    writeUserConfig({ defaultDetach: true }, configPath);
+
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({
+      defaultDetach: true,
+      somethingFromAFutureVersion: 'kept',
+    });
+  });
 });
