@@ -53,17 +53,23 @@ export function ExportMenu() {
               Exporting {filtered.length} of {exchanges.length} (current filter)
             </p>
           )}
+          {/* Re-checked here, not just on the header button: the toolbar filter can
+              change to match nothing while this popover is already open, and without
+              this the menu would sit open with both actions still exporting an empty
+              HAR/JSON. */}
           <button
             type="button"
             onClick={() => handleExport('har')}
-            className="block w-full rounded px-2 py-1.5 text-left text-xs text-[var(--foreground)] hover:bg-[var(--accent)]/10"
+            disabled={filtered.length === 0}
+            className="block w-full rounded px-2 py-1.5 text-left text-xs text-[var(--foreground)] hover:bg-[var(--accent)]/10 disabled:pointer-events-none disabled:opacity-50"
           >
             Export as HAR
           </button>
           <button
             type="button"
             onClick={() => handleExport('json')}
-            className="block w-full rounded px-2 py-1.5 text-left text-xs text-[var(--foreground)] hover:bg-[var(--accent)]/10"
+            disabled={filtered.length === 0}
+            className="block w-full rounded px-2 py-1.5 text-left text-xs text-[var(--foreground)] hover:bg-[var(--accent)]/10 disabled:pointer-events-none disabled:opacity-50"
           >
             Export as JSON
           </button>
