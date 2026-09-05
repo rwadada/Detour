@@ -237,7 +237,10 @@ function StartupDefaultsSection() {
             reaches it before "Allow LAN access" itself, instead of after already having a chance to
             flip it on unread. Boxed (border + tinted background) rather than plain paragraph text so
             it reads as an alert instead of another line of muted help copy easy to skim past. */}
-        <p className="rounded-md border border-[var(--status-5xx)] bg-[var(--status-5xx)]/10 px-2.5 py-2 text-xs text-[var(--status-5xx)]">
+        <p
+          role="alert"
+          className="rounded-md border border-[var(--status-5xx)] bg-[var(--status-5xx)]/10 px-2.5 py-2 text-xs text-[var(--status-5xx)]"
+        >
           ⚠ LAN access has no login of any kind — anyone on your network could reach the dashboard, view decrypted HTTPS
           traffic through it, edit rules, or use the proxy. Only turn this on if you trust every device on your network.
         </p>
