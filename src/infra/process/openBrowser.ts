@@ -18,8 +18,11 @@ export function openBrowser(url: string): void {
   try {
     // `detached: true` + `unref()`: the browser launcher (`open`/`start`/
     // `xdg-open`) shouldn't be a child detour has to wait on or clean up —
-    // once it's spawned, its lifetime is entirely up to the OS.
-    const child = spawn(command, args, { detached: true, stdio: 'ignore' });
+    // once it's spawned, its lifetime is entirely up to the OS. `windowsHide`
+    // (Windows-only, harmless elsewhere) stops the `cmd` we spawn there from
+    // flashing a visible console window for the instant it takes to hand off
+    // to `start`.
+    const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true });
     child.on('error', (err) => {
       console.warn(`⚠ Couldn't open the dashboard in a browser automatically: ${err.message}`);
     });
