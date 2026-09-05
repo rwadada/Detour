@@ -2110,6 +2110,103 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
     });
   });
 
+  describe('detour config --default-detach', () => {
+    /** Points `~/.detour/config.json` at a scratch dir for the duration of one test, so persisting `defaultDetach` here can never leak into the developer's real `~/.detour/config.json` (or between these tests). */
+    function withTempHome(): { home: string; env: NodeJS.ProcessEnv } {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-config-e2e-'));
+      // HOME (POSIX) and USERPROFILE (Windows) — os.homedir() reads whichever applies.
+      return { home, env: { HOME: home, USERPROFILE: home } };
+    }
+
+    it('reports defaultDetach = false when nothing has been configured', async () => {
+      const { home, env } = withTempHome();
+      try {
+        const result = await runTsx(['src/cli.ts', 'config'], { cwd: REPO_ROOT, reject: false, env });
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain('defaultDetach = false');
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it('persists --default-detach on to ~/.detour/config.json', async () => {
+      const { home, env } = withTempHome();
+      try {
+        const result = await runTsx(['src/cli.ts', 'config', '--default-detach', 'on'], {
+          cwd: REPO_ROOT,
+          reject: false,
+          env,
+        });
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain('defaultDetach = true');
+        expect(JSON.parse(fs.readFileSync(path.join(home, '.detour', 'config.json'), 'utf8'))).toEqual({
+          defaultDetach: true,
+        });
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it('makes `detour start` run detached with no --detach flag once defaultDetach is on', async () => {
+      const { home, env } = withTempHome();
+      const port = await findFreePort();
+      const runDetourStop = () =>
+        runTsx(['src/cli.ts', 'stop', '--port', String(port)], { cwd: REPO_ROOT, reject: false, env });
+      try {
+        await runTsx(['src/cli.ts', 'config', '--default-detach', 'on'], { cwd: REPO_ROOT, reject: false, env });
+
+        const start = await runTsx(['src/cli.ts', 'start', '--port', String(port), '--dashboard-port', '0'], {
+          cwd: REPO_ROOT,
+          reject: false,
+          env,
+          timeout: 20_000,
+        });
+        expect(start.exitCode).toBe(0);
+        expect(start.stdout).toContain('started in the background');
+
+        const status = await runTsx(['src/cli.ts', 'status', '--port', String(port)], {
+          cwd: REPO_ROOT,
+          reject: false,
+          env,
+        });
+        expect(status.stdout).toContain('detached');
+      } finally {
+        await runDetourStop().catch(() => {});
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    }, 30_000);
+
+    it('--foreground overrides defaultDetach back to foreground for one run', async () => {
+      const { home, env } = withTempHome();
+      const port = await findFreePort();
+      let cli: Awaited<ReturnType<typeof startDetourCliReady>> | undefined;
+      try {
+        await runTsx(['src/cli.ts', 'config', '--default-detach', 'on'], { cwd: REPO_ROOT, reject: false, env });
+
+        // A foreground run reports readiness itself (no daemon handshake) and keeps running until killed —
+        // both true only if --foreground actually won out over the config's defaultDetach: true.
+        cli = await startDetourCliReady(['--port', String(port), '--dashboard-port', '0', '--foreground'], env);
+        expect(cli.stdout()).toContain('DETOUR_READY');
+      } finally {
+        await cli?.kill();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    }, 20_000);
+
+    it('rejects --foreground combined with --detach rather than silently preferring one', async () => {
+      const port = await findFreePort();
+      const result = await runTsx(
+        ['src/cli.ts', 'start', '--port', String(port), '--dashboard-port', '0', '--foreground', '--detach'],
+        {
+          cwd: REPO_ROOT,
+          reject: false,
+        },
+      );
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain('--foreground and --detach cannot be combined');
+    });
+  });
+
   describe('detour cert export', () => {
     it('prints the CA certificate PEM to stdout when no path is given', async () => {
       const result = await runTsx(['src/cli.ts', 'cert', 'export'], {

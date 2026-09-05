@@ -18,9 +18,11 @@ import {
 } from './infra/fs/runStateStore';
 import { fsRuleProfileStore } from './infra/fs/ruleProfileStore';
 import { fsFileWatcher, fsRulesFileReader, fsRulesFileWriter, loadRulesFile } from './infra/fs/rulesFileSource';
+import { loadUserConfig, resolveUserConfigPath, writeUserConfig } from './infra/fs/userConfigStore';
 import { buildGrpcExchangeInfo } from './infra/grpc/grpcExchangeInfo';
 import { ProtoRegistry } from './infra/grpc/protoRegistry';
 import { isDaemonChild, signalDaemonError, signalDaemonReady, spawnDaemonChild } from './infra/process/daemonize';
+import { openBrowser } from './infra/process/openBrowser';
 import { ensureCaCert } from './infra/proxy/certExport';
 import { startIdleWatcher } from './infra/proxy/idleWatcher';
 import { startProxyServer } from './infra/proxy/proxyServer';
@@ -61,6 +63,13 @@ function parseDumpLevel(value: string): DumpLevel {
     throw new Error(`--dump must be one of "summary", "full", "file" (got: ${value})`);
   }
   return value;
+}
+
+/** Validates `detour config --default-detach <on|off>` (and any future on/off config flag). Deliberately just "on"/"off" — not also "true"/"false" — so the accepted values and this error message never drift apart. */
+function parseOnOff(value: string, flag: string): boolean {
+  if (value === 'on') return true;
+  if (value === 'off') return false;
+  throw new Error(`${flag} must be "on" or "off" (got: ${value})`);
 }
 
 /** Validates `--exit-on-idle <ms>` (issue #20): a positive integer count of milliseconds. */
@@ -110,8 +119,36 @@ interface StartOptions {
   exitOnIdle?: string;
   /** `--fail-on-running` (issue #20): exit 3 instead of starting if detour is already tracked as running on this `--port`. */
   failOnRunning?: boolean;
-  /** `--detach` (issue #20): run as a background daemon; handled by `runDetached` before `runStart` is ever called for the parent process. */
+  /** `--detach`: run as a background daemon; handled by `runDetached` before `runStart` is ever called for the parent process. Undefined unless the flag is actually passed — `resolveShouldDetach` also has `~/.detour/config.json`'s `defaultDetach` to fall back on, so "not passed" and "explicitly off" must stay distinguishable from each other (see `--foreground` for the latter). */
   detach?: boolean;
+  /** `--foreground`: force foreground even when `defaultDetach` is on in `~/.detour/config.json` — the `--detach` counterpart for overriding that default back off for one run. */
+  foreground?: boolean;
+  /** `--no-open`: skip auto-opening the dashboard in a browser after startup. Defaults to `true` (auto-open on) via commander's `--no-<flag>` convention. */
+  open: boolean;
+}
+
+/**
+ * Whether this `start` invocation should run detached, folding together
+ * three sources in priority order: an explicit `--foreground`/`--detach` on
+ * the command line (rejected outright if both are given — there's no
+ * sensible way to silently prefer one over the other), then
+ * `~/.detour/config.json`'s `defaultDetach`, then plain foreground.
+ *
+ * Guarded by `isDaemonChild()` first: `runDetached` re-invokes this same
+ * `start` command in a child process with `--detach` stripped from its argv
+ * (see `runDetached`), relying on that child running foreground. Without
+ * this guard, a `defaultDetach: true` config would make the child read the
+ * same config, decide it too should detach, and spawn another daemon child
+ * of its own — forever.
+ */
+function resolveShouldDetach(options: StartOptions): boolean {
+  if (isDaemonChild()) return false;
+  if (options.foreground && options.detach) {
+    throw new Error('--foreground and --detach cannot be combined');
+  }
+  if (options.foreground) return false;
+  if (options.detach) return true;
+  return loadUserConfig().defaultDetach ?? false;
 }
 
 /**
@@ -133,6 +170,21 @@ export function resolveDashboardPort(proxyPort: number, explicit: string | undef
     );
   }
   return derived;
+}
+
+/**
+ * Whether `runStartBody` should fire the dashboard open in a browser after
+ * binding it. Extracted as pure logic (rather than inlined at the one call
+ * site) so the three exclusions are unit-testable without spawning a real
+ * CLI process: `--no-open`, an ephemeral `dashboardPort` of 0 (only ever
+ * produced by `--port 0` or an explicit `--dashboard-port 0`, both
+ * test-only knobs — nothing a real user would want a browser pointed at,
+ * since the actual bound port isn't known until after this runs), and a
+ * dashboard that hasn't been built yet (`npm run build`), which would just
+ * open a blank page.
+ */
+export function shouldAutoOpenDashboard(info: { open: boolean; dashboardPort: number; built: boolean }): boolean {
+  return info.open && info.dashboardPort !== 0 && info.built;
 }
 
 /**
@@ -266,18 +318,23 @@ async function runStartBody({
   const handle = await startProxyServer({ port, ruleEngine, http2Enabled: options.http2 }, eventBus);
   // `--headless` (issue #20): CI/scripted use has no need for the web
   // dashboard — skip starting it entirely rather than starting it and just
-  // not opening a browser to it (there's no browser-open behavior to skip
-  // yet either way).
+  // not opening a browser to it.
   let dashboardHandle: Awaited<ReturnType<typeof startDashboardServer>> | undefined;
+  // The *requested* dashboard port (0 for an ephemeral `--dashboard-port 0`
+  // or `--port 0`), kept separate from `dashboardHandle.port` (the real
+  // OS-assigned port once bound, never 0) — `shouldAutoOpenDashboard` needs
+  // the former to actually recognize the ephemeral-port case it's meant to
+  // exclude.
+  let requestedDashboardPort: number | undefined;
   if (!headless) {
     // Resolved only when actually needed: computed eagerly (outside this
     // `if`), a `--port` close enough to 65535 that only its +1000 offset
     // would overflow could fail this validation even under `--headless`,
     // where no dashboard port is ever bound at all.
-    const dashboardPort = resolveDashboardPort(port, options.dashboardPort);
+    requestedDashboardPort = resolveDashboardPort(port, options.dashboardPort);
     try {
       dashboardHandle = await startDashboardServer(
-        { port: dashboardPort, proxyPort: handle.port, ruleEngine, ruleProfileStore: fsRuleProfileStore },
+        { port: requestedDashboardPort, proxyPort: handle.port, ruleEngine, ruleProfileStore: fsRuleProfileStore },
         eventBus,
       );
     } catch (err) {
@@ -311,6 +368,18 @@ async function runStartBody({
       await Promise.all([handle.stop(), dashboardHandle?.stop()]);
       throw err;
     }
+  }
+
+  // Deliberately after every fallible startup step above (dashboard bind,
+  // run-state write) has committed — opening a browser tab and then tearing
+  // the dashboard back down moments later because one of those failed would
+  // just leave the user staring at a connection-refused page.
+  if (
+    dashboardHandle &&
+    requestedDashboardPort !== undefined &&
+    shouldAutoOpenDashboard({ open: options.open, dashboardPort: requestedDashboardPort, built: isDashboardBuilt() })
+  ) {
+    openBrowser(`http://localhost:${dashboardHandle.port}`);
   }
 
   printStartupBanner({
@@ -367,6 +436,11 @@ async function runStartBody({
   }
 }
 
+/** Whether `npm run build` has produced a dashboard SPA to serve — shared by the startup banner's "not built yet" message and the `--open` auto-launch's decision not to open a blank page. */
+function isDashboardBuilt(): boolean {
+  return fs.existsSync(path.join(WEB_DIST_DIR, 'index.html'));
+}
+
 function printStartupBanner(info: {
   proxyPort: number;
   caCertPath: string;
@@ -384,7 +458,7 @@ function printStartupBanner(info: {
   console.log('  To decrypt HTTPS traffic, install this CA certificate as trusted on your target device/browser.');
   if (info.dashboardPort === undefined) {
     console.log('Dashboard → disabled (--headless)');
-  } else if (fs.existsSync(path.join(WEB_DIST_DIR, 'index.html'))) {
+  } else if (isDashboardBuilt()) {
     console.log(`Dashboard → http://localhost:${info.dashboardPort}`);
   } else {
     console.log(
@@ -465,6 +539,10 @@ export function createCli(): Command {
     )
     .option('--headless', 'Skip starting the web dashboard entirely — proxy-only, for CI/scripted use (issue #20).')
     .option(
+      '--no-open',
+      'Skip auto-opening the dashboard in a default browser after startup (on by default; has no effect under --headless).',
+    )
+    .option(
       '--exit-on-idle <ms>',
       'Exit automatically after this many milliseconds with no proxied HTTP/WebSocket activity (issue #20) — so a CI job never has to send it a Ctrl+C of its own.',
     )
@@ -474,11 +552,15 @@ export function createCli(): Command {
     )
     .option(
       '--detach',
-      'Start as a background daemon and return once it reports ready (issue #20) — manage it afterwards with `detour status`/`detour stop`; its output goes to ~/.detour/logs/<port>.log instead of this terminal.',
+      'Start as a background daemon and return once it reports ready (issue #20) — manage it afterwards with `detour status`/`detour stop`; its output goes to ~/.detour/logs/<port>.log instead of this terminal. On by default if `defaultDetach` is set via `detour config`.',
+    )
+    .option(
+      '--foreground',
+      'Run in the foreground for this invocation even if `defaultDetach` is enabled via `detour config` — the opposite of --detach.',
     )
     .action(async (options: StartOptions) => {
       try {
-        if (options.detach) {
+        if (resolveShouldDetach(options)) {
           await runDetached(options);
           return;
         }
@@ -557,6 +639,29 @@ export function createCli(): Command {
         // the grace period skips that — clean it up here either way.
         removeRunState(port);
         console.log(`✔ Stopped detour (pid ${state.pid}) on port ${port}.`);
+      } catch (err) {
+        console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('config')
+    .description('View or change persistent `detour start` preferences, stored in ~/.detour/config.json')
+    .option(
+      '--default-detach <on|off>',
+      'When "on", `detour start` runs detached by default (as if --detach were always passed) — override per-invocation with --detach/--foreground.',
+    )
+    .action((options: { defaultDetach?: string }) => {
+      try {
+        if (options.defaultDetach !== undefined) {
+          const defaultDetach = parseOnOff(options.defaultDetach, '--default-detach');
+          writeUserConfig({ defaultDetach });
+          console.log(`✔ defaultDetach = ${defaultDetach} (${resolveUserConfigPath()})`);
+          return;
+        }
+        console.log(`defaultDetach = ${loadUserConfig().defaultDetach ?? false}`);
+        console.log(`Config file: ${resolveUserConfigPath()}`);
       } catch (err) {
         console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;

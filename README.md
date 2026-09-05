@@ -35,6 +35,7 @@ npm start -- start --port 8080
 - `--rules <path>`: Path to a rules file. When given, mock/route/rewrite rules are applied to matching requests (see below). Changes to the file are detected and reloaded automatically. When omitted, `passthrough.rule.json` in the current directory is loaded automatically if present
 - `--dump <level>`: Verbosity of the request/response log (default: `summary`, one line per exchange, as today). `full` additionally prints each exchange's headers and body to the console; `file` skips the console spam and instead writes that same dump to its own file under `~/.detour/dumps`, one file per exchange (overwritten as it moves from request to response). Both `full` and `file` redact sensitive headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Auth-Token`) as `[REDACTED]`; a JSON body is pretty-printed, anything else is shown as raw text
 - `--no-http2`: Disables HTTP/2 (ALPN) on MITM'd HTTPS connections, falling back to HTTP/1.1 only. HTTP/2 is negotiated with the client by default — shown as `HTTP/2: on`/`off` in the startup banner, and tagged `[h2]` in the log/dashboard for exchanges that negotiated it. The connection to the real upstream server is always HTTP/1.1 either way
+- `--no-open`: skips auto-opening the dashboard in your default browser after startup (on by default; see [Web dashboard](#web-dashboard) below). Has no effect under `--headless`
 
 On first run, a local CA root certificate is generated at `~/.detour/certs/certs/ca.pem`. To decrypt HTTPS traffic, install this certificate as a trusted root certificate on your target browser/OS/device. `detour cert export [path]` writes it to `<path>` (or stdout, if omitted) — generating it first if this is the very first time Detour has run on this machine — for scripting that install rather than digging into `~/.detour/certs` by hand.
 
@@ -58,7 +59,7 @@ During development, run `npm run dev` to watch and run the TypeScript sources di
 
 ## Web dashboard
 
-`detour start` serves a real-time dashboard at `http://localhost:9080` by default (`--port` + `1000`; or whatever `--dashboard-port` is set to) for browsing captured traffic without leaving the browser.
+`detour start` serves a real-time dashboard at `http://localhost:9080` by default (`--port` + `1000`; or whatever `--dashboard-port` is set to) for browsing captured traffic without leaving the browser, and opens it in your default browser automatically once it's ready. Pass `--no-open` to skip that (it's also skipped automatically under `--headless`, when the dashboard hasn't been built yet, or for an ephemeral `--dashboard-port 0`).
 
 - Every request/response streams into the log table live over a WebSocket as it passes through the proxy; a bounded backlog (last 500 exchanges) is replayed on connect so refreshing the page doesn't lose recent history
 - The table is virtualized (`@tanstack/react-virtual`), so it stays smooth with thousands of rows
@@ -82,9 +83,12 @@ A handful of `start` flags and top-level commands exist specifically for running
 - `--detach`: starts as a background daemon and returns only once it's actually ready to serve traffic, instead of blocking the terminal. Its output goes to `~/.detour/logs/<port>.log` instead of the console. Manage it afterwards with:
   - `detour status --port <port>`: reports whether an instance (detached or foreground) is running on `<port>` — its PID, proxy/dashboard URLs, and start time
   - `detour stop --port <port>`: stops it (`SIGTERM`, escalating to `SIGKILL` after a 10s grace period) — works on a foreground instance too, not just a detached one
+- `--foreground`: forces this one `start` to run in the foreground even if `defaultDetach` (below) is on — the opposite of `--detach`
 - Every successful `start` — detached or not — prints a `DETOUR_READY proxyPort=<n> [dashboardPort=<n>] pid=<n>` line once the proxy (and dashboard, unless `--headless`) has actually bound its port(s), so a script can wait on that line instead of guessing how long startup takes
 
 `--fail-on-running`/`--detach`/`status`/`stop` are all keyed by the `--port` value given to `start` — an ephemeral `--port 0` has no stable value to be looked up by later, so combining it with `--fail-on-running` or `--detach` is rejected outright.
+
+If you always want `start` to run detached, `detour config --default-detach on` persists that to `~/.detour/config.json` so plain `detour start` (no `--detach`) runs detached from then on — override it back for one run with `--foreground`, or turn it off again with `detour config --default-detach off`. Running `detour config` alone prints the current value.
 
 ## Rule engine (rules.json)
 
@@ -155,7 +159,6 @@ detour view <file> : launch the viewer
 detour setup  
 detour cleanup  
 detour doctor  
-detour settings  
 detour rules edit  
 detour rules use  
 detour session save/load/list  
@@ -163,7 +166,6 @@ detour session save/load/list
 ## Main options for `start`
 --ui-port <number>  
 --ui-lan : expose the dashboard on the LAN  
---no-open  
 --no-ui  
 
 ## Setup
