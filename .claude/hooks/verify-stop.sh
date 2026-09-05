@@ -13,7 +13,7 @@ state_dir="$CLAUDE_PROJECT_DIR/.claude/hooks/.stop-state"
 # Best-effort tidy of stale per-session state files from old sessions.
 find "$state_dir" -type f -mtime +1 -delete 2>/dev/null
 
-session_id=$(cat | jq -r '.session_id // empty')
+session_id=$(jq -r '.session_id // empty')
 [ -n "$session_id" ] || exit 0
 # Same charset guard as record-edited-file.sh: session_id feeds a file path.
 case "$session_id" in
