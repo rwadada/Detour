@@ -18,6 +18,7 @@ import {
 } from './infra/fs/runStateStore';
 import { fsRuleProfileStore } from './infra/fs/ruleProfileStore';
 import { fsFileWatcher, fsRulesFileReader, fsRulesFileWriter, loadRulesFile } from './infra/fs/rulesFileSource';
+import type { UserConfig } from './infra/fs/userConfigStore';
 import { loadUserConfig, resolveUserConfigPath, writeUserConfig } from './infra/fs/userConfigStore';
 import { buildGrpcExchangeInfo } from './infra/grpc/grpcExchangeInfo';
 import { ProtoRegistry } from './infra/grpc/protoRegistry';
@@ -125,6 +126,8 @@ interface StartOptions {
   foreground?: boolean;
   /** `--no-open`: skip auto-opening the dashboard in a browser after startup. Defaults to `true` (auto-open on) via commander's `--no-<flag>` convention. */
   open: boolean;
+  /** `--lan`/`--no-lan`: bind the proxy and dashboard to every network interface (`0.0.0.0`) instead of just `localhost`, for this invocation. Undefined when neither flag is passed — `resolveHost` then falls back to `~/.detour/config.json`'s `lanAccess`. Security-sensitive: see `UserConfigState.lanAccess`'s doc comment. */
+  lan?: boolean;
 }
 
 /**
@@ -149,6 +152,22 @@ function resolveShouldDetach(options: StartOptions): boolean {
   if (options.foreground) return false;
   if (options.detach) return true;
   return loadUserConfig().defaultDetach ?? false;
+}
+
+/**
+ * Resolves the host the proxy and dashboard bind to for this `start`
+ * invocation: `0.0.0.0` (every network interface) or `localhost`-only.
+ * Folds together two sources, same priority as `resolveShouldDetach`'s
+ * `--detach`/`--foreground`: an explicit `--lan`/`--no-lan` on the command
+ * line, then `~/.detour/config.json`'s `lanAccess`, then `localhost`-only.
+ *
+ * Security-sensitive: LAN access has no authentication of its own, so
+ * `0.0.0.0` means anything on the network can reach the dashboard (and,
+ * from there, decrypted HTTPS traffic and rule edits) or use the proxy.
+ */
+function resolveHost(options: StartOptions): string {
+  const lan = options.lan ?? loadUserConfig().lanAccess ?? false;
+  return lan ? '0.0.0.0' : 'localhost';
 }
 
 /**
@@ -315,7 +334,8 @@ async function runStartBody({
     });
   }
 
-  const handle = await startProxyServer({ port, ruleEngine, http2Enabled: options.http2 }, eventBus);
+  const host = resolveHost(options);
+  const handle = await startProxyServer({ port, host, ruleEngine, http2Enabled: options.http2 }, eventBus);
   // `--headless` (issue #20): CI/scripted use has no need for the web
   // dashboard — skip starting it entirely rather than starting it and just
   // not opening a browser to it.
@@ -334,7 +354,13 @@ async function runStartBody({
     requestedDashboardPort = resolveDashboardPort(port, options.dashboardPort);
     try {
       dashboardHandle = await startDashboardServer(
-        { port: requestedDashboardPort, proxyPort: handle.port, ruleEngine, ruleProfileStore: fsRuleProfileStore },
+        {
+          port: requestedDashboardPort,
+          host,
+          proxyPort: handle.port,
+          ruleEngine,
+          ruleProfileStore: fsRuleProfileStore,
+        },
         eventBus,
       );
     } catch (err) {
@@ -383,6 +409,7 @@ async function runStartBody({
   }
 
   printStartupBanner({
+    host,
     proxyPort: handle.port,
     caCertPath: handle.caCertPath,
     dashboardPort: dashboardHandle?.port,
@@ -442,6 +469,7 @@ function isDashboardBuilt(): boolean {
 }
 
 function printStartupBanner(info: {
+  host: string;
   proxyPort: number;
   caCertPath: string;
   /** Undefined when started with `--headless`. */
@@ -463,6 +491,15 @@ function printStartupBanner(info: {
   } else {
     console.log(
       `Dashboard → http://localhost:${info.dashboardPort} (not built yet — run \`npm run build\`, or use \`npm run dev:dashboard\` for a dev server with hot reload)`,
+    );
+  }
+  // `--lan`/`detour config --lan on`: called out loudly rather than folded
+  // quietly into the URLs above — LAN access has no authentication of its
+  // own, so anyone on the network can reach the dashboard (and from there,
+  // decrypted HTTPS traffic and rule edits) or use the proxy.
+  if (info.host !== 'localhost') {
+    console.log(
+      `⚠ Bound to every network interface (${info.host}), not just this machine — anyone on your network can reach the proxy${info.dashboardPort === undefined ? '' : ' and dashboard'}. There's no login of any kind, so only do this on a network you trust.`,
     );
   }
   if (info.ruleEngine) {
@@ -558,6 +595,14 @@ export function createCli(): Command {
       '--foreground',
       'Run in the foreground for this invocation even if `defaultDetach` is enabled via `detour config` — the opposite of --detach.',
     )
+    .option(
+      '--lan',
+      'Bind the proxy and dashboard to every network interface (0.0.0.0) instead of just this machine, for this invocation. SECURITY: there is no authentication of any kind — anyone on your network can reach the dashboard (and decrypted HTTPS traffic through it) or use the proxy. On by default if `lanAccess` is set via `detour config`.',
+    )
+    .option(
+      '--no-lan',
+      'Force localhost-only for this invocation even if `lanAccess` is enabled via `detour config` — the opposite of --lan.',
+    )
     .action(async (options: StartOptions) => {
       try {
         if (resolveShouldDetach(options)) {
@@ -652,15 +697,25 @@ export function createCli(): Command {
       '--default-detach <on|off>',
       'When "on", `detour start` runs detached by default (as if --detach were always passed) — override per-invocation with --detach/--foreground.',
     )
-    .action((options: { defaultDetach?: string }) => {
+    .option(
+      '--lan <on|off>',
+      'When "on", `detour start` binds the proxy and dashboard to every network interface (0.0.0.0) by default — override per-invocation with --lan/--no-lan. SECURITY: there is no authentication of any kind on that surface — anyone on your network could reach the dashboard/proxy.',
+    )
+    .action((options: { defaultDetach?: string; lan?: string }) => {
       try {
-        if (options.defaultDetach !== undefined) {
-          const defaultDetach = parseOnOff(options.defaultDetach, '--default-detach');
-          writeUserConfig({ defaultDetach });
-          console.log(`✔ defaultDetach = ${defaultDetach} (${resolveUserConfigPath()})`);
+        const patch: UserConfig = {};
+        if (options.defaultDetach !== undefined)
+          patch.defaultDetach = parseOnOff(options.defaultDetach, '--default-detach');
+        if (options.lan !== undefined) patch.lanAccess = parseOnOff(options.lan, '--lan');
+
+        if (Object.keys(patch).length > 0) {
+          const written = writeUserConfig(patch);
+          for (const key of Object.keys(patch)) console.log(`✔ ${key} = ${written[key]} (${resolveUserConfigPath()})`);
           return;
         }
-        console.log(`defaultDetach = ${loadUserConfig().defaultDetach ?? false}`);
+        const config = loadUserConfig();
+        console.log(`defaultDetach = ${config.defaultDetach ?? false}`);
+        console.log(`lanAccess = ${config.lanAccess ?? false}`);
         console.log(`Config file: ${resolveUserConfigPath()}`);
       } catch (err) {
         console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);

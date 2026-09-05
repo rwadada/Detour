@@ -5,14 +5,18 @@ import path from 'node:path';
 /**
  * Persistent user preferences for `detour start`, distinct from a run's
  * per-invocation flags (`--port`, `--rules`, etc.) and from the ephemeral
- * per-port state in `runStateStore.ts`. Currently just the one knob
- * (`defaultDetach`), set via `detour config --default-detach <on|off>` and
- * read back by `resolveShouldDetach` in cli.ts — grows here as more
- * "remember this across invocations" settings show up.
+ * per-port state in `runStateStore.ts`. Set via `detour config` (or the
+ * dashboard's Settings panel, which reads/writes the same file over the
+ * `userConfig`/`setUserConfig` WebSocket messages — see
+ * `dashboardServer.ts`) and read back by `resolveShouldDetach`/`resolveHost`
+ * in cli.ts — grows here as more "remember this across invocations"
+ * settings show up.
  */
 export interface UserConfig {
   /** When `true`, `detour start` runs detached (as if `--detach` were passed) unless overridden by `--detach`/`--foreground` on that invocation. Undefined (the file's absent, or the key was never set) means "off" — foreground stays the out-of-the-box default. */
   defaultDetach?: boolean;
+  /** When `true`, `detour start` binds the proxy and dashboard to every network interface (`0.0.0.0`) instead of just `localhost`, unless overridden by `--lan`/`--no-lan` on that invocation. Undefined means "off" — `localhost`-only stays the out-of-the-box default, since LAN access has no authentication of its own. */
+  lanAccess?: boolean;
   /** Keys this version of detour doesn't know about (an older config written by a future version, hand-edited extras, …) — kept around so `writeUserConfig`'s read-modify-write merge doesn't drop them. */
   [key: string]: unknown;
 }
@@ -53,6 +57,9 @@ export function loadUserConfig(configPath: string = resolveUserConfigPath()): Us
   const config = parsed as UserConfig;
   if (config.defaultDetach !== undefined && typeof config.defaultDetach !== 'boolean') {
     throw new Error(`${configPath}: "defaultDetach" must be a boolean (got: ${JSON.stringify(config.defaultDetach)})`);
+  }
+  if (config.lanAccess !== undefined && typeof config.lanAccess !== 'boolean') {
+    throw new Error(`${configPath}: "lanAccess" must be a boolean (got: ${JSON.stringify(config.lanAccess)})`);
   }
   return config;
 }

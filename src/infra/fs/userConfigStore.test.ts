@@ -26,6 +26,17 @@ describe('userConfigStore (fs-backed)', () => {
     expect(loadUserConfig(configPath)).toEqual({ defaultDetach: true });
   });
 
+  it('writes and reads lanAccess back unchanged', () => {
+    writeUserConfig({ lanAccess: true }, configPath);
+    expect(loadUserConfig(configPath)).toEqual({ lanAccess: true });
+  });
+
+  it('throws when lanAccess is not a boolean', () => {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ lanAccess: 'yes' }));
+    expect(() => loadUserConfig(configPath)).toThrow(/must be a boolean/);
+  });
+
   it('creates ~/.detour itself on first write', () => {
     expect(fs.existsSync(path.dirname(configPath))).toBe(false);
     writeUserConfig({ defaultDetach: true }, configPath);

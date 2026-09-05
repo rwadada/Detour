@@ -8,7 +8,8 @@ import {
   useThrottleStore,
   type PresetKey,
 } from '@/entities/proxy-config';
-import type { ThrottleState } from '@/shared/api';
+import { useUserConfigStore } from '@/entities/user-config';
+import type { ThrottleState, UserConfigState } from '@/shared/api';
 import { setTheme, useTheme } from '@/shared/lib/theme';
 import { cn } from '@/shared/lib/utils';
 import { HostChipList, Select } from '@/shared/ui';
@@ -30,6 +31,7 @@ export function SettingsPanel() {
       <FocusSection />
       <ThrottleSection />
       <BlockHostsSection />
+      <StartupDefaultsSection />
     </div>
   );
 }
@@ -169,6 +171,65 @@ function BlockHostsSection() {
         placeholder="api.example.com"
         featureLabel="Block Hosts"
       />
+    </section>
+  );
+}
+
+/**
+ * Persistent `detour start` defaults (`defaultDetach`/`lanAccess`) — the
+ * dashboard-side counterpart to `detour config`. Unlike every section
+ * above, these aren't live proxy behavior a toggle here changes instantly:
+ * both take effect on the *next* `detour start`, never this running
+ * session, since a process's foreground/detached mode and a bound TCP
+ * server's address are both fixed at spawn time. `userConfig` starts
+ * `undefined` until the server's first message arrives right after
+ * connecting — the toggles disable themselves until then rather than
+ * guessing a value that might immediately flip.
+ */
+function StartupDefaultsSection() {
+  const userConfig = useUserConfigStore((s) => s.userConfig);
+  const setUserConfig = useUserConfigStore((s) => s.setUserConfig);
+
+  const toggle = (key: keyof UserConfigState, label: string, dangerous = false) => {
+    const on = userConfig?.[key] ?? false;
+    const onColor = dangerous
+      ? 'border-[var(--status-5xx)] text-[var(--status-5xx)]'
+      : 'border-[var(--accent)] text-[var(--accent)]';
+    return (
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-[var(--muted)]">{label}</span>
+        <button
+          type="button"
+          onClick={() => setUserConfig({ [key]: !on })}
+          disabled={!userConfig}
+          className={cn(
+            'rounded-md border px-3 py-1 text-xs disabled:opacity-50',
+            on ? onColor : 'border-[var(--border)] text-[var(--muted)] hover:bg-[var(--row-hover)]',
+          )}
+        >
+          {on ? 'On' : 'Off'}
+        </button>
+      </div>
+    );
+  };
+
+  return (
+    <section>
+      <SectionHeading>Startup defaults</SectionHeading>
+      <p className="mb-2 text-xs text-[var(--muted)]">
+        Persisted to <code className="font-mono-ui">~/.detour/config.json</code> (same as{' '}
+        <code className="font-mono-ui">detour config</code>) — takes effect on the{' '}
+        <span className="font-medium text-[var(--foreground)]">next</span>{' '}
+        <code className="font-mono-ui">detour start</code>, not this running session.
+      </p>
+      <div className="flex flex-col gap-2">
+        {toggle('defaultDetach', 'Run detached by default')}
+        {toggle('lanAccess', 'Allow LAN access', true)}
+      </div>
+      <p className="mt-2 text-xs text-[var(--status-5xx)]">
+        ⚠ LAN access has no login of any kind — anyone on your network could reach the dashboard, view decrypted HTTPS
+        traffic through it, edit rules, or use the proxy. Only turn this on if you trust every device on your network.
+      </p>
     </section>
   );
 }

@@ -2193,6 +2193,57 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       }
     }, 20_000);
 
+    it('reports lanAccess = false when nothing has been configured', async () => {
+      const { home, env } = withTempHome();
+      try {
+        const result = await runTsx(['src/cli.ts', 'config'], { cwd: REPO_ROOT, reject: false, env });
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain('lanAccess = false');
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it('persists --lan on to ~/.detour/config.json', async () => {
+      const { home, env } = withTempHome();
+      try {
+        const result = await runTsx(['src/cli.ts', 'config', '--lan', 'on'], { cwd: REPO_ROOT, reject: false, env });
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain('lanAccess = true');
+        expect(JSON.parse(fs.readFileSync(path.join(home, '.detour', 'config.json'), 'utf8'))).toEqual({
+          lanAccess: true,
+        });
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it('--lan on `start` warns that it bound to every network interface', async () => {
+      const port = await findFreePort();
+      let cli: Awaited<ReturnType<typeof startDetourCliReady>> | undefined;
+      try {
+        cli = await startDetourCliReady(['--port', String(port), '--headless', '--lan']);
+        expect(cli.stdout()).toContain('Bound to every network interface (0.0.0.0)');
+      } finally {
+        await cli?.kill();
+      }
+    }, 20_000);
+
+    it('--no-lan overrides a config-enabled lanAccess back to localhost-only for one run', async () => {
+      const { home, env } = withTempHome();
+      const port = await findFreePort();
+      let cli: Awaited<ReturnType<typeof startDetourCliReady>> | undefined;
+      try {
+        await runTsx(['src/cli.ts', 'config', '--lan', 'on'], { cwd: REPO_ROOT, reject: false, env });
+
+        cli = await startDetourCliReady(['--port', String(port), '--headless', '--no-lan'], env);
+        expect(cli.stdout()).not.toContain('Bound to every network interface');
+      } finally {
+        await cli?.kill();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    }, 20_000);
+
     it('rejects --foreground combined with --detach rather than silently preferring one', async () => {
       const port = await findFreePort();
       const result = await runTsx(

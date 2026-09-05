@@ -89,7 +89,18 @@ export function RulesEditorPanel() {
 
   return (
     <div className="flex h-[60vh] flex-col gap-3">
-      <div className="flex-1 overflow-auto rounded-md border border-[var(--border)]">
+      {/* Capped instead of flex-1 while a rule's being edited: the edit form below can run long
+          (rewrite's request+response sections, breakpoint's notes, …) and needs the room more than
+          this list does once something's selected — see the `editing ? ... : 'flex-1'` split below
+          giving that room back to the form, wrapped in its own scroll region. Without this split,
+          this list ate the whole flex-1 share and pushed the form (and its "Done" button) out past
+          the visible area with no independent way to scroll back up to it. */}
+      <div
+        className={cn(
+          'overflow-auto rounded-md border border-[var(--border)]',
+          editing ? 'max-h-32 shrink-0' : 'flex-1',
+        )}
+      >
         {draft.rules.length === 0 ? (
           <p className="p-3 text-sm text-[var(--muted)]">No rules yet.</p>
         ) : (
@@ -127,19 +138,21 @@ export function RulesEditorPanel() {
         )}
       </div>
 
-      <Button variant="ghost" onClick={addRule} className="w-fit gap-1">
+      <Button variant="ghost" onClick={addRule} className="w-fit shrink-0 gap-1">
         <Plus className="h-3.5 w-3.5" /> Add rule
       </Button>
 
       {editing && selected !== null && (
-        <RuleFields
-          rule={editing}
-          onChange={(patch) => updateRule(selected, patch)}
-          onClose={() => setSelected(null)}
-        />
+        <div className="min-h-0 flex-1 overflow-auto">
+          <RuleFields
+            rule={editing}
+            onChange={(patch) => updateRule(selected, patch)}
+            onClose={() => setSelected(null)}
+          />
+        </div>
       )}
 
-      <div className="flex items-center justify-end gap-2 border-t border-[var(--border)] pt-3">
+      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-[var(--border)] pt-3">
         <Button variant="ghost" onClick={discard} disabled={!dirty}>
           Discard changes
         </Button>
@@ -164,7 +177,12 @@ function RuleFields({
 
   return (
     <div className="flex flex-col gap-2 rounded-md border border-[var(--border)] p-3">
-      <div className="flex items-center justify-between">
+      {/* Sticky against the scroll region RulesEditorPanel wraps this form in — a long form (rewrite's
+          request+response sections, in particular) can scroll well past this point, and "Done" needs
+          to stay reachable without scrolling back up to find it. The negative margin/matching padding
+          extends the sticky bar's background across the parent's own padding, so content scrolling
+          underneath doesn't show through at the edges. */}
+      <div className="sticky top-0 z-10 -mx-3 -mt-3 flex items-center justify-between bg-[var(--panel)] px-3 py-3">
         <span className="text-xs font-semibold text-[var(--muted)]">Editing rule</span>
         <Button variant="ghost" size="sm" onClick={onClose}>
           Done
