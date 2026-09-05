@@ -2227,7 +2227,12 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
         // Only asserted when this machine actually has a non-internal interface (true for
         // every CI runner and real dev machine) — `localhost` alone would be useless to
         // whoever's supposed to reach this from elsewhere on the network.
-        if (Object.values(os.networkInterfaces()).some((iface) => iface?.some((i) => !i.internal))) {
+        // Matches lanAddresses()'s own selection exactly (IPv4, non-internal) — an IPv6-only
+        // host has a non-internal interface but no non-internal IPv4 one, so the banner
+        // prints no address at all and this guard must not fire there either.
+        if (
+          Object.values(os.networkInterfaces()).some((iface) => iface?.some((i) => i.family === 'IPv4' && !i.internal))
+        ) {
           expect(cli.stdout()).toMatch(/Reachable on your network at:\n {2}Proxy\s+→ http:\/\/\d+\.\d+\.\d+\.\d+:\d+/);
         }
       } finally {
