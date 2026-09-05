@@ -22,7 +22,12 @@ esac
 state_file="$state_dir/edited-files-$session_id.txt"
 [ -f "$state_file" ] || exit 0
 
-grep -Eq '(^|/)(src|web|bin|scripts)/' "$state_file" 2>/dev/null || exit 0
+if ! grep -Eq '(^|/)(src|web|bin|scripts)/' "$state_file" 2>/dev/null; then
+  # Nothing implementation-relevant recorded this turn. Clear it anyway so a
+  # long run of doc/config-only turns doesn't let the file grow unbounded.
+  : > "$state_file" 2>/dev/null
+  exit 0
+fi
 
 output=$(npm run verify 2>&1)
 code=$?
