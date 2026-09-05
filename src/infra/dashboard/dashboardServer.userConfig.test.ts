@@ -120,4 +120,20 @@ describe('startDashboardServer — userConfig / setUserConfig', () => {
     expect(error).toMatchObject({ type: 'error', event: { errorKind: 'USER_CONFIG_WRITE_ERROR' } });
     expect(fs.readFileSync(configPath, 'utf8')).toBe('{ not json');
   });
+
+  // A client is only guaranteed `Partial<UserConfigState>` at compile time —
+  // `JSON.parse`d input off the wire can defeat that entirely (a frontend
+  // bug, a hand-crafted frame, or anything else on the network once `--lan`
+  // is on). This confirms the server rejects it before it ever reaches disk.
+  it('setUserConfig broadcasts a USER_CONFIG_WRITE_ERROR (and never writes) when the value itself is malformed', async () => {
+    handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'userConfig'); // initial snapshot
+
+    socket.send(JSON.stringify({ type: 'setUserConfig', state: { lanAccess: 'yes' } }));
+    const error = await waitForMessage(socket, (m) => m.type === 'error');
+
+    expect(error).toMatchObject({ type: 'error', event: { errorKind: 'USER_CONFIG_WRITE_ERROR' } });
+    expect(fs.existsSync(configPath)).toBe(false);
+  });
 });

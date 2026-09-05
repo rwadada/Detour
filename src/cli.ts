@@ -97,6 +97,21 @@ function collectProtoPath(value: string, previous: string[]): string[] {
 /** Dashboard defaults to this many ports above the proxy (e.g. proxy 8080 → dashboard 9080) when `--dashboard-port` isn't given explicitly. */
 const DEFAULT_DASHBOARD_PORT_OFFSET = 1000;
 
+/**
+ * The core LAN-access security fact, worded once and reused everywhere
+ * `--lan`/`lanAccess` is surfaced to the user: `--lan`'s own help text,
+ * `detour config --lan`'s help text, and the startup banner's warning. One
+ * shared string so refining the wording (or the security posture it
+ * describes) can't drift between three independently hand-edited copies.
+ *
+ * `web/src/features/settings-panel/ui/SettingsPanel.tsx`'s dashboard-side
+ * warning says the same thing in its own words — that's a separate,
+ * standalone-built package with no access to this constant, so it's worded
+ * to match by hand instead. Update both together.
+ */
+const LAN_ACCESS_WARNING =
+  'there is no authentication of any kind — anyone on your network can reach the dashboard (and decrypted HTTPS traffic through it), edit rules, or use the proxy';
+
 /** How long `detour stop` waits for a SIGTERM'd process to exit on its own before escalating to SIGKILL. */
 const STOP_GRACE_PERIOD_MS = 10_000;
 
@@ -468,6 +483,26 @@ function isDashboardBuilt(): boolean {
   return fs.existsSync(path.join(WEB_DIST_DIR, 'index.html'));
 }
 
+/**
+ * Every non-internal IPv4 address this machine currently has — used by the
+ * `--lan`/`lanAccess` startup banner to print an address another device on
+ * the network can actually reach, since `localhost` (what the banner prints
+ * for everything else) resolves to whatever device is asking, not this one.
+ * Order matches `os.networkInterfaces()`'s own (insertion order of the
+ * underlying OS call) — not sorted or deduped further, since a machine
+ * legitimately reachable at more than one address (Wi-Fi + Ethernet, a VPN)
+ * should have every one of them printed.
+ */
+function lanAddresses(): string[] {
+  const addresses: string[] = [];
+  for (const iface of Object.values(os.networkInterfaces())) {
+    for (const info of iface ?? []) {
+      if (info.family === 'IPv4' && !info.internal) addresses.push(info.address);
+    }
+  }
+  return addresses;
+}
+
 function printStartupBanner(info: {
   host: string;
   proxyPort: number;
@@ -498,8 +533,20 @@ function printStartupBanner(info: {
   // own, so anyone on the network can reach the dashboard (and from there,
   // decrypted HTTPS traffic and rule edits) or use the proxy.
   if (info.host !== 'localhost') {
+    // `localhost` on a *different* device resolves to that device, not this
+    // machine — the URLs printed above are useless to whoever's supposed to
+    // reach this from elsewhere on the network. Print every real address
+    // this machine actually has instead.
+    const addresses = lanAddresses();
+    if (addresses.length > 0) {
+      console.log('Reachable on your network at:');
+      for (const address of addresses) {
+        console.log(`  Proxy     → http://${address}:${info.proxyPort}`);
+        if (info.dashboardPort !== undefined) console.log(`  Dashboard → http://${address}:${info.dashboardPort}`);
+      }
+    }
     console.log(
-      `⚠ Bound to every network interface (${info.host}), not just this machine — anyone on your network can reach the proxy${info.dashboardPort === undefined ? '' : ' and dashboard'}. There's no login of any kind, so only do this on a network you trust.`,
+      `⚠ Bound to every network interface (${info.host}), not just this machine — SECURITY: ${LAN_ACCESS_WARNING}. Only do this on a network you trust.`,
     );
   }
   if (info.ruleEngine) {
@@ -597,7 +644,7 @@ export function createCli(): Command {
     )
     .option(
       '--lan',
-      'Bind the proxy and dashboard to every network interface (0.0.0.0) instead of just this machine, for this invocation. SECURITY: there is no authentication of any kind — anyone on your network can reach the dashboard (and decrypted HTTPS traffic through it) or use the proxy. On by default if `lanAccess` is set via `detour config`.',
+      `Bind the proxy and dashboard to every network interface (0.0.0.0) instead of just this machine, for this invocation. SECURITY: ${LAN_ACCESS_WARNING}. On by default if \`lanAccess\` is set via \`detour config\`.`,
     )
     .option(
       '--no-lan',
@@ -699,7 +746,7 @@ export function createCli(): Command {
     )
     .option(
       '--lan <on|off>',
-      'When "on", `detour start` binds the proxy and dashboard to every network interface (0.0.0.0) by default — override per-invocation with --lan/--no-lan. SECURITY: there is no authentication of any kind on that surface — anyone on your network could reach the dashboard/proxy.',
+      `When "on", \`detour start\` binds the proxy and dashboard to every network interface (0.0.0.0) by default — override per-invocation with --lan/--no-lan. SECURITY: ${LAN_ACCESS_WARNING}.`,
     )
     .action((options: { defaultDetach?: string; lan?: string }) => {
       try {

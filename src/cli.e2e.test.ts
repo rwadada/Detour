@@ -2218,12 +2218,18 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       }
     });
 
-    it('--lan on `start` warns that it bound to every network interface', async () => {
+    it('--lan on `start` warns that it bound to every network interface, and prints a reachable address', async () => {
       const port = await findFreePort();
       let cli: Awaited<ReturnType<typeof startDetourCliReady>> | undefined;
       try {
         cli = await startDetourCliReady(['--port', String(port), '--headless', '--lan']);
         expect(cli.stdout()).toContain('Bound to every network interface (0.0.0.0)');
+        // Only asserted when this machine actually has a non-internal interface (true for
+        // every CI runner and real dev machine) — `localhost` alone would be useless to
+        // whoever's supposed to reach this from elsewhere on the network.
+        if (Object.values(os.networkInterfaces()).some((iface) => iface?.some((i) => !i.internal))) {
+          expect(cli.stdout()).toMatch(/Reachable on your network at:\n {2}Proxy\s+→ http:\/\/\d+\.\d+\.\d+\.\d+:\d+/);
+        }
       } finally {
         await cli?.kill();
       }

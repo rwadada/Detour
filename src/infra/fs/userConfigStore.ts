@@ -27,6 +27,25 @@ export function resolveUserConfigPath(): string {
 }
 
 /**
+ * Shared by `loadUserConfig` (validating whatever's already on disk) and
+ * `writeUserConfig` (validating the merged result *before* it's written) —
+ * without the latter, a `setUserConfig` WebSocket message with a malformed
+ * value (a stray frontend bug, a hand-crafted frame, or — once `--lan`/
+ * `lanAccess` is on — literally anything else on the network) would write
+ * straight through with no check at all, corrupting the file for every
+ * `detour start`/`detour config` invocation afterwards until someone
+ * noticed and hand-edited it.
+ */
+function validateUserConfig(config: UserConfig, configPath: string): void {
+  if (config.defaultDetach !== undefined && typeof config.defaultDetach !== 'boolean') {
+    throw new Error(`${configPath}: "defaultDetach" must be a boolean (got: ${JSON.stringify(config.defaultDetach)})`);
+  }
+  if (config.lanAccess !== undefined && typeof config.lanAccess !== 'boolean') {
+    throw new Error(`${configPath}: "lanAccess" must be a boolean (got: ${JSON.stringify(config.lanAccess)})`);
+  }
+}
+
+/**
  * Reads `~/.detour/config.json` (or `configPath`, overridable for tests).
  * A missing file is the common case (nothing has ever been configured) and
  * quietly resolves to `{}`, but a file that exists and fails to parse, or
@@ -55,12 +74,7 @@ export function loadUserConfig(configPath: string = resolveUserConfigPath()): Us
   }
 
   const config = parsed as UserConfig;
-  if (config.defaultDetach !== undefined && typeof config.defaultDetach !== 'boolean') {
-    throw new Error(`${configPath}: "defaultDetach" must be a boolean (got: ${JSON.stringify(config.defaultDetach)})`);
-  }
-  if (config.lanAccess !== undefined && typeof config.lanAccess !== 'boolean') {
-    throw new Error(`${configPath}: "lanAccess" must be a boolean (got: ${JSON.stringify(config.lanAccess)})`);
-  }
+  validateUserConfig(config, configPath);
   return config;
 }
 
@@ -70,9 +84,15 @@ export function loadUserConfig(configPath: string = resolveUserConfigPath()): Us
  * saved there. Creates `~/.detour/` if this is the first thing ever written
  * under it (unlike `resolveRunDir`/`resolveDumpDir`, there's no earlier
  * guaranteed writer that would have created the parent directory already).
+ *
+ * Validates the *merged* result before writing — `patch` itself is
+ * unvalidated (it's only ever type-checked as `UserConfig` at compile time,
+ * which a `JSON.parse`d WebSocket message defeats entirely), so this is the
+ * one place a malformed value gets caught before it reaches disk.
  */
 export function writeUserConfig(patch: UserConfig, configPath: string = resolveUserConfigPath()): UserConfig {
   const merged = { ...loadUserConfig(configPath), ...patch };
+  validateUserConfig(merged, configPath);
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, `${JSON.stringify(merged, null, 2)}\n`);
   return merged;

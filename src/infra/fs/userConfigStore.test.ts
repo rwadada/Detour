@@ -72,4 +72,20 @@ describe('userConfigStore (fs-backed)', () => {
     fs.writeFileSync(configPath, JSON.stringify([1, 2, 3]));
     expect(() => loadUserConfig(configPath)).toThrow(/must contain a JSON object/);
   });
+
+  // A `setUserConfig` WebSocket message reaches `writeUserConfig` with only a
+  // compile-time `Partial<UserConfigState>` guarantee — `JSON.parse`d input
+  // (a frontend bug, a hand-crafted frame, or anything else on the network
+  // once `--lan` is on) can defeat that entirely. `as never` below simulates
+  // exactly that: a value the type system would normally reject.
+  it('rejects a malformed patch rather than writing it to disk', () => {
+    expect(() => writeUserConfig({ lanAccess: 'yes' as never }, configPath)).toThrow(/must be a boolean/);
+    expect(fs.existsSync(configPath)).toBe(false);
+  });
+
+  it('rejects a malformed patch even when it would merge with an already-valid file', () => {
+    writeUserConfig({ defaultDetach: true }, configPath);
+    expect(() => writeUserConfig({ lanAccess: 'yes' as never }, configPath)).toThrow(/must be a boolean/);
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ defaultDetach: true });
+  });
 });

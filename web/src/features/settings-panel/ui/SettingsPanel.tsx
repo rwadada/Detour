@@ -185,6 +185,11 @@ function BlockHostsSection() {
  * `undefined` until the server's first message arrives right after
  * connecting — the toggles disable themselves until then rather than
  * guessing a value that might immediately flip.
+ *
+ * The LAN warning text below is hand-matched to the CLI's own
+ * `LAN_ACCESS_WARNING` constant (`src/cli.ts`) — this is a separate,
+ * standalone-built package with no access to that constant, so update both
+ * together if the wording (or the security posture it describes) changes.
  */
 function StartupDefaultsSection() {
   const userConfig = useUserConfigStore((s) => s.userConfig);
