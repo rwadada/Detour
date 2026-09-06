@@ -51,8 +51,9 @@ function fakeCertPairingServer(session: Partial<CertPairingSession> & { url: str
   };
 }
 
-/** Never actually invoked in most tests below (only one connected device — or zero — is the common case) — a fake that throws makes any accidental use loud instead of silently resolving a bogus pick. */
+/** Never actually invoked in most tests below (only one connected device — or zero — is the common case) — `isInteractive: false` keeps `requireOneDevice` from ever reaching `pick()` at all if a test somehow does end up with multiple devices, and `pick` itself still throws to make that loud rather than silently resolving a bogus pick. */
 const unusedDevicePicker: DevicePicker = {
+  isInteractive: () => false,
   async pick() {
     throw new Error('devicePicker.pick() should not be called here');
   },
@@ -61,6 +62,7 @@ const unusedDevicePicker: DevicePicker = {
 /** Resolves to `serial` regardless of `choices` — the "an interactive terminal picked this one" case. */
 function fakeDevicePicker(serial: string | undefined): DevicePicker {
   return {
+    isInteractive: () => true,
     async pick() {
       return serial;
     },
@@ -443,7 +445,7 @@ describe('requireOneDevice (multi-device picker, exercised via runAndroidDoctor)
     expect(outcome.steps[1]!.message).toContain('EFGH5678');
   });
 
-  it("falls back to the original fail-outright message when the picker can't prompt (returns undefined — e.g. non-interactive stdin)", async () => {
+  it("falls back to the original fail-outright message when an interactive picker's prompt still comes back empty (e.g. stdin closed mid-prompt)", async () => {
     const runner = fakeRunner((command, args) => {
       if (args[0] === 'devices') return { stdout: TWO_DEVICES, stderr: '' };
       return { stdout: '', stderr: '' };
@@ -455,9 +457,27 @@ describe('requireOneDevice (multi-device picker, exercised via runAndroidDoctor)
     });
   });
 
+  it("skips building any device's diagnostic (no `dumpsys` calls at all) when the picker reports it can't prompt — nobody will ever see it", async () => {
+    const calls: string[][] = [];
+    const runner = fakeRunner((command, args) => {
+      calls.push([command, ...args]);
+      if (args[0] === 'devices') return { stdout: TWO_DEVICES, stderr: '' };
+      return { stdout: '', stderr: '' };
+    });
+    const nonInteractivePicker: DevicePicker = {
+      isInteractive: () => false,
+      async pick() {
+        throw new Error('pick() should never be called when isInteractive() is false');
+      },
+    };
+    await runAndroidDoctor(ctxWith(runner, { devicePicker: nonInteractivePicker }));
+    expect(calls.some((c) => c.includes('dumpsys'))).toBe(false);
+  });
+
   it("offers the picker each connected device's classified kind", async () => {
     let offeredChoices: DeviceChoice[] = [];
     const picker: DevicePicker = {
+      isInteractive: () => true,
       async pick(choices) {
         offeredChoices = choices;
         return choices[0]?.serial;
@@ -480,6 +500,7 @@ describe('requireOneDevice (multi-device picker, exercised via runAndroidDoctor)
   it("flags whichever choice has mobile data (not Wi-Fi) as its active network, in that choice's label alone", async () => {
     let offeredChoices: DeviceChoice[] = [];
     const picker: DevicePicker = {
+      isInteractive: () => true,
       async pick(choices) {
         offeredChoices = choices;
         return choices[0]?.serial;

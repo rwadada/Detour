@@ -23,6 +23,7 @@ const unusedCertPairingServer: CertPairingServer = {
 
 /** linux.ts never touches the device picker (that's android.ts's multi-device fallback only) — a throwing stub makes any accidental use loud. */
 const unusedDevicePicker: DevicePicker = {
+  isInteractive: () => false,
   async pick() {
     throw new Error('devicePicker.pick() should not be called here');
   },

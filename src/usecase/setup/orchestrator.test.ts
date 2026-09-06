@@ -19,6 +19,7 @@ const unusedCertPairingServer: CertPairingServer = {
 
 /** No test in this file exercises android's multi-device picker (see android.test.ts for that) — a throwing stub makes any accidental use loud. */
 const unusedDevicePicker: DevicePicker = {
+  isInteractive: () => false,
   async pick() {
     throw new Error('devicePicker.pick() should not be called here');
   },

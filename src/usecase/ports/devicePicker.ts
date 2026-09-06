@@ -15,11 +15,25 @@ export interface DeviceChoice {
  */
 export interface DevicePicker {
   /**
-   * Resolves to the chosen serial, or `undefined` when this environment
-   * can't actually prompt anyone (non-interactive stdin — CI, a script, a
-   * piped invocation) — `android.ts` falls back to its original
-   * fail-outright behavior in that case rather than hanging on a prompt
-   * nobody can ever answer.
+   * Whether this environment can actually prompt anyone right now
+   * (non-interactive stdin — CI, a script, a piped invocation — never can).
+   * `android.ts`'s `requireOneDevice` checks this *before* building each
+   * device's `DeviceChoice` (which costs an extra `adb shell dumpsys
+   * connectivity` round trip per device — see `describeDeviceChoice`), so a
+   * non-interactive run skips that work entirely rather than paying for
+   * diagnostics nobody will ever see before falling back to its original
+   * fail-outright behavior anyway.
+   */
+  isInteractive(): boolean;
+  /**
+   * Resolves to the chosen serial. Only ever called when `isInteractive()`
+   * just returned `true`, so `undefined` here means something did go wrong
+   * mid-prompt (e.g. stdin closed while waiting) rather than "can't prompt
+   * at all" — a real implementation should still keep re-prompting on
+   * merely invalid input (a typo, an out-of-range number) rather than
+   * giving up and returning `undefined` for that, which would make
+   * `android.ts` report its non-interactive-environment message for what's
+   * actually just a fixable mistake.
    */
   pick(choices: DeviceChoice[]): Promise<string | undefined>;
 }

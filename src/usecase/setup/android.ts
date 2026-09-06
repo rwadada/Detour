@@ -154,9 +154,16 @@ async function requireOneDevice(ctx: SetupContext): Promise<string> {
   // the user pick" by disconnecting the rest) — now actually lets them pick,
   // when `ctx.devicePicker` can (an interactive terminal); falls back to the
   // original failure when it can't (CI, a script, anything non-interactive).
-  const choices = await Promise.all(devices.map((serial) => describeDeviceChoice(ctx, serial)));
-  const picked = await ctx.devicePicker.pick(choices);
-  if (picked) return picked;
+  // Checked *before* building each device's `DeviceChoice` (an extra `adb
+  // shell dumpsys connectivity` round trip per device — see
+  // `describeDeviceChoice`) so a non-interactive run never pays for
+  // diagnostics nobody will ever see before hitting the exact same failure
+  // either way.
+  if (ctx.devicePicker.isInteractive()) {
+    const choices = await Promise.all(devices.map((serial) => describeDeviceChoice(ctx, serial)));
+    const picked = await ctx.devicePicker.pick(choices);
+    if (picked) return picked;
+  }
   throw new Error(`Multiple devices connected (${devices.join(', ')}) — disconnect all but one and retry.`);
 }
 
