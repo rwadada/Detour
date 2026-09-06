@@ -180,9 +180,13 @@ async function printStep(step: SetupStep): Promise<void> {
 
 /**
  * Trailing per-target line for `doctor` only, when its steps are all `✔`/`ℹ`
- * (no `failed`, so the summary doesn't compete with a clearer problem) and
- * at least one is `ℹ` (`manual`) — `doctor`'s whole point is answering "is
- * this ready?", and a screen full of `✔` with one quiet `ℹ` mixed in (e.g.
+ * (no `failed` *or* `skipped`, so the summary doesn't compete with a
+ * clearer problem — a `skipped` step, e.g. no booted iOS Simulator or an
+ * explicit `--target` on the wrong host platform, means some checks never
+ * ran at all, a different problem than "ran but can't be auto-verified"
+ * that a plain manual-verification count would blur together) and at least
+ * one is `ℹ` (`manual`) — `doctor`'s whole point is answering "is this
+ * ready?", and a screen full of `✔` with one quiet `ℹ` mixed in (e.g.
  * android's cert-trust check, which needs root to verify over adb) reads as
  * "yes" at a glance even though that one thing was never actually
  * confirmed. Spelled out only for `doctor`: `setup`'s `manual` steps are
@@ -191,7 +195,9 @@ async function printStep(step: SetupStep): Promise<void> {
  */
 function doctorSummaryLine(outcome: TargetOutcome): string | undefined {
   const manualCount = outcome.steps.filter((s) => s.status === 'manual').length;
-  if (manualCount === 0 || outcome.steps.some((s) => s.status === 'failed')) return undefined;
+  if (manualCount === 0 || outcome.steps.some((s) => s.status === 'failed' || s.status === 'skipped')) {
+    return undefined;
+  }
   return manualCount === 1
     ? "  ℹ 1 check above needs manual verification — doctor can't confirm it automatically."
     : `  ℹ ${manualCount} checks above need manual verification — doctor can't confirm them automatically.`;
