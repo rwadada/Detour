@@ -15,6 +15,13 @@ const NEW_PROFILE_OPTION = '__new_profile__';
 
 type NewProfileSource = 'sample' | 'blank' | 'active';
 
+/** The pill's own label — active profile name, else a saved-profile count, else the bare feature name. Pulled out of the JSX to avoid nesting ternaries there. */
+function pillLabel(activeProfile: string | undefined, savedCount: number): string {
+  if (activeProfile) return `Profile: ${activeProfile}`;
+  if (savedCount > 0) return `Profiles: ${savedCount} saved`;
+  return 'Profiles';
+}
+
 /**
  * Header control for Rules Profiles (issue #19): switch which saved
  * ruleset is active, or create a new one. Mirrors `ThrottleControl`'s
@@ -24,13 +31,17 @@ type NewProfileSource = 'sample' | 'blank' | 'active';
  * round 4) rather than a list of profiles each with its own "Apply"
  * button: picking an existing profile applies it immediately, and picking
  * the trailing "+ New profile…" option opens the create form below instead
- * of applying anything. The select's `value` is always the empty
- * placeholder, never the just-applied profile's name — there's no
- * server-side concept of "the currently active profile" to reflect (
- * `applyProfile` just overwrites rules.json's *content*; nothing records
- * which profile it came from), so this behaves as a one-shot action menu
- * rather than a control with persistent state, resetting to the
- * placeholder the instant React re-renders it after the change fires.
+ * of applying anything. The select's own `value` is always the empty
+ * placeholder, never the just-applied profile's name, and resets to it the
+ * instant React re-renders after the change fires — it's a one-shot action
+ * menu, not a control with state of its own to hold.
+ *
+ * "Which profile is currently active" (design/PO review, round 5 — reported
+ * as unclear that switching had worked at all) is instead read off
+ * `rulesFile.$activeProfile`, which the *server* now tracks by writing that
+ * field alongside rules.json's content whenever `applyProfile`/
+ * `saveActiveAsProfile` succeed — see `RulesFile.$activeProfile`'s doc
+ * comment for exactly when it's set vs. cleared.
  */
 export function RuleProfilesControl() {
   const profiles = useRuleStore((s) => s.profiles);
@@ -91,6 +102,12 @@ export function RuleProfilesControl() {
   // the user's actual pick, in case `rulesFile` reappears before they
   // change it.
   const effectiveSource: NewProfileSource = source === 'active' && !rulesFile ? 'sample' : source;
+
+  // See `RulesFile.$activeProfile`'s doc comment — `undefined` means the
+  // active rules.json isn't (or isn't known to still be) any saved
+  // profile's, not that the feature is broken.
+  const activeProfile = rulesFile?.$activeProfile;
+  const enabledCount = rulesFile?.rules.filter((rule) => rule.enabled !== false).length ?? 0;
 
   // A dirty Rules editor draft ignores the next `rules` broadcast (see its
   // sync-from-server guard) so it can't be silently discarded by someone
@@ -172,12 +189,26 @@ export function RuleProfilesControl() {
   return (
     <div className="relative" ref={containerRef}>
       <PillToggle
-        active={profiles.length > 0}
+        active={!!activeProfile}
         onClick={() => (open ? closePopover() : setOpen(true))}
         icon={<BookMarked className="h-3 w-3" />}
-        title="Rule profiles — saved rulesets you can switch between"
+        title={
+          activeProfile
+            ? `Rule profiles — "${activeProfile}" is currently active`
+            : 'Rule profiles — saved rulesets you can switch between'
+        }
       >
-        Profiles{profiles.length > 0 ? ` (${profiles.length})` : ''}
+        {/* Spelled out ("2 saved"), not a bare "(2)" — this button's count
+            is one of several similar "(N)" pills across the toolbar/sidebar
+            (Focus, Block Hosts, ...), each counting a different thing implied
+            only by that pill's own label; a bare number here was reported as
+            unclear on its own. Left as-is on the other pills (design/PO
+            review): fixing this in one place doesn't obligate matching it
+            everywhere in the same pass. Showing the active profile's name
+            here (rather than just a count) once one exists directly answers
+            "which profile is applied right now" without opening the popover
+            at all — the other half of that same round's report. */}
+        {pillLabel(activeProfile, profiles.length)}
       </PillToggle>
       {open && (
         // `left-0`, not `right-0` (which `ThrottleControl`'s popover — living
@@ -188,13 +219,25 @@ export function RuleProfilesControl() {
         <div className="absolute left-0 top-full z-10 mt-2 w-72 rounded-md border border-[var(--border)] bg-[var(--panel)] p-2.5 shadow-lg">
           <p className="mb-2 text-xs text-[var(--muted)]">Switch to a saved profile, or create a new one.</p>
 
+          {rulesFile && (
+            <p className="mb-2 text-xs text-[var(--muted)]">
+              Active:{' '}
+              {activeProfile ? (
+                <span className="font-medium text-[var(--foreground)]">{activeProfile}</span>
+              ) : (
+                <span className="italic">unnamed (edited since a profile was last applied)</span>
+              )}{' '}
+              — {enabledCount} of {rulesFile.rules.length} {rulesFile.rules.length === 1 ? 'rule' : 'rules'} enabled
+            </p>
+          )}
+
           <Select value="" onChange={(e) => handleSelectChange(e.target.value)} className="mb-2 w-full text-xs">
             <option value="" disabled>
               {profiles.length > 0 ? 'Switch profile…' : 'No saved profiles yet'}
             </option>
             {profiles.map((profile) => (
               <option key={profile.name} value={profile.name}>
-                {profile.name} ({profile.ruleCount})
+                {profile.name} — {profile.ruleCount} {profile.ruleCount === 1 ? 'rule' : 'rules'}
               </option>
             ))}
             <option value={NEW_PROFILE_OPTION}>+ New profile…</option>

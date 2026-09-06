@@ -176,5 +176,19 @@ export interface Rule {
 export interface RulesFile {
   /** Optional `$schema` pointer for editor tooling; ignored by Detour itself. */
   $schema?: string;
+  /**
+   * Name of the saved rule profile this file's content currently matches
+   * (issue #19's Rules Profiles), set by `RuleEngine.write()`'s `activeProfile`
+   * option — `applyRuleProfile`/`saveActiveRulesAsProfile` in
+   * `dashboardServer.ts` are the only callers that ever pass one. Absent
+   * whenever this content isn't (or is no longer known to be) any saved
+   * profile's: a plain hand-edit — from the dashboard's Rules editor or an
+   * external text editor — always writes/produces a file with this field
+   * unset, on the premise that editing makes it a different, unnamed
+   * ruleset rather than a still-somehow-the-same-profile one. Purely
+   * informational (which saved profile, if any, is "active" right now) —
+   * never read by the rule-matching engine itself.
+   */
+  $activeProfile?: string;
   rules: Rule[];
 }

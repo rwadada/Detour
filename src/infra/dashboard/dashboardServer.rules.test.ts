@@ -187,7 +187,7 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
     expect(readRuleProfile('empty', profilesDir).rules).toEqual([]);
   });
 
-  it('saveActiveRulesAsProfile snapshots the currently active rules under a new name', async () => {
+  it('saveActiveRulesAsProfile snapshots the currently active rules under a new name, and marks the active file as that profile', async () => {
     await startWithRuleEngine();
     const socket = connect();
     await waitForMessage(socket, (m) => m.type === 'ruleProfiles');
@@ -199,9 +199,19 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
     );
 
     expect(readRuleProfile('snapshot', profilesDir).rules).toEqual([routeRule('a')]);
+    // The saved profile file itself never carries `$activeProfile` (it
+    // wouldn't mean anything there) — only the active rules.json does, via
+    // its own debounced file-watch-driven reload (same `socket` — this is
+    // the *second* `rules` broadcast it ever receives, the first being the
+    // initial post-connect snapshot).
+    const updated = await waitForMessage(socket, (m) => m.type === 'rules' && m.data?.$activeProfile === 'snapshot');
+    expect(updated).toEqual({
+      type: 'rules',
+      data: { rules: [routeRule('a')], $activeProfile: 'snapshot' },
+    });
   });
 
-  it('applyRuleProfile writes the profile into the active rules file, landing as a `rules` broadcast', async () => {
+  it('applyRuleProfile writes the profile into the active rules file, landing as a `rules` broadcast with $activeProfile set to it', async () => {
     writeRuleProfile('two-rules', { rules: [routeRule('a'), routeRule('b')] }, profilesDir);
     await startWithRuleEngine();
     const socket = connect();
@@ -209,6 +219,31 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
 
     socket.send(JSON.stringify({ type: 'applyRuleProfile', name: 'two-rules' }));
     const updated = await waitForMessage(socket, (m) => m.type === 'rules' && m.data?.rules.length === 2);
+
+    expect(updated).toEqual({
+      type: 'rules',
+      data: { rules: [routeRule('a'), routeRule('b')], $activeProfile: 'two-rules' },
+    });
+  });
+
+  it('setRules clears $activeProfile even when a profile was applied just before it', async () => {
+    writeRuleProfile('two-rules', { rules: [routeRule('a'), routeRule('b')] }, profilesDir);
+    await startWithRuleEngine();
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'rules');
+
+    socket.send(JSON.stringify({ type: 'applyRuleProfile', name: 'two-rules' }));
+    await waitForMessage(socket, (m) => m.type === 'rules' && m.data?.$activeProfile === 'two-rules');
+
+    // Edited (still 2 rules, same content even) and saved through the
+    // ordinary Rules editor path — per `RulesFile.$activeProfile`'s doc
+    // comment, that alone clears the marker regardless of what the content
+    // ends up looking like.
+    socket.send(JSON.stringify({ type: 'setRules', data: { rules: [routeRule('a'), routeRule('b')] } }));
+    const updated = await waitForMessage(
+      socket,
+      (m) => m.type === 'rules' && m.data?.rules.length === 2 && m.data.$activeProfile === undefined,
+    );
 
     expect(updated).toEqual({ type: 'rules', data: { rules: [routeRule('a'), routeRule('b')] } });
   });

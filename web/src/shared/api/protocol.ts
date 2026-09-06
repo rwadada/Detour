@@ -219,6 +219,8 @@ export interface Rule {
 
 export interface RulesFile {
   $schema?: string;
+  /** Name of the saved rule profile this content currently matches, if any — see `src/domain/rules/types.ts`'s `RulesFile.$activeProfile`. Absent once edited (from here or a text editor) into a different, unnamed ruleset. */
+  $activeProfile?: string;
   rules: Rule[];
 }
 
