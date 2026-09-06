@@ -44,7 +44,24 @@ export function RuleProfilesControl() {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [source, setSource] = useState<NewProfileSource>('sample');
+  // Set right after a successful apply/create/save, cleared after a couple
+  // seconds — see its own note below. Not persisted state; a page reload or
+  // a second pick before it clears just restarts (or skips) the timer.
+  const [confirmation, setConfirmation] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // The select's `value` is always reset to the empty placeholder the
+  // instant an option is picked (see the class doc comment above) —
+  // deliberately, since there's no real "current profile" to hold it at.
+  // But that alone left applying a profile looking like it silently did
+  // nothing: nothing else in this popover (or the rest of the dashboard)
+  // visibly changes just because rules.json's *content* changed underneath
+  // it. This one-shot, self-clearing message is the only feedback that an
+  // action actually went through.
+  const confirm = (message: string) => {
+    setConfirmation(message);
+    setTimeout(() => setConfirmation((current) => (current === message ? null : current)), 2500);
+  };
 
   // Resets the create form too, not just `open` — without this, dismissing
   // the popover mid-create (clicking outside, or the pill again) and later
@@ -57,6 +74,7 @@ export function RuleProfilesControl() {
     setCreating(false);
     setNewName('');
     setSource('sample');
+    setConfirmation(null);
   };
   useDismissablePopover(open, containerRef, closePopover);
 
@@ -108,7 +126,10 @@ export function RuleProfilesControl() {
     // discarding the in-progress create form anyway would be real data
     // loss for no reason. `cancelCreate` is a no-op if the form wasn't
     // open to begin with.
-    if (applyWithDirtyGuard(value)) cancelCreate();
+    if (applyWithDirtyGuard(value)) {
+      cancelCreate();
+      confirm(`Applied "${value}"`);
+    }
   };
 
   const cancelCreate = () => {
@@ -145,6 +166,7 @@ export function RuleProfilesControl() {
       createProfile(name, effectiveSource);
     }
     cancelCreate();
+    confirm(`Saved "${name}"`);
   };
 
   return (
@@ -177,6 +199,8 @@ export function RuleProfilesControl() {
             ))}
             <option value={NEW_PROFILE_OPTION}>+ New profile…</option>
           </Select>
+
+          {confirmation && <p className="mb-2 text-xs text-[var(--status-2xx)]">✓ {confirmation}</p>}
 
           {creating && (
             <div className="mb-1 rounded border border-[var(--border)] p-2">
