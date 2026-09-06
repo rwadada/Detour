@@ -1,8 +1,26 @@
 import { BookMarked } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRuleStore } from '@/entities/rule';
 import { useDismissablePopover } from '@/shared/lib/useDismissablePopover';
+import { cn } from '@/shared/lib/utils';
 import { Button, Input, PillToggle, Select } from '@/shared/ui';
+
+/**
+ * What `handleSelectChange`/`submitCreate` are waiting to confirm after
+ * dispatching an `applyProfile`/`saveActiveAsProfile`/`createProfile` — these
+ * are all fire-and-forget over WS (no per-request ack), so the *label* to
+ * show on success is decided up front, but showing it at all waits for the
+ * specific state change that action should actually produce (see the
+ * `pending`-resolving effect below) rather than firing the instant it's
+ * sent, which could show "✓ Applied" even for a request the server went on
+ * to reject.
+ */
+type PendingConfirmation =
+  | { kind: 'activeProfile'; name: string; label: string }
+  | { kind: 'profileCreated'; name: string; label: string };
+
+/** How long a `pending` confirmation waits for its expected state change (or an error) before giving up silently — WS delivery on a live connection is effectively instant, so this is just a bailout for the unusual case (a dropped connection, say) where neither ever arrives. */
+const PENDING_CONFIRMATION_TIMEOUT_MS = 5000;
 
 /**
  * Sentinel `<option>` value that opens the create form instead of applying
@@ -51,37 +69,73 @@ export function RuleProfilesControl() {
   const createProfile = useRuleStore((s) => s.createProfile);
   const dirtyDraft = useRuleStore((s) => s.dirtyDraft);
   const setDirtyDraft = useRuleStore((s) => s.setDirtyDraft);
+  const lastError = useRuleStore((s) => s.lastError);
+  const dismissError = useRuleStore((s) => s.dismissError);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [source, setSource] = useState<NewProfileSource>('sample');
-  // Set right after a successful apply/create/save, cleared after a couple
-  // seconds — see its own note below. Not persisted state; a page reload
-  // just loses it.
-  const [confirmation, setConfirmation] = useState<string | null>(null);
-  // The pending auto-clear timer for `confirmation`, if any — tracked so a
-  // second action within the same couple seconds cancels the first one's
-  // timer instead of leaving it running alongside the new one. That first
-  // timer firing late was never actually able to clear the *wrong* message
-  // (it only ever cleared `confirmation` if it still held the exact string
-  // that timer was scheduled for), so this isn't a correctness fix so much
-  // as not leaving a stale timer running for no reason once it's moot.
-  const confirmationTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // What an in-flight apply/save/create is waiting to confirm — see
+  // `PendingConfirmation`'s own doc comment.
+  const [pending, setPending] = useState<PendingConfirmation | null>(null);
+  // Set once `pending` actually resolves — a genuine success (matching
+  // `pending`'s own label) or the error the server rejected it with —
+  // cleared after a couple seconds. Not persisted state; a page reload just
+  // loses it.
+  const [banner, setBanner] = useState<{ text: string; kind: 'success' | 'error' } | null>(null);
+  // The pending auto-clear timer for `banner`, if any — tracked so a second
+  // one within the same couple seconds cancels the first instead of leaving
+  // it running alongside the new one.
+  const bannerTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // The select's `value` is always reset to the empty placeholder the
-  // instant an option is picked (see the class doc comment above) —
-  // deliberately, since there's no real "current profile" to hold it at.
-  // But that alone left applying a profile looking like it silently did
-  // nothing: nothing else in this popover (or the rest of the dashboard)
-  // visibly changes just because rules.json's *content* changed underneath
-  // it. This one-shot, self-clearing message is the only feedback that an
-  // action actually went through.
-  const confirm = (message: string) => {
-    if (confirmationTimer.current) clearTimeout(confirmationTimer.current);
-    setConfirmation(message);
-    confirmationTimer.current = setTimeout(() => setConfirmation(null), 2500);
+  const showBanner = (text: string, kind: 'success' | 'error') => {
+    if (bannerTimer.current) clearTimeout(bannerTimer.current);
+    setBanner({ text, kind });
+    bannerTimer.current = setTimeout(() => setBanner(null), 2500);
   };
+
+  // Resolves `pending` against whichever of `rulesFile`/`lastError` actually
+  // changes first — these WS commands are fire-and-forget with no
+  // per-request ack, so the only way to tell a genuine success from a
+  // server-side rejection (a `RULE_PROFILE_ERROR` bumping `lastError`,
+  // e.g. the profile was deleted after the `<select>` was rendered but
+  // before this was picked) is to wait for the specific state change the
+  // action should actually produce, rather than assuming success the
+  // instant it was sent.
+  useEffect(() => {
+    if (!pending) return;
+    // Genuinely the "subscribe to an external store, setState in response"
+    // case React's own effect docs call out as legitimate — `lastError`/
+    // `rulesFile`/`profiles` all change asynchronously from a WS message
+    // arriving, not from any event this component itself handles, so
+    // there's no synchronous event-handler callback to move this into
+    // instead.
+    if (lastError) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      showBanner(lastError, 'error');
+      dismissError();
+      setPending(null);
+      return;
+    }
+    const resolved =
+      pending.kind === 'activeProfile'
+        ? rulesFile?.$activeProfile === pending.name
+        : profiles.some((profile) => profile.name === pending.name);
+    if (resolved) {
+      showBanner(pending.label, 'success');
+      setPending(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- showBanner/dismissError are stable-enough closures over refs/store actions, not reactive values this effect should re-run for
+  }, [pending, lastError, rulesFile, profiles]);
+
+  // Bails out of a `pending` confirmation that never resolved either way —
+  // see `PENDING_CONFIRMATION_TIMEOUT_MS`'s own doc comment.
+  useEffect(() => {
+    if (!pending) return;
+    const timer = setTimeout(() => setPending(null), PENDING_CONFIRMATION_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [pending]);
 
   // Resets the create form too, not just `open` — without this, dismissing
   // the popover mid-create (clicking outside, or the pill again) and later
@@ -94,8 +148,8 @@ export function RuleProfilesControl() {
     setCreating(false);
     setNewName('');
     setSource('sample');
-    if (confirmationTimer.current) clearTimeout(confirmationTimer.current);
-    setConfirmation(null);
+    if (bannerTimer.current) clearTimeout(bannerTimer.current);
+    setBanner(null);
   };
   useDismissablePopover(open, containerRef, closePopover);
 
@@ -155,7 +209,7 @@ export function RuleProfilesControl() {
     // open to begin with.
     if (applyWithDirtyGuard(value)) {
       cancelCreate();
-      confirm(`Applied "${value}"`);
+      setPending({ kind: 'activeProfile', name: value, label: `Applied "${value}"` });
     }
   };
 
@@ -189,11 +243,12 @@ export function RuleProfilesControl() {
         return;
       }
       saveActiveAsProfile(name);
+      setPending({ kind: 'activeProfile', name, label: `Saved "${name}"` });
     } else {
       createProfile(name, effectiveSource);
+      setPending({ kind: 'profileCreated', name, label: `Saved "${name}"` });
     }
     cancelCreate();
-    confirm(`Saved "${name}"`);
   };
 
   return (
@@ -253,7 +308,16 @@ export function RuleProfilesControl() {
             <option value={NEW_PROFILE_OPTION}>+ New profile…</option>
           </Select>
 
-          {confirmation && <p className="mb-2 text-xs text-[var(--status-2xx)]">✓ {confirmation}</p>}
+          {banner && (
+            <p
+              className={cn(
+                'mb-2 text-xs',
+                banner.kind === 'success' ? 'text-[var(--status-2xx)]' : 'text-[var(--status-5xx)]',
+              )}
+            >
+              {banner.kind === 'success' ? '✓' : '✗'} {banner.text}
+            </p>
+          )}
 
           {creating && (
             <div className="mb-1 rounded border border-[var(--border)] p-2">
