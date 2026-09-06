@@ -6,6 +6,7 @@ import { CopyAsCurlButton } from '@/features/copy-as-curl';
 import { ReplayButton } from '@/features/replay';
 import { cn, formatBytes, formatDuration, headerRows, headerRowsToText, parseQueryParams } from '@/shared/lib/utils';
 import { Button, CopyIconButton, Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui';
+import { CreateRuleButton } from './CreateRuleButton';
 
 // CodeMirror (~500KB) is only needed once a user actually opens the Body
 // tab — code-splitting it keeps the initial bundle (and first paint) small,
@@ -98,6 +99,7 @@ export function InspectorPanel() {
         <div className="flex shrink-0 items-center">
           <CopyAsCurlButton exchange={exchange} />
           <ReplayButton exchange={exchange} />
+          <CreateRuleButton exchange={exchange} />
           <Button variant="ghost" size="icon" onClick={() => select(null)} title="Close">
             <X className="h-4 w-4" />
           </Button>

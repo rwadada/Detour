@@ -1,5 +1,5 @@
 import { ListChecks } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRuleStore } from '@/entities/rule';
 import { Button, Dialog } from '@/shared/ui';
 import { RulesEditorPanel } from './RulesEditorPanel';
@@ -9,6 +9,19 @@ export function RulesEditorButton() {
   const [open, setOpen] = useState(false);
   const dirtyDraft = useRuleStore((s) => s.dirtyDraft);
   const setDirtyDraft = useRuleStore((s) => s.setDirtyDraft);
+  const pendingNewRule = useRuleStore((s) => s.pendingNewRule);
+
+  // Opens on its own the moment some other widget queues a rule to seed the
+  // editor with (`RuleState.pendingNewRule`'s own doc comment) — "create a
+  // rule from this log entry" should show the result immediately, not
+  // require a second, separate click on this button too. Genuinely the
+  // "subscribe to an external store, setState in response" case React's own
+  // effect docs call out as legitimate: `pendingNewRule` changes from a
+  // completely different widget's own click handler, not this component's.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (pendingNewRule) setOpen(true);
+  }, [pendingNewRule]);
 
   // Escape, the backdrop, and the dialog's own "X" all funnel through this
   // one `onClose` — guarding it here (rather than in each trigger) confirms

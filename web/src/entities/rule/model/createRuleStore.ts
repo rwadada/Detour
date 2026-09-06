@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { DashboardConnection, RuleProfileSummary, RulesFile } from '@/shared/api';
+import type { DashboardConnection, Rule, RuleProfileSummary, RulesFile } from '@/shared/api';
 
 export interface RuleState {
   /** The currently active rules.json contents, or `null` if this session has no rules file configured, or the initial `rules` message hasn't arrived yet. */
@@ -53,6 +53,24 @@ export interface RuleState {
    */
   dirtyDraft: boolean;
   setDirtyDraft: (dirty: boolean) => void;
+  /**
+   * A rule waiting to be dropped into the Rules editor's draft the next
+   * time it opens, unsaved and already selected for editing (issue #67's
+   * follow-up — "create a rule from this log entry"). `RulesEditorButton`/
+   * `RulesEditorPanel` are the only consumers: the former auto-opens the
+   * dialog when this becomes set, the latter seeds its initial draft from
+   * it and clears it right back to `null` on mount, so it's only ever
+   * consumed once per queued rule, not re-injected on a later, unrelated
+   * open. Lives here (rather than local to either of those) so a
+   * completely different widget (`InspectorPanel`, via
+   * `features/create-rule-from-exchange`) can queue one without needing to
+   * import either — they're sibling features, and FSD disallows a
+   * feature importing a feature.
+   */
+  pendingNewRule: Rule | null;
+  queueNewRule: (rule: Rule) => void;
+  /** Consumes `pendingNewRule` — called once by `RulesEditorPanel` right after seeding its draft from it. */
+  clearPendingNewRule: () => void;
 }
 
 /**
@@ -96,6 +114,9 @@ export function createRuleStore(connection: DashboardConnection) {
       dismissError: () => set({ lastError: null, lastErrorAt: null }),
       dirtyDraft: false,
       setDirtyDraft: (dirty) => set({ dirtyDraft: dirty }),
+      pendingNewRule: null,
+      queueNewRule: (rule) => set({ pendingNewRule: rule }),
+      clearPendingNewRule: () => set({ pendingNewRule: null }),
     };
   });
 }

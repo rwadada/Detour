@@ -79,6 +79,19 @@ describe('createRuleStore', () => {
     expect(store.getState().lastError).toBeNull();
   });
 
+  it('queueNewRule()/clearPendingNewRule() manage pendingNewRule', () => {
+    const { connection } = fakeDashboardConnection();
+    const store = createRuleStore(connection);
+    expect(store.getState().pendingNewRule).toBeNull();
+
+    const rule = { name: 'r1', match: { url: '*' }, action: { type: 'mock' as const, status: 200 } };
+    store.getState().queueNewRule(rule);
+    expect(store.getState().pendingNewRule).toEqual(rule);
+
+    store.getState().clearPendingNewRule();
+    expect(store.getState().pendingNewRule).toBeNull();
+  });
+
   it('setRules()/createProfile()/saveActiveAsProfile()/applyProfile() send the matching command', () => {
     const { connection, sent } = fakeDashboardConnection();
     const store = createRuleStore(connection);
