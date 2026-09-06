@@ -70,8 +70,19 @@ export type DashboardServerMessage =
    * would just be a dead link. The dashboard's own port isn't included
    * here either way — a connected client already knows it as
    * `window.location.port`, the same page it's looking at right now.
+   *
+   * Optional here even though this server always sends it (see
+   * `dashboardServer.ts`'s `sendInitialPayload`) — this file is meant as
+   * the wire format's single source of truth, and the wire itself can
+   * still carry a message without it (an older server build predating
+   * this field talking to a newer web build, say). `web/src/shared/api/
+   * protocol.ts`'s copy of this type is genuinely optional for exactly
+   * that reason (see `createProxyInfoStore`'s fallback) — matching that
+   * here keeps the two declared wire formats in agreement about what can
+   * actually show up on the wire, not just what this particular server
+   * happens to always send.
    */
-  | { type: 'lanInfo'; addresses: string[]; dashboardOnLan: boolean }
+  | { type: 'lanInfo'; addresses: string[]; dashboardOnLan?: boolean }
   /**
    * Sent instead of the usual just-connected snapshot (`backlog`, `rules`,
    * `userConfig`, etc. below) when a dashboard password is configured and
