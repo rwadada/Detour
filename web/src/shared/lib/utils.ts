@@ -103,3 +103,8 @@ export function headerRows(headers: Record<string, string | string[] | undefined
   }
   return rows.sort((a, b) => a[0].localeCompare(b[0]));
 }
+
+/** Renders `headerRows` output as `Name: value` lines, for copying a header section on its own (issue #67) — the same shape `headersToEditableText` produces, just from rows rather than a raw record. */
+export function headerRowsToText(rows: [string, string][]): string {
+  return rows.map(([name, value]) => `${name}: ${value}`).join('\n');
+}

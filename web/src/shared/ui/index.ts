@@ -1,5 +1,6 @@
 export { Badge } from './badge';
 export { Button, type ButtonProps } from './button';
+export { CopyIconButton } from './copy-icon-button';
 export { DetourLogo } from './detour-logo';
 export { Dialog, type DialogProps } from './dialog';
 export { HostChipList, type HostChipListProps } from './host-chip-list';
