@@ -1,0 +1,136 @@
+import { describe, expect, it } from 'vitest';
+import type { CertPairingServer } from '../ports/certPairingServer';
+import type { CommandResult, CommandRunner } from '../ports/commandRunner';
+import { parseSimulators, runIosCleanup, runIosDoctor, runIosSetup } from './ios';
+import type { SetupContext } from './types';
+
+/** ios.ts never touches the pairing server (that's android.ts's no-adb fallback only) — a throwing stub makes any accidental use loud. */
+const unusedCertPairingServer: CertPairingServer = {
+  async start() {
+    throw new Error('certPairingServer.start() should not be called here');
+  },
+};
+
+const BOOTED_LIST = JSON.stringify({
+  devices: {
+    'com.apple.CoreSimulator.SimRuntime.iOS-18-6': [
+      { udid: 'AAAA-1111', name: 'iPhone 17 Pro', state: 'Booted' },
+      { udid: 'BBBB-2222', name: 'iPad Air', state: 'Shutdown' },
+    ],
+  },
+});
+
+const NONE_BOOTED_LIST = JSON.stringify({
+  devices: {
+    'com.apple.CoreSimulator.SimRuntime.iOS-18-6': [{ udid: 'BBBB-2222', name: 'iPad Air', state: 'Shutdown' }],
+  },
+});
+
+describe('parseSimulators', () => {
+  it('flattens every runtime into one list', () => {
+    expect(parseSimulators(BOOTED_LIST)).toHaveLength(2);
+  });
+
+  it('returns no devices for unparseable output instead of throwing', () => {
+    expect(parseSimulators('not json')).toEqual([]);
+  });
+});
+
+function fakeRunner(handler: (command: string, args: string[]) => CommandResult): CommandRunner {
+  return {
+    async run(command, args) {
+      return handler(command, args);
+    },
+  };
+}
+
+function ctxWith(runner: CommandRunner, overrides: Partial<SetupContext> = {}): SetupContext {
+  return {
+    certPath: '/ca.pem',
+    proxyHost: '203.0.113.5',
+    proxyPort: 8080,
+    runner,
+    certPairingServer: unusedCertPairingServer,
+    hostPlatform: 'darwin',
+    explicitTarget: false,
+    ...overrides,
+  };
+}
+
+describe('runIosSetup', () => {
+  it('trusts the cert on every booted Simulator and still lists physical-device manual steps', async () => {
+    const calls: string[][] = [];
+    const runner = fakeRunner((command, args) => {
+      calls.push([command, ...args]);
+      if (args.includes('booted')) return { stdout: BOOTED_LIST, stderr: '' };
+      return { stdout: '', stderr: '' };
+    });
+
+    const outcome = await runIosSetup(ctxWith(runner));
+
+    expect(outcome.steps[0]).toEqual({ status: 'done', message: expect.stringContaining('iPhone 17 Pro') });
+    expect(outcome.steps.some((s) => s.status === 'manual')).toBe(true);
+    expect(calls.some((c) => c.join(' ') === 'xcrun simctl keychain AAAA-1111 add-root-cert /ca.pem')).toBe(true);
+  });
+
+  it('skips Simulator automation and still lists manual steps when none is booted', async () => {
+    const runner = fakeRunner(() => ({ stdout: NONE_BOOTED_LIST, stderr: '' }));
+    const outcome = await runIosSetup(ctxWith(runner));
+    expect(outcome.steps[0]!.status).toBe('skipped');
+    expect(outcome.steps.some((s) => s.status === 'manual')).toBe(true);
+  });
+
+  it('reports a failed step (not a throw) when xcrun itself is unusable', async () => {
+    const runner: CommandRunner = {
+      async run() {
+        throw new Error('"xcrun" not found');
+      },
+    };
+    const outcome = await runIosSetup(ctxWith(runner));
+    expect(outcome.steps[0]!.status).toBe('failed');
+    expect(outcome.steps.some((s) => s.status === 'manual')).toBe(true);
+  });
+
+  it('substitutes a plain-language placeholder into the proxy-config instruction when proxyHost is unresolved, instead of a blank address', async () => {
+    const runner = fakeRunner(() => ({ stdout: NONE_BOOTED_LIST, stderr: '' }));
+    const outcome = await runIosSetup(ctxWith(runner, { proxyHost: '' }));
+    const proxyStep = outcome.steps.find((s) => s.message.includes('Configure the proxy'));
+    expect(proxyStep?.message).toContain('no LAN IP detected');
+    expect(proxyStep?.message).not.toMatch(/to\s+\/\s*8080/);
+  });
+});
+
+describe('runIosDoctor', () => {
+  it('reports done when a Simulator is booted', async () => {
+    const runner = fakeRunner(() => ({ stdout: BOOTED_LIST, stderr: '' }));
+    const outcome = await runIosDoctor(ctxWith(runner));
+    expect(outcome.steps[0]!.status).toBe('done');
+  });
+
+  it('reports skipped when none is booted', async () => {
+    const runner = fakeRunner(() => ({ stdout: NONE_BOOTED_LIST, stderr: '' }));
+    const outcome = await runIosDoctor(ctxWith(runner));
+    expect(outcome.steps[0]!.status).toBe('skipped');
+  });
+});
+
+describe('runIosCleanup', () => {
+  it('never touches the Simulator keychain — only manual physical-device steps', async () => {
+    const calls: string[][] = [];
+    const runner = fakeRunner((command, args) => {
+      calls.push([command, ...args]);
+      return { stdout: '', stderr: '' };
+    });
+    const outcome = await runIosCleanup(ctxWith(runner));
+    expect(calls).toEqual([]);
+    expect(outcome.steps.every((s) => s.status === 'manual')).toBe(true);
+    // cleanup never touches CA cert trust — its manual step should only be
+    // about the proxy, not repeat the cert-install instructions.
+    expect(outcome.steps.some((s) => s.message.includes('Trust the CA cert'))).toBe(false);
+    // ...and never proxyConfig's "turn it on" wording either — cleanup uses
+    // its own "Turn the proxy off" instruction, which (unlike proxyConfig)
+    // needs no address at all, so an unresolved proxyHost can't leak into
+    // it as a placeholder or a blank value.
+    expect(outcome.steps.every((s) => s.message.includes('Turn the proxy off'))).toBe(true);
+  });
+});

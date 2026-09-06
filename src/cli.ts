@@ -6,6 +6,8 @@ import { CliExitError } from './domain/daemon/errors';
 import { isDumpLevel } from './domain/dump/dumpPolicy';
 import type { DumpLevel } from './domain/dump/dumpPolicy';
 import { SAMPLE_RULES_FILE } from './domain/rules/sample';
+import { isSetupTarget, SETUP_TARGETS } from './domain/setup/targets';
+import type { SetupTarget } from './domain/setup/targets';
 import { startDashboardServer, WEB_DIST_DIR } from './infra/dashboard/dashboardServer';
 import { DetourEventBus } from './infra/eventBus';
 import { resolveDumpDir, writeExchangeDumpFile, writeWebSocketDumpFile } from './infra/fs/dumpFileWriter';
@@ -22,10 +24,13 @@ import type { UserConfig } from './infra/fs/userConfigStore';
 import { loadUserConfig, resolveUserConfigPath, writeUserConfig } from './infra/fs/userConfigStore';
 import { buildGrpcExchangeInfo } from './infra/grpc/grpcExchangeInfo';
 import { ProtoRegistry } from './infra/grpc/protoRegistry';
+import { lanAddresses } from './infra/network/lanAddresses';
 import { isDaemonChild, signalDaemonError, signalDaemonReady, spawnDaemonChild } from './infra/process/daemonize';
+import { nodeCommandRunner } from './infra/process/nodeCommandRunner';
 import { openBrowser } from './infra/process/openBrowser';
-import { ensureCaCert } from './infra/proxy/certExport';
+import { caCertPath, ensureCaCert } from './infra/proxy/certExport';
 import { startIdleWatcher } from './infra/proxy/idleWatcher';
+import { nodeCertPairingServer } from './infra/proxy/nodeCertPairingServer';
 import { startProxyServer } from './infra/proxy/proxyServer';
 import {
   logExchange,
@@ -35,7 +40,11 @@ import {
   logWebSocketConnection,
   logWebSocketFull,
 } from './presentation/logger';
+import { renderQrCode } from './presentation/qrCode';
 import { RuleEngine } from './usecase/ruleEngine';
+import { runTargets } from './usecase/setup/orchestrator';
+import type { SetupMode, TargetReport } from './usecase/setup/orchestrator';
+import type { SetupStep, StepStatus } from './usecase/setup/types';
 
 // This file is Detour's composition root: the one place allowed to import
 // across every layer (domain/usecase/infra/presentation) to wire concrete
@@ -119,6 +128,131 @@ const STOP_GRACE_PERIOD_MS = 10_000;
 function reportNotRunning(port: number): void {
   console.log(`detour is not running on port ${port}.`);
   process.exitCode = 1;
+}
+
+interface SetupCommandOptions {
+  target?: string;
+  port: string;
+  host?: string;
+}
+
+/** One icon per `SetupStep['status']` — shared by `detour setup`/`doctor`/`cleanup`'s output (issue #65). */
+function stepIcon(status: StepStatus): string {
+  switch (status) {
+    case 'done':
+      return '✔';
+    case 'failed':
+      return '✖';
+    case 'skipped':
+      return '⚠';
+    case 'manual':
+      return 'ℹ';
+  }
+}
+
+/**
+ * Steps already shown live via `onProgress` (currently only android.ts's
+ * Wi-Fi/QR pairing step) land in `printedLive` — `printTargetReports`'s
+ * later pass over the same step objects (they're the very same `SetupStep`
+ * returned inside the final `TargetOutcome`, not copies) skips them rather
+ * than printing the message — and re-rendering the QR code — a second time.
+ */
+const printedLive = new WeakSet<SetupStep>();
+
+/**
+ * QR rendering (`qrcode-terminal`) lives in `presentation/`, which
+ * `usecase/setup` may not depend on (see `boundaries/dependencies` in
+ * eslint.config.mjs) — so a step that wants one just carries the URL
+ * (`SetupStep.qrUrl`) and this composition-root function does the actual
+ * rendering. Shared by `printTargetReports`'s final pass over a completed
+ * `TargetOutcome` and by `runSetupCommand`'s `onProgress` wiring below,
+ * which calls this the moment a step is ready rather than only once
+ * everything is (see `SetupContext.onProgress`'s doc comment — currently
+ * just android.ts's Wi-Fi/QR pairing fallback, so its QR code is on screen
+ * before its own multi-minute wait for a download, not just after).
+ */
+async function printStep(step: SetupStep): Promise<void> {
+  printedLive.add(step);
+  console.log(`  ${stepIcon(step.status)} ${step.message}`);
+  if (step.qrUrl) console.log(await renderQrCode(step.qrUrl));
+}
+
+async function printTargetReports(reports: TargetReport[]): Promise<void> {
+  for (const { target, outcome } of reports) {
+    console.log(`\n${target}:`);
+    for (const step of outcome.steps) {
+      if (!printedLive.has(step)) await printStep(step);
+    }
+  }
+}
+
+/** `detour doctor`'s (and, less commonly, `setup`/`cleanup`'s) exit code: nonzero when anything came back `'failed'`, so it's scriptable in CI the way `detour status` already is. */
+function hasFailedStep(reports: TargetReport[]): boolean {
+  return reports.some(({ outcome }) => outcome.steps.some((step) => step.status === 'failed'));
+}
+
+/** Validates `--target`, narrowing it to `SetupTarget` — a plain guard clause doesn't narrow `options.target` itself since it's a mutable object property, so this gives `runSetupCommand` a local value TypeScript can track. */
+function parseSetupTarget(value: string | undefined): SetupTarget | undefined {
+  if (value === undefined) return undefined;
+  if (!isSetupTarget(value)) throw new Error(`--target must be one of ${SETUP_TARGETS.join(', ')} (got: ${value})`);
+  return value;
+}
+
+/**
+ * Shared body for `detour setup`/`doctor`/`cleanup` (issue #65) — the three
+ * commands differ only in which `SetupMode` they run and whether they issue
+ * the CA cert (`setup`) or merely look for one already issued
+ * (`doctor`/`cleanup`, which must never have the side effect of generating
+ * one just by asking a readiness question).
+ */
+async function runSetupCommand(mode: SetupMode, options: SetupCommandOptions): Promise<void> {
+  try {
+    const target = parseSetupTarget(options.target);
+    const port = parsePort(options.port, '--port');
+
+    let certPath: string;
+    let certMissing = false;
+    if (mode === 'setup') {
+      certPath = await ensureCaCert();
+      console.log(`✔ CA certificate ready at ${certPath}`);
+    } else {
+      certPath = caCertPath();
+      certMissing = !fs.existsSync(certPath);
+      if (certMissing) {
+        // `doctor` reports readiness and exits non-zero on anything off —
+        // no cert generated at all means nothing downstream (trust,
+        // proxy) can possibly be configured yet, even for a target whose
+        // own doctor check doesn't verify cert trust directly (e.g.
+        // linux's, which just notes it can't check that automatically),
+        // so this has to fail loudly rather than the informational-only
+        // note it used to be. `cleanup` doesn't carry the same "report
+        // readiness" promise — its job is reverting proxy config
+        // regardless of cert state — so it keeps the plain ℹ note.
+        console.log(
+          mode === 'doctor'
+            ? `✖ No CA certificate generated yet (run \`detour setup\` first) — it would live at ${certPath}.`
+            : `ℹ No CA certificate generated yet (run \`detour setup\` first) — it would live at ${certPath}.`,
+        );
+      }
+    }
+
+    const reports = await runTargets(mode, target ? [target] : undefined, {
+      hostOverride: options.host,
+      certPath,
+      proxyPort: port,
+      runner: nodeCommandRunner,
+      certPairingServer: nodeCertPairingServer,
+      hostPlatform: process.platform,
+      detectedLanAddresses: lanAddresses(),
+      explicitTarget: target !== undefined,
+      onProgress: printStep,
+    });
+    await printTargetReports(reports);
+    if (hasFailedStep(reports) || (mode === 'doctor' && certMissing)) process.exitCode = 1;
+  } catch (err) {
+    console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  }
 }
 
 interface StartOptions {
@@ -483,26 +617,6 @@ function isDashboardBuilt(): boolean {
   return fs.existsSync(path.join(WEB_DIST_DIR, 'index.html'));
 }
 
-/**
- * Every non-internal IPv4 address this machine currently has — used by the
- * `--lan`/`lanAccess` startup banner to print an address another device on
- * the network can actually reach, since `localhost` (what the banner prints
- * for everything else) resolves to whatever device is asking, not this one.
- * Order matches `os.networkInterfaces()`'s own (insertion order of the
- * underlying OS call) — not sorted or deduped further, since a machine
- * legitimately reachable at more than one address (Wi-Fi + Ethernet, a VPN)
- * should have every one of them printed.
- */
-function lanAddresses(): string[] {
-  const addresses: string[] = [];
-  for (const iface of Object.values(os.networkInterfaces())) {
-    for (const info of iface ?? []) {
-      if (info.family === 'IPv4' && !info.internal) addresses.push(info.address);
-    }
-  }
-  return addresses;
-}
-
 function printStartupBanner(info: {
   host: string;
   proxyPort: number;
@@ -795,6 +909,56 @@ export function createCli(): Command {
         console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
+    });
+
+  const setupTargetOption = [
+    '--target <target>',
+    `Limit to one target: ${SETUP_TARGETS.join(', ')} (default: every target).`,
+  ] as const;
+  const setupPortOption = [
+    '-p, --port <port>',
+    "Proxy port to advise/configure the target to use (matches the --port you'll pass to `detour start`).",
+    '8080',
+  ] as const;
+  const setupHostOption = [
+    '--host <host>',
+    "Override the address advertised to the target (default: localhost for a target that is this machine, this machine's auto-detected LAN IP for a separate device like Android).",
+  ] as const;
+
+  program
+    .command('setup')
+    .description(
+      'Prepares a target device/OS to send traffic through detour (issue #65): issues the local CA cert (first run) and, for android/mac/linux, trusts it and configures the proxy automatically (android with --target and no adb device falls back to a QR-code Wi-Fi pairing flow for the cert); ios trusts it on a booted Simulator (xcrun simctl) but still prints manual steps for a physical device — windows is manual-only.',
+    )
+    .option(...setupTargetOption)
+    .option(...setupPortOption)
+    .option(...setupHostOption)
+    .action(async (options: SetupCommandOptions) => {
+      await runSetupCommand('setup', options);
+    });
+
+  program
+    .command('doctor')
+    .description(
+      "Checks whether a target is ready for (or already has) detour's proxy/cert set up (issue #65) — never generates a CA cert itself, unlike `detour setup`.",
+    )
+    .option(...setupTargetOption)
+    .option(...setupPortOption)
+    .option(...setupHostOption)
+    .action(async (options: SetupCommandOptions) => {
+      await runSetupCommand('doctor', options);
+    });
+
+  program
+    .command('cleanup')
+    .description(
+      "Clears the proxy configuration `detour setup` applied to a target (issue #65) — never touches rules.json, `detour config`, or the target's CA cert trust.",
+    )
+    .option(...setupTargetOption)
+    .option(...setupPortOption)
+    .option(...setupHostOption)
+    .action(async (options: SetupCommandOptions) => {
+      await runSetupCommand('cleanup', options);
     });
 
   const rules = program.command('rules').description('Manage rules.json (the declarative rule engine config)');
