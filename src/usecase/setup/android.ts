@@ -100,6 +100,23 @@ export function classifyDeviceKind(serial: string): string {
 }
 
 /**
+ * Worded around `proxyValueMatches` (three-valued, not a plain `boolean` —
+ * see `runAndroidDoctor`'s own comment on it) so `runAndroidDoctor`'s
+ * mobile-data-active step never claims more than what the proxy-value check
+ * right above it actually established: a known-correct value, a
+ * known-mismatched one, or one that couldn't even be read.
+ */
+function mobileDataActiveMessage(proxyValueMatches: boolean | undefined): string {
+  if (proxyValueMatches === true) {
+    return "This device's active network is mobile data, not Wi-Fi — Android's global proxy setting only applies to Wi-Fi traffic, so it isn't actually being used right now even though it's configured correctly above. Turn off mobile data (or otherwise make Wi-Fi the preferred network) and re-run doctor.";
+  }
+  if (proxyValueMatches === false) {
+    return "This device's active network is mobile data, not Wi-Fi — Android's global proxy setting only applies to Wi-Fi traffic, so even once the proxy value above is fixed, it still won't take effect until Wi-Fi (not mobile data) is this device's active network too.";
+  }
+  return "This device's active network is mobile data, not Wi-Fi — Android's global proxy setting only applies to Wi-Fi traffic, so it won't take effect until Wi-Fi (not mobile data) is this device's active network too, whatever the proxy value turns out to be (it couldn't be read above). Turn off mobile data (or otherwise make Wi-Fi the preferred network) and re-run doctor.";
+}
+
+/**
  * Best-effort: whether `serial`'s currently active default network is
  * Wi-Fi — `runAndroidSetup` writes the proxy to Android's *global*
  * `http_proxy` setting, which only ever applies to Wi-Fi traffic; a device
@@ -320,7 +337,13 @@ export async function runAndroidDoctor(ctx: SetupContext): Promise<TargetOutcome
   // Tracked so the Wi-Fi/mobile-data diagnostic below can word itself
   // correctly either way — that step is added regardless of whether this
   // one actually succeeded, so its own wording can't just assume it did.
-  let proxyValueMatches = false;
+  // Three-valued, not just a `boolean`: a caught error below means the
+  // proxy value itself was never actually read, distinct from "read
+  // successfully and it happened not to match" — collapsing that into
+  // `false` would make the diagnostic below claim a specific mismatch
+  // ("even once the proxy value above is fixed") when the truth is closer
+  // to "couldn't even check that".
+  let proxyValueMatches: boolean | undefined;
   try {
     const { stdout } = await ctx.runner.run('adb', ['-s', serial, 'shell', 'settings', 'get', 'global', 'http_proxy']);
     const current = stdout.trim();
@@ -342,12 +365,7 @@ export async function runAndroidDoctor(ctx: SetupContext): Promise<TargetOutcome
   // `isWifiActiveNetwork`'s doc comment.
   const wifiActive = await isWifiActiveNetwork(ctx, serial);
   if (wifiActive === false) {
-    steps.push({
-      status: 'failed',
-      message: proxyValueMatches
-        ? "This device's active network is mobile data, not Wi-Fi — Android's global proxy setting only applies to Wi-Fi traffic, so it isn't actually being used right now even though it's configured correctly above. Turn off mobile data (or otherwise make Wi-Fi the preferred network) and re-run doctor."
-        : "This device's active network is mobile data, not Wi-Fi — Android's global proxy setting only applies to Wi-Fi traffic, so even once the proxy value above is fixed, it still won't take effect until Wi-Fi (not mobile data) is this device's active network too.",
-    });
+    steps.push({ status: 'failed', message: mobileDataActiveMessage(proxyValueMatches) });
   }
 
   steps.push({

@@ -351,6 +351,25 @@ describe('runAndroidDoctor', () => {
     expect(wifiStep?.message).toContain('even once the proxy value above is fixed');
   });
 
+  it('doesn\'t claim a specific proxy mismatch either, when the proxy value itself couldn\'t even be read — a third, distinct outcome from either "matches" or "known mismatch"', async () => {
+    const runner = fakeRunner((command, args) => {
+      if (args[0] === 'devices') return { stdout: ONE_DEVICE, stderr: '' };
+      if (args.includes('get')) throw new CommandRunError('device offline', 'adb');
+      if (args.includes('dumpsys')) {
+        return {
+          stdout: 'Active default network: 171\nNetworkAgentInfo{network{171} ... nc{[ Transports: CELLULAR ... ]}\n',
+          stderr: '',
+        };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    const outcome = await runAndroidDoctor(ctxWith(runner));
+    const wifiStep = outcome.steps.find((s) => s.status === 'failed' && s.message.includes('mobile data'));
+    expect(wifiStep?.message).not.toContain('configured correctly above');
+    expect(wifiStep?.message).not.toContain('even once the proxy value above is fixed');
+    expect(wifiStep?.message).toContain("it couldn't be read above");
+  });
+
   it('adds no extra step when Wi-Fi is the active network', async () => {
     const runner = fakeRunner((command, args) => {
       if (args[0] === 'devices') return { stdout: ONE_DEVICE, stderr: '' };
