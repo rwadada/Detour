@@ -329,7 +329,26 @@ describe('runAndroidDoctor', () => {
       return { stdout: '', stderr: '' };
     });
     const outcome = await runAndroidDoctor(ctxWith(runner));
-    expect(outcome.steps.some((s) => s.status === 'failed' && s.message.includes('mobile data'))).toBe(true);
+    const wifiStep = outcome.steps.find((s) => s.status === 'failed' && s.message.includes('mobile data'));
+    expect(wifiStep?.message).toContain('configured correctly above');
+  });
+
+  it('doesn\'t claim the proxy is "configured correctly above" when that step itself already reported a mismatch — both problems are real, but only one of them is true', async () => {
+    const runner = fakeRunner((command, args) => {
+      if (args[0] === 'devices') return { stdout: ONE_DEVICE, stderr: '' };
+      if (args.includes('get')) return { stdout: 'other-proxy:9999\n', stderr: '' };
+      if (args.includes('dumpsys')) {
+        return {
+          stdout: 'Active default network: 171\nNetworkAgentInfo{network{171} ... nc{[ Transports: CELLULAR ... ]}\n',
+          stderr: '',
+        };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    const outcome = await runAndroidDoctor(ctxWith(runner));
+    const wifiStep = outcome.steps.find((s) => s.status === 'failed' && s.message.includes('mobile data'));
+    expect(wifiStep?.message).not.toContain('configured correctly above');
+    expect(wifiStep?.message).toContain('even once the proxy value above is fixed');
   });
 
   it('adds no extra step when Wi-Fi is the active network', async () => {

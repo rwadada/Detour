@@ -15,14 +15,17 @@ export interface DeviceChoice {
  */
 export interface DevicePicker {
   /**
-   * Whether this environment can actually prompt anyone right now
-   * (non-interactive stdin — CI, a script, a piped invocation — never can).
-   * `android.ts`'s `requireOneDevice` checks this *before* building each
-   * device's `DeviceChoice` (which costs an extra `adb shell dumpsys
-   * connectivity` round trip per device — see `describeDeviceChoice`), so a
-   * non-interactive run skips that work entirely rather than paying for
-   * diagnostics nobody will ever see before falling back to its original
-   * fail-outright behavior anyway.
+   * Whether this environment can actually prompt anyone right now — never
+   * true for a non-interactive stdin (CI, a script, a piped invocation:
+   * nothing there could ever answer), and a real implementation should
+   * check its output side too, not just its input (see
+   * `readlineDevicePicker`'s own doc comment for why stdin alone isn't
+   * enough). `android.ts`'s `requireOneDevice` checks this *before*
+   * building each device's `DeviceChoice` (which costs an extra `adb shell
+   * dumpsys connectivity` round trip per device — see
+   * `describeDeviceChoice`), so a non-interactive run skips that work
+   * entirely rather than paying for diagnostics nobody will ever see
+   * before falling back to its original fail-outright behavior anyway.
    */
   isInteractive(): boolean;
   /**

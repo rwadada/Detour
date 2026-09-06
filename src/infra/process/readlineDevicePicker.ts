@@ -46,14 +46,17 @@ export async function promptForChoiceIndex(rl: readline.Interface, choiceCount: 
 /**
  * Real `DevicePicker` (see that file's doc comment) — a plain numbered
  * `readline` prompt on the real terminal. `isInteractive()` is `false`
- * whenever `process.stdin` isn't an interactive TTY: a CI job, a
- * piped/redirected invocation, or any other script driving `detour setup`
- * has nothing that could ever answer a prompt, and `pick()` would otherwise
- * just hang forever waiting on stdin.
+ * whenever *either* `process.stdin` or `process.stdout` isn't an
+ * interactive TTY: stdin alone isn't enough — `detour doctor > out.txt`
+ * (stdout redirected to a file, stdin still the real terminal) would still
+ * pass a stdin-only check, but the prompt and numbered menu `pick()` prints
+ * go straight into that file where nobody's watching, leaving whoever's
+ * running it looking at what appears to be a hung command while it waits
+ * on an answer to a question they never saw.
  */
 export const readlineDevicePicker: DevicePicker = {
   isInteractive(): boolean {
-    return Boolean(process.stdin.isTTY);
+    return Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
   },
 
   async pick(choices: DeviceChoice[]): Promise<string | undefined> {

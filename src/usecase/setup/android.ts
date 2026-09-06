@@ -317,11 +317,16 @@ export async function runAndroidDoctor(ctx: SetupContext): Promise<TargetOutcome
     return { steps };
   }
 
+  // Tracked so the Wi-Fi/mobile-data diagnostic below can word itself
+  // correctly either way — that step is added regardless of whether this
+  // one actually succeeded, so its own wording can't just assume it did.
+  let proxyValueMatches = false;
   try {
     const { stdout } = await ctx.runner.run('adb', ['-s', serial, 'shell', 'settings', 'get', 'global', 'http_proxy']);
     const current = stdout.trim();
+    proxyValueMatches = current === proxyValue(ctx);
     steps.push(
-      current === proxyValue(ctx)
+      proxyValueMatches
         ? { status: 'done', message: `Device proxy is ${current}.` }
         : { status: 'failed', message: `Device proxy is "${current}", expected ${proxyValue(ctx)}.` },
     );
@@ -339,8 +344,9 @@ export async function runAndroidDoctor(ctx: SetupContext): Promise<TargetOutcome
   if (wifiActive === false) {
     steps.push({
       status: 'failed',
-      message:
-        "This device's active network is mobile data, not Wi-Fi — Android's global proxy setting only applies to Wi-Fi traffic, so it isn't actually being used right now even though it's configured correctly above. Turn off mobile data (or otherwise make Wi-Fi the preferred network) and re-run doctor.",
+      message: proxyValueMatches
+        ? "This device's active network is mobile data, not Wi-Fi — Android's global proxy setting only applies to Wi-Fi traffic, so it isn't actually being used right now even though it's configured correctly above. Turn off mobile data (or otherwise make Wi-Fi the preferred network) and re-run doctor."
+        : "This device's active network is mobile data, not Wi-Fi — Android's global proxy setting only applies to Wi-Fi traffic, so even once the proxy value above is fixed, it still won't take effect until Wi-Fi (not mobile data) is this device's active network too.",
     });
   }
 

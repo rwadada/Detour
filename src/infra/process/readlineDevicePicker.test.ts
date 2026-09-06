@@ -1,7 +1,7 @@
 import readline from 'node:readline';
 import { PassThrough } from 'node:stream';
-import { describe, expect, it } from 'vitest';
-import { promptForChoiceIndex } from './readlineDevicePicker';
+import { afterEach, describe, expect, it } from 'vitest';
+import { promptForChoiceIndex, readlineDevicePicker } from './readlineDevicePicker';
 
 /** A `readline.Interface` over fake, in-memory streams — no real terminal/`process.stdin` involved, so a test can write/close the input on its own schedule. */
 function fakeReadlineInterface(): { rl: readline.Interface; input: PassThrough } {
@@ -10,6 +10,34 @@ function fakeReadlineInterface(): { rl: readline.Interface; input: PassThrough }
   output.on('data', () => {}); // drain silently — this file doesn't assert on prompt text
   return { rl: readline.createInterface({ input, output }), input };
 }
+
+describe('readlineDevicePicker.isInteractive', () => {
+  const originalStdinIsTTY = process.stdin.isTTY;
+  const originalStdoutIsTTY = process.stdout.isTTY;
+
+  afterEach(() => {
+    process.stdin.isTTY = originalStdinIsTTY;
+    process.stdout.isTTY = originalStdoutIsTTY;
+  });
+
+  it('is true only when both stdin and stdout are TTYs', () => {
+    process.stdin.isTTY = true;
+    process.stdout.isTTY = true;
+    expect(readlineDevicePicker.isInteractive()).toBe(true);
+  });
+
+  it("is false when stdin isn't a TTY, even if stdout is", () => {
+    process.stdin.isTTY = false;
+    process.stdout.isTTY = true;
+    expect(readlineDevicePicker.isInteractive()).toBe(false);
+  });
+
+  it("is false when stdout isn't a TTY (redirected to a file, say), even if stdin still is — otherwise the prompt/menu pick() prints would go somewhere nobody's watching, looking like a hang while it waits on an answer to a question no one ever saw", () => {
+    process.stdin.isTTY = true;
+    process.stdout.isTTY = false;
+    expect(readlineDevicePicker.isInteractive()).toBe(false);
+  });
+});
 
 describe('promptForChoiceIndex', () => {
   it('resolves to the 0-based index of a valid first answer', async () => {
