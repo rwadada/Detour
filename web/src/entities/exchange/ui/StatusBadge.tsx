@@ -1,7 +1,14 @@
 import { Badge } from '@/shared/ui';
 import { cn } from '@/shared/lib/utils';
 
-function statusColorVar(status?: number): string {
+function statusColorVar(status?: number, error?: string): string {
+  // Checked first — an exchange can have `error` set with no `statusCode`
+  // at all (a proxy-level failure before any response arrived; every
+  // passthrough tunnel failure), and until this was added that fell
+  // through to the `status === undefined` branch below: the label already
+  // showed `ERR` (see `statusLabel`), but the color stayed the "pending"
+  // gray instead of the red a failure should be.
+  if (error) return 'var(--status-5xx)';
   if (status === undefined) return 'var(--status-pending)';
   if (status >= 500) return 'var(--status-5xx)';
   if (status >= 400) return 'var(--status-4xx)';
@@ -9,15 +16,29 @@ function statusColorVar(status?: number): string {
   return 'var(--status-2xx)';
 }
 
-function statusLabel(status?: number, error?: string): string {
+function statusLabel(status?: number, error?: string, passthrough?: boolean): string {
   if (error) return 'ERR';
+  // Checked before the `status === undefined` fallback below, not after —
+  // a passthrough tunnel's `statusCode` is never anything *but* undefined
+  // (see `CapturedExchange.passthrough`'s doc comment), so without this it
+  // would show the same '···' as a request still genuinely in flight,
+  // forever, even once the tunnel's long since closed.
+  if (passthrough) return 'TLS';
   if (status !== undefined) return String(status);
   return '···';
 }
 
-export function StatusBadge({ status, error }: { status?: number; error?: string }) {
-  const color = statusColorVar(status);
-  const label = statusLabel(status, error);
+export function StatusBadge({
+  status,
+  error,
+  passthrough,
+}: {
+  status?: number;
+  error?: string;
+  passthrough?: boolean;
+}) {
+  const color = statusColorVar(status, error);
+  const label = statusLabel(status, error, passthrough);
   return (
     <Badge
       className={cn('min-w-[3.25rem] justify-center border')}

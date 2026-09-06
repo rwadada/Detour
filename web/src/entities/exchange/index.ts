@@ -4,6 +4,7 @@ import { createExchangeStore } from './model/createExchangeStore';
 export {
   DEFAULT_FILTERS,
   createExchangeStore,
+  isPassthroughDone,
   matchesFilters,
   type Filters,
   type ExchangeState,

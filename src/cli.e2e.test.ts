@@ -507,8 +507,11 @@ function setBlockHosts(dashboardPort: number, state: BlockHostsProfile): Promise
 /** The subset of `CapturedExchange` (see domain/exchange/types.ts) these tests inspect. */
 interface DashboardExchange {
   url: string;
+  host?: string;
   requestHeaders?: Record<string, string | string[]>;
   responseHeaders?: Record<string, string | string[]>;
+  passthrough?: boolean;
+  error?: string;
 }
 
 /**
@@ -1142,6 +1145,37 @@ describe('detour start (CLI, end-to-end)', () => {
         await original.close();
         await routed.close();
       }
+    });
+
+    it('shows a passthrough CONNECT tunnel in the dashboard as the destination it went to — never its (unobservable) contents', async () => {
+      const upstream = await startMarkerEchoServer('upstream');
+      cli = await startDetourCli();
+      await setIntercept(cli.dashboardPort, false);
+
+      const url = `https://127.0.0.1:${upstream.port}`;
+      const requestExchange = (await waitForExchange(cli.dashboardPort, 'request', url)).exchange;
+      const responseExchange = (await waitForExchange(cli.dashboardPort, 'response', url)).exchange;
+
+      let socket: net.Socket | undefined;
+      try {
+        socket = await connectTunnel(cli.port, '127.0.0.1', upstream.port);
+        expect(await writeAndRead(socket, 'ping')).toBe('upstream:ping');
+      } finally {
+        // Triggers the tunnel's own 'close' teardown in proxyServer.ts,
+        // which is what emits the `response` half below — a passthrough
+        // tunnel otherwise stays open indefinitely, same as any other
+        // CONNECT tunnel.
+        socket?.destroy();
+        await upstream.close();
+      }
+
+      const request = await requestExchange;
+      expect(request.passthrough).toBe(true);
+      expect(request.host).toBe(`127.0.0.1:${upstream.port}`);
+
+      const response = await responseExchange;
+      expect(response.passthrough).toBe(true);
+      expect(response.error).toBeUndefined();
     });
   });
 

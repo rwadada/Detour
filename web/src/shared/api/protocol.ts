@@ -35,6 +35,8 @@ export interface CapturedExchange {
   ruleName?: string;
   /** Set only on the transient snapshot sent alongside a `breakpoint` message: which phase this exchange is currently paused at. Cleared on the next `request`/`response` update once resumed/aborted. */
   breakpoint?: 'request' | 'response';
+  /** A raw TLS passthrough tunnel (Intercept off / host outside Focus) rather than a decrypted exchange — see `src/domain/exchange/types.ts`'s `CapturedExchange.passthrough`. Every field beyond the identifying/timing ones is a meaningless placeholder when this is set. */
+  passthrough?: true;
 }
 
 export interface ProxyErrorEvent {

@@ -3,6 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import {
   BreakpointBadge,
+  isPassthroughDone,
   matchesFilters,
   MethodBadge,
   ProtocolBadge,
@@ -276,7 +277,13 @@ function LogRow({
   style: CSSProperties;
 }) {
   const columnWidths = useLogViewStore((s) => s.columnWidths);
-  const pending = exchange.statusCode === undefined && !exchange.error;
+  // A passthrough tunnel's `statusCode` is never set even once it's closed
+  // (see `CapturedExchange.passthrough`), so it can't use the same
+  // "pending" test as every other exchange — that would leave a *finished*
+  // tunnel dimmed at `opacity-60` forever, indistinguishable from one still
+  // open. Its `finishedAt` is what actually distinguishes the two instead.
+  const passthroughDone = isPassthroughDone(exchange);
+  const pending = exchange.passthrough ? !passthroughDone : exchange.statusCode === undefined && !exchange.error;
   const inCompare = compareOrder >= 0;
   const bar = timelineSpan ? computeTimelineBar(exchange, timelineSpan) : null;
   return (
@@ -307,7 +314,7 @@ function LogRow({
         {exchange.breakpoint ? (
           <BreakpointBadge phase={exchange.breakpoint} />
         ) : (
-          <StatusBadge status={exchange.statusCode} error={exchange.error} />
+          <StatusBadge status={exchange.statusCode} error={exchange.error} passthrough={passthroughDone} />
         )}
       </span>
       <span className="min-w-0 flex-1 truncate pr-2">

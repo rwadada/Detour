@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fakeDashboardConnection, type CapturedExchange, type DashboardServerMessage } from '@/shared/api';
-import { DEFAULT_FILTERS, createExchangeStore, matchesFilters } from './createExchangeStore';
+import { DEFAULT_FILTERS, createExchangeStore, isPassthroughDone, matchesFilters } from './createExchangeStore';
 
 // `scheduleFlush` batches upserts via `requestAnimationFrame` — not
 // available in vitest's `node` environment, and not something these tests
@@ -226,6 +226,20 @@ describe('createExchangeStore', () => {
   });
 });
 
+describe('isPassthroughDone', () => {
+  it('is false for a non-passthrough exchange, even a finished one', () => {
+    expect(isPassthroughDone(exchange({ statusCode: 200, finishedAt: 100 }))).toBe(false);
+  });
+
+  it('is false for a passthrough tunnel still open (no finishedAt yet)', () => {
+    expect(isPassthroughDone(exchange({ passthrough: true }))).toBe(false);
+  });
+
+  it('is true for a passthrough tunnel that has closed', () => {
+    expect(isPassthroughDone(exchange({ passthrough: true, finishedAt: 100 }))).toBe(true);
+  });
+});
+
 describe('matchesFilters', () => {
   it('matches everything under the default (unfiltered) filters', () => {
     expect(matchesFilters(exchange(), DEFAULT_FILTERS)).toBe(true);
@@ -240,6 +254,18 @@ describe('matchesFilters', () => {
     expect(matchesFilters(exchange({ statusCode: 404 }), { ...DEFAULT_FILTERS, status: '4xx' })).toBe(true);
     expect(matchesFilters(exchange({ statusCode: 200 }), { ...DEFAULT_FILTERS, status: '4xx' })).toBe(false);
     expect(matchesFilters(exchange(), { ...DEFAULT_FILTERS, status: 'pending' })).toBe(true);
+  });
+
+  it("matches a closed passthrough tunnel only under 'ALL' status — never 'pending' (it'll never get a statusCode) nor any concrete class (it never had one)", () => {
+    const closedTunnel = exchange({ passthrough: true, finishedAt: 100 });
+    expect(matchesFilters(closedTunnel, { ...DEFAULT_FILTERS, status: 'ALL' })).toBe(true);
+    expect(matchesFilters(closedTunnel, { ...DEFAULT_FILTERS, status: 'pending' })).toBe(false);
+    expect(matchesFilters(closedTunnel, { ...DEFAULT_FILTERS, status: '2xx' })).toBe(false);
+  });
+
+  it("matches a still-open passthrough tunnel under 'pending', same as any other in-flight exchange", () => {
+    const openTunnel = exchange({ passthrough: true });
+    expect(matchesFilters(openTunnel, { ...DEFAULT_FILTERS, status: 'pending' })).toBe(true);
   });
 
   it('filters by a case-insensitive URL substring', () => {
