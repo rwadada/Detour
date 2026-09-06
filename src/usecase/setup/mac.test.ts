@@ -139,6 +139,19 @@ describe('runMacDoctor', () => {
     const outcome = await runMacDoctor(ctxWith(runner));
     expect(outcome.steps[1]!.status).toBe('failed');
   });
+
+  it('reports failed when the plain web proxy matches but the secure (HTTPS) one does not (setup configures both)', async () => {
+    const runner = fakeRunner({
+      security: () => ({ stdout: '', stderr: '' }),
+      networksetup: (args) => {
+        if (args[0] === '-listallnetworkservices') return { stdout: LIST_SERVICES, stderr: '' };
+        if (args[0] === '-getsecurewebproxy') return { stdout: 'Enabled: No\nServer: \nPort: \n', stderr: '' };
+        return { stdout: 'Enabled: Yes\nServer: 127.0.0.1\nPort: 8080\n', stderr: '' };
+      },
+    });
+    const outcome = await runMacDoctor(ctxWith(runner));
+    expect(outcome.steps[1]!.status).toBe('failed');
+  });
 });
 
 describe('runMacCleanup', () => {

@@ -34,6 +34,9 @@ async function bootedSimulators(ctx: SetupContext): Promise<SimctlDevice[]> {
   return parseSimulators(stdout).filter((device) => device.state === 'Booted');
 }
 
+/** `orchestrator.ts` lets ios's dispatch through even when it couldn't resolve a LAN IP (Simulator automation doesn't need one) — leaving `ctx.proxyHost` empty in that case rather than a usable address. `physicalDeviceSteps` below is the one place ios *does* need one, so an empty value gets a plain-language placeholder instead of silently printing a blank "Server/Port to  / 8080". */
+const UNRESOLVED_PROXY_HOST_PLACEHOLDER = "<no LAN IP detected — rerun with --host and this machine's LAN IP>";
+
 /**
  * A physical iOS device has no CLI equivalent to `simctl keychain`/proxy
  * config — Apple's own device-automation tool, `devicectl` (Xcode 15+),
@@ -43,7 +46,8 @@ async function bootedSimulators(ctx: SetupContext): Promise<SimctlDevice[]> {
  * the manual AirDrop-and-Settings steps, in every mode.
  */
 function physicalDeviceSteps(mode: SetupMode, ctx: SetupContext): SetupStep[] {
-  return manualSteps(mode, 'ios', { certPath: ctx.certPath, proxyHost: ctx.proxyHost, proxyPort: ctx.proxyPort });
+  const proxyHost = ctx.proxyHost || UNRESOLVED_PROXY_HOST_PLACEHOLDER;
+  return manualSteps(mode, 'ios', { certPath: ctx.certPath, proxyHost, proxyPort: ctx.proxyPort });
 }
 
 export async function runIosSetup(ctx: SetupContext): Promise<TargetOutcome> {

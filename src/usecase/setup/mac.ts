@@ -74,16 +74,22 @@ export async function runMacDoctor(ctx: SetupContext): Promise<TargetOutcome> {
 
   try {
     const service = await activeNetworkService(ctx);
+    // `setup` configures *both* the plain web proxy and the secure (HTTPS)
+    // one — checking only `-getwebproxy` would report success even with
+    // HTTPS traffic left unproxied (the secure proxy off or pointed
+    // elsewhere), so both are checked and both must match.
     const { stdout } = await ctx.runner.run('networksetup', ['-getwebproxy', service]);
+    const { stdout: secureStdout } = await ctx.runner.run('networksetup', ['-getsecurewebproxy', service]);
     const state = parseGetWebProxy(stdout);
-    const matches = state.enabled && state.server === ctx.proxyHost && state.port === String(ctx.proxyPort);
-    const currentDescription = state.enabled ? `${state.server}:${state.port}` : 'disabled';
+    const secureState = parseGetWebProxy(secureStdout);
+    const expected = `${ctx.proxyHost}:${ctx.proxyPort}`;
+    const matches = proxyStateMatches(state, ctx) && proxyStateMatches(secureState, ctx);
     steps.push(
       matches
-        ? { status: 'done', message: `"${service}" is proxied through ${ctx.proxyHost}:${ctx.proxyPort}.` }
+        ? { status: 'done', message: `"${service}" is proxied (HTTP and HTTPS) through ${expected}.` }
         : {
             status: 'failed',
-            message: `"${service}"'s web proxy is ${currentDescription}, expected ${ctx.proxyHost}:${ctx.proxyPort}.`,
+            message: `"${service}"'s web proxy is ${describeProxyState(state)}, secure web proxy is ${describeProxyState(secureState)}, expected both to be ${expected}.`,
           },
     );
   } catch (err) {
@@ -110,8 +116,14 @@ export async function runMacCleanup(ctx: SetupContext): Promise<TargetOutcome> {
   return { steps };
 }
 
-/** Parses `networksetup -getwebproxy <service>`'s `Key: Value` lines into the fields these usecases care about. */
-export function parseGetWebProxy(stdout: string): { enabled: boolean; server?: string; port?: string } {
+interface GetWebProxyState {
+  enabled: boolean;
+  server?: string;
+  port?: string;
+}
+
+/** Parses `networksetup -getwebproxy <service>`'s (and `-getsecurewebproxy`'s — same format) `Key: Value` lines into the fields these usecases care about. */
+export function parseGetWebProxy(stdout: string): GetWebProxyState {
   const fields = new Map<string, string>();
   for (const line of stdout.split('\n')) {
     const [key, ...rest] = line.split(':');
@@ -119,4 +131,12 @@ export function parseGetWebProxy(stdout: string): { enabled: boolean; server?: s
     fields.set(key!.trim(), rest.join(':').trim());
   }
   return { enabled: fields.get('Enabled') === 'Yes', server: fields.get('Server'), port: fields.get('Port') };
+}
+
+function proxyStateMatches(state: GetWebProxyState, ctx: SetupContext): boolean {
+  return state.enabled && state.server === ctx.proxyHost && state.port === String(ctx.proxyPort);
+}
+
+function describeProxyState(state: GetWebProxyState): string {
+  return state.enabled ? `${state.server}:${state.port}` : 'disabled';
 }

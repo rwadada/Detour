@@ -44,7 +44,7 @@ function fakeRunner(handler: (command: string, args: string[]) => CommandResult)
   };
 }
 
-function ctxWith(runner: CommandRunner): SetupContext {
+function ctxWith(runner: CommandRunner, overrides: Partial<SetupContext> = {}): SetupContext {
   return {
     certPath: '/ca.pem',
     proxyHost: '203.0.113.5',
@@ -53,6 +53,7 @@ function ctxWith(runner: CommandRunner): SetupContext {
     certPairingServer: unusedCertPairingServer,
     hostPlatform: 'darwin',
     explicitTarget: false,
+    ...overrides,
   };
 }
 
@@ -118,5 +119,12 @@ describe('runIosCleanup', () => {
     // cleanup never touches CA cert trust — its manual step should only be
     // about the proxy, not repeat the cert-install instructions.
     expect(outcome.steps.some((s) => s.message.includes('Trust the CA cert'))).toBe(false);
+  });
+
+  it('substitutes a plain-language placeholder when proxyHost is unresolved, instead of a blank address', async () => {
+    const runner = fakeRunner(() => ({ stdout: '', stderr: '' }));
+    const outcome = await runIosCleanup(ctxWith(runner, { proxyHost: '' }));
+    expect(outcome.steps[0]!.message).toContain('no LAN IP detected');
+    expect(outcome.steps[0]!.message).not.toMatch(/to\s+\/\s*8080/);
   });
 });

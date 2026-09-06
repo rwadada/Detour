@@ -89,9 +89,24 @@ describe('runForTarget', () => {
     expect(outcome.steps).toEqual([{ status: 'failed', message: expect.stringContaining('No authorized device') }]);
   });
 
-  it("ios's cleanup still requires a resolvable proxy address (unlike android, its manual steps print it)", async () => {
+  it.each(['setup', 'doctor'] as const)(
+    "ios's %s proceeds to real Simulator automation even with no resolvable proxy address (Simulator automation never reads proxyHost)",
+    async (mode) => {
+      const outcome = await runForTarget(mode, 'ios', inputsWith({ detectedLanAddresses: [] }));
+      // Dispatched to ios.ts's real automation rather than bailing out on
+      // the unresolvable address — the noop runner reports no booted
+      // Simulator, so that's what it reports instead, proving proxy-host
+      // resolution didn't block dispatch the way it rightly does for
+      // android's setup/doctor above.
+      expect(outcome.steps[0]!.status).toBe('skipped');
+      expect(outcome.steps[0]!.message).toContain('No booted iOS Simulator');
+    },
+  );
+
+  it("ios's cleanup proceeds too, with a plain-language placeholder standing in for the unresolvable address", async () => {
     const outcome = await runForTarget('cleanup', 'ios', inputsWith({ detectedLanAddresses: [] }));
-    expect(outcome.steps).toEqual([{ status: 'failed', message: expect.stringContaining('LAN IP') }]);
+    expect(outcome.steps[0]!.status).toBe('manual');
+    expect(outcome.steps[0]!.message).toContain('no LAN IP detected');
   });
 
   it('prefixes manual steps for doctor and cleanup differently than setup', async () => {

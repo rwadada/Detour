@@ -69,17 +69,21 @@ export async function runForTarget(
       detectedLanAddresses: inputs.detectedLanAddresses,
     });
   } catch (err) {
-    // Only android's `cleanup` is exempt from needing a resolvable address:
-    // `runAndroidCleanup` resets the device's proxy to a fixed `:0`, never
-    // reading `ctx.proxyHost`, and (being fully automated) never falls back
-    // to `manualSteps` either — so an unresolvable LAN IP (no network
-    // interface detected) shouldn't block it the way it rightly blocks
-    // `setup`/`doctor`, which do need a real address to configure/verify.
-    // ios's `cleanup` looks similar but isn't: it always prints the
-    // physical-device manual steps via `manualSteps`, which *do*
-    // interpolate `ctx.proxyHost` — falling back to a placeholder here
-    // instead of failing would just print a broken instruction instead.
-    if (mode !== 'cleanup' || target !== 'android') {
+    // Two exemptions from needing a resolvable address up front:
+    //
+    // - `ios`, in every mode: its real automation (trusting the CA cert on
+    //   a booted Simulator via `xcrun simctl`) never reads `ctx.proxyHost`
+    //   at all — the Simulator shares this Mac's own network, no explicit
+    //   proxy value needed. Only the physical-device manual instructions
+    //   `ios.ts` always also prints use it, and those degrade gracefully
+    //   (see `ios.ts`'s `physicalDeviceSteps`) instead of the whole target
+    //   failing just because this machine has no LAN interface right now.
+    // - `android`'s `cleanup` specifically: `runAndroidCleanup` resets the
+    //   device's proxy to a fixed `:0`, never reading `ctx.proxyHost`
+    //   either, and (being fully automated) never falls back to
+    //   `manualSteps` — unlike android's `setup`/`doctor`, which do need a
+    //   real address to configure/verify the device's proxy.
+    if (target !== 'ios' && !(mode === 'cleanup' && target === 'android')) {
       return { steps: [{ status: 'failed', message: err instanceof Error ? err.message : String(err) }] };
     }
     proxyHost = inputs.hostOverride ?? '';

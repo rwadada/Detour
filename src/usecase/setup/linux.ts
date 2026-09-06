@@ -31,17 +31,19 @@ export async function runLinuxDoctor(ctx: SetupContext): Promise<TargetOutcome> 
 
   try {
     const mode = (await ctx.runner.run('gsettings', ['get', 'org.gnome.system.proxy', 'mode'])).stdout.trim();
-    const host = (await ctx.runner.run('gsettings', ['get', 'org.gnome.system.proxy.http', 'host'])).stdout
-      .trim()
-      .replace(/^'|'$/g, '');
-    const port = (await ctx.runner.run('gsettings', ['get', 'org.gnome.system.proxy.http', 'port'])).stdout.trim();
-    const matches = mode === "'manual'" && host === ctx.proxyHost && port === String(ctx.proxyPort);
+    const http = await gnomeProxyEndpoint(ctx, 'http');
+    // `setup` configures *both* http and https schemes — checking only
+    // `.http` would report success even with HTTPS traffic left pointed
+    // somewhere else (or unset), so both are checked and both must match.
+    const https = await gnomeProxyEndpoint(ctx, 'https');
+    const expected = `${ctx.proxyHost}:${ctx.proxyPort}`;
+    const matches = mode === "'manual'" && http === expected && https === expected;
     steps.push(
       matches
-        ? { status: 'done', message: `GNOME's proxy is ${host}:${port}.` }
+        ? { status: 'done', message: `GNOME's proxy is ${expected} (http and https).` }
         : {
             status: 'failed',
-            message: `GNOME's proxy is mode=${mode} ${host}:${port}, expected manual ${ctx.proxyHost}:${ctx.proxyPort}.`,
+            message: `GNOME's proxy is mode=${mode} http=${http} https=${https}, expected manual ${expected} for both.`,
           },
     );
   } catch (err) {
@@ -74,6 +76,15 @@ async function setGnomeProxy(ctx: SetupContext): Promise<void> {
   await ctx.runner.run('gsettings', ['set', 'org.gnome.system.proxy.http', 'port', String(ctx.proxyPort)]);
   await ctx.runner.run('gsettings', ['set', 'org.gnome.system.proxy.https', 'host', ctx.proxyHost]);
   await ctx.runner.run('gsettings', ['set', 'org.gnome.system.proxy.https', 'port', String(ctx.proxyPort)]);
+}
+
+/** Reads back `org.gnome.system.proxy.<scheme>`'s host/port as a single `host:port` string, for comparing against what `setGnomeProxy` set. */
+async function gnomeProxyEndpoint(ctx: SetupContext, scheme: 'http' | 'https'): Promise<string> {
+  const host = (await ctx.runner.run('gsettings', ['get', `org.gnome.system.proxy.${scheme}`, 'host'])).stdout
+    .trim()
+    .replace(/^'|'$/g, '');
+  const port = (await ctx.runner.run('gsettings', ['get', `org.gnome.system.proxy.${scheme}`, 'port'])).stdout.trim();
+  return `${host}:${port}`;
 }
 
 /**

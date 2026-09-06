@@ -100,6 +100,17 @@ describe('runLinuxDoctor', () => {
     expect(outcome.steps[0]!.status).toBe('failed');
   });
 
+  it('reports failed when http matches but https is misconfigured (setup configures both)', async () => {
+    const runner = fakeRunner((_command, args) => {
+      if (args[1] === 'org.gnome.system.proxy') return { stdout: "'manual'\n", stderr: '' };
+      if (args[1] === 'org.gnome.system.proxy.https') return { stdout: "'other-host'\n", stderr: '' };
+      if (args[2] === 'host') return { stdout: "'127.0.0.1'\n", stderr: '' };
+      return { stdout: '8080\n', stderr: '' };
+    });
+    const outcome = await runLinuxDoctor(ctxWith(runner));
+    expect(outcome.steps[0]!.status).toBe('failed');
+  });
+
   it('reports skipped when gsettings is missing', async () => {
     const runner: CommandRunner = {
       async run() {

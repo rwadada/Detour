@@ -19,6 +19,16 @@ export class ProxyHostUnresolvedError extends Error {}
  * A target that *is* this machine (mac/linux/windows) uses `localhost`; a
  * separate device (android/ios) needs this machine's LAN IP instead, since
  * `localhost` on the device would mean the device itself.
+ *
+ * This is about what to *advertise*, not whether `target`'s automation can
+ * run at all — `ios` is a device target here because a *physical* iPhone
+ * genuinely does need a LAN IP for its manual proxy instructions, but ios's
+ * real automation (trusting the CA cert on a Simulator, which shares this
+ * Mac's own network) never calls this at all. `orchestrator.ts` lets ios
+ * through even when this throws, precisely so an unresolvable LAN IP can't
+ * block Simulator automation that never needed one (see its own comment on
+ * `runForTarget`'s `catch`, and `ios.ts`'s `physicalDeviceSteps`, which
+ * degrades its printed instructions gracefully instead).
  */
 export function resolveProxyHost(options: ResolveProxyHostOptions): string {
   if (options.hostOverride) return options.hostOverride;
