@@ -165,14 +165,38 @@ function nextCompareIds(current: string[], id: string): string[] {
   return next.length > 2 ? next.slice(next.length - 2) : next;
 }
 
-function statusClass(status?: number): string {
-  if (status === undefined) return 'pending';
-  return `${Math.floor(status / 100)}xx`;
+// A closed passthrough tunnel never has (and never will have) a
+// `statusCode` — it's not "pending" a response that just hasn't arrived
+// yet, there was never an HTTP response to have one in the first place.
+// Naively falling through to the `undefined` branch below would leave it
+// permanently misclassified as `'pending'`, matching that filter forever.
+// There's no real HTTP status class for it either, so this is deliberately
+// not one of `Toolbar`'s selectable `STATUS_CLASSES` — it only ever shows
+// under `filters.status === 'ALL'`, same as before this distinction existed
+// for every other exchange kind.
+function statusClass(exchange: CapturedExchange): string {
+  if (isPassthroughDone(exchange)) return 'passthrough';
+  if (exchange.statusCode === undefined) return 'pending';
+  return `${Math.floor(exchange.statusCode / 100)}xx`;
 }
 
 export function matchesFilters(exchange: CapturedExchange, filters: Filters): boolean {
   if (filters.method !== 'ALL' && exchange.method !== filters.method) return false;
-  if (filters.status !== 'ALL' && statusClass(exchange.statusCode) !== filters.status) return false;
+  if (filters.status !== 'ALL' && statusClass(exchange) !== filters.status) return false;
   if (filters.query && !exchange.url.toLowerCase().includes(filters.query.toLowerCase())) return false;
   return true;
+}
+
+/**
+ * Whether a passthrough tunnel exchange (`CapturedExchange.passthrough`) has
+ * actually closed. Its `statusCode` is never set even once it's done — that
+ * field means something else entirely for a raw tunnel — so `finishedAt` is
+ * what distinguishes an open one (still worth the same "pending" treatment
+ * as any other in-flight exchange) from a closed one (which isn't pending,
+ * and should render as `TLS` rather than an endless `···`). `false` for a
+ * non-passthrough exchange, regardless of `finishedAt` — this question only
+ * makes sense for a passthrough one.
+ */
+export function isPassthroughDone(exchange: CapturedExchange): boolean {
+  return exchange.passthrough === true && exchange.finishedAt !== undefined;
 }

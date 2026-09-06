@@ -1,7 +1,14 @@
 import { Badge } from '@/shared/ui';
 import { cn } from '@/shared/lib/utils';
 
-function statusColorVar(status?: number): string {
+function statusColorVar(status?: number, error?: string): string {
+  // Checked first — an exchange can have `error` set with no `statusCode`
+  // at all (a proxy-level failure before any response arrived; every
+  // passthrough tunnel failure), and until this was added that fell
+  // through to the `status === undefined` branch below: the label already
+  // showed `ERR` (see `statusLabel`), but the color stayed the "pending"
+  // gray instead of the red a failure should be.
+  if (error) return 'var(--status-5xx)';
   if (status === undefined) return 'var(--status-pending)';
   if (status >= 500) return 'var(--status-5xx)';
   if (status >= 400) return 'var(--status-4xx)';
@@ -30,7 +37,7 @@ export function StatusBadge({
   error?: string;
   passthrough?: boolean;
 }) {
-  const color = statusColorVar(status);
+  const color = statusColorVar(status, error);
   const label = statusLabel(status, error, passthrough);
   return (
     <Badge

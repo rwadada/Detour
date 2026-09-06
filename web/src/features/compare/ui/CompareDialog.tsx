@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { MethodBadge, StatusBadge, useExchangeStore } from '@/entities/exchange';
+import { isPassthroughDone, MethodBadge, StatusBadge, useExchangeStore } from '@/entities/exchange';
 import type { CapturedExchange } from '@/shared/api';
 import { cn } from '@/shared/lib/utils';
 import { Dialog } from '@/shared/ui';
@@ -35,7 +35,7 @@ function ExchangeSummary({ exchange }: { exchange: CapturedExchange }) {
     <div className="rounded-md border border-[var(--border)] p-2">
       <div className="flex items-center gap-2">
         <MethodBadge method={exchange.method} />
-        <StatusBadge status={exchange.statusCode} error={exchange.error} />
+        <StatusBadge status={exchange.statusCode} error={exchange.error} passthrough={isPassthroughDone(exchange)} />
       </div>
       <p className="mt-1 break-all font-mono-ui text-xs text-[var(--muted)]">{exchange.url}</p>
     </div>

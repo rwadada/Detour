@@ -1,6 +1,6 @@
 import { lazy, Suspense, useMemo, useState } from 'react';
 import { X } from 'lucide-react';
-import { MethodBadge, StatusBadge, useExchangeStore } from '@/entities/exchange';
+import { isPassthroughDone, MethodBadge, StatusBadge, useExchangeStore } from '@/entities/exchange';
 import { BreakpointEditor, useBreakpointResumeStore } from '@/features/breakpoint-resume';
 import { CopyAsCurlButton } from '@/features/copy-as-curl';
 import { ReplayButton } from '@/features/replay';
@@ -48,7 +48,11 @@ export function InspectorPanel() {
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <MethodBadge method={exchange.method} />
-              <StatusBadge status={exchange.statusCode} error={exchange.error} passthrough />
+              <StatusBadge
+                status={exchange.statusCode}
+                error={exchange.error}
+                passthrough={isPassthroughDone(exchange)}
+              />
             </div>
             <p className="mt-1 break-all font-mono-ui text-xs text-[var(--muted)]">{exchange.url}</p>
             <p className="mt-1 text-xs text-[var(--muted)]">{formatDuration(exchange.durationMs)}</p>
