@@ -65,7 +65,10 @@ describe('startDashboardServer — userConfig / setUserConfig', () => {
     handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);
     const socket = connect();
     const message = await waitForMessage(socket, (m) => m.type === 'userConfig');
-    expect(message).toEqual({ type: 'userConfig', state: { defaultDetach: false, lanAccess: false } });
+    expect(message).toEqual({
+      type: 'userConfig',
+      state: { defaultDetach: false, lanAccess: false, dashboardPasswordSet: false },
+    });
   });
 
   it('sends the config file contents right after connecting when one already exists', async () => {
@@ -73,7 +76,10 @@ describe('startDashboardServer — userConfig / setUserConfig', () => {
     handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);
     const socket = connect();
     const message = await waitForMessage(socket, (m) => m.type === 'userConfig');
-    expect(message).toEqual({ type: 'userConfig', state: { defaultDetach: true, lanAccess: false } });
+    expect(message).toEqual({
+      type: 'userConfig',
+      state: { defaultDetach: true, lanAccess: false, dashboardPasswordSet: false },
+    });
   });
 
   it('setUserConfig persists a partial change and broadcasts the merged state back', async () => {
@@ -84,7 +90,10 @@ describe('startDashboardServer — userConfig / setUserConfig', () => {
     socket.send(JSON.stringify({ type: 'setUserConfig', state: { lanAccess: true } }));
     const updated = await waitForMessage(socket, (m) => m.type === 'userConfig' && m.state.lanAccess === true);
 
-    expect(updated).toEqual({ type: 'userConfig', state: { defaultDetach: false, lanAccess: true } });
+    expect(updated).toEqual({
+      type: 'userConfig',
+      state: { defaultDetach: false, lanAccess: true, dashboardPasswordSet: false },
+    });
     expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ lanAccess: true });
   });
 
@@ -105,7 +114,10 @@ describe('startDashboardServer — userConfig / setUserConfig', () => {
     handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);
     const socket = connect();
     const message = await waitForMessage(socket, (m) => m.type === 'userConfig');
-    expect(message).toEqual({ type: 'userConfig', state: { defaultDetach: false, lanAccess: false } });
+    expect(message).toEqual({
+      type: 'userConfig',
+      state: { defaultDetach: false, lanAccess: false, dashboardPasswordSet: false },
+    });
   });
 
   it('setUserConfig broadcasts a USER_CONFIG_WRITE_ERROR (and leaves the file untouched) when the existing config is invalid', async () => {

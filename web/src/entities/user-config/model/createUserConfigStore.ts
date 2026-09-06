@@ -5,6 +5,8 @@ export interface UserConfigStoreState {
   /** Mirrors the server's `userConfig` message — `undefined` until the first one arrives right after connecting. */
   userConfig: UserConfigState | undefined;
   setUserConfig: (patch: Partial<UserConfigState>) => void;
+  /** Sets (or, with `null`, clears) the dashboard password (issue #66) — a dedicated message rather than `setUserConfig`, since the server (not this store) is the one that hashes the plaintext before persisting it. */
+  setDashboardPassword: (password: string | null) => void;
 }
 
 /**
@@ -35,6 +37,7 @@ export function createUserConfigStore(connection: DashboardConnection) {
     return {
       userConfig: undefined,
       setUserConfig: (patch) => connection.send({ type: 'setUserConfig', state: patch }),
+      setDashboardPassword: (password) => connection.send({ type: 'setDashboardPassword', password }),
     };
   });
 }

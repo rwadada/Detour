@@ -1,18 +1,12 @@
 import { Check, Terminal } from 'lucide-react';
-import { useState } from 'react';
 import type { CapturedExchange } from '@/shared/api';
+import { useCopyToClipboard } from '@/shared/lib/useCopyToClipboard';
 import { Button } from '@/shared/ui';
 import { buildCurlCommand } from '../model/curl';
 
 /** Copies a captured exchange as a `curl` command (issue #19), shown in `InspectorPanel`. */
 export function CopyAsCurlButton({ exchange }: { exchange: CapturedExchange }) {
-  const [copied, setCopied] = useState(false);
-
-  const copy = async () => {
-    await navigator.clipboard.writeText(buildCurlCommand(exchange));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
+  const { copied, copy } = useCopyToClipboard(() => buildCurlCommand(exchange));
 
   return (
     <Button variant="ghost" size="icon" onClick={copy} title="Copy as curl">

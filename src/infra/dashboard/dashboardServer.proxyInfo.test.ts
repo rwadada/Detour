@@ -70,10 +70,15 @@ describe('startDashboardServer — proxyInfo (issue #24)', () => {
     handle = await startDashboardServer({ port: 0 }, eventBus);
     sockets = [];
     const socket = connect();
+    // Attached synchronously, right after `connect()` — same race avoidance
+    // as `waitForMessage` below, so this also catches whatever's sent first.
+    const received: DashboardServerMessage[] = [];
+    socket.on('message', (raw) => received.push(JSON.parse(raw.toString()) as DashboardServerMessage));
 
-    // The next message after connecting is always `backlog` — if `proxyInfo`
-    // were sent regardless of configuration, it would arrive first instead.
-    const message = await waitForMessage(socket, () => true);
-    expect(message.type).toBe('backlog');
+    // `backlog` (further down the just-connected snapshot — see
+    // `sendInitialPayload`) rather than the very first message: `lanInfo` is
+    // sent unconditionally too (issue #66) and arrives before it.
+    await waitForMessage(socket, (m) => m.type === 'backlog');
+    expect(received.some((m) => m.type === 'proxyInfo')).toBe(false);
   });
 });

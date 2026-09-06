@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { AuthGate } from '@/widgets/auth-gate';
 import { shouldSkipSplash, SplashScreen } from '@/widgets/splash-screen';
 import { cn } from '@/shared/lib/utils';
 import App from './App';
@@ -22,6 +23,7 @@ export default function AppShell() {
       <div className={cn('h-full', justRevealed && 'app-float-in')}>
         <App />
       </div>
+      <AuthGate />
       {showSplash && (
         <SplashScreen
           onDone={() => {

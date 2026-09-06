@@ -1,6 +1,6 @@
 import http from 'node:http';
 import path from 'node:path';
-import { WebSocketServer, type WebSocket } from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 import type {
   BlockHostsState,
   CapturedExchange,
@@ -22,6 +22,7 @@ import type { DetourEventBus } from '../eventBus';
 import { loadUserConfig, writeUserConfig } from '../fs/userConfigStore';
 import { assertPortAvailable } from '../portCheck';
 import { nodeHttpRequester } from '../proxy/nodeHttpRequester';
+import { hashDashboardPassword, verifyDashboardPassword } from './dashboardPasswordHash';
 import { serveStatic } from './staticServer';
 
 /**
@@ -75,6 +76,16 @@ export interface DashboardServerOptions {
   httpRequester?: HttpRequester;
   /** Backs `userConfig`/`setUserConfig` (the dashboard Settings panel's `defaultDetach`/`lanAccess` toggles). Injectable for tests; defaults to `~/.detour/config.json` (`resolveUserConfigPath()`). */
   userConfigPath?: string;
+  /**
+   * Every non-internal IPv4 address this machine has, broadcast to clients
+   * as `lanInfo` (issue #66's sidebar LAN Access section) — pass `[]` (the
+   * default) or omit when `host` is `localhost`-only. Computed by the
+   * caller (`cli.ts`, via `lanAddresses()`) rather than here so this module
+   * doesn't need its own opinion on which `host` values count as "LAN",
+   * mirroring how `proxyPort` above is also the caller's own value handed
+   * through rather than derived.
+   */
+  lanAddresses?: string[];
 }
 
 export interface DashboardServerHandle {
@@ -97,6 +108,7 @@ export async function startDashboardServer(
   const host = options.host ?? 'localhost';
   const { ruleEngine, ruleProfileStore } = options;
   const httpRequester = options.httpRequester ?? nodeHttpRequester;
+  const lanAddrs = options.lanAddresses ?? [];
   await assertPortAvailable(options.port, host);
 
   const backlog = new RingBuffer<CapturedExchange>(options.backlogSize ?? DEFAULT_BACKLOG_SIZE, (item) => item.id);
@@ -126,10 +138,58 @@ export async function startDashboardServer(
   const httpServer = http.createServer((req, res) => serveStatic(WEB_DIST_DIR, req, res));
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
 
+  // Issue #66's optional dashboard password: sockets that have proven they
+  // know the current password (or connected while none was configured — see
+  // `wss.on('connection', ...)` below) live in this set. A `WeakSet` rather
+  // than a plain property on the socket so nothing here needs to remember to
+  // clean up on close — an unreachable socket just falls out of it.
+  const authenticatedSockets = new WeakSet<WebSocket>();
+  // Sockets with a `login` currently awaiting `verifyDashboardPassword` —
+  // guards against two `login` frames racing each other: both would pass
+  // the `!authenticatedSockets.has(socket)` check below before either
+  // resolves, and depending on which `await` settles second, that one could
+  // send `authFailed` after the socket was already authenticated by the
+  // first, or duplicate the initial snapshot. A `login` that arrives while
+  // one's already in flight for that socket is dropped rather than queued —
+  // a real client only ever has one outstanding attempt at a time.
+  const loginInFlight = new WeakSet<WebSocket>();
+  // Read fresh on every check (connect, login attempt, `setDashboardPassword`)
+  // rather than cached once at startup — same "no other writer to stay in
+  // sync with, so just read the file" reasoning as `userConfigMessage`
+  // below, and it's what lets a password set via the Settings panel or
+  // `detour config` start applying to new connections without a restart.
+  //
+  // On a read failure (invalid JSON, a validation failure — same cases
+  // `userConfigMessage` below falls back to defaults for), this returns the
+  // last value a *successful* read actually produced, rather than `null`:
+  // `null` means "no password configured" everywhere it's checked below, so
+  // falling back to it unconditionally on error would fail *open* — waving
+  // every new connection straight through the moment `~/.detour/config.json`
+  // gets corrupted while a password happens to be set (a hand-edit of some
+  // unrelated field is enough; `loadUserConfig` fails the whole file, not
+  // just the bad key). Falling back to the last-known value instead keeps a
+  // real password honored across a transient corruption, while a config
+  // that never had one to begin with — most read failures, and every one of
+  // them before the very first successful read — still resolves to `null`
+  // exactly as before, matching `userConfigMessage`'s own "don't lock
+  // anything up over a broken config" posture for every other field.
+  let lastKnownPasswordHash: string | null = null;
+  const currentPasswordHash = (): string | null => {
+    try {
+      lastKnownPasswordHash = loadUserConfig(options.userConfigPath).dashboardPasswordHash ?? null;
+    } catch {
+      // Keep `lastKnownPasswordHash` as it was — see the doc comment above.
+    }
+    return lastKnownPasswordHash;
+  };
+
   const broadcast = (message: DashboardServerMessage) => {
     const payload = JSON.stringify(message);
     for (const client of wss.clients) {
-      if (client.readyState === client.OPEN) client.send(payload);
+      // Skips a socket still waiting on `authRequired` — the whole point of
+      // gating it is that it never sees live traffic, rule contents, or any
+      // other state until it's proven it knows the password.
+      if (client.readyState === WebSocket.OPEN && authenticatedSockets.has(client)) client.send(payload);
     }
   };
 
@@ -178,7 +238,20 @@ export async function startDashboardServer(
     }
     return {
       type: 'userConfig',
-      state: { defaultDetach: config.defaultDetach ?? false, lanAccess: config.lanAccess ?? false },
+      state: {
+        defaultDetach: config.defaultDetach ?? false,
+        lanAccess: config.lanAccess ?? false,
+        // `currentPasswordHash()` (not `config.dashboardPasswordHash` read
+        // above) — they can disagree the moment the config becomes
+        // unreadable after a password was already set: `config` here just
+        // fell back to `{}` (so `dashboardPasswordHash` reads as
+        // `undefined`), but `currentPasswordHash()` fails *closed* to the
+        // last successfully-read hash instead (see its own doc comment).
+        // Deriving this from the same fail-closed-aware getter that
+        // `login`/connection-gating actually uses keeps what a client is
+        // told in sync with whether a password is genuinely still required.
+        dashboardPasswordSet: !!currentPasswordHash(),
+      },
     };
   };
   const broadcastError = (errorKind: string, message: string) =>
@@ -225,11 +298,17 @@ export async function startDashboardServer(
     broadcast({ type: 'wsClose', connection });
   };
 
-  wss.on('connection', (socket: WebSocket) => {
+  // The full just-connected snapshot — sent immediately to a socket that
+  // needed no password, or once one that did has proven it via `login`.
+  // Order matches the pre-issue-#66 unconditional sends exactly (no test or
+  // client relies on it, but no reason to shuffle it either).
+  const sendInitialPayload = (socket: WebSocket) => {
     if (options.proxyPort !== undefined) {
       const proxyInfoMessage: DashboardServerMessage = { type: 'proxyInfo', proxyPort: options.proxyPort };
       socket.send(JSON.stringify(proxyInfoMessage));
     }
+    const lanInfoMessage: DashboardServerMessage = { type: 'lanInfo', addresses: lanAddrs };
+    socket.send(JSON.stringify(lanInfoMessage));
     const backlogMessage: DashboardServerMessage = { type: 'backlog', items: backlog.toArray() };
     socket.send(JSON.stringify(backlogMessage));
     const wsBacklogMessage: DashboardServerMessage = { type: 'wsBacklog', items: wsBacklog.toArray() };
@@ -245,6 +324,22 @@ export async function startDashboardServer(
     socket.send(JSON.stringify(rulesMessage()));
     socket.send(JSON.stringify(ruleProfilesMessage()));
     socket.send(JSON.stringify(userConfigMessage()));
+  };
+
+  wss.on('connection', (socket: WebSocket) => {
+    // No password configured: grandfather this socket in permanently, even
+    // if a password gets set later while it's still open — same "changing
+    // the Wi-Fi password doesn't kick already-connected devices" posture as
+    // `--lan`'s own bind-at-spawn-time semantics. Only *new* connections
+    // made after that point are asked for it.
+    if (!currentPasswordHash()) authenticatedSockets.add(socket);
+
+    if (authenticatedSockets.has(socket)) {
+      sendInitialPayload(socket);
+    } else {
+      const authRequiredMessage: DashboardServerMessage = { type: 'authRequired' };
+      socket.send(JSON.stringify(authRequiredMessage));
+    }
 
     // The only browser → server traffic on this socket: resuming/aborting a
     // paused breakpoint, toggling intercept on/off, editing the Focus host
@@ -256,9 +351,25 @@ export async function startDashboardServer(
     // directly here rather than via the event bus, since they need
     // synchronous validation and per-attempt error feedback that a fire-and-
     // forget event emit can't give — see `handleRulesMessage` below.
-    socket.on('message', (raw) => {
+    // `async`, not sync: `verifyDashboardPassword`/`hashDashboardPassword`
+    // below are async precisely so scrypt's work runs off the main thread
+    // (see `dashboardPasswordHash.ts`) — awaiting them here is what actually
+    // gets that benefit, rather than serializing right back onto this
+    // handler anyway. `ws` doesn't care that the listener returns a promise;
+    // nothing here needs the caller to wait on it.
+    socket.on('message', async (raw) => {
       try {
         const message = JSON.parse(raw.toString()) as DashboardClientMessage;
+
+        if (!authenticatedSockets.has(socket)) {
+          // Nothing but `login` is honored before authenticating — a
+          // malicious device on the network that skipped straight to
+          // `setRules`/`replay`/etc. without ever proving it knows the
+          // password gets silently ignored, same as a malformed frame.
+          if (message.type === 'login') await handleLoginMessage(socket, message);
+          return;
+        }
+
         if (message.type === 'breakpointResume') eventBus.emit('breakpointResume', message.command);
         else if (message.type === 'setIntercept') eventBus.emit('setIntercept', message.enabled);
         else if (message.type === 'setFocus') eventBus.emit('setFocus', message.hosts);
@@ -278,12 +389,74 @@ export async function startDashboardServer(
           } catch (err) {
             broadcastError('USER_CONFIG_WRITE_ERROR', describeError(err));
           }
+        } else if (message.type === 'setDashboardPassword') {
+          try {
+            if (message.password === '') {
+              // Silently accepting this would set a real, trivially-guessable
+              // password while `dashboardPasswordSet` reports "on" — worse
+              // than not setting one at all, since it looks protected.
+              throw new Error('Dashboard password must not be empty — pass null to remove it.');
+            }
+            const dashboardPasswordHash =
+              message.password === null ? null : await hashDashboardPassword(message.password);
+            writeUserConfig({ dashboardPasswordHash }, options.userConfigPath);
+            // Updates `lastKnownPasswordHash` immediately rather than
+            // waiting for some future `currentPasswordHash()` call to catch
+            // up: without this, a password set here has no effect on
+            // `lastKnownPasswordHash`'s fail-closed fallback (see its own
+            // doc comment) until the next connect/login attempt happens to
+            // read it back successfully — leaving a window, right after
+            // setting a password, where the config becoming unreadable
+            // before that next read would still fail open.
+            lastKnownPasswordHash = dashboardPasswordHash;
+            broadcast(userConfigMessage());
+          } catch (err) {
+            broadcastError('USER_CONFIG_WRITE_ERROR', describeError(err));
+          }
         } else handleRulesMessage(message);
       } catch {
         // Ignore malformed frames rather than crashing the dashboard.
       }
     });
   });
+
+  /**
+   * Answers a `login` attempt from a not-yet-authenticated socket — pulled
+   * out of the `socket.on('message', ...)` handler both for its own sake
+   * (that handler was getting long) and to keep `loginInFlight`'s
+   * add/try/finally/delete dance visually separate from the message
+   * dispatch it's guarding.
+   */
+  async function handleLoginMessage(
+    socket: WebSocket,
+    message: Extract<DashboardClientMessage, { type: 'login' }>,
+  ): Promise<void> {
+    if (loginInFlight.has(socket)) return;
+    loginInFlight.add(socket);
+    try {
+      const hash = currentPasswordHash();
+      let verified: boolean;
+      try {
+        verified = !hash || (await verifyDashboardPassword(message.password, hash));
+      } catch {
+        // A crypto failure verifying the password is the server's problem,
+        // not proof the client is wrong — but it still needs *some*
+        // response. The outer `socket.on('message', ...)` handler's own
+        // catch would otherwise swallow this silently, stranding the socket
+        // locked out with no `authFailed` to prompt a retry.
+        verified = false;
+      }
+      if (verified) {
+        authenticatedSockets.add(socket);
+        sendInitialPayload(socket);
+      } else {
+        const authFailedMessage: DashboardServerMessage = { type: 'authFailed' };
+        socket.send(JSON.stringify(authFailedMessage));
+      }
+    } finally {
+      loginInFlight.delete(socket);
+    }
+  }
 
   function handleRulesMessage(message: DashboardClientMessage): void {
     if (message.type === 'setRules') {

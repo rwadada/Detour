@@ -8,6 +8,7 @@ import type { DumpLevel } from './domain/dump/dumpPolicy';
 import { SAMPLE_RULES_FILE } from './domain/rules/sample';
 import { isSetupTarget, SETUP_TARGETS } from './domain/setup/targets';
 import type { SetupTarget } from './domain/setup/targets';
+import { hashDashboardPassword } from './infra/dashboard/dashboardPasswordHash';
 import { startDashboardServer, WEB_DIST_DIR } from './infra/dashboard/dashboardServer';
 import { DetourEventBus } from './infra/eventBus';
 import { resolveDumpDir, writeExchangeDumpFile, writeWebSocketDumpFile } from './infra/fs/dumpFileWriter';
@@ -509,6 +510,9 @@ async function runStartBody({
           proxyPort: handle.port,
           ruleEngine,
           ruleProfileStore: fsRuleProfileStore,
+          // Only actually populated when bound to every interface — see
+          // `DashboardServerOptions.lanAddresses`'s doc comment (issue #66).
+          lanAddresses: host !== 'localhost' ? lanAddresses() : [],
         },
         eventBus,
       );
@@ -566,6 +570,7 @@ async function runStartBody({
     dumpDir,
     http2Enabled: options.http2,
     protoPaths: options.proto,
+    dashboardPasswordSet: readDashboardPasswordSet(),
   });
 
   // DETOUR_READY (issue #20): a stable, greppable line a CI script can wait
@@ -617,6 +622,23 @@ function isDashboardBuilt(): boolean {
   return fs.existsSync(path.join(WEB_DIST_DIR, 'index.html'));
 }
 
+/**
+ * Whether a dashboard password is currently configured, for the startup
+ * banner. `loadUserConfig()` can throw (invalid JSON, a failed validation) —
+ * unlike a `detour config`/Settings-panel write, which the caller is
+ * actively trying to make and should hear about if it fails, this only
+ * exists to print an FYI line, so a broken config shouldn't crash `detour
+ * start` over it. Same "fall back rather than propagate" posture as
+ * `dashboardServer.ts`'s `userConfigMessage`.
+ */
+function readDashboardPasswordSet(): boolean {
+  try {
+    return !!loadUserConfig().dashboardPasswordHash;
+  } catch {
+    return false;
+  }
+}
+
 function printStartupBanner(info: {
   host: string;
   proxyPort: number;
@@ -627,6 +649,8 @@ function printStartupBanner(info: {
   dumpDir: string | undefined;
   http2Enabled: boolean;
   protoPaths: string[];
+  /** Whether `detour config --dashboard-password`/the Settings panel currently requires one (issue #66) — only relevant when `dashboardPort` isn't undefined. */
+  dashboardPasswordSet: boolean;
 }): void {
   console.log(
     `Detour proxy started → http://localhost:${info.proxyPort} (HTTP/2: ${info.http2Enabled ? 'on' : 'off'})`,
@@ -640,6 +664,11 @@ function printStartupBanner(info: {
   } else {
     console.log(
       `Dashboard → http://localhost:${info.dashboardPort} (not built yet — run \`npm run build\`, or use \`npm run dev:dashboard\` for a dev server with hot reload)`,
+    );
+  }
+  if (info.dashboardPort !== undefined) {
+    console.log(
+      `Dashboard password: ${info.dashboardPasswordSet ? 'required' : 'off (detour config --dashboard-password <value>)'}`,
     );
   }
   // `--lan`/`detour config --lan on`: called out loudly rather than folded
@@ -851,6 +880,33 @@ export function createCli(): Command {
       }
     });
 
+  /**
+   * Formats one `detour config` patch field for the "✔ key = value" line
+   * printed after a write — `dashboardPasswordHash` gets special-cased
+   * (renamed, and reported as on/off rather than the hash itself) since it's
+   * the one field here that's never safe to print as-is.
+   */
+  function describeWrittenConfigField(key: string, written: UserConfig): [label: string, value: unknown] {
+    if (key === 'dashboardPasswordHash') return ['dashboardPassword', written.dashboardPasswordHash ? 'on' : 'off'];
+    return [key, written[key]];
+  }
+
+  /**
+   * Validates `detour config --dashboard-password <value>`: `"off"` clears
+   * it (returned as `null`, matching `UserConfig.dashboardPasswordHash`'s
+   * own "unset" value); anything else must be non-empty — an accidentally-
+   * empty value (a script that forgot to interpolate one, say) would
+   * otherwise silently set a real, trivially-guessable password while
+   * still reporting `dashboardPassword = on`, which is worse than not
+   * setting one at all. `dashboardServer.ts`'s `setDashboardPassword`
+   * handler rejects the same thing for the Settings-panel/WebSocket path.
+   */
+  function parseDashboardPasswordFlag(value: string): string | null {
+    if (value === 'off') return null;
+    if (value === '') throw new Error('--dashboard-password must not be empty (pass "off" to remove it)');
+    return value;
+  }
+
   program
     .command('config')
     .description('View or change persistent `detour start` preferences, stored in ~/.detour/config.json')
@@ -862,21 +918,33 @@ export function createCli(): Command {
       '--lan <on|off>',
       `When "on", \`detour start\` binds the proxy and dashboard to every network interface (0.0.0.0) by default — override per-invocation with --lan/--no-lan. SECURITY: ${LAN_ACCESS_WARNING}.`,
     )
-    .action((options: { defaultDetach?: string; lan?: string }) => {
+    .option(
+      '--dashboard-password <value>',
+      'Require this password before the dashboard will send any traffic, rules, or accept any control message over its WebSocket connection (issue #66). Pass "off" to remove it. Independent of --lan; takes effect for new connections immediately (no restart needed); stored hashed, never in plaintext.',
+    )
+    .action(async (options: { defaultDetach?: string; lan?: string; dashboardPassword?: string }) => {
       try {
         const patch: UserConfig = {};
         if (options.defaultDetach !== undefined)
           patch.defaultDetach = parseOnOff(options.defaultDetach, '--default-detach');
         if (options.lan !== undefined) patch.lanAccess = parseOnOff(options.lan, '--lan');
+        if (options.dashboardPassword !== undefined) {
+          const value = parseDashboardPasswordFlag(options.dashboardPassword);
+          patch.dashboardPasswordHash = value === null ? null : await hashDashboardPassword(value);
+        }
 
         if (Object.keys(patch).length > 0) {
           const written = writeUserConfig(patch);
-          for (const key of Object.keys(patch)) console.log(`✔ ${key} = ${written[key]} (${resolveUserConfigPath()})`);
+          for (const key of Object.keys(patch)) {
+            const [label, value] = describeWrittenConfigField(key, written);
+            console.log(`✔ ${label} = ${value} (${resolveUserConfigPath()})`);
+          }
           return;
         }
         const config = loadUserConfig();
         console.log(`defaultDetach = ${config.defaultDetach ?? false}`);
         console.log(`lanAccess = ${config.lanAccess ?? false}`);
+        console.log(`dashboardPassword = ${config.dashboardPasswordHash ? 'on' : 'off'}`);
         console.log(`Config file: ${resolveUserConfigPath()}`);
       } catch (err) {
         console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
