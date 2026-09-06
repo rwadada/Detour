@@ -94,6 +94,23 @@ export async function runForTarget(
     return { steps: manualSteps(mode, target, instructionCtx) };
   }
 
+  // A `--target`-less `setup` sweep announces every target rather than
+  // acting on all of them at once — `doctor` (read-only) and `cleanup`
+  // (only ever reverts what setup applied) don't need this guard, but
+  // `setup` actually pushes certs, rewrites this machine's own proxy
+  // settings, etc., and a plain `detour setup` used to do that to every
+  // automated target it could reach (this machine's own network proxy
+  // included) with no per-target confirmation. Naming one target with
+  // `--target` (`inputs.explicitTarget`) opts back into real automation.
+  if (mode === 'setup' && !inputs.explicitTarget) {
+    return {
+      steps: [
+        { status: 'manual', message: `Run \`detour setup --target ${target}\` to set this up automatically.` },
+        ...manualSteps(mode, target, instructionCtx),
+      ],
+    };
+  }
+
   // ios has no `hostPlatform` requirement (Simulator automation runs
   // through locally-installed Xcode tooling, not a remote host), so this
   // only ever turns away mac/linux/windows on the wrong machine.
@@ -125,14 +142,28 @@ export async function runForTarget(
 }
 
 /**
- * Runs `mode` against every one of `targets` (or all five, in
- * `SETUP_TARGETS` order, when omitted — the `detour setup`/`doctor`/
- * `cleanup` no-`--target` behavior) and reports each independently. Targets
- * share no state (each gets its own `CommandRunner` calls against a
+ * Runs `mode` against every one of `targets` (or, when omitted — the
+ * `detour setup`/`doctor`/`cleanup` no-`--target` behavior — every
+ * `SETUP_TARGETS` entry whose `hostPlatformMatches` this machine) and
+ * reports each independently. The filter only ever excludes mac/linux/
+ * windows (android/ios have no `hostPlatform` requirement — see
+ * `hostPlatformMatches`'s doc comment — so they're never filtered out):
+ * without it, a plain `detour doctor`/`cleanup` on a Mac printed a full page
+ * of Windows `certmgr.msc` steps and Linux `update-ca-certificates` steps
+ * right alongside the ones that actually apply here, none of which this
+ * machine could act on anyway. (`setup` gets the same benefit from this
+ * filter, but for it the bigger source of that same noise is
+ * `runForTarget`'s own `explicitTarget` guard — see its doc comment — which
+ * this filter doesn't affect at all.) Naming a target explicitly with
+ * `--target` bypasses the filter entirely (`runForTarget` still reports it
+ * "skipped" with manual steps, same as ever) — this only trims the
+ * *default* sweep.
+ *
+ * Targets share no state (each gets its own `CommandRunner` calls against a
  * different tool/device), so they run concurrently rather than one after
- * another — otherwise a plain `detour doctor` would serialize up to five
- * targets' worth of subprocess round-trips end to end. `Promise.all`
- * preserves `targets`' order in the result regardless of which resolves
+ * another — otherwise a plain `detour doctor` would serialize every
+ * target's worth of subprocess round-trips end to end. `Promise.all`
+ * preserves `list`'s order in the result regardless of which resolves
  * first.
  */
 export async function runTargets(
@@ -140,6 +171,6 @@ export async function runTargets(
   targets: SetupTarget[] | undefined,
   inputs: OrchestratorInputs,
 ): Promise<TargetReport[]> {
-  const list = targets ?? [...SETUP_TARGETS];
+  const list = targets ?? SETUP_TARGETS.filter((target) => hostPlatformMatches(target, inputs.hostPlatform));
   return Promise.all(list.map(async (target) => ({ target, outcome: await runForTarget(mode, target, inputs) })));
 }

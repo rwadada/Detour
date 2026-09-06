@@ -45,7 +45,7 @@ import { renderQrCode } from './presentation/qrCode';
 import { RuleEngine } from './usecase/ruleEngine';
 import { runTargets } from './usecase/setup/orchestrator';
 import type { SetupMode, TargetReport } from './usecase/setup/orchestrator';
-import type { SetupStep, StepStatus } from './usecase/setup/types';
+import type { SetupStep, StepStatus, TargetOutcome } from './usecase/setup/types';
 
 // This file is Detour's composition root: the one place allowed to import
 // across every layer (domain/usecase/infra/presentation) to wire concrete
@@ -178,11 +178,34 @@ async function printStep(step: SetupStep): Promise<void> {
   if (step.qrUrl) console.log(await renderQrCode(step.qrUrl));
 }
 
-async function printTargetReports(reports: TargetReport[]): Promise<void> {
+/**
+ * Trailing per-target line for `doctor` only, when its steps are all `✔`/`ℹ`
+ * (no `failed`, so the summary doesn't compete with a clearer problem) and
+ * at least one is `ℹ` (`manual`) — `doctor`'s whole point is answering "is
+ * this ready?", and a screen full of `✔` with one quiet `ℹ` mixed in (e.g.
+ * android's cert-trust check, which needs root to verify over adb) reads as
+ * "yes" at a glance even though that one thing was never actually
+ * confirmed. Spelled out only for `doctor`: `setup`'s `manual` steps are
+ * "go do this next", not "this wasn't checked", so they don't need the same
+ * flagging.
+ */
+function doctorSummaryLine(outcome: TargetOutcome): string | undefined {
+  const manualCount = outcome.steps.filter((s) => s.status === 'manual').length;
+  if (manualCount === 0 || outcome.steps.some((s) => s.status === 'failed')) return undefined;
+  return manualCount === 1
+    ? "  ℹ 1 check above needs manual verification — doctor can't confirm it automatically."
+    : `  ℹ ${manualCount} checks above need manual verification — doctor can't confirm them automatically.`;
+}
+
+async function printTargetReports(mode: SetupMode, reports: TargetReport[]): Promise<void> {
   for (const { target, outcome } of reports) {
     console.log(`\n${target}:`);
     for (const step of outcome.steps) {
       if (!printedLive.has(step)) await printStep(step);
+    }
+    if (mode === 'doctor') {
+      const summary = doctorSummaryLine(outcome);
+      if (summary) console.log(summary);
     }
   }
 }
@@ -248,7 +271,7 @@ async function runSetupCommand(mode: SetupMode, options: SetupCommandOptions): P
       explicitTarget: target !== undefined,
       onProgress: printStep,
     });
-    await printTargetReports(reports);
+    await printTargetReports(mode, reports);
     if (hasFailedStep(reports) || (mode === 'doctor' && certMissing)) process.exitCode = 1;
   } catch (err) {
     console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
