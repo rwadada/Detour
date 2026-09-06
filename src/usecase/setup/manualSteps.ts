@@ -3,8 +3,8 @@ import type { InstructionContext } from '../../domain/setup/instructions';
 import type { SetupTarget } from '../../domain/setup/targets';
 import type { SetupMode, SetupStep } from './types';
 
-/** Reworded per `mode` so the same instruction text reads naturally whether it's telling you to *do* something (`setup`), *check* something (`doctor`), or *undo* something (`cleanup`). */
-const MODE_PREFIX: Record<SetupMode, string> = { setup: '', doctor: 'Verify: ', cleanup: 'Undo manually: ' };
+/** `setup`'s instructions are already imperative ("Trust the CA cert: ...", "Configure the proxy: ...") so need no prefix; `doctor`'s get reworded into something checkable. `cleanup` needs none either — it uses `proxyCleanup` instead of `proxyConfig`, already phrased as its own "Turn the proxy off: ..." action, not `proxyConfig`'s "turn it on" one. */
+const MODE_PREFIX: Record<SetupMode, string> = { setup: '', doctor: 'Verify: ', cleanup: '' };
 
 /**
  * Turns `domain/setup/instructions.ts`'s manual instructions into
@@ -14,16 +14,17 @@ const MODE_PREFIX: Record<SetupMode, string> = { setup: '', doctor: 'Verify: ', 
  * touch a physical device — its manual steps are these same lines, appended
  * after whatever Simulator automation ran.
  *
- * `cleanup` gets only the proxy-config instruction, never the cert-trust
- * one: `cleanup` never touches CA cert trust (every automated target's
- * cleanup function leaves it alone too — see e.g. `mac.ts`'s
- * `runMacCleanup`), so an "Undo manually: Trust the CA cert: ..." line
- * would both contradict that and read backwards (the instruction text
- * describes *installing* the cert, not removing it).
+ * `cleanup` gets only `proxyCleanup`, never `certTrust` or `proxyConfig`:
+ * `cleanup` never touches CA cert trust (every automated target's cleanup
+ * function leaves it alone too — see e.g. `mac.ts`'s `runMacCleanup`), and
+ * `proxyConfig` is phrased as turning the proxy *on* (to detour) — showing
+ * either under a "cleanup" heading would contradict what cleanup actually
+ * does or reads backwards.
  */
 export function manualSteps(mode: SetupMode, target: SetupTarget, instructionCtx: InstructionContext): SetupStep[] {
   const prefix = MODE_PREFIX[mode];
   const instructions = manualSetupInstructions(target, instructionCtx);
-  const messages = mode === 'cleanup' ? [instructions.proxyConfig] : [instructions.certTrust, instructions.proxyConfig];
+  const messages =
+    mode === 'cleanup' ? [instructions.proxyCleanup] : [instructions.certTrust, instructions.proxyConfig];
   return messages.map((message) => ({ status: 'manual', message: prefix + message }));
 }

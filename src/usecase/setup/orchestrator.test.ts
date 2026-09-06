@@ -103,19 +103,19 @@ describe('runForTarget', () => {
     },
   );
 
-  it("ios's cleanup proceeds too, with a plain-language placeholder standing in for the unresolvable address", async () => {
+  it('ios\'s cleanup proceeds too, even with no resolvable proxy address (its "Turn the proxy off" wording needs no address at all)', async () => {
     const outcome = await runForTarget('cleanup', 'ios', inputsWith({ detectedLanAddresses: [] }));
     expect(outcome.steps[0]!.status).toBe('manual');
-    expect(outcome.steps[0]!.message).toContain('no LAN IP detected');
+    expect(outcome.steps[0]!.message).toContain('Turn the proxy off');
   });
 
-  it('prefixes manual steps for doctor and cleanup differently than setup', async () => {
+  it('prefixes doctor steps with "Verify:", unlike setup, and gives cleanup its own "Turn the proxy off" wording', async () => {
     const setupOutcome = await runForTarget('setup', 'windows', inputsWith());
     const doctorOutcome = await runForTarget('doctor', 'windows', inputsWith());
     const cleanupOutcome = await runForTarget('cleanup', 'windows', inputsWith());
     expect(setupOutcome.steps[0]!.message.startsWith('Verify:')).toBe(false);
     expect(doctorOutcome.steps[0]!.message.startsWith('Verify:')).toBe(true);
-    expect(cleanupOutcome.steps[0]!.message.startsWith('Undo manually:')).toBe(true);
+    expect(cleanupOutcome.steps[0]!.message).toContain('Turn the proxy off');
   });
 });
 

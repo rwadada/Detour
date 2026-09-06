@@ -7,8 +7,17 @@ const DEVICE_CERT_PATH = '/sdcard/Download/detour-ca.crt';
 /** How long the no-`adb` Wi-Fi/QR fallback (see `wifiPairingFallback`) keeps its one-shot HTTP server open waiting for a phone to scan the code and download the cert, before giving up. */
 const QR_PAIRING_TIMEOUT_MS = 3 * 60_000;
 
-/** `resolveProxyHost` lets an explicit `--host` override win even for a device target (deliberately, for when auto-detection picks the wrong NIC) — but a loopback address is never valid there: a phone can't resolve "this machine" through it, only itself. `wifiPairingFallback` checks against this before ever starting `certPairingServer` (see that port's own doc comment on the same rule) so a mistaken `--host localhost` fails loudly instead of encoding a QR code that can never work. */
+/** `resolveProxyHost` lets an explicit `--host` override win even for a device target (deliberately, for when auto-detection picks the wrong NIC) — but a loopback address is never valid there: a phone can't resolve "this machine" through it, only itself. `loopbackHostError` checks against this in every path that either configures or verifies the device's actual proxy value (both `runAndroidSetup`'s adb push and its Wi-Fi/QR fallback, and `runAndroidDoctor`) so a mistaken `--host localhost` fails loudly instead of silently configuring — or reporting as correct — a proxy value the phone can never actually reach. */
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+
+/** A `'failed'` step when `ctx.proxyHost` is a loopback address, `undefined` otherwise — see `LOOPBACK_HOSTS`'s doc comment. */
+function loopbackHostError(ctx: SetupContext): SetupStep | undefined {
+  if (!LOOPBACK_HOSTS.has(ctx.proxyHost)) return undefined;
+  return {
+    status: 'failed',
+    message: `--host ${ctx.proxyHost} won't work for a device proxy — a phone can't reach this machine at a loopback address. Pass a real LAN IP with --host, or omit --host to auto-detect one.`,
+  };
+}
 
 /**
  * Parses `adb devices` output into the serials that are actually usable —
@@ -69,15 +78,6 @@ async function wifiPairingFallback(ctx: SetupContext): Promise<SetupStep[]> {
     ];
   }
 
-  if (LOOPBACK_HOSTS.has(ctx.proxyHost)) {
-    return [
-      {
-        status: 'failed',
-        message: `--host ${ctx.proxyHost} won't work for Wi-Fi pairing — a phone can't reach this machine at a loopback address to download the cert. Pass a real LAN IP with --host, or omit --host to auto-detect one.`,
-      },
-    ];
-  }
-
   try {
     const session = await ctx.certPairingServer.start({
       certPath: ctx.certPath,
@@ -121,6 +121,9 @@ async function wifiPairingFallback(ctx: SetupContext): Promise<SetupStep[]> {
 }
 
 export async function runAndroidSetup(ctx: SetupContext): Promise<TargetOutcome> {
+  const loopbackError = loopbackHostError(ctx);
+  if (loopbackError) return { steps: [loopbackError] };
+
   let serial: string;
   try {
     serial = await requireOneDevice(ctx);
@@ -156,6 +159,9 @@ export async function runAndroidSetup(ctx: SetupContext): Promise<TargetOutcome>
 }
 
 export async function runAndroidDoctor(ctx: SetupContext): Promise<TargetOutcome> {
+  const loopbackError = loopbackHostError(ctx);
+  if (loopbackError) return { steps: [loopbackError] };
+
   const steps: SetupStep[] = [];
 
   try {

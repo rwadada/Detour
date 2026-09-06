@@ -90,6 +90,14 @@ describe('runIosSetup', () => {
     expect(outcome.steps[0]!.status).toBe('failed');
     expect(outcome.steps.some((s) => s.status === 'manual')).toBe(true);
   });
+
+  it('substitutes a plain-language placeholder into the proxy-config instruction when proxyHost is unresolved, instead of a blank address', async () => {
+    const runner = fakeRunner(() => ({ stdout: NONE_BOOTED_LIST, stderr: '' }));
+    const outcome = await runIosSetup(ctxWith(runner, { proxyHost: '' }));
+    const proxyStep = outcome.steps.find((s) => s.message.includes('Configure the proxy'));
+    expect(proxyStep?.message).toContain('no LAN IP detected');
+    expect(proxyStep?.message).not.toMatch(/to\s+\/\s*8080/);
+  });
 });
 
 describe('runIosDoctor', () => {
@@ -119,12 +127,10 @@ describe('runIosCleanup', () => {
     // cleanup never touches CA cert trust — its manual step should only be
     // about the proxy, not repeat the cert-install instructions.
     expect(outcome.steps.some((s) => s.message.includes('Trust the CA cert'))).toBe(false);
-  });
-
-  it('substitutes a plain-language placeholder when proxyHost is unresolved, instead of a blank address', async () => {
-    const runner = fakeRunner(() => ({ stdout: '', stderr: '' }));
-    const outcome = await runIosCleanup(ctxWith(runner, { proxyHost: '' }));
-    expect(outcome.steps[0]!.message).toContain('no LAN IP detected');
-    expect(outcome.steps[0]!.message).not.toMatch(/to\s+\/\s*8080/);
+    // ...and never proxyConfig's "turn it on" wording either — cleanup uses
+    // its own "Turn the proxy off" instruction, which (unlike proxyConfig)
+    // needs no address at all, so an unresolved proxyHost can't leak into
+    // it as a placeholder or a blank value.
+    expect(outcome.steps.every((s) => s.message.includes('Turn the proxy off'))).toBe(true);
   });
 });

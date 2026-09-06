@@ -152,6 +152,21 @@ describe('runAndroidSetup', () => {
     },
   );
 
+  it.each(['localhost', '127.0.0.1', '::1'])(
+    'refuses a loopback --host override (%s) even with an adb device connected, instead of pointing the device at itself',
+    async (loopbackHost) => {
+      const calls: string[][] = [];
+      const runner = fakeRunner((command, args) => {
+        calls.push([command, ...args]);
+        return { stdout: ONE_DEVICE, stderr: '' };
+      });
+      const outcome = await runAndroidSetup(ctxWith(runner, { proxyHost: loopbackHost }));
+      expect(outcome.steps).toEqual([{ status: 'failed', message: expect.stringContaining(loopbackHost) }]);
+      // Fails before ever touching the device — no push/proxy commands sent.
+      expect(calls).toEqual([]);
+    },
+  );
+
   it('fails cleanly with adb missing entirely', async () => {
     const runner: CommandRunner = {
       async run() {
@@ -174,6 +189,21 @@ describe('runAndroidDoctor', () => {
     const outcome = await runAndroidDoctor(ctxWith(runner));
     expect(outcome.steps.filter((s) => s.status === 'failed')).toEqual([]);
   });
+
+  it.each(['localhost', '127.0.0.1', '::1'])(
+    'reports failed (never "done") for a loopback --host override (%s), instead of validating the device proxy against an address it could never reach',
+    async (loopbackHost) => {
+      const runner = fakeRunner((command, args) => {
+        if (args[0] === 'devices') return { stdout: ONE_DEVICE, stderr: '' };
+        // If the guard didn't fire, this would make the mismatched-loopback
+        // check pass as "done" — proving the guard is what's doing the work.
+        if (args.includes('get')) return { stdout: `${loopbackHost}:8080\n`, stderr: '' };
+        return { stdout: '', stderr: '' };
+      });
+      const outcome = await runAndroidDoctor(ctxWith(runner, { proxyHost: loopbackHost }));
+      expect(outcome.steps).toEqual([{ status: 'failed', message: expect.stringContaining(loopbackHost) }]);
+    },
+  );
 
   it('stops after the first failed step when adb itself is unusable', async () => {
     const runner: CommandRunner = {
