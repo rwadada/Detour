@@ -226,7 +226,20 @@ export function RuleProfilesControl() {
     // open to begin with.
     if (applyWithDirtyGuard(value)) {
       cancelCreate();
-      setPending({ kind: 'activeProfile', name: value, label: `Applied "${value}"` });
+      // Re-picking the profile that's already active can't produce a
+      // `$activeProfile` transition to wait for — it was already `value`
+      // before this request, so the resolving effect would consider it
+      // "resolved" on the very next render regardless of whether the
+      // server's even seen this particular request yet, let alone accepted
+      // it. Nothing to confirm one way or the other here.
+      if (value !== activeProfile) {
+        // Clears any error left over from an earlier, unrelated action —
+        // otherwise the resolving effect below would see it, assume it's
+        // this action's outcome, and report a failure that isn't this
+        // request's to report.
+        dismissError();
+        setPending({ kind: 'activeProfile', name: value, label: `Applied "${value}"` });
+      }
     }
   };
 
@@ -259,9 +272,13 @@ export function RuleProfilesControl() {
       ) {
         return;
       }
+      // Clears any error left over from an earlier, unrelated action — see
+      // the same call in `handleSelectChange`.
+      dismissError();
       saveActiveAsProfile(name);
       setPending({ kind: 'activeProfile', name, label: `Saved "${name}"` });
     } else {
+      dismissError();
       createProfile(name, effectiveSource);
       setPending({ kind: 'profileCreated', name, label: `Saved "${name}"` });
     }
