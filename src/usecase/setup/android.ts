@@ -136,7 +136,7 @@ async function describeDeviceChoice(ctx: SetupContext, serial: string): Promise<
   const wifiActive = await isWifiActiveNetwork(ctx, serial);
   const warning =
     wifiActive === false
-      ? " — ⚠ mobile data (not Wi-Fi) is this device's active network right now; the proxy setting below won't reach it"
+      ? " — ⚠ mobile data (not Wi-Fi) is this device's active network right now; the proxy setting won't reach it"
       : '';
   return { serial, label: `${serial} (${kind})${warning}` };
 }

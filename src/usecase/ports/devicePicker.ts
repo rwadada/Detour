@@ -1,7 +1,7 @@
 /** One selectable `adb` device, described for a human choosing between several. */
 export interface DeviceChoice {
   serial: string;
-  /** One-line description shown in the selection prompt — kind (emulator/real device), connection (USB/Wi-Fi), and any diagnostic warning (e.g. "mobile data is the active network, not Wi-Fi — the proxy setting below won't reach it"). Plain text; `usecase` builds it so `infra`'s picker implementations don't need their own opinion on what's worth surfacing. */
+  /** One-line description shown in the selection prompt — kind (emulator/real device), connection (USB/Wi-Fi), and any diagnostic warning (e.g. "mobile data, not Wi-Fi, is this device's active network right now — the proxy setting won't reach it"). Plain text; `usecase` builds it so `infra`'s picker implementations don't need their own opinion on what's worth surfacing. */
   label: string;
 }
 
