@@ -232,7 +232,16 @@ export async function startDashboardServer(
       state: {
         defaultDetach: config.defaultDetach ?? false,
         lanAccess: config.lanAccess ?? false,
-        dashboardPasswordSet: !!config.dashboardPasswordHash,
+        // `currentPasswordHash()` (not `config.dashboardPasswordHash` read
+        // above) — they can disagree the moment the config becomes
+        // unreadable after a password was already set: `config` here just
+        // fell back to `{}` (so `dashboardPasswordHash` reads as
+        // `undefined`), but `currentPasswordHash()` fails *closed* to the
+        // last successfully-read hash instead (see its own doc comment).
+        // Deriving this from the same fail-closed-aware getter that
+        // `login`/connection-gating actually uses keeps what a client is
+        // told in sync with whether a password is genuinely still required.
+        dashboardPasswordSet: !!currentPasswordHash(),
       },
     };
   };

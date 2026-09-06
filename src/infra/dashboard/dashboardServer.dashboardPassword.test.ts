@@ -238,4 +238,35 @@ describe('startDashboardServer — dashboard password (issue #66)', () => {
     expect(message).toEqual({ type: 'authRequired' });
     await expectNoMessage(socket, (m) => m.type === 'backlog');
   });
+
+  // Regression coverage for a second review finding on the same fail-closed
+  // fix above: `userConfigMessage` must report `dashboardPasswordSet` from
+  // the same fail-closed-aware `currentPasswordHash()` connection-gating
+  // actually uses — not a separate fresh (and, on a corrupt read, always
+  // `false`-falling-back) read of its own, which would tell an already-
+  // authenticated client "no password required" while new connections keep
+  // getting locked out.
+  it('keeps reporting dashboardPasswordSet: true even once the config is unreadable', async () => {
+    handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);
+    const setup = connect();
+    await waitForMessage(setup, (m) => m.type === 'userConfig');
+    setup.send(JSON.stringify({ type: 'setDashboardPassword', password: 'hunter2' }));
+    await waitForMessage(setup, (m) => m.type === 'userConfig' && m.state.dashboardPasswordSet === true);
+
+    // Corrupt the file out from under the running server — same effect as a
+    // hand-edit introducing an unrelated typo (e.g. `lanAccess: "yes"`).
+    fs.writeFileSync(configPath, '{ not json');
+
+    // The correct password still verifies against the cached hash (see
+    // `currentPasswordHash`'s doc comment) — this client authenticates
+    // normally and gets the usual just-connected snapshot, which must still
+    // say a password is required, not silently fall back to "off" just
+    // because the file happens to be unreadable right now.
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'authRequired');
+    socket.send(JSON.stringify({ type: 'login', password: 'hunter2' }));
+
+    const userConfig = await waitForMessage(socket, (m) => m.type === 'userConfig');
+    expect(userConfig).toMatchObject({ type: 'userConfig', state: { dashboardPasswordSet: true } });
+  });
 });

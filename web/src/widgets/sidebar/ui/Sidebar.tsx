@@ -4,7 +4,7 @@ import { RulesEditorButton } from '@/features/rules-editor';
 import { RuleProfilesControl } from '@/features/rules-profiles';
 import { SettingsButton } from '@/features/settings-panel';
 import { getDashboardConnection, useConnectionStatus } from '@/shared/api';
-import { copyToClipboard } from '@/shared/lib/copyToClipboard';
+import { useCopyToClipboard } from '@/shared/lib/useCopyToClipboard';
 import { cn } from '@/shared/lib/utils';
 import { DetourLogo } from '@/shared/ui';
 import { createProxyInfoStore } from '../model/createProxyInfoStore';
@@ -96,18 +96,6 @@ export function Sidebar() {
       )}
     </aside>
   );
-}
-
-/** Shared by `ProxyUrlSection`'s and `CopyableUrl`'s copy buttons: writes `text` to the clipboard (falling back off the secure-context-only Clipboard API — see `copyToClipboard`'s doc comment, directly relevant here since these buttons exist specifically to copy a plain-`http://` LAN URL) and flashes a checkmark for 1.5s on success. */
-function useCopyToClipboard(text: string) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    if (await copyToClipboard(text)) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }
-  };
-  return { copied, copy };
 }
 
 /** The proxy's address, derived from `useProxyInfoStore`'s port plus the page's own host — the dashboard and the proxy it fronts are always reached at the same host, only the port differs. */
