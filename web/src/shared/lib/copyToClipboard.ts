@@ -7,11 +7,15 @@
  * `navigator.clipboard` is undefined — falls back to the older
  * `document.execCommand('copy')` (deprecated, but still works in an
  * insecure context) rather than throwing an unhandled rejection out of a
- * click handler. Not unit-tested — like `downloadTextFile.ts`, this is a DOM
- * side effect and this project's vitest config has no jsdom environment.
+ * click handler. Also guards against `navigator`/`document` themselves
+ * being undefined (a non-DOM runtime — this project's own vitest config has
+ * no jsdom environment, see below) rather than just their properties, since
+ * that's a `ReferenceError` no optional-chaining on a property access
+ * catches. Not unit-tested — like `downloadTextFile.ts`, this is a DOM side
+ * effect and this project's vitest config has no jsdom environment.
  */
 export async function copyToClipboard(text: string): Promise<boolean> {
-  if (navigator.clipboard?.writeText) {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(text);
       return true;
@@ -19,6 +23,7 @@ export async function copyToClipboard(text: string): Promise<boolean> {
       // Permission denied, or the browser only pretends to support it here — fall through to the legacy path below.
     }
   }
+  if (typeof document === 'undefined') return false;
   return legacyCopy(text);
 }
 

@@ -435,7 +435,18 @@ export async function startDashboardServer(
     loginInFlight.add(socket);
     try {
       const hash = currentPasswordHash();
-      if (!hash || (await verifyDashboardPassword(message.password, hash))) {
+      let verified: boolean;
+      try {
+        verified = !hash || (await verifyDashboardPassword(message.password, hash));
+      } catch {
+        // A crypto failure verifying the password is the server's problem,
+        // not proof the client is wrong — but it still needs *some*
+        // response. The outer `socket.on('message', ...)` handler's own
+        // catch would otherwise swallow this silently, stranding the socket
+        // locked out with no `authFailed` to prompt a retry.
+        verified = false;
+      }
+      if (verified) {
         authenticatedSockets.add(socket);
         sendInitialPayload(socket);
       } else {

@@ -2,10 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DashboardServerMessage } from '../../domain/dashboard/protocol';
 import { DetourEventBus } from '../eventBus';
 import { startDashboardServer, type DashboardServerHandle } from './dashboardServer';
+import * as dashboardPasswordHash from './dashboardPasswordHash';
 
 // A syntactically well-formed `dashboardPasswordHash` fixture (matches the
 // exact `<32-hex-char salt>:<128-hex-char hash>` shape `hashDashboardPassword`
@@ -222,6 +223,33 @@ describe('startDashboardServer — dashboard password (issue #66)', () => {
     // The second (wrong) attempt must never surface — it was dropped while
     // the first was still in flight, not processed and rejected afterwards.
     await expectNoMessage(socket, (m) => m.type === 'authFailed');
+  });
+
+  // Regression coverage for a review-caught gap: a crypto failure inside
+  // `verifyDashboardPassword` (not a wrong password — an actual thrown
+  // error) must still resolve to `authFailed`, not silently strand the
+  // socket with no response at all (the outer message handler's own
+  // catch-and-ignore would otherwise swallow it).
+  it('replies with authFailed rather than stranding the socket when verifyDashboardPassword itself throws', async () => {
+    const verifySpy = vi
+      .spyOn(dashboardPasswordHash, 'verifyDashboardPassword')
+      .mockRejectedValueOnce(new Error('simulated crypto failure'));
+    try {
+      handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);
+      const setup = connect();
+      await waitForMessage(setup, (m) => m.type === 'userConfig');
+      setup.send(JSON.stringify({ type: 'setDashboardPassword', password: 'hunter2' }));
+      await waitForMessage(setup, (m) => m.type === 'userConfig' && m.state.dashboardPasswordSet === true);
+
+      const socket = connect();
+      await waitForMessage(socket, (m) => m.type === 'authRequired');
+      socket.send(JSON.stringify({ type: 'login', password: 'hunter2' }));
+
+      const failed = await waitForMessage(socket, (m) => m.type === 'authFailed');
+      expect(failed).toEqual({ type: 'authFailed' });
+    } finally {
+      verifySpy.mockRestore();
+    }
   });
 
   it('ignores every message other than login from an unauthenticated socket', async () => {
