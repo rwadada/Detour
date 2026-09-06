@@ -626,11 +626,24 @@ export class ProxyEngine {
   private emitError(kind: string, ctx: IContext | null, err: Error): void {
     if (ctx) {
       const res = ctx.proxyToClientResponse;
-      if (!res.headersSent) {
-        if (isHttp2(ctx.clientToProxyRequest)) res.writeHead(504);
-        else res.writeHead(504, 'Proxy Error');
+      try {
+        if (!res.headersSent) {
+          if (isHttp2(ctx.clientToProxyRequest)) res.writeHead(504);
+          else res.writeHead(504, 'Proxy Error');
+        }
+        if (!res.writableEnded) res.end(`${kind}: ${err}`, 'utf8');
+      } catch {
+        // `!headersSent`/`!writableEnded` above guard against writing
+        // twice, but not against the client's connection itself already
+        // being gone by the time an abort/error handler gets here — an
+        // HTTP/2 stream in that state throws synchronously
+        // (ERR_HTTP2_INVALID_STREAM: "The stream has been destroyed") from
+        // `writeHead`/`end` rather than just no-op-ing the way an
+        // already-closed HTTP/1 socket does, and nothing upstream of this
+        // method catches it — an uncaught exception here previously took
+        // the whole process down over what's ultimately a client that
+        // already left and was never going to see this response anyway.
       }
-      if (!res.writableEnded) res.end(`${kind}: ${err}`, 'utf8');
     }
     for (const handler of this.onErrorHandlers) handler(ctx, err, kind);
   }

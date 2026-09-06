@@ -1615,6 +1615,76 @@ describe('detour start (CLI, end-to-end)', () => {
         await upstream.close();
       }
     });
+
+    it("doesn't crash the whole process when the client abruptly disconnects mid-request over HTTP/2 (regression)", async () => {
+      // Never responds — the point is for this request to still be "in
+      // flight" (no response sent to the client yet) when the test yanks
+      // the client's connection out from under it below.
+      const slowUpstream = await new Promise<{ port: number; close: () => Promise<void> }>((resolve, reject) => {
+        const { key, cert } = generateSelfSignedCert('127.0.0.1');
+        const server = https.createServer({ key, cert }, (req) => req.resume());
+        server.on('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+          const address = server.address();
+          if (!address || typeof address === 'string') return reject(new Error('failed to bind'));
+          resolve({ port: address.port, close: () => new Promise((res) => server.close(() => res())) });
+        });
+      });
+      cli = await startDetourCli([], insecureUpstreamEnv);
+      let session: http2.ClientHttp2Session | undefined;
+      let tlsSocket: tls.TLSSocket | undefined;
+      try {
+        const connected = await connectHttp2ThroughProxy(cli.port, 'localhost', slowUpstream.port, cli.caCertPath);
+        session = connected.session;
+        tlsSocket = connected.tlsSocket;
+
+        const req = session.request({
+          ':path': '/slow',
+          ':method': 'POST',
+          ':authority': `localhost:${slowUpstream.port}`,
+        });
+        req.write('partial-body'); // starts the request but deliberately never finishes it
+        req.on('error', () => {}); // this request itself erroring out below is expected, not the point of this test
+
+        // Give Detour a moment to actually forward the partial request
+        // upstream before abruptly disconnecting.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        // A dropped connection (network blip, a browser tab closed
+        // mid-upload, ...) rather than a clean HTTP/2 stream close —
+        // leaves Detour's own response stream to this client destroyed
+        // before it ever got a response, the state that used to make
+        // ProxyEngine's `emitError` throw ERR_HTTP2_INVALID_STREAM
+        // uncaught (ProxyEngine.emitError`'s own try/catch is the fix).
+        tlsSocket.destroy();
+
+        // Give the (pre-fix) uncaught exception a moment to actually crash
+        // the process, if it's going to.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        // The regression was the *whole* `detour start` process going
+        // down over one broken connection, not just that connection
+        // failing — a brand new, otherwise-unrelated request through the
+        // same still-running process is the clearest proof it survived.
+        const upstream2 = await startHttpsUpstreamServer();
+        try {
+          const connected2 = await connectHttp2ThroughProxy(cli.port, 'localhost', upstream2.port, cli.caCertPath);
+          try {
+            const result = await h2Get(connected2.session, `localhost:${upstream2.port}`, '/hello');
+            expect(result.status).toBe(200);
+          } finally {
+            connected2.session.close();
+            connected2.tlsSocket.destroy();
+          }
+        } finally {
+          await upstream2.close();
+        }
+      } finally {
+        session?.close();
+        tlsSocket?.destroy();
+        await slowUpstream.close();
+      }
+    }, 15_000);
   });
 
   describe('gRPC detection and decoding (issue #18)', () => {
