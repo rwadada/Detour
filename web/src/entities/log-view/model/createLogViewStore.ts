@@ -66,8 +66,15 @@ export interface LogViewState {
    * expanded (the default for one never clicked); not persisted across
    * reloads, same as `groupByHost` itself. Meaningless (and untouched)
    * while `groupByHost` is off.
+   *
+   * Typed `ReadonlySet` (rather than plain `Set`) even though the value
+   * really is a mutable `Set` underneath (see `toggleHostCollapsed`) — this
+   * is state read out of a Zustand store, and calling `.add`/`.delete`
+   * directly on it would mutate that state in place without ever going
+   * through `set()`, silently skipping the re-render every other update to
+   * this store triggers.
    */
-  collapsedHosts: Set<string>;
+  collapsedHosts: ReadonlySet<string>;
   /** `time`/`asc` reproduces the table's pre-sort behavior (exchanges arrive in roughly chronological order already), so leaving this untouched changes nothing. */
   sort: SortState;
   columnWidths: Record<ResizableColumn, number>;

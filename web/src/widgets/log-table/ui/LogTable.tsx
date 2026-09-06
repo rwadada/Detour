@@ -284,6 +284,7 @@ function GroupHeaderRow({
       onClick={onToggle}
       style={style}
       title={collapsed ? `Expand ${host}` : `Collapse ${host}`}
+      aria-expanded={!collapsed}
       className="flex w-full items-center gap-1.5 border-b border-[var(--border)] bg-[var(--panel)] px-3 text-left text-[11px] font-medium text-[var(--muted)] font-mono-ui hover:bg-[var(--row-hover)]"
     >
       {collapsed ? <ChevronRight className="h-3 w-3 shrink-0" /> : <ChevronDown className="h-3 w-3 shrink-0" />}
