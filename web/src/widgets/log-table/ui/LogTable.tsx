@@ -1,6 +1,6 @@
 import { useMemo, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { ChevronDown, ChevronUp } from 'lucide-react';
+import { ChevronDown, ChevronRight, ChevronUp } from 'lucide-react';
 import {
   BreakpointBadge,
   matchesFilters,
@@ -51,6 +51,8 @@ export function LogTable() {
   const toggleCompare = useExchangeStore((s) => s.toggleCompare);
   const sort = useLogViewStore((s) => s.sort);
   const groupByHost = useLogViewStore((s) => s.groupByHost);
+  const collapsedHosts = useLogViewStore((s) => s.collapsedHosts);
+  const toggleHostCollapsed = useLogViewStore((s) => s.toggleHostCollapsed);
 
   const sorted = useMemo(() => {
     const filtered = exchanges.filter((e) => matchesFilters(e, filters));
@@ -63,9 +65,16 @@ export function LogTable() {
     if (!groupByHost) return sorted.map((exchange) => ({ kind: 'exchange', exchange }));
     return groupExchangesByHost(sorted).flatMap((group) => [
       { kind: 'group' as const, host: group.host, count: group.exchanges.length },
-      ...group.exchanges.map((exchange) => ({ kind: 'exchange' as const, exchange })),
+      // A collapsed group still contributes its header above (so it stays
+      // visible, and can be expanded again) but none of its own rows —
+      // this is the only place collapse actually takes effect; everything
+      // downstream (the virtualizer, "stick to bottom", row rendering) just
+      // sees a shorter flat list, same as a host being filtered out.
+      ...(collapsedHosts.has(group.host)
+        ? []
+        : group.exchanges.map((exchange) => ({ kind: 'exchange' as const, exchange }))),
     ]);
-  }, [sorted, groupByHost]);
+  }, [sorted, groupByHost, collapsedHosts]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -141,7 +150,16 @@ export function LogTable() {
               transform: `translateY(${row.start}px)`,
             };
             if (item.kind === 'group') {
-              return <GroupHeaderRow key={`group:${item.host}`} host={item.host} count={item.count} style={style} />;
+              return (
+                <GroupHeaderRow
+                  key={`group:${item.host}`}
+                  host={item.host}
+                  count={item.count}
+                  collapsed={collapsedHosts.has(item.host)}
+                  onToggle={() => toggleHostCollapsed(item.host)}
+                  style={style}
+                />
+              );
             }
             return (
               <LogRow
@@ -247,15 +265,31 @@ function ResizeHandle({ column }: { column: ResizableColumn }) {
   );
 }
 
-function GroupHeaderRow({ host, count, style }: { host: string; count: number; style: CSSProperties }) {
+function GroupHeaderRow({
+  host,
+  count,
+  collapsed,
+  onToggle,
+  style,
+}: {
+  host: string;
+  count: number;
+  collapsed: boolean;
+  onToggle: () => void;
+  style: CSSProperties;
+}) {
   return (
-    <div
+    <button
+      type="button"
+      onClick={onToggle}
       style={style}
-      className="flex items-center gap-2 border-b border-[var(--border)] bg-[var(--panel)] px-3 text-[11px] font-medium text-[var(--muted)] font-mono-ui"
+      title={collapsed ? `Expand ${host}` : `Collapse ${host}`}
+      className="flex w-full items-center gap-1.5 border-b border-[var(--border)] bg-[var(--panel)] px-3 text-left text-[11px] font-medium text-[var(--muted)] font-mono-ui hover:bg-[var(--row-hover)]"
     >
+      {collapsed ? <ChevronRight className="h-3 w-3 shrink-0" /> : <ChevronDown className="h-3 w-3 shrink-0" />}
       {host}
       <span className="rounded-full bg-[var(--row-hover)] px-1.5 text-[10px]">{count}</span>
-    </div>
+    </button>
   );
 }
 

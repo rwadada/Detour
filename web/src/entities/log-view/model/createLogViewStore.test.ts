@@ -28,6 +28,30 @@ describe('createLogViewStore', () => {
     expect(store.getState().groupByHost).toBe(false);
   });
 
+  it('toggleHostCollapsed adds a host not yet collapsed, and removes one already collapsed', () => {
+    const store = createLogViewStore();
+    expect(store.getState().collapsedHosts.has('example.com')).toBe(false);
+
+    store.getState().toggleHostCollapsed('example.com');
+    expect(store.getState().collapsedHosts.has('example.com')).toBe(true);
+
+    store.getState().toggleHostCollapsed('example.com');
+    expect(store.getState().collapsedHosts.has('example.com')).toBe(false);
+  });
+
+  it('toggleHostCollapsed tracks multiple hosts independently', () => {
+    const store = createLogViewStore();
+    store.getState().toggleHostCollapsed('a.example.com');
+    store.getState().toggleHostCollapsed('b.example.com');
+
+    expect(store.getState().collapsedHosts.has('a.example.com')).toBe(true);
+    expect(store.getState().collapsedHosts.has('b.example.com')).toBe(true);
+
+    store.getState().toggleHostCollapsed('a.example.com');
+    expect(store.getState().collapsedHosts.has('a.example.com')).toBe(false);
+    expect(store.getState().collapsedHosts.has('b.example.com')).toBe(true);
+  });
+
   it('setSort on a new column switches to it ascending', () => {
     const store = createLogViewStore();
     store.getState().setSort('duration');
