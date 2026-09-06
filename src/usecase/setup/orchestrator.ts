@@ -153,7 +153,8 @@ export async function runForTarget(
  * right alongside the ones that actually apply here, none of which this
  * machine could act on anyway. (`setup` gets the same benefit from this
  * filter, but for it the bigger source of that same noise is
- * `runForTarget`'s own `explicitTarget` guard — see its doc comment — which
+ * `runForTarget`'s own `explicitTarget` guard — see the inline comment
+ * above its `mode === 'setup' && !inputs.explicitTarget` check — which
  * this filter doesn't affect at all.) Naming a target explicitly with
  * `--target` bypasses the filter entirely (`runForTarget` still reports it
  * "skipped" with manual steps, same as ever) — this only trims the
