@@ -114,13 +114,20 @@ const DEFAULT_DASHBOARD_PORT_OFFSET = 1000;
  * shared string so refining the wording (or the security posture it
  * describes) can't drift between three independently hand-edited copies.
  *
+ * Scoped to the *dashboard* only — the proxy itself always binds to every
+ * network interface regardless of `--lan`/`lanAccess` (see `PROXY_HOST`'s
+ * doc comment), since a proxy nobody else's device can reach isn't much of
+ * a proxy. This warning exists because the dashboard is the one piece
+ * `--lan` still actually gates: it's where decrypted HTTPS traffic and rule
+ * edits live, with no login of its own.
+ *
  * `web/src/features/settings-panel/ui/SettingsPanel.tsx`'s dashboard-side
  * warning says the same thing in its own words — that's a separate,
  * standalone-built package with no access to this constant, so it's worded
  * to match by hand instead. Update both together.
  */
 const LAN_ACCESS_WARNING =
-  'there is no authentication of any kind — anyone on your network can reach the dashboard (and decrypted HTTPS traffic through it), edit rules, or use the proxy';
+  'there is no authentication of any kind — anyone on your network can reach the dashboard, view decrypted HTTPS traffic through it, or edit rules';
 
 /** How long `detour stop` waits for a SIGTERM'd process to exit on its own before escalating to SIGKILL. */
 const STOP_GRACE_PERIOD_MS = 10_000;
@@ -305,7 +312,7 @@ interface StartOptions {
   foreground?: boolean;
   /** `--no-open`: skip auto-opening the dashboard in a browser after startup. Defaults to `true` (auto-open on) via commander's `--no-<flag>` convention. */
   open: boolean;
-  /** `--lan`/`--no-lan`: bind the proxy and dashboard to every network interface (`0.0.0.0`) instead of just `localhost`, for this invocation. Undefined when neither flag is passed — `resolveHost` then falls back to `~/.detour/config.json`'s `lanAccess`. Security-sensitive: see `UserConfigState.lanAccess`'s doc comment. */
+  /** `--lan`/`--no-lan`: bind the *dashboard* to every network interface (`0.0.0.0`) instead of just `localhost`, for this invocation — the proxy always binds to every interface regardless (see `PROXY_HOST`'s doc comment). Undefined when neither flag is passed — `resolveDashboardHost` then falls back to `~/.detour/config.json`'s `lanAccess`. Security-sensitive: see `UserConfigState.lanAccess`'s doc comment. */
   lan?: boolean;
 }
 
@@ -334,17 +341,33 @@ function resolveShouldDetach(options: StartOptions): boolean {
 }
 
 /**
- * Resolves the host the proxy and dashboard bind to for this `start`
- * invocation: `0.0.0.0` (every network interface) or `localhost`-only.
- * Folds together two sources, same priority as `resolveShouldDetach`'s
- * `--detach`/`--foreground`: an explicit `--lan`/`--no-lan` on the command
- * line, then `~/.detour/config.json`'s `lanAccess`, then `localhost`-only.
+ * The proxy's own bind address — always every network interface, unlike the
+ * dashboard's (`resolveDashboardHost`). A proxy no other device on the
+ * network can reach defeats its main use case (an Android/iOS device — or
+ * anything else — pointing its own proxy setting at this machine), and
+ * unlike the dashboard it has no rule-editing/traffic-viewing surface of
+ * its own to expose: reaching it at all still requires a client to already
+ * have this machine's CA cert (issued by `detour setup`) installed and
+ * trusted, and to know to point its proxy setting here in the first place.
+ * `--lan`/`lanAccess` accordingly only ever gates the dashboard now — see
+ * `resolveDashboardHost`'s doc comment.
+ */
+const PROXY_HOST = '0.0.0.0';
+
+/**
+ * Resolves the host the *dashboard* binds to for this `start` invocation:
+ * `0.0.0.0` (every network interface) or `localhost`-only. Folds together
+ * two sources, same priority as `resolveShouldDetach`'s `--detach`/
+ * `--foreground`: an explicit `--lan`/`--no-lan` on the command line, then
+ * `~/.detour/config.json`'s `lanAccess`, then `localhost`-only.
  *
  * Security-sensitive: LAN access has no authentication of its own, so
- * `0.0.0.0` means anything on the network can reach the dashboard (and,
- * from there, decrypted HTTPS traffic and rule edits) or use the proxy.
+ * `0.0.0.0` means anything on the network can reach the dashboard and,
+ * from there, decrypted HTTPS traffic and rule edits — see
+ * `LAN_ACCESS_WARNING`. The proxy itself doesn't share this gate at all;
+ * see `PROXY_HOST`'s doc comment for why.
  */
-function resolveHost(options: StartOptions): string {
+function resolveDashboardHost(options: StartOptions): string {
   const lan = options.lan ?? loadUserConfig().lanAccess ?? false;
   return lan ? '0.0.0.0' : 'localhost';
 }
@@ -513,8 +536,8 @@ async function runStartBody({
     });
   }
 
-  const host = resolveHost(options);
-  const handle = await startProxyServer({ port, host, ruleEngine, http2Enabled: options.http2 }, eventBus);
+  const dashboardHost = resolveDashboardHost(options);
+  const handle = await startProxyServer({ port, host: PROXY_HOST, ruleEngine, http2Enabled: options.http2 }, eventBus);
   // `--headless` (issue #20): CI/scripted use has no need for the web
   // dashboard — skip starting it entirely rather than starting it and just
   // not opening a browser to it.
@@ -535,13 +558,15 @@ async function runStartBody({
       dashboardHandle = await startDashboardServer(
         {
           port: requestedDashboardPort,
-          host,
+          host: dashboardHost,
           proxyPort: handle.port,
           ruleEngine,
           ruleProfileStore: fsRuleProfileStore,
-          // Only actually populated when bound to every interface — see
-          // `DashboardServerOptions.lanAddresses`'s doc comment (issue #66).
-          lanAddresses: host !== 'localhost' ? lanAddresses() : [],
+          // Passed regardless of `dashboardHost` — the proxy this dashboard
+          // fronts always binds to every interface, so its LAN address(es)
+          // are always worth knowing. See `DashboardServerOptions.lanAddresses`'s
+          // doc comment (issue #66).
+          lanAddresses: lanAddresses(),
         },
         eventBus,
       );
@@ -591,7 +616,7 @@ async function runStartBody({
   }
 
   printStartupBanner({
-    host,
+    dashboardHost,
     proxyPort: handle.port,
     caCertPath: handle.caCertPath,
     dashboardPort: dashboardHandle?.port,
@@ -669,7 +694,8 @@ function readDashboardPasswordSet(): boolean {
 }
 
 function printStartupBanner(info: {
-  host: string;
+  /** The dashboard's own bind host (`localhost` or `0.0.0.0`) — the proxy's is always `PROXY_HOST` ('0.0.0.0'), not passed in since this function never needs to branch on it. */
+  dashboardHost: string;
   proxyPort: number;
   caCertPath: string;
   /** Undefined when started with `--headless`. */
@@ -700,25 +726,33 @@ function printStartupBanner(info: {
       `Dashboard password: ${info.dashboardPasswordSet ? 'required' : 'off (detour config --dashboard-password <value>)'}`,
     );
   }
-  // `--lan`/`detour config --lan on`: called out loudly rather than folded
-  // quietly into the URLs above — LAN access has no authentication of its
-  // own, so anyone on the network can reach the dashboard (and from there,
-  // decrypted HTTPS traffic and rule edits) or use the proxy.
-  if (info.host !== 'localhost') {
-    // `localhost` on a *different* device resolves to that device, not this
-    // machine — the URLs printed above are useless to whoever's supposed to
-    // reach this from elsewhere on the network. Print every real address
-    // this machine actually has instead.
-    const addresses = lanAddresses();
-    if (addresses.length > 0) {
-      console.log('Reachable on your network at:');
-      for (const address of addresses) {
-        console.log(`  Proxy     → http://${address}:${info.proxyPort}`);
-        if (info.dashboardPort !== undefined) console.log(`  Dashboard → http://${address}:${info.dashboardPort}`);
-      }
+  // The proxy (unlike the dashboard) always binds to every network
+  // interface — see `PROXY_HOST`'s doc comment — so its LAN address is
+  // always worth printing, `--lan`/`lanAccess` or not: `localhost` on a
+  // *different* device resolves to that device, not this machine, so the
+  // `localhost` URL printed above is useless to whoever's supposed to reach
+  // the proxy from elsewhere on the network. The dashboard only joins this
+  // list (and only then gets the SECURITY callout below) when it's
+  // actually bound to every interface too.
+  const dashboardOnLan = info.dashboardPort !== undefined && info.dashboardHost !== 'localhost';
+  const addresses = lanAddresses();
+  if (addresses.length > 0) {
+    console.log('Reachable on your network at:');
+    for (const address of addresses) {
+      console.log(`  Proxy     → http://${address}:${info.proxyPort}`);
+      if (dashboardOnLan) console.log(`  Dashboard → http://${address}:${info.dashboardPort}`);
     }
+  }
+  if (dashboardOnLan) {
+    // `--lan`/`detour config --lan on`: called out loudly rather than
+    // folded quietly into the URL above — LAN access has no authentication
+    // of its own, so anyone on the network can reach the dashboard and,
+    // from there, decrypted HTTPS traffic and rule edits (the proxy itself
+    // isn't part of this warning: it's always reachable this way, and has
+    // no comparable rule-editing/traffic-viewing surface to expose — see
+    // `LAN_ACCESS_WARNING`'s doc comment).
     console.log(
-      `⚠ Bound to every network interface (${info.host}), not just this machine — SECURITY: ${LAN_ACCESS_WARNING}. Only do this on a network you trust.`,
+      `⚠ Dashboard bound to every network interface, not just this machine — SECURITY: ${LAN_ACCESS_WARNING}. Only do this on a network you trust.`,
     );
   }
   if (info.ruleEngine) {
@@ -816,11 +850,11 @@ export function createCli(): Command {
     )
     .option(
       '--lan',
-      `Bind the proxy and dashboard to every network interface (0.0.0.0) instead of just this machine, for this invocation. SECURITY: ${LAN_ACCESS_WARNING}. On by default if \`lanAccess\` is set via \`detour config\`.`,
+      `Bind the dashboard to every network interface (0.0.0.0) instead of just this machine, for this invocation (the proxy always binds to every interface regardless of --lan — a proxy nothing else on the network can reach isn't much of a proxy). SECURITY: ${LAN_ACCESS_WARNING}. On by default if \`lanAccess\` is set via \`detour config\`.`,
     )
     .option(
       '--no-lan',
-      'Force localhost-only for this invocation even if `lanAccess` is enabled via `detour config` — the opposite of --lan.',
+      'Force the dashboard to localhost-only for this invocation even if `lanAccess` is enabled via `detour config` — the opposite of --lan. Never affects the proxy, which always binds to every interface regardless.',
     )
     .action(async (options: StartOptions) => {
       try {
@@ -945,7 +979,7 @@ export function createCli(): Command {
     )
     .option(
       '--lan <on|off>',
-      `When "on", \`detour start\` binds the proxy and dashboard to every network interface (0.0.0.0) by default — override per-invocation with --lan/--no-lan. SECURITY: ${LAN_ACCESS_WARNING}.`,
+      `When "on", \`detour start\` binds the dashboard to every network interface (0.0.0.0) by default (the proxy always does, on or off) — override per-invocation with --lan/--no-lan. SECURITY: ${LAN_ACCESS_WARNING}.`,
     )
     .option(
       '--dashboard-password <value>',

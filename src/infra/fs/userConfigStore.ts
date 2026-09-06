@@ -9,14 +9,14 @@ import { isValidDashboardPasswordHash } from '../dashboard/dashboardPasswordHash
  * per-port state in `runStateStore.ts`. Set via `detour config` (or the
  * dashboard's Settings panel, which reads/writes the same file over the
  * `userConfig`/`setUserConfig` WebSocket messages — see
- * `dashboardServer.ts`) and read back by `resolveShouldDetach`/`resolveHost`
- * in cli.ts — grows here as more "remember this across invocations"
- * settings show up.
+ * `dashboardServer.ts`) and read back by `resolveShouldDetach`/
+ * `resolveDashboardHost` in cli.ts — grows here as more "remember this
+ * across invocations" settings show up.
  */
 export interface UserConfig {
   /** When `true`, `detour start` runs detached (as if `--detach` were passed) unless overridden by `--detach`/`--foreground` on that invocation. Undefined (the file's absent, or the key was never set) means "off" — foreground stays the out-of-the-box default. */
   defaultDetach?: boolean;
-  /** When `true`, `detour start` binds the proxy and dashboard to every network interface (`0.0.0.0`) instead of just `localhost`, unless overridden by `--lan`/`--no-lan` on that invocation. Undefined means "off" — `localhost`-only stays the out-of-the-box default, since LAN access has no authentication of its own. */
+  /** When `true`, `detour start` binds the *dashboard* to every network interface (`0.0.0.0`) instead of just `localhost`, unless overridden by `--lan`/`--no-lan` on that invocation. Undefined means "off" — `localhost`-only stays the out-of-the-box default for the dashboard, since LAN access has no authentication of its own. Never affects the proxy, which always binds to every interface regardless — see cli.ts's `PROXY_HOST`. */
   lanAccess?: boolean;
   /**
    * A hashed password (see `dashboardPasswordHash.ts`'s `hashDashboardPassword`)

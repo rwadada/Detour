@@ -24,7 +24,7 @@ import type { RulesFile } from '../rules/types';
 export interface UserConfigState {
   /** Whether `detour start` runs detached by default (as if `--detach` were always passed) — `detour config --default-detach`. */
   defaultDetach: boolean;
-  /** Whether `detour start` binds the proxy and dashboard to every network interface (`0.0.0.0`) instead of just `localhost` — `detour config --lan`. Security-sensitive: LAN access has no authentication of its own, so anything on the network can reach the dashboard (and, from there, decrypted HTTPS traffic and rule edits) or use the proxy. */
+  /** Whether `detour start` binds the *dashboard* to every network interface (`0.0.0.0`) instead of just `localhost` — `detour config --lan`. Never affects the proxy, which always binds to every interface regardless (see cli.ts's `PROXY_HOST`). Security-sensitive: LAN access has no authentication of its own, so anything on the network can reach the dashboard and, from there, decrypted HTTPS traffic and rule edits. */
   lanAccess: boolean;
   /**
    * Whether a dashboard password is currently required (issue #66's optional
@@ -54,16 +54,24 @@ export type DashboardServerMessage =
   | { type: 'proxyInfo'; proxyPort: number }
   /**
    * Sent once, right after connecting (issue #66): every non-internal IPv4
-   * address this machine has, when `detour start --lan`/`lanAccess` bound
-   * the proxy/dashboard to every network interface — empty when bound to
-   * `localhost` only. Lets the dashboard show the actual URL(s) another
-   * device on the network should use, instead of only ever knowing the
-   * address the current browser tab happens to be viewing it from (which is
-   * `localhost` unless this tab itself was opened over LAN). The dashboard's
-   * own port isn't included here — a connected client already knows it as
+   * address this machine has. Non-empty regardless of `--lan`/`lanAccess` —
+   * the proxy always binds to every network interface (see cli.ts's
+   * `PROXY_HOST`), so its LAN address(es) are always worth showing. Lets
+   * the dashboard show the actual URL(s) another device on the network
+   * should use, instead of only ever knowing the address the current
+   * browser tab happens to be viewing it from (which is `localhost` unless
+   * this tab itself was opened over LAN).
+   *
+   * `dashboardOnLan` is the one piece that *does* still depend on
+   * `--lan`/`lanAccess`: whether the *dashboard* (unlike the proxy) is
+   * itself bound to every interface right now, so the client knows whether
+   * to also show a Dashboard URL alongside the Proxy one for each address —
+   * showing one that's actually `localhost`-only elsewhere on the network
+   * would just be a dead link. The dashboard's own port isn't included
+   * here either way — a connected client already knows it as
    * `window.location.port`, the same page it's looking at right now.
    */
-  | { type: 'lanInfo'; addresses: string[] }
+  | { type: 'lanInfo'; addresses: string[]; dashboardOnLan: boolean }
   /**
    * Sent instead of the usual just-connected snapshot (`backlog`, `rules`,
    * `userConfig`, etc. below) when a dashboard password is configured and

@@ -4,8 +4,15 @@ import type { DashboardConnection } from '@/shared/api';
 export interface ProxyInfoState {
   /** The proxy's port, or null until the `proxyInfo` message arrives (issue #24's sidebar Proxy URL / QR code). Null on an older server build that predates this message, too — the sidebar falls back to hiding the Proxy URL rather than guessing. */
   proxyPort: number | null;
-  /** Every LAN address this machine has, from the `lanInfo` message (issue #66's sidebar LAN Access section) — empty until that message arrives, and empty for good when the server is bound to `localhost` only. */
+  /** Every LAN address this machine has, from the `lanInfo` message (issue #66's sidebar LAN Access section) — empty until that message arrives, or when this machine genuinely has none. The proxy always binds to every interface, so (unlike before) this is populated regardless of whether the dashboard itself is LAN-reachable. */
   lanAddresses: string[];
+  /** Whether the *dashboard* (not just the proxy, which is covered by `lanAddresses` alone) is also bound to every network interface right now — from `lanInfo`'s own field, or `resolveDashboardOnLan`'s fallback for an older server that predates it. Gates whether the sidebar's LAN Access section shows a Dashboard URL alongside each address's Proxy URL, since a Dashboard URL would be a dead link on any address but this one otherwise. Defaults to `false` until `lanInfo` arrives — the safer guess, since showing a dead Dashboard link is worse than briefly not showing a live one. */
+  dashboardOnLan: boolean;
+}
+
+/** How an older server's `lanInfo` (one predating the `dashboardOnLan` field) is read: back then `addresses` was only ever sent non-empty when the dashboard itself was LAN-bound (there was no proxy-always-on-LAN split yet), so "field missing" safely means "yes" under that older server's own semantics, not "no". Exported for the test below; not meant as a general-purpose default. */
+export function resolveDashboardOnLan(message: { addresses: string[]; dashboardOnLan?: boolean }): boolean {
+  return message.dashboardOnLan ?? message.addresses.length > 0;
 }
 
 /**
@@ -24,9 +31,11 @@ export function createProxyInfoStore(connection: DashboardConnection) {
   return create<ProxyInfoState>((set) => {
     connection.onMessage((message) => {
       if (message.type === 'proxyInfo') set({ proxyPort: message.proxyPort });
-      else if (message.type === 'lanInfo') set({ lanAddresses: message.addresses });
+      else if (message.type === 'lanInfo') {
+        set({ lanAddresses: message.addresses, dashboardOnLan: resolveDashboardOnLan(message) });
+      }
     });
 
-    return { proxyPort: null, lanAddresses: [] };
+    return { proxyPort: null, lanAddresses: [], dashboardOnLan: false };
   });
 }

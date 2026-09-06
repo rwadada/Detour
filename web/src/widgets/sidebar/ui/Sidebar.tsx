@@ -151,18 +151,25 @@ function ProxyUrlSection() {
 }
 
 /**
- * Only rendered while bound to every network interface (`--lan`/
- * `lanAccess`, issue #66) — lists every address this machine actually has,
- * so whoever's running Detour knows what to hand another device instead of
- * only ever seeing the address the *current* browser tab happens to be
- * viewing the dashboard from (which is `localhost` unless this very tab was
- * itself opened over LAN — `ProxyUrlSection` above has exactly that
- * limitation). The dashboard's own port isn't sent by the server at all —
+ * Rendered whenever this machine has any LAN address at all — the proxy
+ * always binds to every network interface, `--lan`/`lanAccess` or not, so
+ * its address(es) are always worth listing here: whoever's running Detour
+ * needs to know what to hand another device (an Android/iOS phone, say)
+ * instead of only ever seeing the address the *current* browser tab
+ * happens to be viewing the dashboard from (which is `localhost` unless
+ * this very tab was itself opened over LAN — `ProxyUrlSection` above has
+ * exactly that limitation). The Dashboard URL alongside each address is a
+ * separate matter, gated on `dashboardOnLan` (issue #66): unlike the proxy,
+ * the dashboard only binds to every interface when `--lan`/`lanAccess`
+ * actually says so, so showing its URL unconditionally here would print a
+ * dead link on every address whenever it's still `localhost`-only. The
+ * dashboard's own port isn't sent by the server at all when it does apply —
  * this tab is already looking at it, as `window.location.port`.
  */
 function LanAccessSection() {
   const lanAddresses = useProxyInfoStore((s) => s.lanAddresses);
   const proxyPort = useProxyInfoStore((s) => s.proxyPort);
+  const dashboardOnLan = useProxyInfoStore((s) => s.dashboardOnLan);
 
   if (lanAddresses.length === 0) return null;
   // A plain variable rather than inlining `window.location.port` into the
@@ -182,7 +189,7 @@ function LanAccessSection() {
             keeps every entry), so `address` alone isn't guaranteed unique here. */}
         {lanAddresses.map((address, index) => (
           <div key={`${address}-${index}`} className="flex flex-col gap-1">
-            <CopyableUrl label="Dashboard" url={`http://${address}${dashboardPortSuffix}`} />
+            {dashboardOnLan && <CopyableUrl label="Dashboard" url={`http://${address}${dashboardPortSuffix}`} />}
             {proxyPort !== null && <CopyableUrl label="Proxy" url={`http://${address}:${proxyPort}`} />}
           </div>
         ))}
