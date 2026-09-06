@@ -22,7 +22,15 @@ export function CopyIconButton({
   const { copied, copy } = useCopyToClipboard(getText);
 
   return (
-    <Button variant="ghost" size="icon" onClick={copy} title={title} className={className}>
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      onClick={copy}
+      title={title}
+      aria-label={title}
+      className={className}
+    >
       {copied ? <Check className="h-3 w-3 text-[var(--status-2xx)]" /> : <Copy className="h-3 w-3" />}
     </Button>
   );
