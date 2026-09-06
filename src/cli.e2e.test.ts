@@ -2244,7 +2244,9 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
         if (
           Object.values(os.networkInterfaces()).some((iface) => iface?.some((i) => i.family === 'IPv4' && !i.internal))
         ) {
-          expect(cli.stdout()).toMatch(/Reachable on your network at:\n {2}Proxy\s+→ http:\/\/\d+\.\d+\.\d+\.\d+:\d+\n {2}Dashboard → http:\/\/\d+\.\d+\.\d+\.\d+:\d+/);
+          expect(cli.stdout()).toMatch(
+            /Reachable on your network at:\n {2}Proxy\s+→ http:\/\/\d+\.\d+\.\d+\.\d+:\d+\n {2}Dashboard → http:\/\/\d+\.\d+\.\d+\.\d+:\d+/,
+          );
         }
       } finally {
         await cli?.kill();

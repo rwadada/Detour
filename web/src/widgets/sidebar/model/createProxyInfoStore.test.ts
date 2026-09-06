@@ -51,4 +51,19 @@ describe('createProxyInfoStore', () => {
     fake.emit({ type: 'lanInfo', addresses: ['192.168.1.5'], dashboardOnLan: true });
     expect(store.getState().dashboardOnLan).toBe(true);
   });
+
+  it('falls back to true for dashboardOnLan when an older server omits that field but still sent addresses (its old all-or-nothing semantics)', () => {
+    const fake = fakeDashboardConnection();
+    const store = createProxyInfoStore(fake.connection);
+    // eslint-disable-next-line sonarjs/no-hardcoded-ip -- a private-range test fixture address, not a real one.
+    fake.emit({ type: 'lanInfo', addresses: ['192.168.1.5'] });
+    expect(store.getState().dashboardOnLan).toBe(true);
+  });
+
+  it('falls back to false for dashboardOnLan when an older server omits that field and sent no addresses either', () => {
+    const fake = fakeDashboardConnection();
+    const store = createProxyInfoStore(fake.connection);
+    fake.emit({ type: 'lanInfo', addresses: [] });
+    expect(store.getState().dashboardOnLan).toBe(false);
+  });
 });
