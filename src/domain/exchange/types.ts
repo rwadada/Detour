@@ -56,6 +56,19 @@ export interface CapturedExchange {
    * is not part of an exchange's persisted state.
    */
   breakpoint?: 'request' | 'response';
+  /**
+   * True for a raw TLS passthrough tunnel (Intercept off, or a host outside
+   * Focus — see `InterceptState`/`FocusState`'s doc comments), recorded so
+   * the dashboard shows at least *where* passthrough traffic went even
+   * though its contents are never decrypted. Every field here beyond the
+   * identifying/timing ones (`id`, `method` — always `'CONNECT'` —, `url`,
+   * `host`, `isSSL`, `startedAt`, `finishedAt`, `durationMs`, `error`) is a
+   * meaningless placeholder (empty headers, zero body sizes, no
+   * `statusCode`) rather than real captured data; this flag is what tells a
+   * consumer that's the case instead of it misreading them as an empty
+   * decrypted exchange. Absent (not merely `false`) on every other exchange.
+   */
+  passthrough?: true;
 }
 
 /**
@@ -182,7 +195,9 @@ export type BreakpointResumeCommand =
 /**
  * Whether the proxy is actively intercepting traffic. `enabled: false` means:
  * HTTPS is a raw TLS passthrough (no MITM decryption — the client sees the
- * real upstream certificate, and no exchange is observable), and mock/
+ * real upstream certificate, and its contents are never observable, though
+ * it still shows up as a `passthrough` exchange recording just the
+ * destination and timing — see `CapturedExchange.passthrough`), and mock/
  * rewrite/breakpoint rules are skipped for plain HTTP. A `route` rule keeps
  * applying either way, for both HTTP and (host-only, since the tunnel is
  * never decrypted) HTTPS.

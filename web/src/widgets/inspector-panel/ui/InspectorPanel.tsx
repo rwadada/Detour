@@ -36,6 +36,37 @@ export function InspectorPanel() {
     return <BreakpointEditor payload={pausedPayload} />;
   }
 
+  // A raw TLS passthrough tunnel (see `CapturedExchange.passthrough`) — its
+  // headers/query/body tabs below would just render empty placeholders, no
+  // more informative than not showing them at all, and "Copy as cURL"/
+  // Replay make no sense for a connection that was never actually parsed as
+  // HTTP. Explain why instead of a blank inspector that looks broken.
+  if (exchange.passthrough) {
+    return (
+      <div className="flex h-full flex-col">
+        <div className="flex items-start justify-between gap-2 border-b border-[var(--border)] p-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <MethodBadge method={exchange.method} />
+              <StatusBadge status={exchange.statusCode} error={exchange.error} passthrough />
+            </div>
+            <p className="mt-1 break-all font-mono-ui text-xs text-[var(--muted)]">{exchange.url}</p>
+            <p className="mt-1 text-xs text-[var(--muted)]">{formatDuration(exchange.durationMs)}</p>
+            {exchange.error && <p className="mt-1 text-xs text-[var(--status-5xx)]">{exchange.error}</p>}
+          </div>
+          <Button variant="ghost" size="icon" onClick={() => select(null)} title="Close">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="flex flex-1 items-center justify-center p-4 text-center text-sm text-[var(--muted)]">
+          Encrypted TLS passthrough — Intercept is off (or this host is outside Focus), so the tunnel was relayed
+          byte-for-byte without being decrypted. Headers and body aren't observable this way; turn Intercept back on (or
+          add this host to Focus) to inspect requests through it.
+        </div>
+      </div>
+    );
+  }
+
   const queryParams = parseQueryParams(exchange.url);
   const requestHeaders = headerRows(exchange.requestHeaders);
   const responseHeaders = headerRows(exchange.responseHeaders);

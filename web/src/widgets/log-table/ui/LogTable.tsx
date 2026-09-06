@@ -276,7 +276,11 @@ function LogRow({
   style: CSSProperties;
 }) {
   const columnWidths = useLogViewStore((s) => s.columnWidths);
-  const pending = exchange.statusCode === undefined && !exchange.error;
+  // A passthrough tunnel's `statusCode` is never set even once it's closed
+  // (see `CapturedExchange.passthrough`) — without excluding it here, a
+  // finished passthrough row would stay dimmed at `opacity-60` forever,
+  // indistinguishable from one still genuinely in flight.
+  const pending = exchange.statusCode === undefined && !exchange.error && !exchange.passthrough;
   const inCompare = compareOrder >= 0;
   const bar = timelineSpan ? computeTimelineBar(exchange, timelineSpan) : null;
   return (
@@ -307,7 +311,7 @@ function LogRow({
         {exchange.breakpoint ? (
           <BreakpointBadge phase={exchange.breakpoint} />
         ) : (
-          <StatusBadge status={exchange.statusCode} error={exchange.error} />
+          <StatusBadge status={exchange.statusCode} error={exchange.error} passthrough={exchange.passthrough} />
         )}
       </span>
       <span className="min-w-0 flex-1 truncate pr-2">
