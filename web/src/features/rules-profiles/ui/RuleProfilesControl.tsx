@@ -95,6 +95,17 @@ export function RuleProfilesControl() {
     bannerTimer.current = setTimeout(() => setBanner(null), 2500);
   };
 
+  // Clears a still-pending auto-clear timer on unmount — this component
+  // isn't currently ever conditionally unmounted while its popover could be
+  // open, but nothing prevents that changing later, and a timer outliving
+  // its component calling `setBanner` on the way out is exactly the kind of
+  // mistake that's cheap to rule out now and easy to forget to add later.
+  useEffect(() => {
+    return () => {
+      if (bannerTimer.current) clearTimeout(bannerTimer.current);
+    };
+  }, []);
+
   // Resolves `pending` against whichever of `rulesFile`/`lastError` actually
   // changes first — these WS commands are fire-and-forget with no
   // per-request ack, so the only way to tell a genuine success from a
@@ -148,6 +159,12 @@ export function RuleProfilesControl() {
     setCreating(false);
     setNewName('');
     setSource('sample');
+    // Also drops any still-unresolved `pending` confirmation — without this,
+    // a WS response arriving after the popover's already closed would still
+    // resolve it (the effect above doesn't know or care whether `open` is
+    // true), popping a stale "✓ Applied" up the *next* time the popover
+    // opens instead of never showing it at all, like closing should mean.
+    setPending(null);
     if (bannerTimer.current) clearTimeout(bannerTimer.current);
     setBanner(null);
   };
