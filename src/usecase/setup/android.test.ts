@@ -470,6 +470,22 @@ describe('isWifiActiveNetwork', () => {
     };
     expect(await isWifiActiveNetwork(ctxWith(runner), 'ABCD1234')).toBeUndefined();
   });
+
+  it('returns undefined rather than guessing when the active network is neither Wi-Fi nor cellular (VPN, Ethernet, ...)', async () => {
+    const runner = fakeRunner(() => ({
+      stdout: 'Active default network: 118\nNetworkAgentInfo{network{118} ... nc{[ Transports: VPN ... ]}\n',
+      stderr: '',
+    }));
+    expect(await isWifiActiveNetwork(ctxWith(runner), 'ABCD1234')).toBeUndefined();
+  });
+
+  it('returns false when cellular is present alongside another transport, rather than only ever recognizing an exact "CELLULAR" match', async () => {
+    const runner = fakeRunner(() => ({
+      stdout: 'Active default network: 42\nNetworkAgentInfo{network{42} ... nc{[ Transports: CELLULAR|VPN ... ]}\n',
+      stderr: '',
+    }));
+    expect(await isWifiActiveNetwork(ctxWith(runner), 'ABCD1234')).toBe(false);
+  });
 });
 
 describe('requireOneDevice (multi-device picker, exercised via runAndroidDoctor)', () => {

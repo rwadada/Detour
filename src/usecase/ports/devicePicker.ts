@@ -34,9 +34,12 @@ export interface DevicePicker {
    * mid-prompt (e.g. stdin closed while waiting) rather than "can't prompt
    * at all" — a real implementation should still keep re-prompting on
    * merely invalid input (a typo, an out-of-range number) rather than
-   * giving up and returning `undefined` for that, which would make
-   * `android.ts` report its non-interactive-environment message for what's
-   * actually just a fixable mistake.
+   * giving up and returning `undefined` for that: `android.ts`'s
+   * `requireOneDevice` can't tell an invalid-input `undefined` apart from a
+   * mid-prompt-failure one, so either way it falls back to the same
+   * original "disconnect all but one and retry" failure — reporting that
+   * for what's actually just a fixable typo would be a needlessly harsh
+   * way to handle a wrong keystroke.
    */
   pick(choices: DeviceChoice[]): Promise<string | undefined>;
 }

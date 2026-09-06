@@ -33,11 +33,12 @@ export async function promptForChoiceIndex(rl: readline.Interface, choiceCount: 
     // Re-prompts on anything but a valid number — `android.ts` only ever
     // calls `pick()` after `isInteractive()` already said this terminal
     // *can* prompt, so a typo or an out-of-range answer is a mistake to
-    // correct, not "can't prompt", which `undefined` is reserved for
-    // elsewhere in this port (see `DevicePicker`'s doc comment) —
-    // returning it here instead would make `requireOneDevice` report its
-    // non-interactive-environment message for what's actually just a
-    // fixable typo.
+    // correct, not "can't prompt any further" (what `undefined` means
+    // elsewhere in this port — see `DevicePicker`'s doc comment). Returning
+    // `undefined` here instead would be indistinguishable to
+    // `requireOneDevice` from a real mid-prompt failure, both of which fall
+    // back to the same "disconnect all but one and retry" error — reporting
+    // that over a plain wrong keystroke would be needlessly harsh.
     if (Number.isInteger(index) && index >= 0 && index < choiceCount) return index;
     console.log(`"${trimmed}" isn't a valid choice — enter a number from 1 to ${choiceCount}.`);
   }

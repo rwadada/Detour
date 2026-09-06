@@ -131,7 +131,13 @@ function mobileDataActiveMessage(proxyValueMatches: boolean | undefined): string
  * versions/OEM skins. `undefined` (not `false`) on anything that doesn't
  * match what was verified firsthand on one real device, rather than
  * guessing: a missed parse should stay silent, never assert the opposite of
- * what's actually true.
+ * what's actually true. Explicitly: `false` only when `Transports` names
+ * `CELLULAR` and not `WIFI` — an earlier version treated *any* non-`WIFI`
+ * first token as "mobile data", which would have misreported a VPN or
+ * Ethernet connection (an actual possibility here — `Transports` can list
+ * more than one, `CELLULAR&VPN` or similar) as mobile data specifically,
+ * rather than the "can't tell, so say nothing" this diagnostic is supposed
+ * to fall back on for anything that isn't actually Wi-Fi-vs-cellular.
  */
 export async function isWifiActiveNetwork(ctx: SetupContext, serial: string): Promise<boolean | undefined> {
   try {
@@ -139,9 +145,13 @@ export async function isWifiActiveNetwork(ctx: SetupContext, serial: string): Pr
     const activeMatch = stdout.match(/Active default network:\s*(-?\d+)/);
     if (!activeMatch || activeMatch[1] === '-1') return undefined;
     const agentMatch = stdout.match(
-      new RegExp(`NetworkAgentInfo\\{network\\{${activeMatch[1]}\\}[\\s\\S]{0,4000}?Transports:\\s*([A-Za-z_]+)`),
+      new RegExp(`NetworkAgentInfo\\{network\\{${activeMatch[1]}\\}[\\s\\S]{0,4000}?Transports:\\s*([^\\n]+)`),
     );
-    return agentMatch ? agentMatch[1] === 'WIFI' : undefined;
+    if (!agentMatch) return undefined;
+    const transports = agentMatch[1]!;
+    if (transports.includes('WIFI')) return true;
+    if (transports.includes('CELLULAR')) return false;
+    return undefined; // VPN, Ethernet, Bluetooth, ... — not what this diagnostic is about either way
   } catch {
     return undefined;
   }
