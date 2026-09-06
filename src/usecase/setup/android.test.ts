@@ -68,7 +68,16 @@ describe('runAndroidSetup', () => {
     const outcome = await runAndroidSetup(ctxWith(runner));
 
     expect(outcome.steps.map((s) => s.status)).toEqual(['manual', 'done']);
-    expect(calls.some((c) => c.join(' ') === 'adb -s ABCD1234 push /ca.pem /sdcard/Download/detour-ca.crt')).toBe(true);
+    expect(
+      calls.some((c) => c.join(' ') === 'adb -s ABCD1234 push /ca.pem /sdcard/Download/Detour/detour-ca.crt'),
+    ).toBe(true);
+    expect(
+      calls.some(
+        (c) =>
+          c.join(' ') ===
+          'adb -s ABCD1234 shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Download/Detour/detour-ca.crt',
+      ),
+    ).toBe(true);
     expect(
       calls.some((c) => c.join(' ') === 'adb -s ABCD1234 shell settings put global http_proxy 203.0.113.5:8080'),
     ).toBe(true);

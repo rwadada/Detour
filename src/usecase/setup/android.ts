@@ -1,8 +1,19 @@
 import { errorMessage } from './errorMessage';
 import type { SetupContext, SetupStep, TargetOutcome } from './types';
 
-/** Where the CA cert is pushed on the device — `Download` so it's easy for the user to find from the "Install a certificate" file picker that `runAndroidSetup` opens Security settings to below; `.crt` (not `.pem`) since some Android file pickers filter certificate imports by that extension. */
-const DEVICE_CERT_PATH = '/sdcard/Download/detour-ca.crt';
+/**
+ * Where the CA cert is pushed on the device — under `Download` so it's
+ * reachable from the "Install a certificate" file picker that
+ * `runAndroidSetup` opens Security settings to below; in its own `Detour`
+ * subfolder rather than `Download` itself, since that file picker lists
+ * every other file already in Downloads right alongside it (screenshots,
+ * PDFs, app-generated logs, ...) — on a phone with any real usage history
+ * that's a wall of unrelated files to hunt `detour-ca.crt` out of, where a
+ * lone `Detour` folder is not. `.crt` (not `.pem`) since some Android file
+ * pickers filter certificate imports by that extension.
+ */
+const DEVICE_CERT_DIR = '/sdcard/Download/Detour';
+const DEVICE_CERT_PATH = `${DEVICE_CERT_DIR}/detour-ca.crt`;
 
 /** How long the no-`adb` Wi-Fi/QR fallback (see `wifiPairingFallback`) keeps its one-shot HTTP server open waiting for a phone to scan the code and download the cert, before giving up. */
 const QR_PAIRING_TIMEOUT_MS = 3 * 60_000;
@@ -166,10 +177,27 @@ export async function runAndroidSetup(ctx: SetupContext): Promise<TargetOutcome>
 
   try {
     await ctx.runner.run('adb', ['-s', serial, 'push', ctx.certPath, DEVICE_CERT_PATH]);
+    // `adb push` into a brand-new subfolder can outrun MediaStore's index —
+    // the cert file picker below has been seen reporting the `Detour`
+    // folder empty for a few seconds after the push with no nudge, then
+    // populating instantly once this fires. Best-effort: `am broadcast`
+    // reports success even with no receiver listening, so this never turns
+    // an otherwise-fine push into a `failed` step.
+    await ctx.runner.run('adb', [
+      '-s',
+      serial,
+      'shell',
+      'am',
+      'broadcast',
+      '-a',
+      'android.intent.action.MEDIA_SCANNER_SCAN_FILE',
+      '-d',
+      `file://${DEVICE_CERT_PATH}`,
+    ]);
     await ctx.runner.run('adb', ['-s', serial, 'shell', 'am', 'start', '-a', 'android.settings.SECURITY_SETTINGS']);
     steps.push({
       status: 'manual',
-      message: `Pushed the CA cert to ${DEVICE_CERT_PATH} and opened Security settings on the device — finish with Encryption & credentials → Install a certificate → CA certificate (Android can't accept a CA cert without that in-device confirmation).`,
+      message: `Pushed the CA cert to ${DEVICE_CERT_PATH} and opened Security settings on the device — finish with Encryption & credentials → Install a certificate → CA certificate, picking it from the "Detour" folder under Downloads (Android can't accept a CA cert without that in-device confirmation).`,
     });
   } catch (err) {
     steps.push({
