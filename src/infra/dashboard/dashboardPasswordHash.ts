@@ -29,6 +29,11 @@ const scryptAsync = promisify(crypto.scrypt) as (
   keylen: number,
 ) => Promise<Buffer>;
 
+/** Matches exactly the hex string `hashDashboardPassword` produces for a value of `byteLength` bytes — used to validate a `stored` hash's two halves *before* decoding either. */
+function isHexOfLength(value: string, byteLength: number): boolean {
+  return value.length === byteLength * 2 && /^[0-9a-f]+$/i.test(value);
+}
+
 /**
  * Hashes `password` into the `<saltHex>:<hashHex>` string persisted as
  * `UserConfig.dashboardPasswordHash`. A fresh random salt every call, so
@@ -45,19 +50,22 @@ export async function hashDashboardPassword(password: string): Promise<string> {
  * `hashDashboardPassword`. Returns `false` (rather than throwing) for a
  * malformed `stored` value — a hand-edited config shouldn't be able to crash
  * a login attempt, only fail it.
+ *
+ * Validates both halves' shape with `isHexOfLength` *before* decoding either
+ * — `Buffer.from(str, 'hex')` doesn't reliably throw on invalid input, it
+ * just silently stops decoding at the first bad character, which can still
+ * produce a shorter-than-expected but non-empty buffer. Checking the exact
+ * expected length up front (rather than, say, just `expected.length === 0`
+ * afterwards) also bounds the KDF's own cost: without it, a maliciously
+ * oversized on-disk `hashHex` could force `scrypt` to derive an equally
+ * oversized key.
  */
 export async function verifyDashboardPassword(password: string, stored: string): Promise<boolean> {
   const [saltHex, hashHex] = stored.split(':');
   if (!saltHex || !hashHex) return false;
-  let salt: Buffer;
-  let expected: Buffer;
-  try {
-    salt = Buffer.from(saltHex, 'hex');
-    expected = Buffer.from(hashHex, 'hex');
-  } catch {
-    return false;
-  }
-  if (expected.length === 0) return false;
+  if (!isHexOfLength(saltHex, SALT_LENGTH) || !isHexOfLength(hashHex, KEY_LENGTH)) return false;
+  const salt = Buffer.from(saltHex, 'hex');
+  const expected = Buffer.from(hashHex, 'hex');
   const actual = await scryptAsync(password, salt, expected.length);
   return crypto.timingSafeEqual(actual, expected);
 }

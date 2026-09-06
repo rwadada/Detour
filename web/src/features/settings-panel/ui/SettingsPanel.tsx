@@ -302,6 +302,7 @@ function DashboardPasswordSection() {
           placeholder={passwordSet ? 'New password' : 'Set a password'}
           disabled={!userConfig}
           autoComplete="new-password"
+          aria-label="Dashboard password"
           className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-transparent px-2 py-1 text-xs disabled:opacity-50"
         />
         <button

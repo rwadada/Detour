@@ -570,7 +570,7 @@ async function runStartBody({
     dumpDir,
     http2Enabled: options.http2,
     protoPaths: options.proto,
-    dashboardPasswordSet: !!loadUserConfig().dashboardPasswordHash,
+    dashboardPasswordSet: readDashboardPasswordSet(),
   });
 
   // DETOUR_READY (issue #20): a stable, greppable line a CI script can wait
@@ -620,6 +620,23 @@ async function runStartBody({
 /** Whether `npm run build` has produced a dashboard SPA to serve — shared by the startup banner's "not built yet" message and the `--open` auto-launch's decision not to open a blank page. */
 function isDashboardBuilt(): boolean {
   return fs.existsSync(path.join(WEB_DIST_DIR, 'index.html'));
+}
+
+/**
+ * Whether a dashboard password is currently configured, for the startup
+ * banner. `loadUserConfig()` can throw (invalid JSON, a failed validation) —
+ * unlike a `detour config`/Settings-panel write, which the caller is
+ * actively trying to make and should hear about if it fails, this only
+ * exists to print an FYI line, so a broken config shouldn't crash `detour
+ * start` over it. Same "fall back rather than propagate" posture as
+ * `dashboardServer.ts`'s `userConfigMessage`.
+ */
+function readDashboardPasswordSet(): boolean {
+  try {
+    return !!loadUserConfig().dashboardPasswordHash;
+  } catch {
+    return false;
+  }
 }
 
 function printStartupBanner(info: {
