@@ -82,12 +82,14 @@ export function RuleProfilesControl() {
   // just-applied profile with that stale draft. Confirm and clear the
   // dirty flag first so the editor picks up the newly applied profile
   // instead.
-  const applyWithDirtyGuard = (name: string) => {
+  /** Returns whether the profile was actually applied — `false` means the dirty-draft confirm was declined, nothing happened. */
+  const applyWithDirtyGuard = (name: string): boolean => {
     if (dirtyDraft && !window.confirm('Applying this profile will discard your unsaved rules.json edits. Continue?')) {
-      return;
+      return false;
     }
     setDirtyDraft(false);
     applyProfile(name);
+    return true;
   };
 
   const handleSelectChange = (value: string) => {
@@ -101,9 +103,12 @@ export function RuleProfilesControl() {
     // same select) is itself a "changed my mind" gesture; leaving the form
     // open afterward would let a later, unrelated "Save" click create/
     // overwrite a profile from whatever name/source was still sitting
-    // there, stale. `cancelCreate` is a no-op if the form wasn't open to
-    // begin with.
-    cancelCreate();
+    // there, stale. Only once the apply actually goes through, though —
+    // declining the dirty-draft confirm above means nothing happened, and
+    // discarding the in-progress create form anyway would be real data
+    // loss for no reason. `cancelCreate` is a no-op if the form wasn't
+    // open to begin with.
+    if (applyWithDirtyGuard(value)) cancelCreate();
     applyWithDirtyGuard(value);
   };
 
