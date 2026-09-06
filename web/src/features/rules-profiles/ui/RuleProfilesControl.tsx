@@ -73,7 +73,9 @@ function pillLabel(activeProfile: string | undefined, savedCount: number): strin
  */
 export function RuleProfilesControl() {
   const profiles = useRuleStore((s) => s.profiles);
+  const profilesAt = useRuleStore((s) => s.profilesAt);
   const rulesFile = useRuleStore((s) => s.rulesFile);
+  const rulesFileAt = useRuleStore((s) => s.rulesFileAt);
   const applyProfile = useRuleStore((s) => s.applyProfile);
   const saveActiveAsProfile = useRuleStore((s) => s.saveActiveAsProfile);
   const createProfile = useRuleStore((s) => s.createProfile);
@@ -124,12 +126,16 @@ export function RuleProfilesControl() {
   // e.g. the profile was deleted after the `<select>` was rendered but
   // before this was picked) is to wait for the specific state change the
   // action should actually produce, rather than assuming success the
-  // instant it was sent. `lastError` alone isn't enough, though — it's one
-  // shared field for every Rules-editor/Rules-Profile error this session
-  // sees, so only a `lastErrorAt` at least as new as `pending.dispatchedAt`
-  // actually counts as *this* request's outcome rather than something
-  // unrelated that happened to already be sitting there (or that arrived
-  // from another action, or another tab, while this one was in flight).
+  // instant it was sent. Neither `lastError` nor `rulesFile`/`profiles`
+  // matching the target is enough *on its own*, though — all three are
+  // shared fields this session's whole Rules editor/Rules Profiles surface
+  // writes to (including another connected browser tab), and the state a
+  // request is waiting to observe can easily already have been true
+  // *before* it was ever sent (overwriting a profile under its own current
+  // name; re-applying whatever's already active). Requiring each one's own
+  // `*At` timestamp to be no older than `pending.dispatchedAt` is what
+  // actually ties the observation to *this* request rather than a
+  // coincidence, an unrelated action, or a stale error.
   useEffect(() => {
     if (!pending) return;
     // Genuinely the "subscribe to an external store, setState in response"
@@ -147,14 +153,16 @@ export function RuleProfilesControl() {
     }
     const resolved =
       pending.kind === 'activeProfile'
-        ? rulesFile?.$activeProfile === pending.name
-        : profiles.some((profile) => profile.name === pending.name);
+        ? rulesFileAt !== null && rulesFileAt >= pending.dispatchedAt && rulesFile?.$activeProfile === pending.name
+        : profilesAt !== null &&
+          profilesAt >= pending.dispatchedAt &&
+          profiles.some((profile) => profile.name === pending.name);
     if (resolved) {
       showBanner(pending.label, 'success');
       setPending(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- showBanner/dismissError are stable-enough closures over refs/store actions, not reactive values this effect should re-run for
-  }, [pending, lastError, lastErrorAt, rulesFile, profiles]);
+  }, [pending, lastError, lastErrorAt, rulesFile, rulesFileAt, profiles, profilesAt]);
 
   // Bails out of a `pending` confirmation that never resolved either way —
   // see `PENDING_CONFIRMATION_TIMEOUT_MS`'s own doc comment.
@@ -242,24 +250,22 @@ export function RuleProfilesControl() {
     // open to begin with.
     if (applyWithDirtyGuard(value)) {
       cancelCreate();
-      // Re-picking the profile that's already active can't produce a
-      // `$activeProfile` transition to wait for — it was already `value`
-      // before this request, so the resolving effect would consider it
-      // "resolved" on the very next render regardless of whether the
-      // server's even seen this particular request yet, let alone accepted
-      // it. Nothing to confirm one way or the other here.
-      if (value !== activeProfile) {
-        // Clears any error left over from an earlier, unrelated action —
-        // otherwise the resolving effect below would see it, assume it's
-        // this action's outcome, and report a failure that isn't this
-        // request's to report.
-        dismissError();
-        // `Date.now()` here runs inside this event handler, not during
-        // render — never called until the user actually picks something —
-        // so there's no purity concern despite the lint rule flagging it.
-        // eslint-disable-next-line react-hooks/purity
-        setPending({ kind: 'activeProfile', name: value, label: `Applied "${value}"`, dispatchedAt: Date.now() });
-      }
+      // Clears any error left over from an earlier, unrelated action —
+      // otherwise the resolving effect below would see it, assume it's
+      // this action's outcome, and report a failure that isn't this
+      // request's to report.
+      dismissError();
+      // Re-picking the profile that's already active still gets tracked (not
+      // skipped) — `rulesFileAt`'s own freshness check in the resolving
+      // effect is what actually distinguishes a genuinely-new post-dispatch
+      // `rules` broadcast from the pre-existing match, not a special case
+      // here, so this reports the real outcome (including a real failure)
+      // instead of silently assuming a no-op re-apply always succeeds.
+      // `Date.now()` here runs inside this event handler, not during
+      // render — never called until the user actually picks something —
+      // so there's no purity concern despite the lint rule flagging it.
+      // eslint-disable-next-line react-hooks/purity
+      setPending({ kind: 'activeProfile', name: value, label: `Applied "${value}"`, dispatchedAt: Date.now() });
     }
   };
 

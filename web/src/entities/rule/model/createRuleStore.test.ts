@@ -14,24 +14,30 @@ describe('createRuleStore', () => {
     expect(store.getState().profiles).toEqual([]);
   });
 
-  it('applies a `rules` message, including `null` (no rules file configured)', () => {
+  it('applies a `rules` message, including `null` (no rules file configured), bumping rulesFileAt each time', () => {
     const { connection, emit } = fakeDashboardConnection();
     const store = createRuleStore(connection);
+    expect(store.getState().rulesFileAt).toBeNull();
 
     emit({ type: 'rules', data: rulesFile });
     expect(store.getState().rulesFile).toEqual(rulesFile);
+    const first = store.getState().rulesFileAt;
+    expect(first).toEqual(expect.any(Number));
 
     emit({ type: 'rules', data: null });
     expect(store.getState().rulesFile).toBeNull();
+    expect(store.getState().rulesFileAt).not.toBeNull();
   });
 
-  it('applies a `ruleProfiles` message', () => {
+  it('applies a `ruleProfiles` message, bumping profilesAt', () => {
     const { connection, emit } = fakeDashboardConnection();
     const store = createRuleStore(connection);
+    expect(store.getState().profilesAt).toBeNull();
 
     emit({ type: 'ruleProfiles', profiles: [{ name: 'staging', ruleCount: 3, updatedAt: 1 }] });
 
     expect(store.getState().profiles).toEqual([{ name: 'staging', ruleCount: 3, updatedAt: 1 }]);
+    expect(store.getState().profilesAt).toEqual(expect.any(Number));
   });
 
   it('surfaces RULES_WRITE_ERROR / RULE_PROFILE_ERROR as lastError, dismissable', () => {

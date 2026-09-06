@@ -4,8 +4,21 @@ import type { DashboardConnection, RuleProfileSummary, RulesFile } from '@/share
 export interface RuleState {
   /** The currently active rules.json contents, or `null` if this session has no rules file configured, or the initial `rules` message hasn't arrived yet. */
   rulesFile: RulesFile | null;
+  /**
+   * `Date.now()` when `rulesFile` was last (re)set — updated on *every*
+   * incoming `rules` message, even one whose content happens to be
+   * identical to what was already there (applying a profile that's already
+   * active, say). Lets a consumer with its own "I dispatched something at
+   * time T" marker (`RuleProfilesControl`'s `pending`) require a
+   * genuinely-arrived-after-dispatch update before treating the *content*
+   * matching its target as this request's own success, rather than a
+   * coincidence that was already true before it was ever sent.
+   */
+  rulesFileAt: number | null;
   /** Saved rule profiles (issue #19's Rules Profiles), available to apply or overwrite. */
   profiles: RuleProfileSummary[];
+  /** `Date.now()` when `profiles` was last (re)set — mirrors `rulesFileAt`, for the same reason, against `ruleProfiles` messages instead. */
+  profilesAt: number | null;
   /** The most recent `RULES_WRITE_ERROR`/`RULE_PROFILE_ERROR` message from the server, if any hasn't been dismissed yet. */
   lastError: string | null;
   /**
@@ -54,10 +67,10 @@ export function createRuleStore(connection: DashboardConnection) {
     connection.onMessage((message) => {
       switch (message.type) {
         case 'rules':
-          set({ rulesFile: message.data });
+          set({ rulesFile: message.data, rulesFileAt: Date.now() });
           return;
         case 'ruleProfiles':
-          set({ profiles: message.profiles });
+          set({ profiles: message.profiles, profilesAt: Date.now() });
           return;
         case 'error':
           if (message.event.errorKind === 'RULES_WRITE_ERROR' || message.event.errorKind === 'RULE_PROFILE_ERROR') {
@@ -71,7 +84,9 @@ export function createRuleStore(connection: DashboardConnection) {
 
     return {
       rulesFile: null,
+      rulesFileAt: null,
       profiles: [],
+      profilesAt: null,
       lastError: null,
       lastErrorAt: null,
       setRules: (data) => connection.send({ type: 'setRules', data }),
