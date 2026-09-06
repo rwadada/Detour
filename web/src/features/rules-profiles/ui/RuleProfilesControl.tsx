@@ -96,6 +96,14 @@ export function RuleProfilesControl() {
       setCreating(true);
       return;
     }
+    // Picking an existing profile while the create form is still open (its
+    // own selection didn't get here — this is the *other* branch of this
+    // same select) is itself a "changed my mind" gesture; leaving the form
+    // open afterward would let a later, unrelated "Save" click create/
+    // overwrite a profile from whatever name/source was still sitting
+    // there, stale. `cancelCreate` is a no-op if the form wasn't open to
+    // begin with.
+    cancelCreate();
     applyWithDirtyGuard(value);
   };
 
