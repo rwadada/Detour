@@ -2425,5 +2425,32 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
         fs.rmSync(home, { recursive: true, force: true });
       }
     });
+
+    it("doctor suppresses its manual-verification summary when a step was skipped (e.g. an explicit --target on the wrong host) — skipped means some checks never ran at all, not merely 'ran but needs a look'", async () => {
+      const { home, env } = withTempHome();
+      try {
+        // windows's own automation is manual-only, so `setup` here just
+        // issues the CA cert as a side effect without touching anything else.
+        await runTsx(['src/cli.ts', 'setup', '--target', 'windows'], {
+          cwd: REPO_ROOT,
+          reject: false,
+          env,
+          timeout: 15_000,
+        });
+
+        // Whichever of mac/linux this test isn't already running on.
+        const wrongHostTarget = process.platform === 'darwin' ? 'linux' : 'mac';
+        const result = await runTsx(['src/cli.ts', 'doctor', '--target', wrongHostTarget], {
+          cwd: REPO_ROOT,
+          reject: false,
+          env,
+          timeout: 15_000,
+        });
+        expect(result.stdout).toContain(`can't run automated doctor for ${wrongHostTarget}`);
+        expect(result.stdout).not.toContain('need manual verification');
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
   });
 });
