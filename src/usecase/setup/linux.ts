@@ -1,4 +1,5 @@
 import { CommandRunError } from '../ports/commandRunner';
+import { errorMessage } from './errorMessage';
 import type { SetupContext, SetupStep, TargetOutcome } from './types';
 
 const GSETTINGS_MISSING_MESSAGE =
@@ -14,7 +15,7 @@ export async function runLinuxSetup(ctx: SetupContext): Promise<TargetOutcome> {
       message: `Set GNOME's proxy (org.gnome.system.proxy) to manual, ${ctx.proxyHost}:${ctx.proxyPort}.`,
     });
   } catch (err) {
-    steps.push({ status: err instanceof CommandRunError ? 'skipped' : 'failed', message: gsettingsErrorMessage(err) });
+    steps.push(gsettingsFailureStep(err));
   }
 
   steps.push({
@@ -44,7 +45,7 @@ export async function runLinuxDoctor(ctx: SetupContext): Promise<TargetOutcome> 
           },
     );
   } catch (err) {
-    steps.push({ status: err instanceof CommandRunError ? 'skipped' : 'failed', message: gsettingsErrorMessage(err) });
+    steps.push(gsettingsFailureStep(err));
   }
 
   steps.push({
@@ -62,7 +63,7 @@ export async function runLinuxCleanup(ctx: SetupContext): Promise<TargetOutcome>
     await ctx.runner.run('gsettings', ['set', 'org.gnome.system.proxy', 'mode', 'none']);
     steps.push({ status: 'done', message: "Set GNOME's proxy mode back to none." });
   } catch (err) {
-    steps.push({ status: err instanceof CommandRunError ? 'skipped' : 'failed', message: gsettingsErrorMessage(err) });
+    steps.push(gsettingsFailureStep(err));
   }
   return { steps };
 }
@@ -75,7 +76,23 @@ async function setGnomeProxy(ctx: SetupContext): Promise<void> {
   await ctx.runner.run('gsettings', ['set', 'org.gnome.system.proxy.https', 'port', String(ctx.proxyPort)]);
 }
 
-function gsettingsErrorMessage(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
-  return raw.includes('not found') ? `${GSETTINGS_MISSING_MESSAGE} (${raw})` : raw;
+/**
+ * Turns a failed `gsettings` call into a step — `'skipped'` only when
+ * `gsettings` itself is missing (no GNOME/no D-Bus session, an expected,
+ * common case on this OS), `'failed'` for anything else (a real error a
+ * user should act on). Keys off `CommandRunError.notFound` — set by
+ * `infra/process/nodeCommandRunner.ts` from the underlying error's actual
+ * `ENOENT` code — rather than pattern-matching "not found" in the message
+ * text: a real (non-missing-binary) `gsettings` failure could coincidentally
+ * contain that same substring (a schema/key lookup error, wording that
+ * varies by gsettings/glib version, ...), which would then get the same
+ * wrongly-lenient `'skipped'` treatment this function exists to avoid —
+ * `hasFailedStep` (cli.ts) never counts `'skipped'`, so `detour doctor
+ * --target linux` would exit 0 even though the proxy genuinely wasn't
+ * configured.
+ */
+function gsettingsFailureStep(err: unknown): SetupStep {
+  const missing = err instanceof CommandRunError && err.notFound;
+  const raw = errorMessage(err);
+  return { status: missing ? 'skipped' : 'failed', message: missing ? `${GSETTINGS_MISSING_MESSAGE} (${raw})` : raw };
 }

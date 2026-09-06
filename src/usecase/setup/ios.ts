@@ -1,3 +1,4 @@
+import { errorMessage } from './errorMessage';
 import { manualSteps } from './manualSteps';
 import type { SetupContext, SetupMode, SetupStep, TargetOutcome } from './types';
 
@@ -27,6 +28,9 @@ export function parseSimulators(stdout: string): SimctlDevice[] {
 
 async function bootedSimulators(ctx: SetupContext): Promise<SimctlDevice[]> {
   const { stdout } = await ctx.runner.run('xcrun', ['simctl', 'list', 'devices', 'booted', '-j']);
+  // The `booted` argument above already restricts `simctl`'s own output to
+  // booted devices — this re-checks `state` anyway as cheap defense against
+  // relying on that filter being exact across Xcode versions.
   return parseSimulators(stdout).filter((device) => device.state === 'Booted');
 }
 
@@ -107,8 +111,4 @@ export async function runIosCleanup(ctx: SetupContext): Promise<TargetOutcome> {
   // its own to undo either (it inherits the Mac's), so there's nothing safe
   // to automate here.
   return { steps: physicalDeviceSteps('cleanup', ctx) };
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

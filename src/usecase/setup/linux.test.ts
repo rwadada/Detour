@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { CertPairingServer } from '../ports/certPairingServer';
 import type { CommandResult, CommandRunner } from '../ports/commandRunner';
 import { CommandRunError } from '../ports/commandRunner';
 import { runLinuxCleanup, runLinuxDoctor, runLinuxSetup } from './linux';
@@ -12,8 +13,23 @@ function fakeRunner(handler: (command: string, args: string[]) => CommandResult)
   };
 }
 
+/** linux.ts never touches the pairing server (that's android.ts's no-adb fallback only) — a throwing stub makes any accidental use loud. */
+const unusedCertPairingServer: CertPairingServer = {
+  async start() {
+    throw new Error('certPairingServer.start() should not be called here');
+  },
+};
+
 function ctxWith(runner: CommandRunner): SetupContext {
-  return { certPath: '/ca.pem', proxyHost: '127.0.0.1', proxyPort: 8080, runner, hostPlatform: 'linux' };
+  return {
+    certPath: '/ca.pem',
+    proxyHost: '127.0.0.1',
+    proxyPort: 8080,
+    runner,
+    certPairingServer: unusedCertPairingServer,
+    hostPlatform: 'linux',
+    explicitTarget: false,
+  };
 }
 
 describe('runLinuxSetup', () => {
@@ -32,12 +48,38 @@ describe('runLinuxSetup', () => {
   it('reports skipped (not failed) when gsettings is missing', async () => {
     const runner: CommandRunner = {
       async run() {
-        throw new CommandRunError('"gsettings" not found — is it installed and on PATH?', 'gsettings');
+        throw new CommandRunError('"gsettings" not found — is it installed and on PATH?', 'gsettings', true);
       },
     };
     const outcome = await runLinuxSetup(ctxWith(runner));
     expect(outcome.steps[0]!.status).toBe('skipped');
     expect(outcome.steps[0]!.message).toContain("isn't available");
+  });
+
+  it('reports failed (not skipped) for a real gsettings error, not just a missing binary', async () => {
+    const runner: CommandRunner = {
+      async run() {
+        throw new CommandRunError('Cannot autolaunch D-Bus without X11 $DISPLAY', 'gsettings');
+      },
+    };
+    const outcome = await runLinuxSetup(ctxWith(runner));
+    expect(outcome.steps[0]!.status).toBe('failed');
+    expect(outcome.steps[0]!.message).toBe('Cannot autolaunch D-Bus without X11 $DISPLAY');
+  });
+
+  it('reports failed, not skipped, when a real error message happens to contain the words "not found"', async () => {
+    // Regression test: classification used to pattern-match "not found" in
+    // the message text, which this deliberately unrelated real failure
+    // would have wrongly matched — `notFound` (set only for an actual
+    // ENOENT) is what CommandRunError.notFound: false here proves is now
+    // actually driving the decision instead.
+    const runner: CommandRunner = {
+      async run() {
+        throw new CommandRunError('schema key not found: org.gnome.system.proxy.http', 'gsettings', false);
+      },
+    };
+    const outcome = await runLinuxSetup(ctxWith(runner));
+    expect(outcome.steps[0]!.status).toBe('failed');
   });
 });
 
@@ -61,7 +103,7 @@ describe('runLinuxDoctor', () => {
   it('reports skipped when gsettings is missing', async () => {
     const runner: CommandRunner = {
       async run() {
-        throw new CommandRunError('"gsettings" not found — is it installed and on PATH?', 'gsettings');
+        throw new CommandRunError('"gsettings" not found — is it installed and on PATH?', 'gsettings', true);
       },
     };
     const outcome = await runLinuxDoctor(ctxWith(runner));
@@ -84,7 +126,7 @@ describe('runLinuxCleanup', () => {
   it('reports skipped when gsettings is missing', async () => {
     const runner: CommandRunner = {
       async run() {
-        throw new CommandRunError('"gsettings" not found — is it installed and on PATH?', 'gsettings');
+        throw new CommandRunError('"gsettings" not found — is it installed and on PATH?', 'gsettings', true);
       },
     };
     const outcome = await runLinuxCleanup(ctxWith(runner));

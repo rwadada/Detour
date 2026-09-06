@@ -1,7 +1,14 @@
+import { errorMessage } from './errorMessage';
 import type { SetupContext, SetupStep, TargetOutcome } from './types';
 
 /** Where the CA cert is pushed on the device — `Download` so it's easy for the user to find from the "Install a certificate" file picker that `runAndroidSetup` opens Security settings to below; `.crt` (not `.pem`) since some Android file pickers filter certificate imports by that extension. */
 const DEVICE_CERT_PATH = '/sdcard/Download/detour-ca.crt';
+
+/** How long the no-`adb` Wi-Fi/QR fallback (see `wifiPairingFallback`) keeps its one-shot HTTP server open waiting for a phone to scan the code and download the cert, before giving up. */
+const QR_PAIRING_TIMEOUT_MS = 3 * 60_000;
+
+/** `resolveProxyHost` lets an explicit `--host` override win even for a device target (deliberately, for when auto-detection picks the wrong NIC) — but a loopback address is never valid there: a phone can't resolve "this machine" through it, only itself. `wifiPairingFallback` checks against this before ever starting `certPairingServer` (see that port's own doc comment on the same rule) so a mistaken `--host localhost` fails loudly instead of encoding a QR code that can never work. */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 
 /**
  * Parses `adb devices` output into the serials that are actually usable —
@@ -17,11 +24,18 @@ export function parseAdbDevices(stdout: string): string[] {
     .map((line) => line.split('\t')[0]!);
 }
 
-async function requireOneDevice(ctx: SetupContext): Promise<string> {
+/** Thrown by `requireOneDevice` specifically for zero devices — distinguished from "ambiguous, more than one" so `runAndroidSetup` can catch just this case and fall back to Wi-Fi/QR pairing instead of failing outright. */
+class NoDeviceError extends Error {}
+
+async function connectedDevices(ctx: SetupContext): Promise<string[]> {
   const { stdout } = await ctx.runner.run('adb', ['devices']);
-  const devices = parseAdbDevices(stdout);
+  return parseAdbDevices(stdout);
+}
+
+async function requireOneDevice(ctx: SetupContext): Promise<string> {
+  const devices = await connectedDevices(ctx);
   if (devices.length === 0) {
-    throw new Error(
+    throw new NoDeviceError(
       "No authorized device found (`adb devices`) — connect one over USB (or `adb connect <ip>` over Wi-Fi) and accept the host's RSA key fingerprint prompt on the device.",
     );
   }
@@ -33,16 +47,89 @@ async function requireOneDevice(ctx: SetupContext): Promise<string> {
   return devices[0]!;
 }
 
-export async function runAndroidSetup(ctx: SetupContext): Promise<TargetOutcome> {
-  const steps: SetupStep[] = [];
+/**
+ * No `adb` device at all (no USB connection, no Developer Options/USB
+ * debugging enabled) doesn't have to be a dead end: serving the CA cert
+ * over a one-shot local HTTP server and printing a QR code for it lets a
+ * phone on the same Wi-Fi download (and, on Android, be offered to
+ * install) it with nothing more than its camera app — no `adb` required.
+ * Gated on `explicitTarget` because it blocks waiting for a scan for up to
+ * `QR_PAIRING_TIMEOUT_MS`: fine when the user explicitly asked to set up
+ * Android, surprising as a multi-minute hang buried inside a plain `detour
+ * setup` sweeping every target.
+ */
+async function wifiPairingFallback(ctx: SetupContext): Promise<SetupStep[]> {
+  if (!ctx.explicitTarget) {
+    return [
+      {
+        status: 'skipped',
+        message:
+          'No adb device found. Run `detour setup --target android` on its own for a no-adb Wi-Fi pairing option (scan a QR code to download the cert) — skipped here so setting up every target at once never blocks on one waiting for a phone.',
+      },
+    ];
+  }
 
-  let serial: string | undefined;
+  if (LOOPBACK_HOSTS.has(ctx.proxyHost)) {
+    return [
+      {
+        status: 'failed',
+        message: `--host ${ctx.proxyHost} won't work for Wi-Fi pairing — a phone can't reach this machine at a loopback address to download the cert. Pass a real LAN IP with --host, or omit --host to auto-detect one.`,
+      },
+    ];
+  }
+
+  try {
+    const session = await ctx.certPairingServer.start({
+      certPath: ctx.certPath,
+      host: ctx.proxyHost,
+      timeoutMs: QR_PAIRING_TIMEOUT_MS,
+    });
+    const waitMinutes = Math.round(QR_PAIRING_TIMEOUT_MS / 60_000);
+    const qrStep: SetupStep = {
+      status: 'manual',
+      message: `No adb device found — scan this QR code with the phone's camera (same Wi-Fi network) to download the CA cert, or open ${session.url} directly. Waiting up to ${waitMinutes} minute(s) (Ctrl+C to stop)...`,
+      qrUrl: session.url,
+    };
+    // The wait below can take up to QR_PAIRING_TIMEOUT_MS — print the QR
+    // code *now*, before waiting, or the person meant to scan it would
+    // never see it until the whole thing was already over.
+    await ctx.onProgress?.(qrStep);
+    const steps: SetupStep[] = [qrStep];
+
+    const { downloaded } = await session.waitForDownloadOrTimeout();
+    steps.push(
+      downloaded
+        ? {
+            status: 'done',
+            message:
+              'The cert was downloaded — open it from the notification/Downloads and confirm under Settings → Security → Encryption & credentials → Install a certificate → CA certificate.',
+          }
+        : {
+            status: 'skipped',
+            message:
+              'Nobody downloaded the cert before the wait timed out — rerun `detour setup --target android` to try again.',
+          },
+    );
+    steps.push({
+      status: 'manual',
+      message: `Configure the proxy yourself: Settings → Wi-Fi → long-press your network → Modify network → Advanced options → Proxy → Manual, and set Hostname/Port to ${ctx.proxyHost} / ${ctx.proxyPort}.`,
+    });
+    return steps;
+  } catch (err) {
+    return [{ status: 'failed', message: `Couldn't serve the CA cert over Wi-Fi: ${errorMessage(err)}` }];
+  }
+}
+
+export async function runAndroidSetup(ctx: SetupContext): Promise<TargetOutcome> {
+  let serial: string;
   try {
     serial = await requireOneDevice(ctx);
   } catch (err) {
-    steps.push({ status: 'failed', message: errorMessage(err) });
-    return { steps };
+    if (err instanceof NoDeviceError) return { steps: await wifiPairingFallback(ctx) };
+    return { steps: [{ status: 'failed', message: errorMessage(err) }] };
   }
+
+  const steps: SetupStep[] = [];
 
   try {
     await ctx.runner.run('adb', ['-s', serial, 'push', ctx.certPath, DEVICE_CERT_PATH]);
@@ -139,8 +226,4 @@ export async function runAndroidCleanup(ctx: SetupContext): Promise<TargetOutcom
 
 function proxyValue(ctx: SetupContext): string {
   return `${ctx.proxyHost}:${ctx.proxyPort}`;
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

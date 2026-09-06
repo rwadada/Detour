@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
+import type { CertPairingServer } from '../ports/certPairingServer';
 import type { CommandResult, CommandRunner } from '../ports/commandRunner';
 import { parseSimulators, runIosCleanup, runIosDoctor, runIosSetup } from './ios';
 import type { SetupContext } from './types';
+
+/** ios.ts never touches the pairing server (that's android.ts's no-adb fallback only) — a throwing stub makes any accidental use loud. */
+const unusedCertPairingServer: CertPairingServer = {
+  async start() {
+    throw new Error('certPairingServer.start() should not be called here');
+  },
+};
 
 const BOOTED_LIST = JSON.stringify({
   devices: {
@@ -37,7 +45,15 @@ function fakeRunner(handler: (command: string, args: string[]) => CommandResult)
 }
 
 function ctxWith(runner: CommandRunner): SetupContext {
-  return { certPath: '/ca.pem', proxyHost: '203.0.113.5', proxyPort: 8080, runner, hostPlatform: 'darwin' };
+  return {
+    certPath: '/ca.pem',
+    proxyHost: '203.0.113.5',
+    proxyPort: 8080,
+    runner,
+    certPairingServer: unusedCertPairingServer,
+    hostPlatform: 'darwin',
+    explicitTarget: false,
+  };
 }
 
 describe('runIosSetup', () => {

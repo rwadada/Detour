@@ -8,10 +8,11 @@ export const nodeCommandRunner: CommandRunner = {
     return new Promise((resolve, reject) => {
       execFile(command, args, { timeout: 15_000 }, (err, stdout, stderr) => {
         if (err) {
-          const code = (err as NodeJS.ErrnoException).code;
-          const message =
-            code === 'ENOENT' ? `"${command}" not found — is it installed and on PATH?` : stderr.trim() || err.message;
-          reject(new CommandRunError(message, command));
+          const notFound = (err as NodeJS.ErrnoException).code === 'ENOENT';
+          const message = notFound
+            ? `"${command}" not found — is it installed and on PATH?`
+            : stderr.trim() || err.message;
+          reject(new CommandRunError(message, command, notFound));
           return;
         }
         resolve({ stdout, stderr });

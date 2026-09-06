@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SETUP_TARGETS } from '../../domain/setup/targets';
+import type { CertPairingServer } from '../ports/certPairingServer';
 import type { CommandRunner } from '../ports/commandRunner';
 import { runForTarget, runTargets } from './orchestrator';
 
@@ -9,13 +10,22 @@ const noopRunner: CommandRunner = {
   },
 };
 
+/** No test in this file exercises android's Wi-Fi/QR fallback (see android.test.ts for that) — a throwing stub makes any accidental use loud. */
+const unusedCertPairingServer: CertPairingServer = {
+  async start() {
+    throw new Error('certPairingServer.start() should not be called here');
+  },
+};
+
 function inputsWith(overrides: Partial<Parameters<typeof runForTarget>[2]> = {}) {
   return {
     certPath: '/ca.pem',
     proxyPort: 8080,
     runner: noopRunner,
+    certPairingServer: unusedCertPairingServer,
     hostPlatform: 'darwin' as NodeJS.Platform,
     detectedLanAddresses: ['203.0.113.5'],
+    explicitTarget: false,
     ...overrides,
   };
 }
@@ -62,6 +72,25 @@ describe('runForTarget', () => {
 
   it('reports a single failed step when a device target has no resolvable proxy address', async () => {
     const outcome = await runForTarget('setup', 'android', inputsWith({ detectedLanAddresses: [] }));
+    expect(outcome.steps).toEqual([{ status: 'failed', message: expect.stringContaining('LAN IP') }]);
+  });
+
+  it('also requires a resolvable proxy address for doctor (it reports the proxy address, so needs to know it)', async () => {
+    const outcome = await runForTarget('doctor', 'android', inputsWith({ detectedLanAddresses: [] }));
+    expect(outcome.steps).toEqual([{ status: 'failed', message: expect.stringContaining('LAN IP') }]);
+  });
+
+  it("android's cleanup proceeds to real automation even with no resolvable proxy address (it never reads proxyHost)", async () => {
+    const outcome = await runForTarget('cleanup', 'android', inputsWith({ detectedLanAddresses: [] }));
+    // Reaches android.ts's real cleanup logic instead of bailing out on the
+    // unresolvable address — the noop runner reports no adb device, so it
+    // fails for that reason instead, proving proxy-host resolution didn't
+    // block dispatch.
+    expect(outcome.steps).toEqual([{ status: 'failed', message: expect.stringContaining('No authorized device') }]);
+  });
+
+  it("ios's cleanup still requires a resolvable proxy address (unlike android, its manual steps print it)", async () => {
+    const outcome = await runForTarget('cleanup', 'ios', inputsWith({ detectedLanAddresses: [] }));
     expect(outcome.steps).toEqual([{ status: 'failed', message: expect.stringContaining('LAN IP') }]);
   });
 

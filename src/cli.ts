@@ -30,6 +30,7 @@ import { nodeCommandRunner } from './infra/process/nodeCommandRunner';
 import { openBrowser } from './infra/process/openBrowser';
 import { caCertPath, ensureCaCert } from './infra/proxy/certExport';
 import { startIdleWatcher } from './infra/proxy/idleWatcher';
+import { nodeCertPairingServer } from './infra/proxy/nodeCertPairingServer';
 import { startProxyServer } from './infra/proxy/proxyServer';
 import {
   logExchange,
@@ -39,10 +40,11 @@ import {
   logWebSocketConnection,
   logWebSocketFull,
 } from './presentation/logger';
+import { renderQrCode } from './presentation/qrCode';
 import { RuleEngine } from './usecase/ruleEngine';
 import { runTargets } from './usecase/setup/orchestrator';
 import type { SetupMode, TargetReport } from './usecase/setup/orchestrator';
-import type { StepStatus } from './usecase/setup/types';
+import type { SetupStep, StepStatus } from './usecase/setup/types';
 
 // This file is Detour's composition root: the one place allowed to import
 // across every layer (domain/usecase/infra/presentation) to wire concrete
@@ -148,10 +150,39 @@ function stepIcon(status: StepStatus): string {
   }
 }
 
-function printTargetReports(reports: TargetReport[]): void {
+/**
+ * Steps already shown live via `onProgress` (currently only android.ts's
+ * Wi-Fi/QR pairing step) land in `printedLive` — `printTargetReports`'s
+ * later pass over the same step objects (they're the very same `SetupStep`
+ * returned inside the final `TargetOutcome`, not copies) skips them rather
+ * than printing the message — and re-rendering the QR code — a second time.
+ */
+const printedLive = new WeakSet<SetupStep>();
+
+/**
+ * QR rendering (`qrcode-terminal`) lives in `presentation/`, which
+ * `usecase/setup` may not depend on (see `boundaries/dependencies` in
+ * eslint.config.mjs) — so a step that wants one just carries the URL
+ * (`SetupStep.qrUrl`) and this composition-root function does the actual
+ * rendering. Shared by `printTargetReports`'s final pass over a completed
+ * `TargetOutcome` and by `runSetupCommand`'s `onProgress` wiring below,
+ * which calls this the moment a step is ready rather than only once
+ * everything is (see `SetupContext.onProgress`'s doc comment — currently
+ * just android.ts's Wi-Fi/QR pairing fallback, so its QR code is on screen
+ * before its own multi-minute wait for a download, not just after).
+ */
+async function printStep(step: SetupStep): Promise<void> {
+  printedLive.add(step);
+  console.log(`  ${stepIcon(step.status)} ${step.message}`);
+  if (step.qrUrl) console.log(await renderQrCode(step.qrUrl));
+}
+
+async function printTargetReports(reports: TargetReport[]): Promise<void> {
   for (const { target, outcome } of reports) {
     console.log(`\n${target}:`);
-    for (const step of outcome.steps) console.log(`  ${stepIcon(step.status)} ${step.message}`);
+    for (const step of outcome.steps) {
+      if (!printedLive.has(step)) await printStep(step);
+    }
   }
 }
 
@@ -195,10 +226,13 @@ async function runSetupCommand(mode: SetupMode, options: SetupCommandOptions): P
       certPath,
       proxyPort: port,
       runner: nodeCommandRunner,
+      certPairingServer: nodeCertPairingServer,
       hostPlatform: process.platform,
       detectedLanAddresses: lanAddresses(),
+      explicitTarget: target !== undefined,
+      onProgress: printStep,
     });
-    printTargetReports(reports);
+    await printTargetReports(reports);
     if (hasFailedStep(reports)) process.exitCode = 1;
   } catch (err) {
     console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
@@ -879,7 +913,7 @@ export function createCli(): Command {
   program
     .command('setup')
     .description(
-      'Prepares a target device/OS to send traffic through detour (issue #65): issues the local CA cert (first run) and, for android/mac/linux, trusts it and configures the proxy automatically; ios trusts it on a booted Simulator (xcrun simctl) but still prints manual steps for a physical device — windows is manual-only.',
+      'Prepares a target device/OS to send traffic through detour (issue #65): issues the local CA cert (first run) and, for android/mac/linux, trusts it and configures the proxy automatically (android with --target and no adb device falls back to a QR-code Wi-Fi pairing flow for the cert); ios trusts it on a booted Simulator (xcrun simctl) but still prints manual steps for a physical device — windows is manual-only.',
     )
     .option(...setupTargetOption)
     .option(...setupPortOption)

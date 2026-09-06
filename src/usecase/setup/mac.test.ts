@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { CertPairingServer } from '../ports/certPairingServer';
 import type { CommandResult, CommandRunner } from '../ports/commandRunner';
 import { CommandRunError } from '../ports/commandRunner';
 import {
@@ -10,6 +11,13 @@ import {
   runMacSetup,
 } from './mac';
 import type { SetupContext } from './types';
+
+/** mac.ts never touches the pairing server (that's android.ts's no-adb fallback only) — a throwing stub makes any accidental use loud. */
+const unusedCertPairingServer: CertPairingServer = {
+  async start() {
+    throw new Error('certPairingServer.start() should not be called here');
+  },
+};
 
 const LIST_SERVICES =
   'An asterisk (*) denotes that a network service is disabled.\nWi-Fi\nThunderbolt Bridge\n*iPhone USB\n';
@@ -59,7 +67,15 @@ function fakeRunner(handlers: Record<string, (args: string[]) => CommandResult>)
 }
 
 function ctxWith(runner: CommandRunner): SetupContext {
-  return { certPath: '/ca.pem', proxyHost: '127.0.0.1', proxyPort: 8080, runner, hostPlatform: 'darwin' };
+  return {
+    certPath: '/ca.pem',
+    proxyHost: '127.0.0.1',
+    proxyPort: 8080,
+    runner,
+    certPairingServer: unusedCertPairingServer,
+    hostPlatform: 'darwin',
+    explicitTarget: false,
+  };
 }
 
 describe('runMacSetup', () => {

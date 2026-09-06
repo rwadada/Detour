@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { errorMessage } from './errorMessage';
 import type { SetupContext, SetupStep, TargetOutcome } from './types';
 
 /** `security add-trusted-cert` targets the current user's login keychain (not the System keychain, which needs `-d` and a sudo prompt) — trusting the cert for this user only, with no password prompt beyond an already-unlocked login keychain. */
@@ -118,8 +119,4 @@ export function parseGetWebProxy(stdout: string): { enabled: boolean; server?: s
     fields.set(key!.trim(), rest.join(':').trim());
   }
   return { enabled: fields.get('Enabled') === 'Yes', server: fields.get('Server'), port: fields.get('Port') };
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

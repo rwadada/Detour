@@ -1,6 +1,7 @@
 import { hostPlatformMatches, TARGET_AUTOMATION } from '../../domain/setup/automation';
 import { SETUP_TARGETS } from '../../domain/setup/targets';
 import type { SetupTarget } from '../../domain/setup/targets';
+import type { CertPairingServer } from '../ports/certPairingServer';
 import type { CommandRunner } from '../ports/commandRunner';
 import { runAndroidCleanup, runAndroidDoctor, runAndroidSetup } from './android';
 import { runIosCleanup, runIosDoctor, runIosSetup } from './ios';
@@ -18,8 +19,13 @@ export interface OrchestratorInputs {
   certPath: string;
   proxyPort: number;
   runner: CommandRunner;
+  certPairingServer: CertPairingServer;
   hostPlatform: NodeJS.Platform;
   detectedLanAddresses: string[];
+  /** Whether this run targets exactly one explicit `--target` — see `SetupContext.explicitTarget`'s doc comment. `cli.ts` sets this from `options.target !== undefined`, the same condition that decides whether `runTargets` gets a one-element `targets` array or `undefined`. */
+  explicitTarget: boolean;
+  /** See `SetupContext.onProgress`'s doc comment. */
+  onProgress?: SetupContext['onProgress'];
 }
 
 export interface TargetReport {
@@ -63,7 +69,20 @@ export async function runForTarget(
       detectedLanAddresses: inputs.detectedLanAddresses,
     });
   } catch (err) {
-    return { steps: [{ status: 'failed', message: err instanceof Error ? err.message : String(err) }] };
+    // Only android's `cleanup` is exempt from needing a resolvable address:
+    // `runAndroidCleanup` resets the device's proxy to a fixed `:0`, never
+    // reading `ctx.proxyHost`, and (being fully automated) never falls back
+    // to `manualSteps` either — so an unresolvable LAN IP (no network
+    // interface detected) shouldn't block it the way it rightly blocks
+    // `setup`/`doctor`, which do need a real address to configure/verify.
+    // ios's `cleanup` looks similar but isn't: it always prints the
+    // physical-device manual steps via `manualSteps`, which *do*
+    // interpolate `ctx.proxyHost` — falling back to a placeholder here
+    // instead of failing would just print a broken instruction instead.
+    if (mode !== 'cleanup' || target !== 'android') {
+      return { steps: [{ status: 'failed', message: err instanceof Error ? err.message : String(err) }] };
+    }
+    proxyHost = inputs.hostOverride ?? '';
   }
   const instructionCtx = { certPath: inputs.certPath, proxyHost, proxyPort: inputs.proxyPort };
 
@@ -91,23 +110,32 @@ export async function runForTarget(
     proxyHost,
     proxyPort: inputs.proxyPort,
     runner: inputs.runner,
+    certPairingServer: inputs.certPairingServer,
     hostPlatform: inputs.hostPlatform,
+    explicitTarget: inputs.explicitTarget,
+    onProgress: inputs.onProgress,
   };
   return isAutomatedTarget(target)
     ? AUTOMATED_RUNNERS[target][mode](ctx)
     : { steps: manualSteps(mode, target, instructionCtx) };
 }
 
-/** Runs `mode` against every one of `targets` (or all five, in `SETUP_TARGETS` order, when omitted — the `detour setup`/`doctor`/`cleanup` no-`--target` behavior) and reports each independently. */
+/**
+ * Runs `mode` against every one of `targets` (or all five, in
+ * `SETUP_TARGETS` order, when omitted — the `detour setup`/`doctor`/
+ * `cleanup` no-`--target` behavior) and reports each independently. Targets
+ * share no state (each gets its own `CommandRunner` calls against a
+ * different tool/device), so they run concurrently rather than one after
+ * another — otherwise a plain `detour doctor` would serialize up to five
+ * targets' worth of subprocess round-trips end to end. `Promise.all`
+ * preserves `targets`' order in the result regardless of which resolves
+ * first.
+ */
 export async function runTargets(
   mode: SetupMode,
   targets: SetupTarget[] | undefined,
   inputs: OrchestratorInputs,
 ): Promise<TargetReport[]> {
   const list = targets ?? [...SETUP_TARGETS];
-  const reports: TargetReport[] = [];
-  for (const target of list) {
-    reports.push({ target, outcome: await runForTarget(mode, target, inputs) });
-  }
-  return reports;
+  return Promise.all(list.map(async (target) => ({ target, outcome: await runForTarget(mode, target, inputs) })));
 }
