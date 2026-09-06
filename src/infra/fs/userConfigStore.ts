@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { isValidDashboardPasswordHash } from '../dashboard/dashboardPasswordHash';
 
 /**
  * Persistent user preferences for `detour start`, distinct from a run's
@@ -82,15 +83,19 @@ function validateUserConfig(config: UserConfig, configPath: string): void {
   if (
     config.dashboardPasswordHash !== undefined &&
     config.dashboardPasswordHash !== null &&
-    // Also rejects `''`: a real hash from `hashDashboardPassword` is never
-    // empty, so an empty string here could only be a hand-edit — one that,
-    // left unchecked, would leave `dashboardServer.ts`'s dashboardPasswordSet
-    // reporting "on" while `verifyDashboardPassword` rejects every password
-    // against it (an unrecoverable lockout) rather than failing loudly here.
-    (typeof config.dashboardPasswordHash !== 'string' || config.dashboardPasswordHash === '')
+    // Validates the *whole* `<saltHex>:<hashHex>` shape, not just "is a
+    // non-empty string" — `verifyDashboardPassword` uses this exact same
+    // check (see its own doc comment), so anything that fails it can never
+    // actually verify a password either way. Left unchecked here, such a
+    // value would still leave `dashboardServer.ts`'s `dashboardPasswordSet`
+    // reporting "on" while every login attempt against it fails: an
+    // unrecoverable lockout with no way out except editing the config file
+    // or `detour config --dashboard-password off` by hand, rather than
+    // failing loudly right here where it was written.
+    (typeof config.dashboardPasswordHash !== 'string' || !isValidDashboardPasswordHash(config.dashboardPasswordHash))
   ) {
     throw new Error(
-      `${configPath}: "dashboardPasswordHash" must be a non-empty string or null (got: ${JSON.stringify(config.dashboardPasswordHash)})`,
+      `${configPath}: "dashboardPasswordHash" must be a valid hash produced by hashDashboardPassword, or null (got: ${JSON.stringify(config.dashboardPasswordHash)})`,
     );
   }
 }

@@ -35,6 +35,22 @@ function isHexOfLength(value: string, byteLength: number): boolean {
 }
 
 /**
+ * Whether `value` has exactly the `<saltHex>:<hashHex>` shape
+ * `hashDashboardPassword` produces. Exported so `userConfigStore.ts`'s
+ * config validation can reject a malformed `dashboardPasswordHash` up
+ * front — a non-empty string that isn't a well-formed hash would otherwise
+ * pass that validation, get persisted, and then have `dashboardPasswordSet`
+ * report `true` while `verifyDashboardPassword` (using the same check
+ * below) rejects every password against it: a self-inflicted lockout with
+ * no way out except editing the config file or CLI by hand.
+ */
+export function isValidDashboardPasswordHash(value: string): boolean {
+  const [saltHex, hashHex] = value.split(':');
+  if (!saltHex || !hashHex) return false;
+  return isHexOfLength(saltHex, SALT_LENGTH) && isHexOfLength(hashHex, KEY_LENGTH);
+}
+
+/**
  * Hashes `password` into the `<saltHex>:<hashHex>` string persisted as
  * `UserConfig.dashboardPasswordHash`. A fresh random salt every call, so
  * hashing the same password twice produces different output (as it should).
@@ -51,19 +67,22 @@ export async function hashDashboardPassword(password: string): Promise<string> {
  * malformed `stored` value — a hand-edited config shouldn't be able to crash
  * a login attempt, only fail it.
  *
- * Validates both halves' shape with `isHexOfLength` *before* decoding either
- * — `Buffer.from(str, 'hex')` doesn't reliably throw on invalid input, it
- * just silently stops decoding at the first bad character, which can still
- * produce a shorter-than-expected but non-empty buffer. Checking the exact
- * expected length up front (rather than, say, just `expected.length === 0`
- * afterwards) also bounds the KDF's own cost: without it, a maliciously
- * oversized on-disk `hashHex` could force `scrypt` to derive an equally
- * oversized key.
+ * Validates the whole shape with `isValidDashboardPasswordHash` *before*
+ * decoding either half — `Buffer.from(str, 'hex')` doesn't reliably throw on
+ * invalid input, it just silently stops decoding at the first bad character,
+ * which can still produce a shorter-than-expected but non-empty buffer.
+ * Checking the exact expected length up front (rather than, say, just
+ * `expected.length === 0` afterwards) also bounds the KDF's own cost:
+ * without it, a maliciously oversized on-disk `hashHex` could force
+ * `scrypt` to derive an equally oversized key.
  */
 export async function verifyDashboardPassword(password: string, stored: string): Promise<boolean> {
-  const [saltHex, hashHex] = stored.split(':');
-  if (!saltHex || !hashHex) return false;
-  if (!isHexOfLength(saltHex, SALT_LENGTH) || !isHexOfLength(hashHex, KEY_LENGTH)) return false;
+  if (!isValidDashboardPasswordHash(stored)) return false;
+  // `isValidDashboardPasswordHash` just confirmed both halves exist and have
+  // the right shape — this cast tells TypeScript what that check already
+  // guarantees; `stored.split(':')` on its own is typed as `string[]`
+  // (length unknown), not the 2-tuple it always actually is here.
+  const [saltHex, hashHex] = stored.split(':') as [string, string];
   const salt = Buffer.from(saltHex, 'hex');
   const expected = Buffer.from(hashHex, 'hex');
   const actual = await scryptAsync(password, salt, expected.length);

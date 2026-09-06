@@ -7,6 +7,15 @@ import type { DashboardServerMessage } from '../../domain/dashboard/protocol';
 import { DetourEventBus } from '../eventBus';
 import { startDashboardServer, type DashboardServerHandle } from './dashboardServer';
 
+// A syntactically well-formed `dashboardPasswordHash` fixture (matches the
+// exact `<32-hex-char salt>:<128-hex-char hash>` shape `hashDashboardPassword`
+// produces — see `userConfigStore.ts`'s validation, which now enforces this
+// shape) — used wherever a test hand-writes a config file directly rather
+// than going through `setDashboardPassword`. Content is irrelevant to these
+// tests (none of them log in against it), only that `loadUserConfig` accepts
+// it without throwing.
+const VALID_HASH_FIXTURE = `${'a'.repeat(32)}:${'b'.repeat(128)}`;
+
 /**
  * Covers the optional dashboard password (issue #66's second half — the
  * first half, `lanInfo`, is covered by `dashboardServer.lanInfo.test.ts`): a
@@ -144,7 +153,7 @@ describe('startDashboardServer — dashboard password (issue #66)', () => {
   });
 
   it('sends authRequired instead of the snapshot to a new connection when a password is already configured', async () => {
-    fs.writeFileSync(configPath, JSON.stringify({ dashboardPasswordHash: 'deadbeef:cafe' }));
+    fs.writeFileSync(configPath, JSON.stringify({ dashboardPasswordHash: VALID_HASH_FIXTURE }));
     handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);
     const socket = connect();
 
@@ -216,7 +225,7 @@ describe('startDashboardServer — dashboard password (issue #66)', () => {
   });
 
   it('ignores every message other than login from an unauthenticated socket', async () => {
-    fs.writeFileSync(configPath, JSON.stringify({ dashboardPasswordHash: 'deadbeef:cafe' }));
+    fs.writeFileSync(configPath, JSON.stringify({ dashboardPasswordHash: VALID_HASH_FIXTURE }));
     handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);
     const socket = connect();
     await waitForMessage(socket, (m) => m.type === 'authRequired');
@@ -227,7 +236,7 @@ describe('startDashboardServer — dashboard password (issue #66)', () => {
     // `login` has succeeded.
     socket.send(JSON.stringify({ type: 'setUserConfig', state: { lanAccess: true } }));
     await expectNoMessage(socket, (m) => m.type === 'userConfig' || m.type === 'error');
-    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ dashboardPasswordHash: 'deadbeef:cafe' });
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ dashboardPasswordHash: VALID_HASH_FIXTURE });
   });
 
   it('keeps broadcasting to a socket that connected before a password was set, even after one is added', async () => {
