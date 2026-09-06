@@ -102,7 +102,7 @@ export async function runForTarget(
       steps: [
         {
           status: 'skipped',
-          message: `This machine is running "${inputs.hostPlatform}", not "${automation.hostPlatform}" — can't automate ${target} setup from here.`,
+          message: `This machine is running "${inputs.hostPlatform}", not "${automation.hostPlatform}" — can't run automated ${mode} for ${target} from here.`,
         },
         ...manualSteps(mode, target, instructionCtx),
       ],

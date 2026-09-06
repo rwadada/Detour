@@ -141,7 +141,7 @@ describe('runAndroidSetup', () => {
     expect(outcome.steps).toEqual([{ status: 'failed', message: expect.stringContaining('EADDRINUSE') }]);
   });
 
-  it.each(['localhost', '127.0.0.1', '::1'])(
+  it.each(['localhost', '127.0.0.1', '127.0.1.1', '::1', '0.0.0.0'])(
     'refuses to start Wi-Fi pairing with a loopback --host override (%s) instead of encoding an unreachable QR code',
     async (loopbackHost) => {
       const runner = fakeRunner(() => ({ stdout: 'List of devices attached\n', stderr: '' }));
@@ -152,7 +152,7 @@ describe('runAndroidSetup', () => {
     },
   );
 
-  it.each(['localhost', '127.0.0.1', '::1'])(
+  it.each(['localhost', '127.0.0.1', '127.0.1.1', '::1', '0.0.0.0'])(
     'refuses a loopback --host override (%s) even with an adb device connected, instead of pointing the device at itself',
     async (loopbackHost) => {
       const calls: string[][] = [];
@@ -204,7 +204,7 @@ describe('runAndroidDoctor', () => {
     expect(outcome.steps.filter((s) => s.status === 'failed')).toEqual([]);
   });
 
-  it.each(['localhost', '127.0.0.1', '::1'])(
+  it.each(['localhost', '127.0.0.1', '127.0.1.1', '::1', '0.0.0.0'])(
     'reports failed (never "done") for a loopback --host override (%s), instead of validating the device proxy against an address it could never reach',
     async (loopbackHost) => {
       const runner = fakeRunner((command, args) => {

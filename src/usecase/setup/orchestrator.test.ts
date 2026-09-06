@@ -56,6 +56,14 @@ describe('runForTarget', () => {
     expect(outcome.steps.slice(1).every((s) => s.status === 'manual')).toBe(true);
   });
 
+  it.each(['setup', 'doctor', 'cleanup'] as const)(
+    'the wrong-host skip message names the actual mode (%s), not always "setup"',
+    async (mode) => {
+      const outcome = await runForTarget(mode, 'mac', inputsWith({ hostPlatform: 'linux' }));
+      expect(outcome.steps[0]!.message).toContain(`automated ${mode} for mac`);
+    },
+  );
+
   it('runs real automation when the host platform matches', async () => {
     const calls: string[] = [];
     const runner: CommandRunner = {

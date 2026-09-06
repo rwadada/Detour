@@ -7,15 +7,22 @@ const DEVICE_CERT_PATH = '/sdcard/Download/detour-ca.crt';
 /** How long the no-`adb` Wi-Fi/QR fallback (see `wifiPairingFallback`) keeps its one-shot HTTP server open waiting for a phone to scan the code and download the cert, before giving up. */
 const QR_PAIRING_TIMEOUT_MS = 3 * 60_000;
 
-/** `resolveProxyHost` lets an explicit `--host` override win even for a device target (deliberately, for when auto-detection picks the wrong NIC) — but a loopback address is never valid there: a phone can't resolve "this machine" through it, only itself. `invalidProxyHostError` checks against this (and the other ways a hand-typed `--host` can be unusable — see its own doc comment) in every path that either configures or verifies the device's actual proxy value (both `runAndroidSetup`'s adb push and its Wi-Fi/QR fallback, and `runAndroidDoctor`) so a bad `--host` fails loudly instead of silently configuring — or reporting as correct — a proxy value the phone can never actually reach. */
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+/** `resolveProxyHost` lets an explicit `--host` override win even for a device target (deliberately, for when auto-detection picks the wrong NIC) — but not every address is usable there. `invalidProxyHostError` checks against every way a hand-typed `--host` can be unusable (see its own doc comment) in every path that either configures or verifies the device's actual proxy value (both `runAndroidSetup`'s adb push and its Wi-Fi/QR fallback, and `runAndroidDoctor`) so a bad `--host` fails loudly instead of silently configuring — or reporting as correct — a proxy value the phone can never actually reach. */
+const UNROUTABLE_EXACT_HOSTS = new Set(['localhost', '::1', '0.0.0.0']);
+
+/** Whole `127.0.0.0/8` is loopback, not just `127.0.0.1` — a phone can't reach any address in it any more than the one commonly-typed example. */
+function isLoopbackIPv4(host: string): boolean {
+  return host.startsWith('127.');
+}
 
 /**
  * A `'failed'` step when `ctx.proxyHost` can't work as a device proxy
  * value, `undefined` otherwise:
  *
- * - a loopback address (`LOOPBACK_HOSTS`) — a phone can't reach "this
- *   machine" through one, only itself;
+ * - a loopback address (all of `127.0.0.0/8`, plus `localhost`/`::1`) — a
+ *   phone can't reach "this machine" through one, only itself;
+ * - `0.0.0.0` — a bind-all address, meaningful as something to *listen*
+ *   on, not a destination anything can *connect to*;
  * - anything containing a `:` — a bare IPv6 literal (`fe80::1`) needs
  *   brackets to appear in a URL (`http://[fe80::1]:port/...`) or Android's
  *   `http_proxy` value (`host:port`) at all, and this machine's LAN
@@ -27,10 +34,10 @@ const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
  *   that's silently wrong.
  */
 function invalidProxyHostError(ctx: SetupContext): SetupStep | undefined {
-  if (LOOPBACK_HOSTS.has(ctx.proxyHost)) {
+  if (UNROUTABLE_EXACT_HOSTS.has(ctx.proxyHost) || isLoopbackIPv4(ctx.proxyHost)) {
     return {
       status: 'failed',
-      message: `--host ${ctx.proxyHost} won't work for a device proxy — a phone can't reach this machine at a loopback address. Pass a real LAN IP with --host, or omit --host to auto-detect one.`,
+      message: `--host ${ctx.proxyHost} won't work for a device proxy — a phone can't connect to this machine at that address. Pass a real LAN IP with --host, or omit --host to auto-detect one.`,
     };
   }
   if (ctx.proxyHost.includes(':')) {
