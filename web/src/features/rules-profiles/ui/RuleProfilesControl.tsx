@@ -56,9 +56,17 @@ export function RuleProfilesControl() {
   const [newName, setNewName] = useState('');
   const [source, setSource] = useState<NewProfileSource>('sample');
   // Set right after a successful apply/create/save, cleared after a couple
-  // seconds — see its own note below. Not persisted state; a page reload or
-  // a second pick before it clears just restarts (or skips) the timer.
+  // seconds — see its own note below. Not persisted state; a page reload
+  // just loses it.
   const [confirmation, setConfirmation] = useState<string | null>(null);
+  // The pending auto-clear timer for `confirmation`, if any — tracked so a
+  // second action within the same couple seconds cancels the first one's
+  // timer instead of leaving it running alongside the new one. That first
+  // timer firing late was never actually able to clear the *wrong* message
+  // (it only ever cleared `confirmation` if it still held the exact string
+  // that timer was scheduled for), so this isn't a correctness fix so much
+  // as not leaving a stale timer running for no reason once it's moot.
+  const confirmationTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // The select's `value` is always reset to the empty placeholder the
@@ -70,8 +78,9 @@ export function RuleProfilesControl() {
   // it. This one-shot, self-clearing message is the only feedback that an
   // action actually went through.
   const confirm = (message: string) => {
+    if (confirmationTimer.current) clearTimeout(confirmationTimer.current);
     setConfirmation(message);
-    setTimeout(() => setConfirmation((current) => (current === message ? null : current)), 2500);
+    confirmationTimer.current = setTimeout(() => setConfirmation(null), 2500);
   };
 
   // Resets the create form too, not just `open` — without this, dismissing
@@ -85,6 +94,7 @@ export function RuleProfilesControl() {
     setCreating(false);
     setNewName('');
     setSource('sample');
+    if (confirmationTimer.current) clearTimeout(confirmationTimer.current);
     setConfirmation(null);
   };
   useDismissablePopover(open, containerRef, closePopover);
