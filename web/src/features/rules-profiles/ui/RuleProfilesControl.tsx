@@ -109,7 +109,6 @@ export function RuleProfilesControl() {
     // loss for no reason. `cancelCreate` is a no-op if the form wasn't
     // open to begin with.
     if (applyWithDirtyGuard(value)) cancelCreate();
-    applyWithDirtyGuard(value);
   };
 
   const cancelCreate = () => {
