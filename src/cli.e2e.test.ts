@@ -1619,15 +1619,35 @@ describe('detour start (CLI, end-to-end)', () => {
     it("doesn't crash the whole process when the client abruptly disconnects mid-request over HTTP/2 (regression)", async () => {
       // Never responds — the point is for this request to still be "in
       // flight" (no response sent to the client yet) when the test yanks
-      // the client's connection out from under it below.
+      // the client's connection out from under it below. Tracks every
+      // connected socket and destroys them on `close()`: `server.close()`
+      // alone waits for open connections to finish on their own, which
+      // this test's own proxy↔upstream connection never does by design —
+      // left untracked, `close()` would hang instead of ever resolving.
       const slowUpstream = await new Promise<{ port: number; close: () => Promise<void> }>((resolve, reject) => {
         const { key, cert } = generateSelfSignedCert('127.0.0.1');
         const server = https.createServer({ key, cert }, (req) => req.resume());
+        // `Duplex`, not `net.Socket`/`tls.TLSSocket` — that's the type
+        // @types/node itself declares for `https.Server`'s own
+        // `'connection'` event, even though a `tls.TLSSocket` (a `net.Socket`
+        // subclass) is what's actually emitted.
+        const sockets = new Set<import('node:stream').Duplex>();
+        server.on('connection', (socket) => {
+          sockets.add(socket);
+          socket.on('close', () => sockets.delete(socket));
+        });
         server.on('error', reject);
         server.listen(0, '127.0.0.1', () => {
           const address = server.address();
           if (!address || typeof address === 'string') return reject(new Error('failed to bind'));
-          resolve({ port: address.port, close: () => new Promise((res) => server.close(() => res())) });
+          resolve({
+            port: address.port,
+            close: () =>
+              new Promise((res) => {
+                for (const socket of sockets) socket.destroy();
+                server.close(() => res());
+              }),
+          });
         });
       });
       cli = await startDetourCli([], insecureUpstreamEnv);
@@ -1637,6 +1657,13 @@ describe('detour start (CLI, end-to-end)', () => {
         const connected = await connectHttp2ThroughProxy(cli.port, 'localhost', slowUpstream.port, cli.caCertPath);
         session = connected.session;
         tlsSocket = connected.tlsSocket;
+        // Destroying the underlying TLS socket below can itself surface as
+        // an `error` event on the session wrapping it — an EventEmitter
+        // `error` with no listener throws, which would crash this test
+        // process for an unrelated reason (a test-harness artifact of how
+        // the disconnect was simulated, not anything this test is actually
+        // checking).
+        session.on('error', () => {});
 
         const req = session.request({
           ':path': '/slow',

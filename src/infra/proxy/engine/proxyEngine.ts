@@ -632,7 +632,7 @@ export class ProxyEngine {
           else res.writeHead(504, 'Proxy Error');
         }
         if (!res.writableEnded) res.end(`${kind}: ${err}`, 'utf8');
-      } catch {
+      } catch (writeErr) {
         // `!headersSent`/`!writableEnded` above guard against writing
         // twice, but not against the client's connection itself already
         // being gone by the time an abort/error handler gets here — an
@@ -643,6 +643,21 @@ export class ProxyEngine {
         // method catches it — an uncaught exception here previously took
         // the whole process down over what's ultimately a client that
         // already left and was never going to see this response anyway.
+        //
+        // Deliberately not narrowed to just that one error code: an
+        // already-gone client can surface as more than one shape depending
+        // on exactly when/how it left, and guessing at an exhaustive list
+        // risks leaving the process just as exposed to whichever one isn't
+        // on it. Still reported to the same `onErrorHandlers` any other
+        // proxy error goes through (as its own `kind`, and with `ctx: null`
+        // — this is a failure to even report `kind` above, not `kind`
+        // itself, and passing the real `ctx` here would double the
+        // per-request cleanup `proxyServer.ts`'s own `onError` handler does
+        // for it) so a write failure that turns out *not* to be one of
+        // these benign already-gone-client cases still shows up in
+        // logging/telemetry instead of silently vanishing.
+        const reportedErr = writeErr instanceof Error ? writeErr : new Error(String(writeErr));
+        for (const handler of this.onErrorHandlers) handler(null, reportedErr, 'EMIT_ERROR_RESPONSE_WRITE_FAILED');
       }
     }
     for (const handler of this.onErrorHandlers) handler(ctx, err, kind);
