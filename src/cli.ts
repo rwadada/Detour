@@ -32,6 +32,7 @@ import { openBrowser } from './infra/process/openBrowser';
 import { caCertPath, ensureCaCert } from './infra/proxy/certExport';
 import { startIdleWatcher } from './infra/proxy/idleWatcher';
 import { nodeCertPairingServer } from './infra/proxy/nodeCertPairingServer';
+import { readlineDevicePicker } from './infra/process/readlineDevicePicker';
 import { startProxyServer } from './infra/proxy/proxyServer';
 import {
   logExchange,
@@ -279,6 +280,7 @@ async function runSetupCommand(mode: SetupMode, options: SetupCommandOptions): P
       proxyPort: port,
       runner: nodeCommandRunner,
       certPairingServer: nodeCertPairingServer,
+      devicePicker: readlineDevicePicker,
       hostPlatform: process.platform,
       detectedLanAddresses: lanAddresses(),
       explicitTarget: target !== undefined,

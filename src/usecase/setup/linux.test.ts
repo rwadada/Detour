@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CertPairingServer } from '../ports/certPairingServer';
 import type { CommandResult, CommandRunner } from '../ports/commandRunner';
 import { CommandRunError } from '../ports/commandRunner';
+import type { DevicePicker } from '../ports/devicePicker';
 import { runLinuxCleanup, runLinuxDoctor, runLinuxSetup } from './linux';
 import type { SetupContext } from './types';
 
@@ -20,6 +21,13 @@ const unusedCertPairingServer: CertPairingServer = {
   },
 };
 
+/** linux.ts never touches the device picker (that's android.ts's multi-device fallback only) — a throwing stub makes any accidental use loud. */
+const unusedDevicePicker: DevicePicker = {
+  async pick() {
+    throw new Error('devicePicker.pick() should not be called here');
+  },
+};
+
 function ctxWith(runner: CommandRunner): SetupContext {
   return {
     certPath: '/ca.pem',
@@ -27,6 +35,7 @@ function ctxWith(runner: CommandRunner): SetupContext {
     proxyPort: 8080,
     runner,
     certPairingServer: unusedCertPairingServer,
+    devicePicker: unusedDevicePicker,
     hostPlatform: 'linux',
     explicitTarget: false,
   };

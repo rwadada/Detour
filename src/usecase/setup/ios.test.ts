@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CertPairingServer } from '../ports/certPairingServer';
 import type { CommandResult, CommandRunner } from '../ports/commandRunner';
+import type { DevicePicker } from '../ports/devicePicker';
 import { parseSimulators, runIosCleanup, runIosDoctor, runIosSetup } from './ios';
 import type { SetupContext } from './types';
 
@@ -8,6 +9,13 @@ import type { SetupContext } from './types';
 const unusedCertPairingServer: CertPairingServer = {
   async start() {
     throw new Error('certPairingServer.start() should not be called here');
+  },
+};
+
+/** ios.ts never touches the device picker (that's android.ts's multi-device fallback only) — a throwing stub makes any accidental use loud. */
+const unusedDevicePicker: DevicePicker = {
+  async pick() {
+    throw new Error('devicePicker.pick() should not be called here');
   },
 };
 
@@ -51,6 +59,7 @@ function ctxWith(runner: CommandRunner, overrides: Partial<SetupContext> = {}): 
     proxyPort: 8080,
     runner,
     certPairingServer: unusedCertPairingServer,
+    devicePicker: unusedDevicePicker,
     hostPlatform: 'darwin',
     explicitTarget: false,
     ...overrides,

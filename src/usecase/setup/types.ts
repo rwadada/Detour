@@ -1,5 +1,6 @@
 import type { CertPairingServer } from '../ports/certPairingServer';
 import type { CommandRunner } from '../ports/commandRunner';
+import type { DevicePicker } from '../ports/devicePicker';
 
 /** Which of `detour setup`/`doctor`/`cleanup` is running — lives here (rather than only in `orchestrator.ts`, which is its main consumer) so `manualSteps.ts` and per-target modules like `ios.ts` can depend on it too without an import cycle back through `orchestrator.ts`. */
 export type SetupMode = 'setup' | 'doctor' | 'cleanup';
@@ -16,6 +17,8 @@ export interface SetupContext {
   hostPlatform: NodeJS.Platform;
   /** Only `android.ts`'s no-`adb` Wi-Fi/QR pairing fallback uses this — injected here anyway (rather than as its own separate parameter) to keep every per-target function's signature the same. */
   certPairingServer: CertPairingServer;
+  /** Only `android.ts`'s `requireOneDevice` uses this, when more than one `adb` device is connected — injected here anyway for the same reason as `certPairingServer` above. */
+  devicePicker: DevicePicker;
   /** True only for `detour <mode> --target <one target>` — false for the blanket "every target" sweep. Gates `android.ts`'s QR pairing fallback, which blocks waiting for a phone to scan a code: fine when the user explicitly asked to set up Android, surprising as a multi-minute hang buried inside a plain `detour setup`. */
   explicitTarget: boolean;
   /**

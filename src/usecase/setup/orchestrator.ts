@@ -3,6 +3,7 @@ import { SETUP_TARGETS } from '../../domain/setup/targets';
 import type { SetupTarget } from '../../domain/setup/targets';
 import type { CertPairingServer } from '../ports/certPairingServer';
 import type { CommandRunner } from '../ports/commandRunner';
+import type { DevicePicker } from '../ports/devicePicker';
 import { runAndroidCleanup, runAndroidDoctor, runAndroidSetup } from './android';
 import { runIosCleanup, runIosDoctor, runIosSetup } from './ios';
 import { runLinuxCleanup, runLinuxDoctor, runLinuxSetup } from './linux';
@@ -20,6 +21,7 @@ export interface OrchestratorInputs {
   proxyPort: number;
   runner: CommandRunner;
   certPairingServer: CertPairingServer;
+  devicePicker: DevicePicker;
   hostPlatform: NodeJS.Platform;
   detectedLanAddresses: string[];
   /** Whether this run targets exactly one explicit `--target` — see `SetupContext.explicitTarget`'s doc comment. `cli.ts` sets this from `options.target !== undefined`, the same condition that decides whether `runTargets` gets a one-element `targets` array or `undefined`. */
@@ -132,6 +134,7 @@ export async function runForTarget(
     proxyPort: inputs.proxyPort,
     runner: inputs.runner,
     certPairingServer: inputs.certPairingServer,
+    devicePicker: inputs.devicePicker,
     hostPlatform: inputs.hostPlatform,
     explicitTarget: inputs.explicitTarget,
     onProgress: inputs.onProgress,

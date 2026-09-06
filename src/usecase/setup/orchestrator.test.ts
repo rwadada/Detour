@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CertPairingServer } from '../ports/certPairingServer';
 import type { CommandRunner } from '../ports/commandRunner';
+import type { DevicePicker } from '../ports/devicePicker';
 import { runForTarget, runTargets } from './orchestrator';
 
 const noopRunner: CommandRunner = {
@@ -16,12 +17,20 @@ const unusedCertPairingServer: CertPairingServer = {
   },
 };
 
+/** No test in this file exercises android's multi-device picker (see android.test.ts for that) — a throwing stub makes any accidental use loud. */
+const unusedDevicePicker: DevicePicker = {
+  async pick() {
+    throw new Error('devicePicker.pick() should not be called here');
+  },
+};
+
 function inputsWith(overrides: Partial<Parameters<typeof runForTarget>[2]> = {}) {
   return {
     certPath: '/ca.pem',
     proxyPort: 8080,
     runner: noopRunner,
     certPairingServer: unusedCertPairingServer,
+    devicePicker: unusedDevicePicker,
     hostPlatform: 'darwin' as NodeJS.Platform,
     detectedLanAddresses: ['203.0.113.5'],
     explicitTarget: false,
