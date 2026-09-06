@@ -144,6 +144,15 @@ export async function startDashboardServer(
   // than a plain property on the socket so nothing here needs to remember to
   // clean up on close — an unreachable socket just falls out of it.
   const authenticatedSockets = new WeakSet<WebSocket>();
+  // Sockets with a `login` currently awaiting `verifyDashboardPassword` —
+  // guards against two `login` frames racing each other: both would pass
+  // the `!authenticatedSockets.has(socket)` check below before either
+  // resolves, and depending on which `await` settles second, that one could
+  // send `authFailed` after the socket was already authenticated by the
+  // first, or duplicate the initial snapshot. A `login` that arrives while
+  // one's already in flight for that socket is dropped rather than queued —
+  // a real client only ever has one outstanding attempt at a time.
+  const loginInFlight = new WeakSet<WebSocket>();
   // Read fresh on every check (connect, login attempt, `setDashboardPassword`)
   // rather than cached once at startup — same "no other writer to stay in
   // sync with, so just read the file" reasoning as `userConfigMessage`
@@ -357,16 +366,7 @@ export async function startDashboardServer(
           // malicious device on the network that skipped straight to
           // `setRules`/`replay`/etc. without ever proving it knows the
           // password gets silently ignored, same as a malformed frame.
-          if (message.type === 'login') {
-            const hash = currentPasswordHash();
-            if (!hash || (await verifyDashboardPassword(message.password, hash))) {
-              authenticatedSockets.add(socket);
-              sendInitialPayload(socket);
-            } else {
-              const authFailedMessage: DashboardServerMessage = { type: 'authFailed' };
-              socket.send(JSON.stringify(authFailedMessage));
-            }
-          }
+          if (message.type === 'login') await handleLoginMessage(socket, message);
           return;
         }
 
@@ -419,6 +419,33 @@ export async function startDashboardServer(
       }
     });
   });
+
+  /**
+   * Answers a `login` attempt from a not-yet-authenticated socket — pulled
+   * out of the `socket.on('message', ...)` handler both for its own sake
+   * (that handler was getting long) and to keep `loginInFlight`'s
+   * add/try/finally/delete dance visually separate from the message
+   * dispatch it's guarding.
+   */
+  async function handleLoginMessage(
+    socket: WebSocket,
+    message: Extract<DashboardClientMessage, { type: 'login' }>,
+  ): Promise<void> {
+    if (loginInFlight.has(socket)) return;
+    loginInFlight.add(socket);
+    try {
+      const hash = currentPasswordHash();
+      if (!hash || (await verifyDashboardPassword(message.password, hash))) {
+        authenticatedSockets.add(socket);
+        sendInitialPayload(socket);
+      } else {
+        const authFailedMessage: DashboardServerMessage = { type: 'authFailed' };
+        socket.send(JSON.stringify(authFailedMessage));
+      }
+    } finally {
+      loginInFlight.delete(socket);
+    }
+  }
 
   function handleRulesMessage(message: DashboardClientMessage): void {
     if (message.type === 'setRules') {

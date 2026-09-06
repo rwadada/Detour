@@ -185,6 +185,36 @@ describe('startDashboardServer — dashboard password (issue #66)', () => {
     await expectNoMessage(socket, (m) => m.type === 'backlog');
   });
 
+  // Regression coverage for a review-caught race: `verifyDashboardPassword`
+  // is async (see its own doc comment on why), so two `login` frames sent
+  // back-to-back — before the first one's `await` has resolved — could
+  // otherwise both pass the "not authenticated yet" check and race each
+  // other. Depending on resolution order, a later wrong-password attempt
+  // could send `authFailed` after the socket was already authenticated by
+  // the first (correct) one, or two correct attempts could duplicate the
+  // initial snapshot.
+  it('ignores a second login frame that arrives while the first is still being verified', async () => {
+    handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);
+    const setup = connect();
+    await waitForMessage(setup, (m) => m.type === 'userConfig');
+    setup.send(JSON.stringify({ type: 'setDashboardPassword', password: 'hunter2' }));
+    await waitForMessage(setup, (m) => m.type === 'userConfig' && m.state.dashboardPasswordSet === true);
+
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'authRequired');
+    // Sent synchronously, one after the other — both land before either's
+    // `verifyDashboardPassword` (real scrypt work) has a chance to resolve.
+    socket.send(JSON.stringify({ type: 'login', password: 'hunter2' }));
+    // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a deliberately-wrong test fixture, not a real credential.
+    socket.send(JSON.stringify({ type: 'login', password: 'wrong-guess' }));
+
+    const backlog = await waitForMessage(socket, (m) => m.type === 'backlog');
+    expect(backlog.type).toBe('backlog');
+    // The second (wrong) attempt must never surface — it was dropped while
+    // the first was still in flight, not processed and rejected afterwards.
+    await expectNoMessage(socket, (m) => m.type === 'authFailed');
+  });
+
   it('ignores every message other than login from an unauthenticated socket', async () => {
     fs.writeFileSync(configPath, JSON.stringify({ dashboardPasswordHash: 'deadbeef:cafe' }));
     handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);
