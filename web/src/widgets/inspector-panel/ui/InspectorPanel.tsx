@@ -4,8 +4,8 @@ import { MethodBadge, StatusBadge, useExchangeStore } from '@/entities/exchange'
 import { BreakpointEditor, useBreakpointResumeStore } from '@/features/breakpoint-resume';
 import { CopyAsCurlButton } from '@/features/copy-as-curl';
 import { ReplayButton } from '@/features/replay';
-import { cn, formatBytes, formatDuration, headerRows, parseQueryParams } from '@/shared/lib/utils';
-import { Button, Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui';
+import { cn, formatBytes, formatDuration, headerRows, headerRowsToText, parseQueryParams } from '@/shared/lib/utils';
+import { Button, CopyIconButton, Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui';
 
 // CodeMirror (~500KB) is only needed once a user actually opens the Body
 // tab — code-splitting it keeps the initial bundle (and first paint) small,
@@ -158,7 +158,16 @@ function BodyTab(props: {
 function HeaderSection({ title, rows }: { title: string; rows: [string, string][] }) {
   return (
     <div className="mb-4">
-      <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">{title}</h3>
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">{title}</h3>
+        {rows.length > 0 && (
+          <CopyIconButton
+            getText={() => headerRowsToText(rows)}
+            title={`Copy ${title.toLowerCase()}`}
+            className="h-5 w-5"
+          />
+        )}
+      </div>
       {rows.length === 0 ? <p className="text-xs text-[var(--muted)]">None.</p> : <KeyValueTable rows={rows} />}
     </div>
   );

@@ -2,6 +2,7 @@ import { json } from '@codemirror/lang-json';
 import CodeMirror, { EditorView } from '@uiw/react-codemirror';
 import { useTheme } from '@/shared/lib/theme';
 import { capturedByteLength, decodeCapturedBody, formatBytes, tryPrettyJson } from '@/shared/lib/utils';
+import { CopyIconButton } from '@/shared/ui';
 
 const readOnlyView = EditorView.editable.of(false);
 
@@ -25,11 +26,13 @@ export function BodyViewer({ body, bodySize, truncated }: { body?: string; bodyS
 
   return (
     <div className="flex h-full flex-col">
-      {truncated && (
-        <div className="border-b border-[var(--border)] bg-[var(--row-hover)] px-3 py-1 text-xs text-[var(--muted)]">
-          Truncated — showing the first {formatBytes(capturedByteLength(body))} of {formatBytes(bodySize)}.
-        </div>
-      )}
+      <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] px-3 py-1 text-xs text-[var(--muted)]">
+        <span>
+          {truncated &&
+            `Truncated — showing the first ${formatBytes(capturedByteLength(body))} of ${formatBytes(bodySize)}.`}
+        </span>
+        <CopyIconButton getText={() => text} title="Copy body" className="h-5 w-5 shrink-0" />
+      </div>
       <div className="flex-1 overflow-auto">
         <CodeMirror
           value={text}
