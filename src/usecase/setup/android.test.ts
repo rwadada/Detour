@@ -167,6 +167,20 @@ describe('runAndroidSetup', () => {
     },
   );
 
+  it.each(['2001:db8::1', '10.0.0.2:8080'])(
+    'refuses a --host value containing a colon (%s) — an unbracketed IPv6 literal or an accidental host:port pair',
+    async (badHost) => {
+      const calls: string[][] = [];
+      const runner = fakeRunner((command, args) => {
+        calls.push([command, ...args]);
+        return { stdout: ONE_DEVICE, stderr: '' };
+      });
+      const outcome = await runAndroidSetup(ctxWith(runner, { proxyHost: badHost }));
+      expect(outcome.steps).toEqual([{ status: 'failed', message: expect.stringContaining(badHost) }]);
+      expect(calls).toEqual([]);
+    },
+  );
+
   it('fails cleanly with adb missing entirely', async () => {
     const runner: CommandRunner = {
       async run() {
@@ -202,6 +216,19 @@ describe('runAndroidDoctor', () => {
       });
       const outcome = await runAndroidDoctor(ctxWith(runner, { proxyHost: loopbackHost }));
       expect(outcome.steps).toEqual([{ status: 'failed', message: expect.stringContaining(loopbackHost) }]);
+    },
+  );
+
+  it.each(['2001:db8::1', '10.0.0.2:8080'])(
+    'reports failed for a --host value containing a colon (%s), never comparing it against the device proxy',
+    async (badHost) => {
+      const runner = fakeRunner((command, args) => {
+        if (args[0] === 'devices') return { stdout: ONE_DEVICE, stderr: '' };
+        if (args.includes('get')) return { stdout: `${badHost}:8080\n`, stderr: '' };
+        return { stdout: '', stderr: '' };
+      });
+      const outcome = await runAndroidDoctor(ctxWith(runner, { proxyHost: badHost }));
+      expect(outcome.steps).toEqual([{ status: 'failed', message: expect.stringContaining(badHost) }]);
     },
   );
 

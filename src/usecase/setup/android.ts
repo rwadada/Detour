@@ -7,16 +7,39 @@ const DEVICE_CERT_PATH = '/sdcard/Download/detour-ca.crt';
 /** How long the no-`adb` Wi-Fi/QR fallback (see `wifiPairingFallback`) keeps its one-shot HTTP server open waiting for a phone to scan the code and download the cert, before giving up. */
 const QR_PAIRING_TIMEOUT_MS = 3 * 60_000;
 
-/** `resolveProxyHost` lets an explicit `--host` override win even for a device target (deliberately, for when auto-detection picks the wrong NIC) — but a loopback address is never valid there: a phone can't resolve "this machine" through it, only itself. `loopbackHostError` checks against this in every path that either configures or verifies the device's actual proxy value (both `runAndroidSetup`'s adb push and its Wi-Fi/QR fallback, and `runAndroidDoctor`) so a mistaken `--host localhost` fails loudly instead of silently configuring — or reporting as correct — a proxy value the phone can never actually reach. */
+/** `resolveProxyHost` lets an explicit `--host` override win even for a device target (deliberately, for when auto-detection picks the wrong NIC) — but a loopback address is never valid there: a phone can't resolve "this machine" through it, only itself. `invalidProxyHostError` checks against this (and the other ways a hand-typed `--host` can be unusable — see its own doc comment) in every path that either configures or verifies the device's actual proxy value (both `runAndroidSetup`'s adb push and its Wi-Fi/QR fallback, and `runAndroidDoctor`) so a bad `--host` fails loudly instead of silently configuring — or reporting as correct — a proxy value the phone can never actually reach. */
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 
-/** A `'failed'` step when `ctx.proxyHost` is a loopback address, `undefined` otherwise — see `LOOPBACK_HOSTS`'s doc comment. */
-function loopbackHostError(ctx: SetupContext): SetupStep | undefined {
-  if (!LOOPBACK_HOSTS.has(ctx.proxyHost)) return undefined;
-  return {
-    status: 'failed',
-    message: `--host ${ctx.proxyHost} won't work for a device proxy — a phone can't reach this machine at a loopback address. Pass a real LAN IP with --host, or omit --host to auto-detect one.`,
-  };
+/**
+ * A `'failed'` step when `ctx.proxyHost` can't work as a device proxy
+ * value, `undefined` otherwise:
+ *
+ * - a loopback address (`LOOPBACK_HOSTS`) — a phone can't reach "this
+ *   machine" through one, only itself;
+ * - anything containing a `:` — a bare IPv6 literal (`fe80::1`) needs
+ *   brackets to appear in a URL (`http://[fe80::1]:port/...`) or Android's
+ *   `http_proxy` value (`host:port`) at all, and this machine's LAN
+ *   detection (`infra/network/lanAddresses.ts`) only ever returns IPv4
+ *   addresses anyway, so an unbracketed colon here is either a typo'd
+ *   `--host <ip>:<port>` (a host was expected, not a host:port pair) or an
+ *   IPv6 address this code doesn't attempt to bracket correctly — either
+ *   way, safer to reject it with a clear reason than build a URL/setting
+ *   that's silently wrong.
+ */
+function invalidProxyHostError(ctx: SetupContext): SetupStep | undefined {
+  if (LOOPBACK_HOSTS.has(ctx.proxyHost)) {
+    return {
+      status: 'failed',
+      message: `--host ${ctx.proxyHost} won't work for a device proxy — a phone can't reach this machine at a loopback address. Pass a real LAN IP with --host, or omit --host to auto-detect one.`,
+    };
+  }
+  if (ctx.proxyHost.includes(':')) {
+    return {
+      status: 'failed',
+      message: `--host ${ctx.proxyHost} isn't a plain IPv4 address or hostname — pass just the address, with no port and no IPv6 colons (e.g. --host 192.168.1.5), or omit --host to auto-detect one.`,
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -121,8 +144,8 @@ async function wifiPairingFallback(ctx: SetupContext): Promise<SetupStep[]> {
 }
 
 export async function runAndroidSetup(ctx: SetupContext): Promise<TargetOutcome> {
-  const loopbackError = loopbackHostError(ctx);
-  if (loopbackError) return { steps: [loopbackError] };
+  const hostError = invalidProxyHostError(ctx);
+  if (hostError) return { steps: [hostError] };
 
   let serial: string;
   try {
@@ -159,8 +182,8 @@ export async function runAndroidSetup(ctx: SetupContext): Promise<TargetOutcome>
 }
 
 export async function runAndroidDoctor(ctx: SetupContext): Promise<TargetOutcome> {
-  const loopbackError = loopbackHostError(ctx);
-  if (loopbackError) return { steps: [loopbackError] };
+  const hostError = invalidProxyHostError(ctx);
+  if (hostError) return { steps: [hostError] };
 
   const steps: SetupStep[] = [];
 
