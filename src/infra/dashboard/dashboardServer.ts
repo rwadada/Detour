@@ -316,7 +316,15 @@ export async function startDashboardServer(
     const lanInfoMessage: DashboardServerMessage = {
       type: 'lanInfo',
       addresses: lanAddrs,
-      dashboardOnLan: host !== 'localhost',
+      // Specifically `=== '0.0.0.0'`, not merely `!== 'localhost'`: `host`
+      // is a plain `string` (see `DashboardServerOptions.host`), so it's
+      // never guaranteed to be one of only those two values — a caller
+      // could hand this a single bare interface address (`192.168.1.5`,
+      // say) to bind just that one NIC. `!== 'localhost'` would call that
+      // "on every interface" too, sending clients a Dashboard URL for
+      // every *other* LAN address this machine has, none of which that
+      // bind would actually accept a connection on.
+      dashboardOnLan: host === '0.0.0.0',
     };
     socket.send(JSON.stringify(lanInfoMessage));
     const backlogMessage: DashboardServerMessage = { type: 'backlog', items: backlog.toArray() };
