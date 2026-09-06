@@ -14,7 +14,7 @@ import { copyToClipboard } from './copyToClipboard';
  */
 export function useCopyToClipboard(text: string) {
   const [copied, setCopied] = useState(false);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => () => clearTimeout(timeoutRef.current), []);
 
