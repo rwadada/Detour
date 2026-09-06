@@ -78,12 +78,18 @@ export interface DashboardServerOptions {
   userConfigPath?: string;
   /**
    * Every non-internal IPv4 address this machine has, broadcast to clients
-   * as `lanInfo` (issue #66's sidebar LAN Access section) — pass `[]` (the
-   * default) or omit when `host` is `localhost`-only. Computed by the
-   * caller (`cli.ts`, via `lanAddresses()`) rather than here so this module
-   * doesn't need its own opinion on which `host` values count as "LAN",
-   * mirroring how `proxyPort` above is also the caller's own value handed
-   * through rather than derived.
+   * as `lanInfo` (issue #66's sidebar LAN Access section) — the caller
+   * (`cli.ts`) passes this regardless of this server's own `host`, since
+   * the proxy it's fronting always binds to every interface either way
+   * (see cli.ts's `PROXY_HOST`) and its LAN address(es) are worth showing
+   * on that basis alone. Pass `[]` (the default) or omit only when this
+   * machine genuinely has none to offer. Computed by the caller rather
+   * than here so this module doesn't need its own opinion on which
+   * addresses count as "LAN", mirroring how `proxyPort` above is also the
+   * caller's own value handed through rather than derived. Contrast
+   * `sendInitialPayload`'s own `dashboardOnLan`, which *is* derived from
+   * this server's own `host` — that one bit genuinely is this module's to
+   * know.
    */
   lanAddresses?: string[];
 }
@@ -307,7 +313,11 @@ export async function startDashboardServer(
       const proxyInfoMessage: DashboardServerMessage = { type: 'proxyInfo', proxyPort: options.proxyPort };
       socket.send(JSON.stringify(proxyInfoMessage));
     }
-    const lanInfoMessage: DashboardServerMessage = { type: 'lanInfo', addresses: lanAddrs };
+    const lanInfoMessage: DashboardServerMessage = {
+      type: 'lanInfo',
+      addresses: lanAddrs,
+      dashboardOnLan: host !== 'localhost',
+    };
     socket.send(JSON.stringify(lanInfoMessage));
     const backlogMessage: DashboardServerMessage = { type: 'backlog', items: backlog.toArray() };
     socket.send(JSON.stringify(backlogMessage));

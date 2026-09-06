@@ -244,7 +244,9 @@ function StartupDefaultsSection() {
           className="rounded-md border border-[var(--status-5xx)] bg-[var(--status-5xx)]/10 px-2.5 py-2 text-xs text-[var(--status-5xx)]"
         >
           ⚠ LAN access has no login of any kind — anyone on your network could reach the dashboard, view decrypted HTTPS
-          traffic through it, edit rules, or use the proxy. Only turn this on if you trust every device on your network.
+          traffic through it, or edit rules. (The proxy itself is always reachable from your network regardless of this
+          setting — a proxy nothing else on the network can reach isn't much of a proxy.) Only turn this on if you trust
+          every device on your network.
         </p>
         {toggle('lanAccess', 'Allow LAN access', true)}
       </div>

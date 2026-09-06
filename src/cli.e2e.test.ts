@@ -2211,12 +2211,14 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       }
     });
 
-    it('--lan on `start` warns that it bound to every network interface, and prints a reachable address', async () => {
+    it('the proxy is reachable on the network with no --lan at all — it always binds to every interface, --headless included', async () => {
       const port = await findFreePort();
       let cli: Awaited<ReturnType<typeof startDetourCliReady>> | undefined;
       try {
-        cli = await startDetourCliReady(['--port', String(port), '--headless', '--lan']);
-        expect(cli.stdout()).toContain('Bound to every network interface (0.0.0.0)');
+        cli = await startDetourCliReady(['--port', String(port), '--headless']);
+        // No dashboard at all here (--headless) and no --lan/lanAccess either —
+        // the proxy's own LAN reachability doesn't depend on either.
+        expect(cli.stdout()).not.toContain('Dashboard bound to every network interface');
         // Only asserted when this machine actually has a non-internal interface (true for
         // every CI runner and real dev machine) — `localhost` alone would be useless to
         // whoever's supposed to reach this from elsewhere on the network.
@@ -2233,22 +2235,40 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       }
     }, 20_000);
 
-    it('--no-lan overrides a config-enabled lanAccess back to localhost-only for one run', async () => {
+    it('--lan on `start` additionally warns that the *dashboard* bound to every network interface, and lists a reachable Dashboard URL alongside the Proxy one', async () => {
+      const port = await findFreePort();
+      let cli: Awaited<ReturnType<typeof startDetourCliReady>> | undefined;
+      try {
+        cli = await startDetourCliReady(['--port', String(port), '--dashboard-port', '0', '--lan']);
+        expect(cli.stdout()).toContain('Dashboard bound to every network interface');
+        if (
+          Object.values(os.networkInterfaces()).some((iface) => iface?.some((i) => i.family === 'IPv4' && !i.internal))
+        ) {
+          expect(cli.stdout()).toMatch(/Reachable on your network at:\n {2}Proxy\s+→ http:\/\/\d+\.\d+\.\d+\.\d+:\d+\n {2}Dashboard → http:\/\/\d+\.\d+\.\d+\.\d+:\d+/);
+        }
+      } finally {
+        await cli?.kill();
+      }
+    }, 20_000);
+
+    it('--no-lan overrides a config-enabled lanAccess back to localhost-only for one run — for the dashboard only, never the proxy', async () => {
       const { home, env } = withTempHome();
       const port = await findFreePort();
       let cli: Awaited<ReturnType<typeof startDetourCliReady>> | undefined;
       try {
         await runTsx(['src/cli.ts', 'config', '--lan', 'on'], { cwd: REPO_ROOT, reject: false, env });
 
-        cli = await startDetourCliReady(['--port', String(port), '--headless', '--no-lan'], env);
-        expect(cli.stdout()).not.toContain('Bound to every network interface');
+        cli = await startDetourCliReady(['--port', String(port), '--dashboard-port', '0', '--no-lan'], env);
+        expect(cli.stdout()).not.toContain('Dashboard bound to every network interface');
+        // The proxy line is still there regardless — --no-lan never touches it.
+        expect(cli.stdout()).toContain('Proxy     →');
       } finally {
         await cli?.kill();
         fs.rmSync(home, { recursive: true, force: true });
       }
     }, 20_000);
 
-    it('makes `detour start` bind 0.0.0.0 with no --lan flag once lanAccess is on', async () => {
+    it('makes the dashboard bind 0.0.0.0 with no --lan flag once lanAccess is on', async () => {
       const { home, env } = withTempHome();
       const port = await findFreePort();
       let cli: Awaited<ReturnType<typeof startDetourCliReady>> | undefined;
@@ -2259,8 +2279,8 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
         // (`options.lan ?? config.lanAccess`) most likely to regress silently,
         // since commander's own defaulting could just as easily turn "flag
         // omitted" into `false` instead of `undefined`.
-        cli = await startDetourCliReady(['--port', String(port), '--headless'], env);
-        expect(cli.stdout()).toContain('Bound to every network interface (0.0.0.0)');
+        cli = await startDetourCliReady(['--port', String(port), '--dashboard-port', '0'], env);
+        expect(cli.stdout()).toContain('Dashboard bound to every network interface');
       } finally {
         await cli?.kill();
         fs.rmSync(home, { recursive: true, force: true });

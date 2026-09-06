@@ -34,7 +34,21 @@ describe('createProxyInfoStore', () => {
     const store = createProxyInfoStore(fake.connection);
     // eslint-disable-next-line sonarjs/no-hardcoded-ip -- a private-range test fixture address, not a real one.
     const fakeAddresses = ['192.168.1.5'];
-    fake.emit({ type: 'lanInfo', addresses: fakeAddresses });
+    fake.emit({ type: 'lanInfo', addresses: fakeAddresses, dashboardOnLan: false });
     expect(store.getState().lanAddresses).toEqual(fakeAddresses);
+  });
+
+  it('starts with dashboardOnLan false before any message arrives', () => {
+    const fake = fakeDashboardConnection();
+    const store = createProxyInfoStore(fake.connection);
+    expect(store.getState().dashboardOnLan).toBe(false);
+  });
+
+  it("sets dashboardOnLan from a lanInfo message's own field, independent of addresses", () => {
+    const fake = fakeDashboardConnection();
+    const store = createProxyInfoStore(fake.connection);
+    // eslint-disable-next-line sonarjs/no-hardcoded-ip -- a private-range test fixture address, not a real one.
+    fake.emit({ type: 'lanInfo', addresses: ['192.168.1.5'], dashboardOnLan: true });
+    expect(store.getState().dashboardOnLan).toBe(true);
   });
 });
