@@ -211,13 +211,28 @@ async function runSetupCommand(mode: SetupMode, options: SetupCommandOptions): P
     const port = parsePort(options.port, '--port');
 
     let certPath: string;
+    let certMissing = false;
     if (mode === 'setup') {
       certPath = await ensureCaCert();
       console.log(`✔ CA certificate ready at ${certPath}`);
     } else {
       certPath = caCertPath();
-      if (!fs.existsSync(certPath)) {
-        console.log(`ℹ No CA certificate generated yet (run \`detour setup\` first) — it would live at ${certPath}.`);
+      certMissing = !fs.existsSync(certPath);
+      if (certMissing) {
+        // `doctor` reports readiness and exits non-zero on anything off —
+        // no cert generated at all means nothing downstream (trust,
+        // proxy) can possibly be configured yet, even for a target whose
+        // own doctor check doesn't verify cert trust directly (e.g.
+        // linux's, which just notes it can't check that automatically),
+        // so this has to fail loudly rather than the informational-only
+        // note it used to be. `cleanup` doesn't carry the same "report
+        // readiness" promise — its job is reverting proxy config
+        // regardless of cert state — so it keeps the plain ℹ note.
+        console.log(
+          mode === 'doctor'
+            ? `✖ No CA certificate generated yet (run \`detour setup\` first) — it would live at ${certPath}.`
+            : `ℹ No CA certificate generated yet (run \`detour setup\` first) — it would live at ${certPath}.`,
+        );
       }
     }
 
@@ -233,7 +248,7 @@ async function runSetupCommand(mode: SetupMode, options: SetupCommandOptions): P
       onProgress: printStep,
     });
     await printTargetReports(reports);
-    if (hasFailedStep(reports)) process.exitCode = 1;
+    if (hasFailedStep(reports) || (mode === 'doctor' && certMissing)) process.exitCode = 1;
   } catch (err) {
     console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
     process.exitCode = 1;

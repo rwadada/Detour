@@ -2314,4 +2314,46 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       expect(fs.readFileSync(dest, 'utf8')).toContain('-----BEGIN CERTIFICATE-----');
     });
   });
+
+  describe('detour doctor / cleanup and CA cert existence (issue #65)', () => {
+    /** Isolated `~/.detour` with nothing in it yet — the "first run ever, `detour setup` hasn't happened" state these tests exercise. */
+    function withTempHome(): { home: string; env: NodeJS.ProcessEnv } {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-setup-cert-e2e-'));
+      return { home, env: { HOME: home, USERPROFILE: home } };
+    }
+
+    it('doctor exits non-zero when no CA certificate has been generated yet, even for a target whose own check never verifies cert trust', async () => {
+      const { home, env } = withTempHome();
+      try {
+        // windows: manual-only, so this isolates the cert-existence check
+        // itself from any of the automated targets' own pass/fail logic.
+        const result = await runTsx(['src/cli.ts', 'doctor', '--target', 'windows'], {
+          cwd: REPO_ROOT,
+          reject: false,
+          env,
+          timeout: 15_000,
+        });
+        expect(result.exitCode).not.toBe(0);
+        expect(result.stdout).toContain('No CA certificate generated yet');
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it('cleanup does not fail just because no CA certificate has been generated yet (it only reverts proxy config)', async () => {
+      const { home, env } = withTempHome();
+      try {
+        const result = await runTsx(['src/cli.ts', 'cleanup', '--target', 'windows'], {
+          cwd: REPO_ROOT,
+          reject: false,
+          env,
+          timeout: 15_000,
+        });
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain('No CA certificate generated yet');
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+  });
 });

@@ -25,8 +25,13 @@ export interface ManualInstructions {
 /**
  * Manual, human-followed setup steps for `target` — the `detour setup`
  * (no `--target`) "announce" output, and what a `--target` run falls back
- * to for targets `TARGET_AUTOMATION` marks as not automated (ios, windows)
- * or where the host platform doesn't match (issue #65).
+ * to for: a target `TARGET_AUTOMATION` marks as not automated at all
+ * (currently just windows); an automated target on the wrong host platform
+ * (mac/linux run from somewhere else); and, even for a fully-automated
+ * target, whatever part of it automation still can't reach — currently
+ * android's adb-less devices and ios's physical (non-Simulator) devices,
+ * both of which reuse these same instructions for that half of their own
+ * output (issue #65).
  */
 export function manualSetupInstructions(target: SetupTarget, ctx: InstructionContext): ManualInstructions {
   switch (target) {
