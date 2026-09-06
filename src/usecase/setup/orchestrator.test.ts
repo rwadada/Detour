@@ -48,7 +48,7 @@ describe('runForTarget', () => {
     });
   });
 
-  it('skips an automated target on the wrong host and still offers manual steps (with --target so the announce-only guard below doesn\'t shadow it)', async () => {
+  it("skips an automated target on the wrong host and still offers manual steps (with --target so the announce-only guard below doesn't shadow it)", async () => {
     const outcome = await runForTarget('setup', 'mac', inputsWith({ hostPlatform: 'linux', explicitTarget: true }));
     expect(outcome.steps[0]!.status).toBe('skipped');
     expect(outcome.steps[0]!.message).toContain('linux');

@@ -83,6 +83,26 @@ describe('runAndroidSetup', () => {
     ).toBe(true);
   });
 
+  it('still succeeds when the best-effort MediaStore re-scan broadcast itself throws (push and Security settings still ran)', async () => {
+    const calls: string[][] = [];
+    const runner = fakeRunner((command, args) => {
+      calls.push([command, ...args]);
+      if (command === 'adb' && args[0] === 'devices') return { stdout: ONE_DEVICE, stderr: '' };
+      if (args.includes('MEDIA_SCANNER_SCAN_FILE')) throw new Error('adb: device offline');
+      return { stdout: '', stderr: '' };
+    });
+
+    const outcome = await runAndroidSetup(ctxWith(runner));
+
+    // Same result as the happy-path test above — the broadcast failure
+    // never surfaces as a `failed` step.
+    expect(outcome.steps.map((s) => s.status)).toEqual(['manual', 'done']);
+    // ...and the push/Security-settings calls after the broadcast still ran.
+    expect(
+      calls.some((c) => c.join(' ') === 'adb -s ABCD1234 shell am start -a android.settings.SECURITY_SETTINGS'),
+    ).toBe(true);
+  });
+
   it('skips (not fails) with no device connected during a --target-less sweep, pointing at --target android', async () => {
     const runner = fakeRunner(() => ({ stdout: 'List of devices attached\n', stderr: '' }));
     const outcome = await runAndroidSetup(ctxWith(runner, { explicitTarget: false }));

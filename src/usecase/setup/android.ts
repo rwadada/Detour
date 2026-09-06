@@ -10,7 +10,10 @@ import type { SetupContext, SetupStep, TargetOutcome } from './types';
  * PDFs, app-generated logs, ...) — on a phone with any real usage history
  * that's a wall of unrelated files to hunt `detour-ca.crt` out of, where a
  * lone `Detour` folder is not. `.crt` (not `.pem`) since some Android file
- * pickers filter certificate imports by that extension.
+ * pickers filter certificate imports by that extension. No separate `adb
+ * shell mkdir -p` for this new subfolder: verified firsthand that `adb
+ * push` creates any missing intermediate directories itself, same as `cp
+ * --parents` would.
  */
 const DEVICE_CERT_DIR = '/sdcard/Download/Detour';
 const DEVICE_CERT_PATH = `${DEVICE_CERT_DIR}/detour-ca.crt`;
@@ -180,20 +183,28 @@ export async function runAndroidSetup(ctx: SetupContext): Promise<TargetOutcome>
     // `adb push` into a brand-new subfolder can outrun MediaStore's index —
     // the cert file picker below has been seen reporting the `Detour`
     // folder empty for a few seconds after the push with no nudge, then
-    // populating instantly once this fires. Best-effort: `am broadcast`
-    // reports success even with no receiver listening, so this never turns
-    // an otherwise-fine push into a `failed` step.
-    await ctx.runner.run('adb', [
-      '-s',
-      serial,
-      'shell',
-      'am',
-      'broadcast',
-      '-a',
-      'android.intent.action.MEDIA_SCANNER_SCAN_FILE',
-      '-d',
-      `file://${DEVICE_CERT_PATH}`,
-    ]);
+    // populating instantly once this fires. Genuinely best-effort: wrapped
+    // in its own try/catch (unlike the push and `am start` below) so a
+    // failure here — the adb invocation itself throwing, not just `am
+    // broadcast` reporting no receiver listening, which it treats as
+    // success either way — can't turn an otherwise-fine push into a
+    // `failed` step. Worst case, the picker needs a few extra seconds to
+    // catch up on its own.
+    try {
+      await ctx.runner.run('adb', [
+        '-s',
+        serial,
+        'shell',
+        'am',
+        'broadcast',
+        '-a',
+        'android.intent.action.MEDIA_SCANNER_SCAN_FILE',
+        '-d',
+        `file://${DEVICE_CERT_PATH}`,
+      ]);
+    } catch {
+      // Best-effort — see comment above.
+    }
     await ctx.runner.run('adb', ['-s', serial, 'shell', 'am', 'start', '-a', 'android.settings.SECURITY_SETTINGS']);
     steps.push({
       status: 'manual',
