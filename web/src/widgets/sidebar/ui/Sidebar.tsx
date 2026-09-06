@@ -106,7 +106,7 @@ function ProxyUrlSection() {
   // rather than skipping `useCopyToClipboard` outright, so the early return
   // below (still needed to render nothing) comes after every hook call.
   const url = proxyPort === null ? '' : `http://${window.location.hostname}:${proxyPort}`;
-  const { copied, copy } = useCopyToClipboard(url);
+  const { copied, copy } = useCopyToClipboard(() => url);
 
   if (proxyPort === null) return null; // pre-issue-#24 server, or the message hasn't arrived yet
 
@@ -176,8 +176,12 @@ function LanAccessSection() {
       <h2 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">LAN Access</h2>
       <p className="mb-1.5 text-[10px] text-[var(--muted)]">Reachable from other devices on this network at:</p>
       <div className="flex flex-col gap-2">
-        {lanAddresses.map((address) => (
-          <div key={address} className="flex flex-col gap-1">
+        {/* Index folded into the key, not just `address`: `lanAddresses()` deliberately
+            preserves `os.networkInterfaces()`'s own order without deduping (a machine
+            reachable at the same address twice — an alias, an unusual network config —
+            keeps every entry), so `address` alone isn't guaranteed unique here. */}
+        {lanAddresses.map((address, index) => (
+          <div key={`${address}-${index}`} className="flex flex-col gap-1">
             <CopyableUrl label="Dashboard" url={`http://${address}${dashboardPortSuffix}`} />
             {proxyPort !== null && <CopyableUrl label="Proxy" url={`http://${address}:${proxyPort}`} />}
           </div>
@@ -189,7 +193,7 @@ function LanAccessSection() {
 
 /** One copyable `label: url` row — the LAN Access list's per-address building block (`ProxyUrlSection`'s single URL button inlines the same behavior since it only ever needs one). */
 function CopyableUrl({ label, url }: { label: string; url: string }) {
-  const { copied, copy } = useCopyToClipboard(url);
+  const { copied, copy } = useCopyToClipboard(() => url);
 
   return (
     <button

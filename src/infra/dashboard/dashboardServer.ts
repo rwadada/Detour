@@ -1,6 +1,6 @@
 import http from 'node:http';
 import path from 'node:path';
-import { WebSocketServer, type WebSocket } from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 import type {
   BlockHostsState,
   CapturedExchange,
@@ -180,7 +180,7 @@ export async function startDashboardServer(
       // Skips a socket still waiting on `authRequired` — the whole point of
       // gating it is that it never sees live traffic, rule contents, or any
       // other state until it's proven it knows the password.
-      if (client.readyState === client.OPEN && authenticatedSockets.has(client)) client.send(payload);
+      if (client.readyState === WebSocket.OPEN && authenticatedSockets.has(client)) client.send(payload);
     }
   };
 
