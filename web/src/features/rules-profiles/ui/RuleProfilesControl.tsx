@@ -4,7 +4,13 @@ import { useRuleStore } from '@/entities/rule';
 import { useDismissablePopover } from '@/shared/lib/useDismissablePopover';
 import { Button, Input, PillToggle, Select } from '@/shared/ui';
 
-/** Sentinel `<option>` value that opens the create form instead of applying anything — never a real profile name (profile names come from user input, but this string is reserved regardless so a same-named profile can't collide with it). */
+/**
+ * Sentinel `<option>` value that opens the create form instead of applying
+ * anything. Deliberately leading with `_` rather than a letter/digit — the
+ * server rejects any profile name that doesn't (see `PROFILE_NAME_PATTERN`
+ * in `src/infra/fs/ruleProfileStore.ts`), so this string can never collide
+ * with a real one to begin with, not merely by convention.
+ */
 const NEW_PROFILE_OPTION = '__new_profile__';
 
 type NewProfileSource = 'sample' | 'blank' | 'active';
@@ -39,7 +45,20 @@ export function RuleProfilesControl() {
   const [newName, setNewName] = useState('');
   const [source, setSource] = useState<NewProfileSource>('sample');
   const containerRef = useRef<HTMLDivElement>(null);
-  useDismissablePopover(open, containerRef, () => setOpen(false));
+
+  // Resets the create form too, not just `open` — without this, dismissing
+  // the popover mid-create (clicking outside, or the pill again) and later
+  // reopening it would show whatever name/source was left sitting there,
+  // stale, with `creating` still `true`. A `submitCreate` firing against
+  // that stale state later would be an accidental save the user never
+  // meant to make this time around.
+  const closePopover = () => {
+    setOpen(false);
+    setCreating(false);
+    setNewName('');
+    setSource('sample');
+  };
+  useDismissablePopover(open, containerRef, closePopover);
 
   // A dirty Rules editor draft ignores the next `rules` broadcast (see its
   // sync-from-server guard) so it can't be silently discarded by someone
@@ -109,7 +128,7 @@ export function RuleProfilesControl() {
     <div className="relative" ref={containerRef}>
       <PillToggle
         active={profiles.length > 0}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => (open ? closePopover() : setOpen(true))}
         icon={<BookMarked className="h-3 w-3" />}
         title="Rule profiles — saved rulesets you can switch between"
       >
