@@ -64,4 +64,23 @@ describe('nodeCertPairingServer', () => {
     expect(response.status).toBe(404);
     expect(await session.waitForDownloadOrTimeout()).toEqual({ downloaded: false });
   });
+
+  it('rejects (rather than throwing synchronously) when certPath does not exist', async () => {
+    // `fs.readFileSync` runs before the Promise executor — without `start`
+    // itself being `async`, a missing file would throw synchronously out of
+    // this very call instead of rejecting the promise its return type
+    // promises, breaking any caller that does `const p = server.start(...)`
+    // and awaits `p` separately rather than awaiting the call directly. One
+    // single call, captured either way, so its rejection is never left
+    // unhandled regardless of which path fires.
+    let threwSynchronously = false;
+    let result: Promise<unknown> | undefined;
+    try {
+      result = nodeCertPairingServer.start({ certPath: '/no/such/file', host: '127.0.0.1', timeoutMs: 5_000 });
+    } catch {
+      threwSynchronously = true;
+    }
+    expect(threwSynchronously).toBe(false);
+    await expect(result).rejects.toThrow();
+  });
 });

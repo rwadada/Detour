@@ -16,7 +16,14 @@ const DOWNLOAD_GRACE_MS = 2_000;
  * — the same reasoning `mitm.it`/similar tools' cert-bootstrap pages use.
  */
 export const nodeCertPairingServer: CertPairingServer = {
-  start({ certPath, host, timeoutMs }: CertPairingOptions): Promise<CertPairingSession> {
+  // `async`, even though the body just returns `new Promise(...)` directly:
+  // without it, `fs.readFileSync` below (synchronous, and run before that
+  // Promise is ever constructed) would throw synchronously out of `start`
+  // itself on a missing/unreadable cert file, instead of the rejected
+  // Promise its `Promise<CertPairingSession>` return type promises every
+  // caller — `async` converts any throw in the function body into a
+  // rejection automatically, the same way it would for an `await` inside.
+  async start({ certPath, host, timeoutMs }: CertPairingOptions): Promise<CertPairingSession> {
     const cert = fs.readFileSync(certPath);
 
     return new Promise((resolveStart, rejectStart) => {
