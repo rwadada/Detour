@@ -8,7 +8,17 @@ export interface CertPairingSession {
 export interface CertPairingOptions {
   /** Path to the CA cert on this machine (`ensureCaCert()`'s result). */
   certPath: string;
-  /** LAN-reachable address to advertise in `url` — a bare IPv4/hostname, no port, no IPv6 colons (the implementation interpolates this straight into a `host:port` URL component, unbracketed), and never a loopback address, since a phone can't resolve that to this machine. Callers validate this before calling `start` (see `usecase/setup/android.ts`'s `invalidProxyHostError`, the only caller today) — this port trusts it's already been checked. */
+  /**
+   * Address to advertise in `url` — a bare IPv4/hostname, no port, no IPv6
+   * colons (the implementation interpolates this straight into a
+   * `host:port` URL component, unbracketed). Should be LAN-reachable for
+   * real device use — a phone can't resolve a loopback address to this
+   * machine — which `usecase/setup/android.ts`'s `invalidProxyHostError`
+   * validates before calling `start` (the only real caller today); this
+   * port itself doesn't enforce it, so a test exercising the server
+   * mechanics directly (`infra/proxy/nodeCertPairingServer.test.ts`) can
+   * still legitimately pass `127.0.0.1` to talk to it locally.
+   */
   host: string;
   timeoutMs: number;
 }
