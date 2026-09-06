@@ -1,3 +1,4 @@
+import type { DeviceChoice } from '../ports/devicePicker';
 import { errorMessage } from './errorMessage';
 import type { SetupContext, SetupStep, TargetOutcome } from './types';
 
@@ -85,6 +86,88 @@ async function connectedDevices(ctx: SetupContext): Promise<string[]> {
   return parseAdbDevices(stdout);
 }
 
+/**
+ * How a serial is classified for a human picking between several — no `adb`
+ * call needed, the serial's own shape already says this: `adb`'s emulators
+ * are always named `emulator-<port>`, and a Wi-Fi-paired device's serial is
+ * always its `<ip>:<port>` (what `adb connect` was given) rather than a
+ * hardware serial number.
+ */
+export function classifyDeviceKind(serial: string): string {
+  if (serial.startsWith('emulator-')) return 'emulator';
+  if (/^\d+\.\d+\.\d+\.\d+:\d+$/.test(serial)) return 'Wi-Fi (adb over network)';
+  return 'USB';
+}
+
+/**
+ * Worded around `proxyValueMatches` (three-valued, not a plain `boolean` —
+ * see `runAndroidDoctor`'s own comment on it) so `runAndroidDoctor`'s
+ * mobile-data-active step never claims more than what the proxy-value check
+ * right above it actually established: a known-correct value, a
+ * known-mismatched one, or one that couldn't even be read.
+ */
+function mobileDataActiveMessage(proxyValueMatches: boolean | undefined): string {
+  if (proxyValueMatches === true) {
+    return "This device's active network is mobile data, not Wi-Fi — Android's global proxy setting only applies to Wi-Fi traffic, so it isn't actually being used right now even though it's configured correctly above. Turn off mobile data (or otherwise make Wi-Fi the preferred network) and re-run doctor.";
+  }
+  if (proxyValueMatches === false) {
+    return "This device's active network is mobile data, not Wi-Fi — Android's global proxy setting only applies to Wi-Fi traffic, so even once the proxy value above is fixed, it still won't take effect until Wi-Fi (not mobile data) is this device's active network too.";
+  }
+  return "This device's active network is mobile data, not Wi-Fi — Android's global proxy setting only applies to Wi-Fi traffic, so it won't take effect until Wi-Fi (not mobile data) is this device's active network too, whatever the proxy value turns out to be (it couldn't be read above). Turn off mobile data (or otherwise make Wi-Fi the preferred network) and re-run doctor.";
+}
+
+/**
+ * Best-effort: whether `serial`'s currently active default network is
+ * Wi-Fi — `runAndroidSetup` writes the proxy to Android's *global*
+ * `http_proxy` setting, which only ever applies to Wi-Fi traffic; a device
+ * with mobile data as its active network (perfectly possible with both
+ * radios on at once — see `describeDeviceChoice`'s doc comment for how this
+ * was actually found) silently ignores it, with nothing in the setup/doctor
+ * output otherwise pointing at why "the proxy is configured correctly" and
+ * "nothing is actually going through it" are both true at once.
+ *
+ * Parses `dumpsys connectivity`'s own output, which is a debugging dump —
+ * not a stable, documented API, and free to reshape itself between Android
+ * versions/OEM skins. `undefined` (not `false`) on anything that doesn't
+ * match what was verified firsthand on one real device, rather than
+ * guessing: a missed parse should stay silent, never assert the opposite of
+ * what's actually true. Explicitly: `false` only when `Transports` names
+ * `CELLULAR` and not `WIFI` — an earlier version treated *any* non-`WIFI`
+ * first token as "mobile data", which would have misreported a VPN or
+ * Ethernet connection (an actual possibility here — `Transports` can list
+ * more than one, `CELLULAR&VPN` or similar) as mobile data specifically,
+ * rather than the "can't tell, so say nothing" this diagnostic is supposed
+ * to fall back on for anything that isn't actually Wi-Fi-vs-cellular.
+ */
+export async function isWifiActiveNetwork(ctx: SetupContext, serial: string): Promise<boolean | undefined> {
+  try {
+    const { stdout } = await ctx.runner.run('adb', ['-s', serial, 'shell', 'dumpsys', 'connectivity']);
+    const activeMatch = stdout.match(/Active default network:\s*(-?\d+)/);
+    if (!activeMatch || activeMatch[1] === '-1') return undefined;
+    const agentMatch = stdout.match(
+      new RegExp(`NetworkAgentInfo\\{network\\{${activeMatch[1]}\\}[\\s\\S]{0,4000}?Transports:\\s*([^\\n]+)`),
+    );
+    if (!agentMatch) return undefined;
+    const transports = agentMatch[1]!;
+    if (transports.includes('WIFI')) return true;
+    if (transports.includes('CELLULAR')) return false;
+    return undefined; // VPN, Ethernet, Bluetooth, ... — not what this diagnostic is about either way
+  } catch {
+    return undefined;
+  }
+}
+
+/** One line for `ctx.devicePicker`'s prompt — kind (`classifyDeviceKind`) plus, best-effort, the same Wi-Fi/mobile-data diagnostic `runAndroidDoctor` reports for whichever device ends up chosen (see `isWifiActiveNetwork`'s doc comment for why it matters here specifically: picking *between* devices is exactly when it's cheap to steer towards the one the proxy will actually reach). */
+async function describeDeviceChoice(ctx: SetupContext, serial: string): Promise<DeviceChoice> {
+  const kind = classifyDeviceKind(serial);
+  const wifiActive = await isWifiActiveNetwork(ctx, serial);
+  const warning =
+    wifiActive === false
+      ? " — ⚠ mobile data (not Wi-Fi) is this device's active network right now; the proxy setting won't reach it"
+      : '';
+  return { serial, label: `${serial} (${kind})${warning}` };
+}
+
 async function requireOneDevice(ctx: SetupContext): Promise<string> {
   const devices = await connectedDevices(ctx);
   if (devices.length === 0) {
@@ -92,12 +175,23 @@ async function requireOneDevice(ctx: SetupContext): Promise<string> {
       "No authorized device found (`adb devices`) — connect one over USB (or `adb connect <ip>` over Wi-Fi) and accept the host's RSA key fingerprint prompt on the device.",
     );
   }
-  // Multiple connected devices is ambiguous (which one gets the proxy/cert?)
-  // — same "make the user pick" stance as `adb`'s own `-s <serial>` requirement.
-  if (devices.length > 1) {
-    throw new Error(`Multiple devices connected (${devices.join(', ')}) — disconnect all but one and retry.`);
+  if (devices.length === 1) return devices[0]!;
+
+  // Multiple connected devices used to be an unconditional failure ("make
+  // the user pick" by disconnecting the rest) — now actually lets them pick,
+  // when `ctx.devicePicker` can (an interactive terminal); falls back to the
+  // original failure when it can't (CI, a script, anything non-interactive).
+  // Checked *before* building each device's `DeviceChoice` (an extra `adb
+  // shell dumpsys connectivity` round trip per device — see
+  // `describeDeviceChoice`) so a non-interactive run never pays for
+  // diagnostics nobody will ever see before hitting the exact same failure
+  // either way.
+  if (ctx.devicePicker.isInteractive()) {
+    const choices = await Promise.all(devices.map((serial) => describeDeviceChoice(ctx, serial)));
+    const picked = await ctx.devicePicker.pick(choices);
+    if (picked) return picked;
   }
-  return devices[0]!;
+  throw new Error(`Multiple devices connected (${devices.join(', ')}) — disconnect all but one and retry.`);
 }
 
 /**
@@ -250,16 +344,38 @@ export async function runAndroidDoctor(ctx: SetupContext): Promise<TargetOutcome
     return { steps };
   }
 
+  // Tracked so the Wi-Fi/mobile-data diagnostic below can word itself
+  // correctly either way — that step is added regardless of whether this
+  // one actually succeeded, so its own wording can't just assume it did.
+  // Three-valued, not just a `boolean`: a caught error below means the
+  // proxy value itself was never actually read, distinct from "read
+  // successfully and it happened not to match" — collapsing that into
+  // `false` would make the diagnostic below claim a specific mismatch
+  // ("even once the proxy value above is fixed") when the truth is closer
+  // to "couldn't even check that".
+  let proxyValueMatches: boolean | undefined;
   try {
     const { stdout } = await ctx.runner.run('adb', ['-s', serial, 'shell', 'settings', 'get', 'global', 'http_proxy']);
     const current = stdout.trim();
+    proxyValueMatches = current === proxyValue(ctx);
     steps.push(
-      current === proxyValue(ctx)
+      proxyValueMatches
         ? { status: 'done', message: `Device proxy is ${current}.` }
         : { status: 'failed', message: `Device proxy is "${current}", expected ${proxyValue(ctx)}.` },
     );
   } catch (err) {
     steps.push({ status: 'failed', message: `Couldn't read the device's proxy: ${errorMessage(err)}` });
+  }
+
+  // A correctly-configured proxy value above is necessary but not
+  // sufficient — Android's global `http_proxy` only ever applies to Wi-Fi
+  // traffic, so it silently does nothing while mobile data is this device's
+  // active network (both radios can easily be on at once). `undefined`
+  // (couldn't tell) prints nothing rather than a guess either way — see
+  // `isWifiActiveNetwork`'s doc comment.
+  const wifiActive = await isWifiActiveNetwork(ctx, serial);
+  if (wifiActive === false) {
+    steps.push({ status: 'failed', message: mobileDataActiveMessage(proxyValueMatches) });
   }
 
   steps.push({
