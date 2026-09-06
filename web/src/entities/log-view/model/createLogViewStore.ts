@@ -60,10 +60,27 @@ function loadColumnWidths(): Record<ResizableColumn, number> {
 export interface LogViewState {
   /** Groups the log table's rows under collapsible per-host headers instead of one flat list (issue #24's toolbar "Group by host"). */
   groupByHost: boolean;
+  /**
+   * Hosts currently collapsed under "Group by host" — a group header click
+   * toggles its host's membership here. A host absent from this set is
+   * expanded (the default for one never clicked); not persisted across
+   * reloads, same as `groupByHost` itself. Meaningless (and untouched)
+   * while `groupByHost` is off.
+   *
+   * Typed `ReadonlySet` (rather than plain `Set`) even though the value
+   * really is a mutable `Set` underneath (see `toggleHostCollapsed`) — this
+   * is state read out of a Zustand store, and calling `.add`/`.delete`
+   * directly on it would mutate that state in place without ever going
+   * through `set()`, silently skipping the re-render every other update to
+   * this store triggers.
+   */
+  collapsedHosts: ReadonlySet<string>;
   /** `time`/`asc` reproduces the table's pre-sort behavior (exchanges arrive in roughly chronological order already), so leaving this untouched changes nothing. */
   sort: SortState;
   columnWidths: Record<ResizableColumn, number>;
   toggleGroupByHost: () => void;
+  /** Expands/collapses one host's rows under "Group by host" — see `collapsedHosts`. */
+  toggleHostCollapsed: (host: string) => void;
   /** Clicking the currently-sorted column flips direction; clicking a different one switches to it ascending. */
   setSort: (column: SortColumn) => void;
   /** Updates in-memory width only — called on every `pointermove` while dragging a resize handle, so it deliberately does *not* touch localStorage (a synchronous write per move event is a real jank risk on that hot path). See `persistColumnWidths`. */
@@ -83,9 +100,17 @@ export interface LogViewState {
 export function createLogViewStore() {
   return create<LogViewState>((set, get) => ({
     groupByHost: false,
+    collapsedHosts: new Set<string>(),
     sort: { column: 'time', direction: 'asc' },
     columnWidths: loadColumnWidths(),
     toggleGroupByHost: () => set((state) => ({ groupByHost: !state.groupByHost })),
+    toggleHostCollapsed: (host) =>
+      set((state) => {
+        const next = new Set(state.collapsedHosts);
+        if (next.has(host)) next.delete(host);
+        else next.add(host);
+        return { collapsedHosts: next };
+      }),
     setSort: (column) =>
       set((state) => ({
         sort:
