@@ -14,10 +14,20 @@ import { Button, Input, PillToggle, Select } from '@/shared/ui';
  * `pending`-resolving effect below) rather than firing the instant it's
  * sent, which could show "✓ Applied" even for a request the server went on
  * to reject.
+ *
+ * `dispatchedAt` (`Date.now()` at the moment this was created) is what lets
+ * the resolving effect tell a `lastError` that's actually about *this*
+ * request apart from one already sitting in the store from an earlier,
+ * unrelated action — `lastError` is one shared field for every
+ * `RULES_WRITE_ERROR`/`RULE_PROFILE_ERROR` this session sees, including ones
+ * from the Rules editor's own Save, or even another connected browser tab —
+ * only a `lastErrorAt` at least as new as this counts as this request's own
+ * outcome.
  */
-type PendingConfirmation =
+type PendingConfirmation = { dispatchedAt: number } & (
   | { kind: 'activeProfile'; name: string; label: string }
-  | { kind: 'profileCreated'; name: string; label: string };
+  | { kind: 'profileCreated'; name: string; label: string }
+);
 
 /** How long a `pending` confirmation waits for its expected state change (or an error) before giving up silently — WS delivery on a live connection is effectively instant, so this is just a bailout for the unusual case (a dropped connection, say) where neither ever arrives. */
 const PENDING_CONFIRMATION_TIMEOUT_MS = 5000;
@@ -70,6 +80,7 @@ export function RuleProfilesControl() {
   const dirtyDraft = useRuleStore((s) => s.dirtyDraft);
   const setDirtyDraft = useRuleStore((s) => s.setDirtyDraft);
   const lastError = useRuleStore((s) => s.lastError);
+  const lastErrorAt = useRuleStore((s) => s.lastErrorAt);
   const dismissError = useRuleStore((s) => s.dismissError);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -113,7 +124,12 @@ export function RuleProfilesControl() {
   // e.g. the profile was deleted after the `<select>` was rendered but
   // before this was picked) is to wait for the specific state change the
   // action should actually produce, rather than assuming success the
-  // instant it was sent.
+  // instant it was sent. `lastError` alone isn't enough, though — it's one
+  // shared field for every Rules-editor/Rules-Profile error this session
+  // sees, so only a `lastErrorAt` at least as new as `pending.dispatchedAt`
+  // actually counts as *this* request's outcome rather than something
+  // unrelated that happened to already be sitting there (or that arrived
+  // from another action, or another tab, while this one was in flight).
   useEffect(() => {
     if (!pending) return;
     // Genuinely the "subscribe to an external store, setState in response"
@@ -122,7 +138,7 @@ export function RuleProfilesControl() {
     // arriving, not from any event this component itself handles, so
     // there's no synchronous event-handler callback to move this into
     // instead.
-    if (lastError) {
+    if (lastError && lastErrorAt !== null && lastErrorAt >= pending.dispatchedAt) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       showBanner(lastError, 'error');
       dismissError();
@@ -138,7 +154,7 @@ export function RuleProfilesControl() {
       setPending(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- showBanner/dismissError are stable-enough closures over refs/store actions, not reactive values this effect should re-run for
-  }, [pending, lastError, rulesFile, profiles]);
+  }, [pending, lastError, lastErrorAt, rulesFile, profiles]);
 
   // Bails out of a `pending` confirmation that never resolved either way —
   // see `PENDING_CONFIRMATION_TIMEOUT_MS`'s own doc comment.
@@ -238,7 +254,11 @@ export function RuleProfilesControl() {
         // this action's outcome, and report a failure that isn't this
         // request's to report.
         dismissError();
-        setPending({ kind: 'activeProfile', name: value, label: `Applied "${value}"` });
+        // `Date.now()` here runs inside this event handler, not during
+        // render — never called until the user actually picks something —
+        // so there's no purity concern despite the lint rule flagging it.
+        // eslint-disable-next-line react-hooks/purity
+        setPending({ kind: 'activeProfile', name: value, label: `Applied "${value}"`, dispatchedAt: Date.now() });
       }
     }
   };
@@ -276,11 +296,11 @@ export function RuleProfilesControl() {
       // the same call in `handleSelectChange`.
       dismissError();
       saveActiveAsProfile(name);
-      setPending({ kind: 'activeProfile', name, label: `Saved "${name}"` });
+      setPending({ kind: 'activeProfile', name, label: `Saved "${name}"`, dispatchedAt: Date.now() });
     } else {
       dismissError();
       createProfile(name, effectiveSource);
-      setPending({ kind: 'profileCreated', name, label: `Saved "${name}"` });
+      setPending({ kind: 'profileCreated', name, label: `Saved "${name}"`, dispatchedAt: Date.now() });
     }
     cancelCreate();
   };

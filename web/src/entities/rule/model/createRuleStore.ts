@@ -8,6 +8,17 @@ export interface RuleState {
   profiles: RuleProfileSummary[];
   /** The most recent `RULES_WRITE_ERROR`/`RULE_PROFILE_ERROR` message from the server, if any hasn't been dismissed yet. */
   lastError: string | null;
+  /**
+   * `Date.now()` when `lastError` was last set — `null` exactly when
+   * `lastError` is. Lets a consumer with its own "I dispatched something at
+   * time T" marker (`RuleProfilesControl`'s `pending`) tell an error that's
+   * actually about *its* request apart from one already sitting here from
+   * an earlier, unrelated action (this is one shared field for every
+   * `RULES_WRITE_ERROR`/`RULE_PROFILE_ERROR` this session sees, including
+   * ones from other controls, or even another connected browser tab) by
+   * requiring the timestamp to be at least as new as its own dispatch.
+   */
+  lastErrorAt: number | null;
   /** Saves edits to the active rules.json (Rules editor). */
   setRules: (data: RulesFile) => void;
   /** Creates a new saved profile from a template. */
@@ -50,7 +61,7 @@ export function createRuleStore(connection: DashboardConnection) {
           return;
         case 'error':
           if (message.event.errorKind === 'RULES_WRITE_ERROR' || message.event.errorKind === 'RULE_PROFILE_ERROR') {
-            set({ lastError: message.event.message });
+            set({ lastError: message.event.message, lastErrorAt: Date.now() });
           }
           return;
         default:
@@ -62,11 +73,12 @@ export function createRuleStore(connection: DashboardConnection) {
       rulesFile: null,
       profiles: [],
       lastError: null,
+      lastErrorAt: null,
       setRules: (data) => connection.send({ type: 'setRules', data }),
       createProfile: (name, template) => connection.send({ type: 'createRuleProfile', name, template }),
       saveActiveAsProfile: (name) => connection.send({ type: 'saveActiveRulesAsProfile', name }),
       applyProfile: (name) => connection.send({ type: 'applyRuleProfile', name }),
-      dismissError: () => set({ lastError: null }),
+      dismissError: () => set({ lastError: null, lastErrorAt: null }),
       dirtyDraft: false,
       setDirtyDraft: (dirty) => set({ dirtyDraft: dirty }),
     };
