@@ -1,3 +1,4 @@
+import { type FormEvent, useState } from 'react';
 import {
   PRESETS,
   presetFor,
@@ -32,6 +33,7 @@ export function SettingsPanel() {
       <ThrottleSection />
       <BlockHostsSection />
       <StartupDefaultsSection />
+      <DashboardPasswordSection />
     </div>
   );
 }
@@ -246,6 +248,80 @@ function StartupDefaultsSection() {
         </p>
         {toggle('lanAccess', 'Allow LAN access', true)}
       </div>
+    </section>
+  );
+}
+
+/**
+ * The optional dashboard password (issue #66) — unlike `StartupDefaultsSection`
+ * above, this isn't a `detour start`-time setting: it gates the `/ws`
+ * connection itself (see `dashboardServer.ts`'s `login`/`authRequired`), so a
+ * change here takes effect for new connections immediately, no restart
+ * needed. A separate section (not folded into `StartupDefaultsSection`)
+ * specifically to avoid implying that "next start only" caveat applies here
+ * too. The password itself is never round-tripped back from the server —
+ * only whether one is currently set (`dashboardPasswordSet`) — so this can
+ * only ever show On/Off, never the value.
+ */
+function DashboardPasswordSection() {
+  const userConfig = useUserConfigStore((s) => s.userConfig);
+  const setDashboardPassword = useUserConfigStore((s) => s.setDashboardPassword);
+  const [value, setValue] = useState('');
+  const passwordSet = userConfig?.dashboardPasswordSet ?? false;
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!value) return;
+    setDashboardPassword(value);
+    setValue('');
+  };
+
+  return (
+    <section>
+      <SectionHeading>Dashboard password</SectionHeading>
+      <p className="mb-2 text-xs text-[var(--muted)]">
+        Require this password before the dashboard will send any traffic, rules, or accept any control message.
+        Independent of LAN access — meant to be paired with it, but works for a localhost-only session too.
+      </p>
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-xs text-[var(--muted)]">Password protection</span>
+        <span
+          className={cn(
+            'rounded-md border px-3 py-1 text-xs',
+            passwordSet ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-[var(--border)] text-[var(--muted)]',
+          )}
+        >
+          {passwordSet ? 'On' : 'Off'}
+        </span>
+      </div>
+      <form onSubmit={submit} className="flex gap-1.5">
+        <input
+          type="password"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder={passwordSet ? 'New password' : 'Set a password'}
+          disabled={!userConfig}
+          autoComplete="new-password"
+          className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-transparent px-2 py-1 text-xs disabled:opacity-50"
+        />
+        <button
+          type="submit"
+          disabled={!userConfig || !value}
+          className="shrink-0 rounded-md border border-[var(--accent)] px-3 py-1 text-xs text-[var(--accent)] disabled:opacity-50"
+        >
+          {passwordSet ? 'Update' : 'Set'}
+        </button>
+        {passwordSet && (
+          <button
+            type="button"
+            onClick={() => setDashboardPassword(null)}
+            disabled={!userConfig}
+            className="shrink-0 rounded-md border border-[var(--status-5xx)] px-3 py-1 text-xs text-[var(--status-5xx)] disabled:opacity-50"
+          >
+            Remove
+          </button>
+        )}
+      </form>
     </section>
   );
 }

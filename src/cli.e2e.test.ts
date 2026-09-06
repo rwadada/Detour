@@ -2118,12 +2118,16 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       return { home, env: { HOME: home, USERPROFILE: home } };
     }
 
-    it('reports defaultDetach = false when nothing has been configured', async () => {
+    it.each([
+      ['defaultDetach', 'false'],
+      ['lanAccess', 'false'],
+      ['dashboardPassword', 'off'],
+    ])('reports %s = %s when nothing has been configured', async (key, expected) => {
       const { home, env } = withTempHome();
       try {
         const result = await runTsx(['src/cli.ts', 'config'], { cwd: REPO_ROOT, reject: false, env });
         expect(result.exitCode).toBe(0);
-        expect(result.stdout).toContain('defaultDetach = false');
+        expect(result.stdout).toContain(`${key} = ${expected}`);
       } finally {
         fs.rmSync(home, { recursive: true, force: true });
       }
@@ -2192,17 +2196,6 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
         fs.rmSync(home, { recursive: true, force: true });
       }
     }, 20_000);
-
-    it('reports lanAccess = false when nothing has been configured', async () => {
-      const { home, env } = withTempHome();
-      try {
-        const result = await runTsx(['src/cli.ts', 'config'], { cwd: REPO_ROOT, reject: false, env });
-        expect(result.exitCode).toBe(0);
-        expect(result.stdout).toContain('lanAccess = false');
-      } finally {
-        fs.rmSync(home, { recursive: true, force: true });
-      }
-    });
 
     it('persists --lan on to ~/.detour/config.json', async () => {
       const { home, env } = withTempHome();
@@ -2286,6 +2279,67 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       expect(result.exitCode).not.toBe(0);
       expect(result.stderr).toContain('--foreground and --detach cannot be combined');
     });
+
+    it('persists --dashboard-password <value> as a hash, never the plaintext', async () => {
+      const { home, env } = withTempHome();
+      try {
+        const result = await runTsx(['src/cli.ts', 'config', '--dashboard-password', 'hunter2'], {
+          cwd: REPO_ROOT,
+          reject: false,
+          env,
+        });
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain('dashboardPassword = on');
+        expect(result.stdout).not.toContain('hunter2');
+        const onDisk = JSON.parse(fs.readFileSync(path.join(home, '.detour', 'config.json'), 'utf8'));
+        expect(onDisk.dashboardPasswordHash).toBeTruthy();
+        expect(onDisk.dashboardPasswordHash).not.toContain('hunter2');
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it('--dashboard-password off clears a previously-set password', async () => {
+      const { home, env } = withTempHome();
+      try {
+        await runTsx(['src/cli.ts', 'config', '--dashboard-password', 'hunter2'], {
+          cwd: REPO_ROOT,
+          reject: false,
+          env,
+        });
+
+        const result = await runTsx(['src/cli.ts', 'config', '--dashboard-password', 'off'], {
+          cwd: REPO_ROOT,
+          reject: false,
+          env,
+        });
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain('dashboardPassword = off');
+        const onDisk = JSON.parse(fs.readFileSync(path.join(home, '.detour', 'config.json'), 'utf8'));
+        expect(onDisk.dashboardPasswordHash).toBeNull();
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it('`detour start` banner reports whether a dashboard password is required', async () => {
+      const { home, env } = withTempHome();
+      const port = await findFreePort();
+      let cli: Awaited<ReturnType<typeof startDetourCliReady>> | undefined;
+      try {
+        await runTsx(['src/cli.ts', 'config', '--dashboard-password', 'hunter2'], {
+          cwd: REPO_ROOT,
+          reject: false,
+          env,
+        });
+
+        cli = await startDetourCliReady(['--port', String(port), '--dashboard-port', '0'], env);
+        expect(cli.stdout()).toContain('Dashboard password: required');
+      } finally {
+        await cli?.kill();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    }, 20_000);
   });
 
   describe('detour cert export', () => {

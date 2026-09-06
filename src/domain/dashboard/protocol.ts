@@ -26,6 +26,14 @@ export interface UserConfigState {
   defaultDetach: boolean;
   /** Whether `detour start` binds the proxy and dashboard to every network interface (`0.0.0.0`) instead of just `localhost` — `detour config --lan`. Security-sensitive: LAN access has no authentication of its own, so anything on the network can reach the dashboard (and, from there, decrypted HTTPS traffic and rule edits) or use the proxy. */
   lanAccess: boolean;
+  /**
+   * Whether a dashboard password is currently required (issue #66's optional
+   * auth) — `detour config --dashboard-password <value>` or the Settings
+   * panel. Never the hash or plaintext itself, just whether one is set;
+   * unlike `defaultDetach`/`lanAccess`, this takes effect immediately for
+   * new connections rather than on the next `detour start`.
+   */
+  dashboardPasswordSet: boolean;
 }
 
 /**
@@ -44,6 +52,29 @@ export type DashboardServerMessage =
    * independently of that default.
    */
   | { type: 'proxyInfo'; proxyPort: number }
+  /**
+   * Sent once, right after connecting (issue #66): every non-internal IPv4
+   * address this machine has, when `detour start --lan`/`lanAccess` bound
+   * the proxy/dashboard to every network interface — empty when bound to
+   * `localhost` only. Lets the dashboard show the actual URL(s) another
+   * device on the network should use, instead of only ever knowing the
+   * address the current browser tab happens to be viewing it from (which is
+   * `localhost` unless this tab itself was opened over LAN). The dashboard's
+   * own port isn't included here — a connected client already knows it as
+   * `window.location.port`, the same page it's looking at right now.
+   */
+  | { type: 'lanInfo'; addresses: string[] }
+  /**
+   * Sent instead of the usual just-connected snapshot (`backlog`, `rules`,
+   * `userConfig`, etc. below) when a dashboard password is configured and
+   * this socket hasn't supplied it yet (issue #66's optional auth) — the
+   * client should prompt for one and reply with `login`. Not sent at all
+   * when no password is configured; the snapshot goes out immediately in
+   * that case, same as before this feature existed.
+   */
+  | { type: 'authRequired' }
+  /** A `login` message's password didn't match — the socket stays unauthenticated (no snapshot, no traffic) and can retry. */
+  | { type: 'authFailed' }
   /** Sent once, right after connecting: the recent-history backlog so a client that (re)connects mid-session isn't starting from a blank table. */
   | { type: 'backlog'; items: CapturedExchange[] }
   /** Sent once, right after connecting: the recent WebSocket connection backlog (see `backlog` above; issue #17). */
@@ -123,6 +154,15 @@ export type DashboardServerMessage =
  * — every other message type is server → browser only.
  */
 export type DashboardClientMessage =
+  /**
+   * Answers an `authRequired` message (issue #66's optional dashboard
+   * password) with the password the user typed. The server replies with
+   * either the normal just-connected snapshot (success — same messages any
+   * client gets right after connecting when no password is required) or
+   * `authFailed` (wrong password; the socket stays unauthenticated and this
+   * can be retried). Sending anything else before authenticating is ignored.
+   */
+  | { type: 'login'; password: string }
   /** Resumes (optionally with edits) or aborts an exchange paused by a `breakpoint` rule. */
   | { type: 'breakpointResume'; command: BreakpointResumeCommand }
   /** Turns interception on/off (see `InterceptState`). */
@@ -165,4 +205,13 @@ export type DashboardClientMessage =
    * connected tab (via `userConfig`) once written, same as every other
    * `set*` message here.
    */
-  | { type: 'setUserConfig'; state: Partial<UserConfigState> };
+  | { type: 'setUserConfig'; state: Partial<UserConfigState> }
+  /**
+   * Sets or clears the dashboard password (issue #66) — `null` removes it.
+   * Only meaningful from an already-authenticated socket (see `login`
+   * above): a socket that hasn't authenticated yet has this ignored along
+   * with every other message type. The server hashes `password` before
+   * persisting it (never stored or logged in plaintext) and broadcasts the
+   * updated `userConfig` (`dashboardPasswordSet`) to every connected tab.
+   */
+  | { type: 'setDashboardPassword'; password: string | null };

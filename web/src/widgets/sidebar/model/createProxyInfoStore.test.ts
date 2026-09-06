@@ -22,4 +22,19 @@ describe('createProxyInfoStore', () => {
     fake.emit({ type: 'intercept', state: { enabled: false } });
     expect(store.getState().proxyPort).toBeNull();
   });
+
+  it('starts with an empty lanAddresses list before any message arrives', () => {
+    const fake = fakeDashboardConnection();
+    const store = createProxyInfoStore(fake.connection);
+    expect(store.getState().lanAddresses).toEqual([]);
+  });
+
+  it('sets lanAddresses on a lanInfo message', () => {
+    const fake = fakeDashboardConnection();
+    const store = createProxyInfoStore(fake.connection);
+    // eslint-disable-next-line sonarjs/no-hardcoded-ip -- a private-range test fixture address, not a real one.
+    const fakeAddresses = ['192.168.1.5'];
+    fake.emit({ type: 'lanInfo', addresses: fakeAddresses });
+    expect(store.getState().lanAddresses).toEqual(fakeAddresses);
+  });
 });

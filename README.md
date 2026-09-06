@@ -101,6 +101,14 @@ During development, run `npm run dev` to watch and run the TypeScript sources di
 
 The dashboard's source lives in [`web/`](./web) (React 19 + Vite + Tailwind CSS + Zustand) and is built to `web-dist/`, which `npm run build` produces alongside the CLI's `dist/`. To iterate on the UI with `npm run dev:dashboard` (Vite's dev server with hot reload) instead of rebuilding, run `detour start` in one terminal and `npm run dev:dashboard` in another — Vite proxies `/ws` through to the default dashboard port.
 
+## LAN access and the dashboard password (issue #66)
+
+By default the proxy and dashboard only bind to `localhost` — nothing else on your network can reach them. `detour start --lan` (or `detour config --lan on` to make it the default for every future `start`) binds both to every network interface (`0.0.0.0`) instead, so another device on the same Wi-Fi/LAN — a phone, say — can point its proxy settings or a browser at this machine.
+
+Once bound to the network, both the terminal's startup banner and the dashboard's sidebar ("LAN Access" section, only shown while `--lan` is active) list every reachable address, so you don't have to go find this machine's IP yourself — copy the URL straight from either place.
+
+**LAN access has no authentication of its own** — anyone on the network can reach the dashboard (and, from there, decrypted HTTPS traffic and rule edits) or use the proxy. If that's a concern, `detour config --dashboard-password <value>` (or the dashboard's Settings panel) requires a password before the dashboard will send any traffic, rules, or accept any control message over its connection — takes effect for new connections immediately, no restart needed. Pass `--dashboard-password off` (or clear it from the Settings panel) to remove it. This only protects the dashboard itself; the proxy remains open to anything that's configured to use it.
+
 ## Daemon mode, CI, and automation (issue #20)
 
 A handful of `start` flags and top-level commands exist specifically for running Detour unattended — from a CI pipeline or test harness, or as a long-lived background process — rather than in an interactive terminal.

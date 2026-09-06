@@ -37,6 +37,23 @@ describe('userConfigStore (fs-backed)', () => {
     expect(() => loadUserConfig(configPath)).toThrow(/must be a boolean/);
   });
 
+  it('writes and reads dashboardPasswordHash back unchanged', () => {
+    writeUserConfig({ dashboardPasswordHash: 'salt:hash' }, configPath);
+    expect(loadUserConfig(configPath)).toEqual({ dashboardPasswordHash: 'salt:hash' });
+  });
+
+  it('writes and reads a null dashboardPasswordHash back unchanged (clearing a previously-set password)', () => {
+    writeUserConfig({ dashboardPasswordHash: 'salt:hash' }, configPath);
+    writeUserConfig({ dashboardPasswordHash: null }, configPath);
+    expect(loadUserConfig(configPath)).toEqual({ dashboardPasswordHash: null });
+  });
+
+  it('throws when dashboardPasswordHash is neither a string nor null', () => {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ dashboardPasswordHash: 42 }));
+    expect(() => loadUserConfig(configPath)).toThrow(/must be a string or null/);
+  });
+
   it('creates ~/.detour itself on first write', () => {
     expect(fs.existsSync(path.dirname(configPath))).toBe(false);
     writeUserConfig({ defaultDetach: true }, configPath);

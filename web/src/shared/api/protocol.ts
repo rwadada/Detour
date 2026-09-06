@@ -234,11 +234,19 @@ export interface RuleProfileSummary {
 export interface UserConfigState {
   defaultDetach: boolean;
   lanAccess: boolean;
+  /** Whether a dashboard password is currently required (issue #66) — never the hash/plaintext itself, just whether one is set. Takes effect immediately for new connections, unlike `defaultDetach`/`lanAccess` above. */
+  dashboardPasswordSet: boolean;
 }
 
 export type DashboardServerMessage =
   /** Sent once, right after connecting: the proxy port this dashboard session is fronting (issue #24's sidebar Proxy URL / QR code). */
   | { type: 'proxyInfo'; proxyPort: number }
+  /** Sent once, right after connecting (issue #66): every LAN address this machine has, when bound to every network interface — empty when bound to `localhost` only. Powers the sidebar's LAN Access section. */
+  | { type: 'lanInfo'; addresses: string[] }
+  /** Sent instead of the usual just-connected snapshot when a dashboard password is configured and this socket hasn't supplied it yet (issue #66) — reply with `login`. Never sent at all when no password is configured. */
+  | { type: 'authRequired' }
+  /** A `login` message's password didn't match — still unauthenticated, can retry. */
+  | { type: 'authFailed' }
   | { type: 'backlog'; items: CapturedExchange[] }
   | { type: 'wsBacklog'; items: CapturedWebSocketConnection[] }
   | { type: 'request'; exchange: CapturedExchange }
@@ -260,6 +268,8 @@ export type DashboardServerMessage =
   | { type: 'userConfig'; state: UserConfigState };
 
 export type DashboardClientMessage =
+  /** Answers an `authRequired` message with the password the user typed (issue #66). The server replies with either the normal just-connected snapshot (success) or `authFailed`. Ignored — like every other message type — before the socket has authenticated. */
+  | { type: 'login'; password: string }
   | { type: 'breakpointResume'; command: BreakpointResumeCommand }
   | { type: 'setIntercept'; enabled: boolean }
   | { type: 'setFocus'; hosts: string[] }
@@ -276,4 +286,6 @@ export type DashboardClientMessage =
   /** Re-sends a previously captured exchange for real (Replay). The result appears as a normal new `request`/`response` pair, not a dedicated message type. */
   | { type: 'replay'; exchange: CapturedExchange }
   /** Persists a change to `~/.detour/config.json`, merged into the existing file (setting one field never clobbers the other). */
-  | { type: 'setUserConfig'; state: Partial<UserConfigState> };
+  | { type: 'setUserConfig'; state: Partial<UserConfigState> }
+  /** Sets (or, with `null`, clears) the dashboard password (issue #66). Only meaningful from an already-authenticated socket. */
+  | { type: 'setDashboardPassword'; password: string | null };

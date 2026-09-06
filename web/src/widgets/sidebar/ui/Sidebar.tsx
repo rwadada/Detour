@@ -70,6 +70,7 @@ export function Sidebar() {
       ) : (
         <div className="flex-1 space-y-4 overflow-y-auto p-3">
           <ProxyUrlSection />
+          <LanAccessSection />
           <section>
             <h2 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">Rules</h2>
             <div className="flex flex-wrap items-center gap-1.5">
@@ -96,20 +97,28 @@ export function Sidebar() {
   );
 }
 
-/** The proxy's address, derived from `useProxyInfoStore`'s port plus the page's own host — the dashboard and the proxy it fronts are always reached at the same host, only the port differs. */
-function ProxyUrlSection() {
-  const proxyPort = useProxyInfoStore((s) => s.proxyPort);
+/** Shared by `ProxyUrlSection`'s and `CopyableUrl`'s copy buttons: writes `text` to the clipboard and flashes a checkmark for 1.5s. */
+function useCopyToClipboard(text: string) {
   const [copied, setCopied] = useState(false);
-  const [showQr, setShowQr] = useState(false);
-
-  if (proxyPort === null) return null; // pre-issue-#24 server, or the message hasn't arrived yet
-  const url = `http://${window.location.hostname}:${proxyPort}`;
-
   const copy = async () => {
-    await navigator.clipboard.writeText(url);
+    await navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
+  return { copied, copy };
+}
+
+/** The proxy's address, derived from `useProxyInfoStore`'s port plus the page's own host — the dashboard and the proxy it fronts are always reached at the same host, only the port differs. */
+function ProxyUrlSection() {
+  const proxyPort = useProxyInfoStore((s) => s.proxyPort);
+  const [showQr, setShowQr] = useState(false);
+  // Hooks must run unconditionally on every render — `url` falls back to ''
+  // rather than skipping `useCopyToClipboard` outright, so the early return
+  // below (still needed to render nothing) comes after every hook call.
+  const url = proxyPort === null ? '' : `http://${window.location.hostname}:${proxyPort}`;
+  const { copied, copy } = useCopyToClipboard(url);
+
+  if (proxyPort === null) return null; // pre-issue-#24 server, or the message hasn't arrived yet
 
   return (
     <section>
@@ -148,5 +157,64 @@ function ProxyUrlSection() {
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * Only rendered while bound to every network interface (`--lan`/
+ * `lanAccess`, issue #66) — lists every address this machine actually has,
+ * so whoever's running Detour knows what to hand another device instead of
+ * only ever seeing the address the *current* browser tab happens to be
+ * viewing the dashboard from (which is `localhost` unless this very tab was
+ * itself opened over LAN — `ProxyUrlSection` above has exactly that
+ * limitation). The dashboard's own port isn't sent by the server at all —
+ * this tab is already looking at it, as `window.location.port`.
+ */
+function LanAccessSection() {
+  const lanAddresses = useProxyInfoStore((s) => s.lanAddresses);
+  const proxyPort = useProxyInfoStore((s) => s.proxyPort);
+
+  if (lanAddresses.length === 0) return null;
+  // A plain variable rather than inlining `window.location.port` into the
+  // template below — `:${port}` nested inside the outer `http://${address}…`
+  // template is a nested template literal, which this codebase's lint config
+  // (sonarjs/no-nested-template-literals) forbids.
+  const dashboardPortSuffix = window.location.port ? `:${window.location.port}` : '';
+
+  return (
+    <section>
+      <h2 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">LAN Access</h2>
+      <p className="mb-1.5 text-[10px] text-[var(--muted)]">Reachable from other devices on this network at:</p>
+      <div className="flex flex-col gap-2">
+        {lanAddresses.map((address) => (
+          <div key={address} className="flex flex-col gap-1">
+            <CopyableUrl label="Dashboard" url={`http://${address}${dashboardPortSuffix}`} />
+            {proxyPort !== null && <CopyableUrl label="Proxy" url={`http://${address}:${proxyPort}`} />}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** One copyable `label: url` row — the LAN Access list's per-address building block (`ProxyUrlSection`'s single URL button inlines the same behavior since it only ever needs one). */
+function CopyableUrl({ label, url }: { label: string; url: string }) {
+  const { copied, copy } = useCopyToClipboard(url);
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      title={`Copy ${label.toLowerCase()} URL`}
+      className="flex min-w-0 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 py-1.5 text-left font-mono-ui text-xs hover:bg-[var(--row-hover)]"
+    >
+      <span className="shrink-0 text-[var(--muted)]">{label}</span>
+      <span className="min-w-0 flex-1 truncate">{url}</span>
+      {copied ? (
+        <Check className="h-3 w-3 shrink-0 text-[var(--status-2xx)]" />
+      ) : (
+        <Copy className="h-3 w-3 shrink-0 text-[var(--muted)]" />
+      )}
+    </button>
   );
 }
