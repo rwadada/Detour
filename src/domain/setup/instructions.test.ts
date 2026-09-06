@@ -5,19 +5,19 @@ import { SETUP_TARGETS } from './targets';
 const ctx = { certPath: '/home/user/.detour/certs/certs/ca.pem', proxyHost: '203.0.113.5', proxyPort: 8080 };
 
 describe('manualSetupInstructions', () => {
-  it('returns at least a cert step and a proxy step for every target', () => {
+  it('returns a non-empty cert-trust and proxy-config instruction for every target', () => {
     for (const target of SETUP_TARGETS) {
-      const steps = manualSetupInstructions(target, ctx);
-      expect(steps.length).toBeGreaterThanOrEqual(2);
-      for (const step of steps) expect(step.length).toBeGreaterThan(0);
+      const instructions = manualSetupInstructions(target, ctx);
+      expect(instructions.certTrust.length).toBeGreaterThan(0);
+      expect(instructions.proxyConfig.length).toBeGreaterThan(0);
     }
   });
 
-  it('interpolates the cert path and proxy address into every target', () => {
+  it('interpolates the cert path into certTrust and the proxy address into proxyConfig for every target', () => {
     for (const target of SETUP_TARGETS) {
-      const steps = manualSetupInstructions(target, ctx).join('\n');
-      expect(steps).toContain(ctx.certPath);
-      expect(steps).toContain(`${ctx.proxyHost} / ${ctx.proxyPort}`);
+      const instructions = manualSetupInstructions(target, ctx);
+      expect(instructions.certTrust).toContain(ctx.certPath);
+      expect(instructions.proxyConfig).toContain(`${ctx.proxyHost} / ${ctx.proxyPort}`);
     }
   });
 });

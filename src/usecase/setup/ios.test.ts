@@ -115,5 +115,8 @@ describe('runIosCleanup', () => {
     const outcome = await runIosCleanup(ctxWith(runner));
     expect(calls).toEqual([]);
     expect(outcome.steps.every((s) => s.status === 'manual')).toBe(true);
+    // cleanup never touches CA cert trust — its manual step should only be
+    // about the proxy, not repeat the cert-install instructions.
+    expect(outcome.steps.some((s) => s.message.includes('Trust the CA cert'))).toBe(false);
   });
 });
