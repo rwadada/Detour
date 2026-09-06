@@ -33,9 +33,16 @@ export function AuthGate() {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-[var(--background)]">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="auth-gate-title"
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-[var(--background)]"
+    >
       <DetourLogo className="h-12 w-12 rounded-2xl" decorative />
-      <div className="text-sm font-semibold tracking-tight">Dashboard password required</div>
+      <div id="auth-gate-title" className="text-sm font-semibold tracking-tight">
+        Dashboard password required
+      </div>
       <form onSubmit={submit} className="flex w-56 flex-col items-stretch gap-2">
         <input
           type="password"

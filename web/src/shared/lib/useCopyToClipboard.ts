@@ -24,7 +24,18 @@ export function useCopyToClipboard(getText: () => string) {
   useEffect(() => () => clearTimeout(timeoutRef.current), []);
 
   const copy = async () => {
-    if (await copyToClipboard(getText())) {
+    // `getText()` is called outside `copyToClipboard`'s own try/catch, so a
+    // thunk that throws (not any current call site, but nothing stops a
+    // future one building text from more complex state) would otherwise
+    // defeat `copyToClipboard`'s own "never throws" contract right back out
+    // of this click handler.
+    let text: string;
+    try {
+      text = getText();
+    } catch {
+      return;
+    }
+    if (await copyToClipboard(text)) {
       setCopied(true);
       clearTimeout(timeoutRef.current);
       timeoutRef.current = setTimeout(() => setCopied(false), 1500);
