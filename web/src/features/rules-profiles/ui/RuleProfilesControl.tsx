@@ -82,6 +82,14 @@ export function RuleProfilesControl() {
     const name = newName.trim();
     if (!name) return;
     if (source === 'active') {
+      // `rulesFile` can go from set to `null` while this form sits open
+      // (the active rules file was unconfigured elsewhere) — the "Start
+      // from: Currently active rules.json" `<option>` disappears from the
+      // `<select>` above when that happens, but `source` itself doesn't
+      // reset, so this guard (mirrored on the Save button's `disabled`
+      // below) is what actually stops a "save active" request with nothing
+      // active to save.
+      if (!rulesFile) return;
       if (
         dirtyDraft &&
         !window.confirm(
@@ -150,7 +158,13 @@ export function RuleProfilesControl() {
                 <Button variant="outline" size="sm" className="flex-1" onClick={cancelCreate}>
                   Cancel
                 </Button>
-                <Button size="sm" className="flex-1" onClick={submitCreate} disabled={!newName.trim()}>
+                <Button
+                  size="sm"
+                  className="flex-1"
+                  onClick={submitCreate}
+                  disabled={!newName.trim() || (source === 'active' && !rulesFile)}
+                  title={source === 'active' && !rulesFile ? 'No active rules to save' : undefined}
+                >
                   Save
                 </Button>
               </div>
