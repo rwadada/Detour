@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { promisify } from 'node:util';
 
 /**
  * Optional dashboard password (issue #66): a lightweight gate on the `/ws`
@@ -12,14 +13,30 @@ import crypto from 'node:crypto';
 const KEY_LENGTH = 64;
 const SALT_LENGTH = 16;
 
+// The async form, not `crypto.scryptSync`: this runs inside `dashboardServer.ts`'s
+// `login`/`setDashboardPassword` WebSocket message handlers, on the same
+// event loop the proxy itself runs on. `scryptSync` blocks that loop for the
+// full ~20ms+ of the KDF — with `--lan` on, anything on the network can hit
+// `login` repeatedly, so a sync call here turns "verify a password" into a
+// trivial way to stall every other connection (dashboard tabs *and*
+// proxied traffic) for as long as the flood continues. `crypto.scrypt`'s
+// actual work still runs off the main thread (libuv's threadpool), which is
+// what actually avoids the stall — `promisify` just gives it a `Promise`
+// shape to `await`.
+const scryptAsync = promisify(crypto.scrypt) as (
+  password: crypto.BinaryLike,
+  salt: crypto.BinaryLike,
+  keylen: number,
+) => Promise<Buffer>;
+
 /**
  * Hashes `password` into the `<saltHex>:<hashHex>` string persisted as
  * `UserConfig.dashboardPasswordHash`. A fresh random salt every call, so
  * hashing the same password twice produces different output (as it should).
  */
-export function hashDashboardPassword(password: string): string {
+export async function hashDashboardPassword(password: string): Promise<string> {
   const salt = crypto.randomBytes(SALT_LENGTH);
-  const hash = crypto.scryptSync(password, salt, KEY_LENGTH);
+  const hash = await scryptAsync(password, salt, KEY_LENGTH);
   return `${salt.toString('hex')}:${hash.toString('hex')}`;
 }
 
@@ -29,7 +46,7 @@ export function hashDashboardPassword(password: string): string {
  * malformed `stored` value — a hand-edited config shouldn't be able to crash
  * a login attempt, only fail it.
  */
-export function verifyDashboardPassword(password: string, stored: string): boolean {
+export async function verifyDashboardPassword(password: string, stored: string): Promise<boolean> {
   const [saltHex, hashHex] = stored.split(':');
   if (!saltHex || !hashHex) return false;
   let salt: Buffer;
@@ -41,6 +58,6 @@ export function verifyDashboardPassword(password: string, stored: string): boole
     return false;
   }
   if (expected.length === 0) return false;
-  const actual = crypto.scryptSync(password, salt, expected.length);
+  const actual = await scryptAsync(password, salt, expected.length);
   return crypto.timingSafeEqual(actual, expected);
 }

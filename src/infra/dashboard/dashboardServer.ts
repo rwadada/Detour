@@ -149,12 +149,29 @@ export async function startDashboardServer(
   // sync with, so just read the file" reasoning as `userConfigMessage`
   // below, and it's what lets a password set via the Settings panel or
   // `detour config` start applying to new connections without a restart.
+  //
+  // On a read failure (invalid JSON, a validation failure — same cases
+  // `userConfigMessage` below falls back to defaults for), this returns the
+  // last value a *successful* read actually produced, rather than `null`:
+  // `null` means "no password configured" everywhere it's checked below, so
+  // falling back to it unconditionally on error would fail *open* — waving
+  // every new connection straight through the moment `~/.detour/config.json`
+  // gets corrupted while a password happens to be set (a hand-edit of some
+  // unrelated field is enough; `loadUserConfig` fails the whole file, not
+  // just the bad key). Falling back to the last-known value instead keeps a
+  // real password honored across a transient corruption, while a config
+  // that never had one to begin with — most read failures, and every one of
+  // them before the very first successful read — still resolves to `null`
+  // exactly as before, matching `userConfigMessage`'s own "don't lock
+  // anything up over a broken config" posture for every other field.
+  let lastKnownPasswordHash: string | null = null;
   const currentPasswordHash = (): string | null => {
     try {
-      return loadUserConfig(options.userConfigPath).dashboardPasswordHash ?? null;
+      lastKnownPasswordHash = loadUserConfig(options.userConfigPath).dashboardPasswordHash ?? null;
     } catch {
-      return null;
+      // Keep `lastKnownPasswordHash` as it was — see the doc comment above.
     }
+    return lastKnownPasswordHash;
   };
 
   const broadcast = (message: DashboardServerMessage) => {
@@ -316,7 +333,13 @@ export async function startDashboardServer(
     // directly here rather than via the event bus, since they need
     // synchronous validation and per-attempt error feedback that a fire-and-
     // forget event emit can't give — see `handleRulesMessage` below.
-    socket.on('message', (raw) => {
+    // `async`, not sync: `verifyDashboardPassword`/`hashDashboardPassword`
+    // below are async precisely so scrypt's work runs off the main thread
+    // (see `dashboardPasswordHash.ts`) — awaiting them here is what actually
+    // gets that benefit, rather than serializing right back onto this
+    // handler anyway. `ws` doesn't care that the listener returns a promise;
+    // nothing here needs the caller to wait on it.
+    socket.on('message', async (raw) => {
       try {
         const message = JSON.parse(raw.toString()) as DashboardClientMessage;
 
@@ -327,7 +350,7 @@ export async function startDashboardServer(
           // password gets silently ignored, same as a malformed frame.
           if (message.type === 'login') {
             const hash = currentPasswordHash();
-            if (!hash || verifyDashboardPassword(message.password, hash)) {
+            if (!hash || (await verifyDashboardPassword(message.password, hash))) {
               authenticatedSockets.add(socket);
               sendInitialPayload(socket);
             } else {
@@ -359,8 +382,24 @@ export async function startDashboardServer(
           }
         } else if (message.type === 'setDashboardPassword') {
           try {
-            const dashboardPasswordHash = message.password === null ? null : hashDashboardPassword(message.password);
+            if (message.password === '') {
+              // Silently accepting this would set a real, trivially-guessable
+              // password while `dashboardPasswordSet` reports "on" — worse
+              // than not setting one at all, since it looks protected.
+              throw new Error('Dashboard password must not be empty — pass null to remove it.');
+            }
+            const dashboardPasswordHash =
+              message.password === null ? null : await hashDashboardPassword(message.password);
             writeUserConfig({ dashboardPasswordHash }, options.userConfigPath);
+            // Updates `lastKnownPasswordHash` immediately rather than
+            // waiting for some future `currentPasswordHash()` call to catch
+            // up: without this, a password set here has no effect on
+            // `lastKnownPasswordHash`'s fail-closed fallback (see its own
+            // doc comment) until the next connect/login attempt happens to
+            // read it back successfully — leaving a window, right after
+            // setting a password, where the config becoming unreadable
+            // before that next read would still fail open.
+            lastKnownPasswordHash = dashboardPasswordHash;
             broadcast(userConfigMessage());
           } catch (err) {
             broadcastError('USER_CONFIG_WRITE_ERROR', describeError(err));

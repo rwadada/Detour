@@ -51,7 +51,16 @@ describe('userConfigStore (fs-backed)', () => {
   it('throws when dashboardPasswordHash is neither a string nor null', () => {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, JSON.stringify({ dashboardPasswordHash: 42 }));
-    expect(() => loadUserConfig(configPath)).toThrow(/must be a string or null/);
+    expect(() => loadUserConfig(configPath)).toThrow(/must be a non-empty string or null/);
+  });
+
+  // A real hash from `hashDashboardPassword` is never empty — this can only
+  // be a hand-edit, and left unchecked would leave `dashboardPasswordSet`
+  // reporting "on" while no password could ever actually verify against it.
+  it('throws when dashboardPasswordHash is an empty string', () => {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ dashboardPasswordHash: '' }));
+    expect(() => loadUserConfig(configPath)).toThrow(/must be a non-empty string or null/);
   });
 
   it('creates ~/.detour itself on first write', () => {

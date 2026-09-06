@@ -874,6 +874,22 @@ export function createCli(): Command {
     return [key, written[key]];
   }
 
+  /**
+   * Validates `detour config --dashboard-password <value>`: `"off"` clears
+   * it (returned as `null`, matching `UserConfig.dashboardPasswordHash`'s
+   * own "unset" value); anything else must be non-empty — an accidentally-
+   * empty value (a script that forgot to interpolate one, say) would
+   * otherwise silently set a real, trivially-guessable password while
+   * still reporting `dashboardPassword = on`, which is worse than not
+   * setting one at all. `dashboardServer.ts`'s `setDashboardPassword`
+   * handler rejects the same thing for the Settings-panel/WebSocket path.
+   */
+  function parseDashboardPasswordFlag(value: string): string | null {
+    if (value === 'off') return null;
+    if (value === '') throw new Error('--dashboard-password must not be empty (pass "off" to remove it)');
+    return value;
+  }
+
   program
     .command('config')
     .description('View or change persistent `detour start` preferences, stored in ~/.detour/config.json')
@@ -889,15 +905,15 @@ export function createCli(): Command {
       '--dashboard-password <value>',
       'Require this password before the dashboard will send any traffic, rules, or accept any control message over its WebSocket connection (issue #66). Pass "off" to remove it. Independent of --lan; takes effect for new connections immediately (no restart needed); stored hashed, never in plaintext.',
     )
-    .action((options: { defaultDetach?: string; lan?: string; dashboardPassword?: string }) => {
+    .action(async (options: { defaultDetach?: string; lan?: string; dashboardPassword?: string }) => {
       try {
         const patch: UserConfig = {};
         if (options.defaultDetach !== undefined)
           patch.defaultDetach = parseOnOff(options.defaultDetach, '--default-detach');
         if (options.lan !== undefined) patch.lanAccess = parseOnOff(options.lan, '--lan');
         if (options.dashboardPassword !== undefined) {
-          patch.dashboardPasswordHash =
-            options.dashboardPassword === 'off' ? null : hashDashboardPassword(options.dashboardPassword);
+          const value = parseDashboardPasswordFlag(options.dashboardPassword);
+          patch.dashboardPasswordHash = value === null ? null : await hashDashboardPassword(value);
         }
 
         if (Object.keys(patch).length > 0) {

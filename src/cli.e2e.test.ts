@@ -2299,6 +2299,22 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       }
     });
 
+    it('rejects an empty --dashboard-password rather than silently setting a trivially-guessable one', async () => {
+      const { home, env } = withTempHome();
+      try {
+        const result = await runTsx(['src/cli.ts', 'config', '--dashboard-password', ''], {
+          cwd: REPO_ROOT,
+          reject: false,
+          env,
+        });
+        expect(result.exitCode).not.toBe(0);
+        expect(result.stderr).toContain('--dashboard-password must not be empty');
+        expect(fs.existsSync(path.join(home, '.detour', 'config.json'))).toBe(false);
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
     it('--dashboard-password off clears a previously-set password', async () => {
       const { home, env } = withTempHome();
       try {

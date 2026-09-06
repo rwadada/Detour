@@ -82,10 +82,15 @@ function validateUserConfig(config: UserConfig, configPath: string): void {
   if (
     config.dashboardPasswordHash !== undefined &&
     config.dashboardPasswordHash !== null &&
-    typeof config.dashboardPasswordHash !== 'string'
+    // Also rejects `''`: a real hash from `hashDashboardPassword` is never
+    // empty, so an empty string here could only be a hand-edit — one that,
+    // left unchecked, would leave `dashboardServer.ts`'s dashboardPasswordSet
+    // reporting "on" while `verifyDashboardPassword` rejects every password
+    // against it (an unrecoverable lockout) rather than failing loudly here.
+    (typeof config.dashboardPasswordHash !== 'string' || config.dashboardPasswordHash === '')
   ) {
     throw new Error(
-      `${configPath}: "dashboardPasswordHash" must be a string or null (got: ${JSON.stringify(config.dashboardPasswordHash)})`,
+      `${configPath}: "dashboardPasswordHash" must be a non-empty string or null (got: ${JSON.stringify(config.dashboardPasswordHash)})`,
     );
   }
 }

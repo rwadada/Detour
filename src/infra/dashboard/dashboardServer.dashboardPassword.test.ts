@@ -81,6 +81,19 @@ describe('startDashboardServer — dashboard password (issue #66)', () => {
     expect(message.type).toBe('backlog');
   });
 
+  // A config that never had a password shouldn't start gating connections
+  // just because it's unreadable for some unrelated reason — that's a
+  // regular `userConfigMessage`-style "fall back to defaults" case, not a
+  // security-relevant one (contrast the "already set" case covered further
+  // below, where the fallback must go the other way).
+  it('does not gate connections when the config is unreadable but a password was never successfully read', async () => {
+    fs.writeFileSync(configPath, '{ not json');
+    handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);
+    const socket = connect();
+    const message = await waitForMessage(socket, (m) => m.type === 'backlog');
+    expect(message.type).toBe('backlog');
+  });
+
   it('setDashboardPassword persists a hash (never the plaintext) and reports dashboardPasswordSet: true', async () => {
     handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);
     const socket = connect();
@@ -96,6 +109,21 @@ describe('startDashboardServer — dashboard password (issue #66)', () => {
     const onDisk = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { dashboardPasswordHash?: string };
     expect(onDisk.dashboardPasswordHash).toBeTruthy();
     expect(onDisk.dashboardPasswordHash).not.toContain('hunter2');
+  });
+
+  // Silently accepting '' would set a real, trivially-guessable password
+  // while `dashboardPasswordSet` keeps reporting "on" — worse than not
+  // setting one at all, since it looks protected. Mirrors `detour config
+  // --dashboard-password`'s own guard on the CLI side.
+  it('setDashboardPassword rejects an empty string rather than setting a trivially-guessable password', async () => {
+    handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'userConfig');
+
+    socket.send(JSON.stringify({ type: 'setDashboardPassword', password: '' }));
+    const error = await waitForMessage(socket, (m) => m.type === 'error');
+    expect(error).toMatchObject({ type: 'error', event: { errorKind: 'USER_CONFIG_WRITE_ERROR' } });
+    expect(fs.existsSync(configPath)).toBe(false);
   });
 
   it('setDashboardPassword with null clears a previously-set password', async () => {
@@ -185,5 +213,29 @@ describe('startDashboardServer — dashboard password (issue #66)', () => {
     early.send(JSON.stringify({ type: 'setUserConfig', state: { lanAccess: true } }));
     const updated = await waitForMessage(early, (m) => m.type === 'userConfig' && m.state.lanAccess === true);
     expect(updated).toMatchObject({ type: 'userConfig', state: { lanAccess: true } });
+  });
+
+  // Regression coverage for a fail-open bug a review caught: `currentPasswordHash`
+  // must not treat "the config failed to read" the same as "no password is
+  // configured" once a password has actually been read successfully at
+  // least once — otherwise corrupting `~/.detour/config.json` (a hand-edit
+  // of some unrelated field is enough; `loadUserConfig` fails the whole
+  // file, not just the bad key) would silently wave every new connection
+  // straight through with no password prompt at all.
+  it('keeps gating new connections if the config becomes unreadable after a password was already set', async () => {
+    handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);
+    const setup = connect();
+    await waitForMessage(setup, (m) => m.type === 'userConfig');
+    setup.send(JSON.stringify({ type: 'setDashboardPassword', password: 'hunter2' }));
+    await waitForMessage(setup, (m) => m.type === 'userConfig' && m.state.dashboardPasswordSet === true);
+
+    // Corrupt the file out from under the running server — same effect as a
+    // hand-edit introducing an unrelated typo (e.g. `lanAccess: "yes"`).
+    fs.writeFileSync(configPath, '{ not json');
+
+    const socket = connect();
+    const message = await waitForMessage(socket, () => true);
+    expect(message).toEqual({ type: 'authRequired' });
+    await expectNoMessage(socket, (m) => m.type === 'backlog');
   });
 });

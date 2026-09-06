@@ -1,6 +1,7 @@
 import { Check, Terminal } from 'lucide-react';
 import { useState } from 'react';
 import type { CapturedExchange } from '@/shared/api';
+import { copyToClipboard } from '@/shared/lib/copyToClipboard';
 import { Button } from '@/shared/ui';
 import { buildCurlCommand } from '../model/curl';
 
@@ -9,9 +10,13 @@ export function CopyAsCurlButton({ exchange }: { exchange: CapturedExchange }) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
-    await navigator.clipboard.writeText(buildCurlCommand(exchange));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    // `copyToClipboard` (not `navigator.clipboard` directly): the dashboard
+    // is reachable over plain `http://` once `--lan` is on (issue #66),
+    // where the Clipboard API is unavailable — see its doc comment.
+    if (await copyToClipboard(buildCurlCommand(exchange))) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
   };
 
   return (
