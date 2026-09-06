@@ -60,6 +60,20 @@ export function RuleProfilesControl() {
   };
   useDismissablePopover(open, containerRef, closePopover);
 
+  // `rulesFile` can legitimately go from set to `null` while this form sits
+  // open (the active rules file was unconfigured elsewhere) — its "Start
+  // from" `<option value="active">` disappears from the `<select>` below
+  // the moment that happens, but `source` itself doesn't follow along on
+  // its own. Derived here (rather than synced back into `source` via a
+  // `useEffect` — an unnecessary cascading-render setState React's own
+  // guidance steers away from: https://react.dev/learn/you-might-not-need-an-effect)
+  // so a controlled `<select>` never renders a `value` that doesn't match
+  // any of its own `<option>`s, and `submitCreate` never acts on a stale
+  // 'active' with nothing active to save. `source` itself still remembers
+  // the user's actual pick, in case `rulesFile` reappears before they
+  // change it.
+  const effectiveSource: NewProfileSource = source === 'active' && !rulesFile ? 'sample' : source;
+
   // A dirty Rules editor draft ignores the next `rules` broadcast (see its
   // sync-from-server guard) so it can't be silently discarded by someone
   // else's change — but that means applying a profile here would otherwise
@@ -97,18 +111,15 @@ export function RuleProfilesControl() {
   // screen and what this is about to snapshot as the new profile are two
   // different things; confirming makes that explicit instead of letting
   // someone assume it just captured their in-progress edits.
+  //
+  // Reads `effectiveSource`, not `source` — `effectiveSource` is never
+  // `'active'` without `rulesFile` also being set (see its own doc
+  // comment), so this never needs its own separate "is there actually
+  // something active to save" check.
   const submitCreate = () => {
     const name = newName.trim();
     if (!name) return;
-    if (source === 'active') {
-      // `rulesFile` can go from set to `null` while this form sits open
-      // (the active rules file was unconfigured elsewhere) — the "Start
-      // from: Currently active rules.json" `<option>` disappears from the
-      // `<select>` above when that happens, but `source` itself doesn't
-      // reset, so this guard (mirrored on the Save button's `disabled`
-      // below) is what actually stops a "save active" request with nothing
-      // active to save.
-      if (!rulesFile) return;
+    if (effectiveSource === 'active') {
       if (
         dirtyDraft &&
         !window.confirm(
@@ -119,7 +130,7 @@ export function RuleProfilesControl() {
       }
       saveActiveAsProfile(name);
     } else {
-      createProfile(name, source);
+      createProfile(name, effectiveSource);
     }
     cancelCreate();
   };
@@ -165,7 +176,7 @@ export function RuleProfilesControl() {
                 className="mb-1.5 h-7 w-full text-xs"
               />
               <Select
-                value={source}
+                value={effectiveSource}
                 onChange={(e) => setSource(e.target.value as NewProfileSource)}
                 className="mb-1.5 w-full text-xs"
               >
@@ -177,13 +188,7 @@ export function RuleProfilesControl() {
                 <Button variant="outline" size="sm" className="flex-1" onClick={cancelCreate}>
                   Cancel
                 </Button>
-                <Button
-                  size="sm"
-                  className="flex-1"
-                  onClick={submitCreate}
-                  disabled={!newName.trim() || (source === 'active' && !rulesFile)}
-                  title={source === 'active' && !rulesFile ? 'No active rules to save' : undefined}
-                >
+                <Button size="sm" className="flex-1" onClick={submitCreate} disabled={!newName.trim()}>
                   Save
                 </Button>
               </div>
