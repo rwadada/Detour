@@ -50,6 +50,7 @@ export function GroupByHostToggle() {
       {groupByHost && (
         <>
           <Button
+            type="button"
             variant="ghost"
             size="icon"
             className="h-7 w-7"
@@ -60,6 +61,7 @@ export function GroupByHostToggle() {
             <UnfoldVertical className="h-3.5 w-3.5" />
           </Button>
           <Button
+            type="button"
             variant="ghost"
             size="icon"
             className="h-7 w-7"
