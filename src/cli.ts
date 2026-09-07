@@ -826,7 +826,9 @@ async function runDetached(options: StartOptions): Promise<void> {
  */
 export function installProcessCrashGuards(): void {
   process.on('uncaughtException', (err) => {
-    console.error(`✖ Uncaught exception (continuing): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+    console.error(
+      `✖ Uncaught exception (continuing): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
+    );
   });
   process.on('unhandledRejection', (reason) => {
     console.error(
