@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { resolveDashboardPort, shouldAutoOpenDashboard } from './cli';
+import { afterEach, describe, expect, it } from 'vitest';
+import { installProcessCrashGuards, resolveDashboardPort, shouldAutoOpenDashboard } from './cli';
 
 /**
  * `resolveDashboardPort` is the one piece of pure, synchronous logic in
@@ -55,5 +55,39 @@ describe('shouldAutoOpenDashboard', () => {
 
   it('skips when the dashboard has not been built yet', () => {
     expect(shouldAutoOpenDashboard({ open: true, dashboardPort: 9080, built: false })).toBe(false);
+  });
+});
+
+/**
+ * `installProcessCrashGuards` (issue #94) keeps the process alive across an
+ * unanticipated `uncaughtException`/`unhandledRejection` instead of dying —
+ * but must still mark the eventual exit as a failure (`process.exitCode`),
+ * or a short-lived command that hits one would silently exit 0.
+ */
+describe('installProcessCrashGuards (issue #94)', () => {
+  const originalExitCode = process.exitCode;
+
+  afterEach(() => {
+    process.removeAllListeners('uncaughtException');
+    process.removeAllListeners('unhandledRejection');
+    process.exitCode = originalExitCode;
+  });
+
+  it('sets a non-zero exitCode on an uncaught exception, without crashing', () => {
+    installProcessCrashGuards();
+    process.exitCode = 0;
+    process.emit('uncaughtException', new Error('boom'));
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('sets a non-zero exitCode on an unhandled rejection, without crashing', () => {
+    installProcessCrashGuards();
+    process.exitCode = 0;
+    process.emit(
+      'unhandledRejection',
+      new Error('boom'),
+      Promise.reject().catch(() => {}),
+    );
+    expect(process.exitCode).toBe(1);
   });
 });

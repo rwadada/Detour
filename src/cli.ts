@@ -829,11 +829,19 @@ export function installProcessCrashGuards(): void {
     console.error(
       `✖ Uncaught exception (continuing): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
     );
+    // Keep the process alive (that's the whole point of this guard — see the
+    // doc comment above), but still mark the eventual exit as a failure. A
+    // long-running `detour start` never reaches an implicit exit at all, so
+    // this only matters for a short-lived command (e.g. `detour config`)
+    // that happens to hit an unanticipated error and would otherwise exit 0,
+    // silently telling scripts/CI the command succeeded.
+    process.exitCode = 1;
   });
   process.on('unhandledRejection', (reason) => {
     console.error(
       `✖ Unhandled rejection (continuing): ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`,
     );
+    process.exitCode = 1;
   });
 }
 
