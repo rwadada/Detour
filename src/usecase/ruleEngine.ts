@@ -20,6 +20,15 @@ export interface RuleEngineOptions {
   watcher?: FileWatcher;
   /** Validates/writes rules.json — injected for the same reason. Required to call `write()` (issue #19's Rules editor); omit for a read-only engine. */
   writer?: RulesFileWriter;
+  /**
+   * Issue #98's `detour start --allow-external-script-paths` opt-in:
+   * whether a `script.path`/`mock.bodyFile` may resolve outside `basePath`
+   * (an absolute path, or `../` traversal) instead of being rejected at
+   * rule-match time. Defaults to `false` — a rules.json write (e.g. via the
+   * dashboard's `setRules`) otherwise can't point either at an arbitrary
+   * file on disk. See `resolveRulePath`'s doc comment.
+   */
+  allowExternalScriptPaths?: boolean;
 }
 
 /**
@@ -32,6 +41,8 @@ export class RuleEngine {
   readonly filePath: string;
   /** Directory rules.json lives in — the base for relative paths like `mock.bodyFile`. */
   readonly basePath: string;
+  /** See `RuleEngineOptions.allowExternalScriptPaths`'s doc comment. */
+  readonly allowExternalScriptPaths: boolean;
   private compiledRules: CompiledRule[];
   /** See `RulesFile.$activeProfile`'s doc comment — mirrors whatever the on-disk file's own field currently says, kept in sync by `reload()` the same way `compiledRules` is. */
   private activeProfile: string | undefined;
@@ -42,6 +53,7 @@ export class RuleEngine {
   private constructor(filePath: string, data: RulesFile, options: RuleEngineOptions) {
     this.filePath = filePath;
     this.basePath = path.dirname(filePath);
+    this.allowExternalScriptPaths = options.allowExternalScriptPaths ?? false;
     this.compiledRules = data.rules.map(compileRule);
     this.activeProfile = data.$activeProfile;
     this.options = options;

@@ -61,7 +61,10 @@ dashboard run on your own machine. Worth knowing up front:
 - **`rules.json` is not a sandboxed format.** A `script` action's hook runs
   with the same permissions as the `detour` process itself. Only load rules
   files you trust the origin of, the same way you'd treat any other local
-  script.
+  script. `script.path` and `mock.bodyFile` are restricted to the directory
+  rules.json lives in by default (an absolute path or `../` traversal is
+  rejected) — `detour start --allow-external-script-paths` opts back into
+  unrestricted paths for both, if you deliberately want that.
 - Certificate pinning inside a target app is a defense Detour (or any MITM
   proxy) cannot bypass from the network side — that's expected behavior, not
   a vulnerability in Detour.
