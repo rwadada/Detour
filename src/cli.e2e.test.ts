@@ -548,6 +548,48 @@ function waitForExchange(
   });
 }
 
+/** The subset of a `BreakpointPayload` (see domain/exchange/types.ts) these tests inspect. */
+interface BreakpointHitPayload {
+  id: string;
+  bodyTruncated: boolean;
+}
+
+/**
+ * Opens a dashboard `/ws` connection and resolves with the first `breakpoint`
+ * broadcast (see dashboardServer.ts's `onBreakpointHit`) for the given
+ * `phase` — the payload the dashboard would show a user for a paused
+ * exchange, including whether its display copy of the body was truncated.
+ * Leaves `socket` open (unlike `waitForExchange`) so the caller can send a
+ * `breakpointResume` command back on it once done inspecting the payload.
+ * Connects and resolves its `open` promise before the caller does anything
+ * that might trigger the broadcast, so there's no race with a broadcast
+ * firing before this is listening.
+ */
+function waitForBreakpoint(
+  dashboardPort: number,
+  phase: 'request' | 'response',
+): Promise<{
+  socket: WebSocket;
+  payload: Promise<BreakpointHitPayload>;
+}> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+    const payload = new Promise<BreakpointHitPayload>((resolvePayload) => {
+      socket.on('message', (raw) => {
+        const message = JSON.parse(raw.toString()) as {
+          type: string;
+          payload?: { phase: string } & BreakpointHitPayload;
+        };
+        if (message.type === 'breakpoint' && message.payload?.phase === phase) {
+          resolvePayload(message.payload);
+        }
+      });
+    });
+    socket.on('open', () => resolve({ socket, payload }));
+    socket.on('error', reject);
+  });
+}
+
 /** Requests `path` through the given HTTP proxy, to `http://127.0.0.1:targetPort`. */
 function requestThroughProxy(
   proxyPort: number,
@@ -801,6 +843,103 @@ describe('detour start (CLI, end-to-end)', () => {
     // if the hook's `req.body` (and thus what got forwarded) had been
     // truncated at the cap, this would come back short.
     expect(JSON.parse(result.body).body).toHaveLength(bigBody.length);
+  });
+
+  it('forwards a request body larger than the dashboard capture cap unmodified through a breakpoint rule resumed without edits (issue #95)', async () => {
+    // Same cap as the script-rule test above, but exercised through a
+    // `breakpoint` rule's request phase instead: resuming a paused request
+    // untouched must forward the real, full body upstream — not the
+    // dashboard's own capped display copy (MAX_CAPTURED_BODY_BYTES, see
+    // domain/exchange/bodyCapture.ts).
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-breakpoint-big-request',
+            match: { url: `http://127.0.0.1:${echo.port}/*` },
+            action: { type: 'breakpoint', request: true, response: false },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const { socket, payload } = await waitForBreakpoint(cli.dashboardPort, 'request');
+    const bigBody = 'x'.repeat(300 * 1024); // > MAX_CAPTURED_BODY_BYTES
+    const resultPromise = new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = http.request(
+        { host: 'localhost', port: cli!.port, path: `http://127.0.0.1:${echo!.port}/bp`, method: 'POST' },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+        },
+      );
+      req.on('error', reject);
+      req.end(bigBody);
+    });
+
+    const hit = await payload;
+    // The dashboard's own display copy is truncated (it always caps at
+    // MAX_CAPTURED_BODY_BYTES) — confirming that here, rather than assuming
+    // it, guards against this test passing were the cap ever raised past
+    // this body's size.
+    expect(hit.bodyTruncated).toBe(true);
+    socket.send(
+      JSON.stringify({ type: 'breakpointResume', command: { id: hit.id, phase: 'request', action: 'resume' } }),
+    );
+    socket.close();
+
+    const result = await resultPromise;
+    expect(result.status).toBe(200);
+    // The upstream echo server's own report of what it actually received —
+    // if the (capped) display copy had been forwarded instead of the real
+    // body, this would come back short at MAX_CAPTURED_BODY_BYTES.
+    expect(JSON.parse(result.body).body).toHaveLength(bigBody.length);
+  });
+
+  it('forwards a response body larger than the dashboard capture cap unmodified through a breakpoint rule resumed without edits (issue #95)', async () => {
+    const bodyBytes = 300 * 1024; // > MAX_CAPTURED_BODY_BYTES
+    const fixed = await startFixedBodyServer(bodyBytes);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-breakpoint-big-response',
+            match: { url: `http://127.0.0.1:${fixed.port}/*` },
+            action: { type: 'breakpoint', request: false, response: true },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    try {
+      const { socket, payload } = await waitForBreakpoint(cli.dashboardPort, 'response');
+      const resultPromise = requestThroughProxy(cli.port, fixed.port, '/big');
+
+      const hit = await payload;
+      expect(hit.bodyTruncated).toBe(true);
+      socket.send(
+        JSON.stringify({ type: 'breakpointResume', command: { id: hit.id, phase: 'response', action: 'resume' } }),
+      );
+      socket.close();
+
+      const result = await resultPromise;
+      expect(result.status).toBe(200);
+      // What the client actually received (not the dashboard's own capped
+      // display copy) must be the full, untruncated response.
+      expect(result.body).toHaveLength(bodyBytes);
+    } finally {
+      await fixed.close();
+    }
   });
 
   it('forwards a response body larger than the dashboard capture cap unmodified through a script rule', async () => {
