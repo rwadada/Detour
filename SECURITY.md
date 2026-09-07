@@ -46,10 +46,13 @@ dashboard run on your own machine. Worth knowing up front:
   a rule engine that can execute arbitrary JavaScript (`script` rules) and
   redirect traffic (`route` rules) — treat anything that can reach it as
   having meaningful access to what's flowing through the proxy.
-- **`--lan` / `lanAccess` widens that exposure to your local network,
-  without authentication by default.** Only enable it on a network you
-  trust, and set a dashboard password (`detour config --dashboard-password`)
-  when you do.
+- **The proxy itself is reachable from your local network unconditionally**
+  — `--lan`/`lanAccess` doesn't gate it, and never has; a proxy nothing else
+  on the network can reach isn't very useful. `--lan`/`lanAccess` only
+  widens the **dashboard's** exposure the same way, from localhost-only to
+  your whole LAN, with no authentication by default. Only enable it on a
+  network you trust, and set a dashboard password
+  (`detour config --dashboard-password`) when you do.
 - **The CA private key is a high-value secret.** It's the key behind a
   certificate you've asked your OS/browser to trust — anyone who reads it
   can mint valid-looking certificates for any domain, for as long as your
