@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadUserConfig, writeUserConfig } from './userConfigStore';
 
 // A syntactically well-formed `dashboardPasswordHash` fixture (matches the
@@ -179,6 +179,38 @@ describe('userConfigStore (fs-backed)', () => {
 
       expect(fs.statSync(path.dirname(configPath)).mode & 0o777).toBe(0o700);
       expect(fs.statSync(configPath).mode & 0o777).toBe(0o600);
+    });
+
+    it('tightens a pre-existing world-readable config to 0600 before writing new content to it, not just after', () => {
+      // Regression for a Copilot review finding on PR #104: if the chmod
+      // only ran *after* writeFileSync, a pre-existing world-readable
+      // config.json would sit world-readable — with this call's own new
+      // content already written into it — for the window between the two
+      // calls. Asserting call order (chmod, then write, then chmod again)
+      // is what's actually checkable synchronously; the statSync assertions
+      // above cover the end state.
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({ defaultDetach: true }));
+      // eslint-disable-next-line sonarjs/file-permissions -- test fixture simulating a pre-fix, world-readable config.
+      fs.chmodSync(configPath, 0o644);
+
+      const realChmodSync = fs.chmodSync.bind(fs);
+      const realWriteFileSync = fs.writeFileSync.bind(fs);
+      const calls: string[] = [];
+      const chmodSpy = vi.spyOn(fs, 'chmodSync').mockImplementation((target, mode) => {
+        if (target === configPath) calls.push(`chmod:${mode}`);
+        return realChmodSync(target, mode);
+      });
+      const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation((target, ...rest) => {
+        if (target === configPath) calls.push('write');
+        return realWriteFileSync(target, ...rest);
+      });
+
+      writeUserConfig({ dashboardPasswordHash: VALID_HASH_FIXTURE }, configPath);
+
+      chmodSpy.mockRestore();
+      writeSpy.mockRestore();
+      expect(calls).toEqual(['chmod:384', 'write', 'chmod:384']); // 0o600 === 384
     });
   });
 });

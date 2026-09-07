@@ -175,9 +175,17 @@ export function writeUserConfig(patch: UserConfig, configPath: string = resolveU
   // 0o600 (owner read/write only): the file may hold `dashboardPasswordHash`,
   // a value someone with read access could otherwise brute-force offline.
   // `writeFileSync`'s `mode` only takes effect when it creates the file, so
-  // also re-chmod explicitly for a config.json left world-readable by a
-  // version predating this fix (issue #96). Meaningless on Windows, but
-  // harmless to still pass.
+  // an existing config.json left world-readable by a version predating this
+  // fix needs an explicit chmod too (issue #96) — done *before* the write,
+  // not just after: `writeFileSync` on an existing file truncates it in
+  // place rather than replacing it, so if we wrote first and chmod'd after,
+  // the new content (this call's own `patch`, which might be the very write
+  // that first sets `dashboardPasswordHash`) would sit world-readable for
+  // the instant between those two calls. Chmod'ing after as well covers the
+  // file-didn't-exist-yet case, where there's nothing to tighten beforehand
+  // and `writeFileSync`'s own `mode` already applies. Both no-ops on
+  // Windows (no POSIX permission bits), but harmless to still pass/call.
+  if (process.platform !== 'win32' && fs.existsSync(configPath)) fs.chmodSync(configPath, 0o600);
   fs.writeFileSync(configPath, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
   if (process.platform !== 'win32') fs.chmodSync(configPath, 0o600);
   return merged;
