@@ -205,7 +205,15 @@ export async function startDashboardServer(
       const end = hostHeader.indexOf(']');
       return end === -1 ? undefined : hostHeader.slice(1, end).toLowerCase();
     }
+    const firstColon = hostHeader.indexOf(':');
     const lastColon = hostHeader.lastIndexOf(':');
+    // More than one `:` outside of brackets means this isn't `host` or
+    // `host:port` — it's an unbracketed IPv6 literal (e.g. `::1:1234`),
+    // which RFC 7230 doesn't permit as a bare Host value. Reject rather than
+    // guess which segment is the "hostname", so a malformed/ambiguous Host
+    // header can't be parsed into something that happens to match the
+    // allowlist.
+    if (firstColon !== -1 && firstColon !== lastColon) return undefined;
     return (lastColon === -1 ? hostHeader : hostHeader.slice(0, lastColon)).toLowerCase();
   }
 
