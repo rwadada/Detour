@@ -41,6 +41,7 @@ export function GroupByHostToggle() {
             className="h-7 w-7"
             onClick={() => expandAllHosts()}
             title="Expand all hosts"
+            aria-label="Expand all hosts"
           >
             <UnfoldVertical className="h-3.5 w-3.5" />
           </Button>
@@ -50,6 +51,7 @@ export function GroupByHostToggle() {
             className="h-7 w-7"
             onClick={() => collapseAllHosts(hosts)}
             title="Collapse all hosts"
+            aria-label="Collapse all hosts"
           >
             <FoldVertical className="h-3.5 w-3.5" />
           </Button>
