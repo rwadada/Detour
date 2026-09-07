@@ -559,6 +559,7 @@
   Google's font-specific CDN caching and `display=swap` for free.
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@700;800;900&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;700&display=swap">
 </head>
 <body>
@@ -567,7 +568,7 @@
 
 <div class="shell">
   <header class="topbar">
-    <button class="icon-btn menu-btn" id="menuBtn" title="Menu" aria-label="Toggle navigation">☰</button>
+    <button class="icon-btn menu-btn" id="menuBtn" title="Menu" aria-label="Toggle navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
     <a href="#overview" class="brand">
       <svg class="brand-mark" viewBox="0 0 64 64" aria-hidden="true">
         <rect width="64" height="64" rx="14" fill="#0f1117" />
@@ -1140,10 +1141,12 @@ detour config --dashboard-password off  <span class="tok-com"># remove it</span>
     function closeMobileNav() {
       sidebar.classList.remove("open");
       backdrop.classList.remove("show");
+      menuBtn.setAttribute("aria-expanded", "false");
     }
     menuBtn.addEventListener("click", function () {
-      sidebar.classList.toggle("open");
-      backdrop.classList.toggle("show");
+      var open = sidebar.classList.toggle("open");
+      backdrop.classList.toggle("show", open);
+      menuBtn.setAttribute("aria-expanded", String(open));
     });
     backdrop.addEventListener("click", closeMobileNav);
     navLinks.forEach(function (l) { l.addEventListener("click", closeMobileNav); });
