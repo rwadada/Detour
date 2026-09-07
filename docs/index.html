@@ -552,6 +552,12 @@
 
   @media print { .sidebar, .toc, .topbar { display: none; } }
 </style>
+<!--
+  The only external requests this page makes: Google Fonts, for the three
+  typefaces below. Everything else (markup/CSS/JS, no build step) lives in
+  this one file — deliberately not vendoring/self-hosting the fonts, to get
+  Google's font-specific CDN caching and `display=swap` for free.
+-->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@700;800;900&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;700&display=swap">
 </head>
@@ -1045,12 +1051,18 @@ detour config --dashboard-password off  <span class="tok-com"># remove it</span>
       },
       { rootMargin: "-20% 0px -70% 0px" }
     );
-    var mo = new MutationObserver(function () {
+    function observeActiveHeadings() {
       document.querySelectorAll(".page.active h2, .page.active h3").forEach(function (h) {
         spyObserver.observe(h);
       });
-    });
+    }
+    var mo = new MutationObserver(observeActiveHeadings);
     mo.observe(main, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    // The MutationObserver only fires on a *later* page switch — the very
+    // first page's headings (built by the initial showPage() call above,
+    // before mo.observe() even ran) would otherwise never get registered,
+    // silently disabling the TOC scrollspy until the user navigates once.
+    observeActiveHeadings();
 
     // copy buttons
     document.querySelectorAll(".copy").forEach(function (btn) {
