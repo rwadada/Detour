@@ -797,6 +797,44 @@ async function runDetached(options: StartOptions): Promise<void> {
   console.log(`  Stop with: detour stop --port ${port}`);
 }
 
+/**
+ * Last-resort safety net (issue #94): `detour start` is meant to run for
+ * hours/days as a MITM proxy, so a single request/connection tripping an
+ * unexpected synchronous throw or rejected promise somewhere deep in the
+ * stack (a malformed percent-encoded URL hitting `decodeURIComponent`
+ * uncaught was the case that surfaced this — see `staticServer.ts`'s own
+ * guard for the actual fix) should never take the whole process — and every
+ * in-flight proxied connection along with it — down with it. Node's default
+ * behavior for an *unhandled* `uncaughtException`/`unhandledRejection` is to
+ * print a stack trace and exit; registering a listener here suppresses that
+ * exit and just logs instead, trading "crash loudly" for "stay up and keep
+ * proxying" — the right tradeoff for a long-running local dev tool, even
+ * though Node's own docs caution that continuing after an uncaught exception
+ * can leave the process in a somewhat inconsistent state. Deliberately not
+ * relied on as the primary fix for any specific bug (that's what a real
+ * try/catch at the actual throw site is for) — this only exists to keep one
+ * unanticipated one from being fatal.
+ *
+ * Called from both real entry points — `bin/detour.js` (the npm-installed
+ * CLI, which `require()`s the compiled `dist/cli.js` rather than running it
+ * directly, so `cli.ts`'s own `require.main === module` guard below never
+ * fires there) and this file's own guard (covers `tsx src/cli.ts` in dev, and
+ * `scripts/build-release.mjs`'s single-file bundle, which esbuild's entry-
+ * point handling makes `require.main === module` for) — rather than
+ * installed unconditionally at module load, so importing `createCli` for
+ * tests doesn't also install process-wide handlers no test expects.
+ */
+export function installProcessCrashGuards(): void {
+  process.on('uncaughtException', (err) => {
+    console.error(`✖ Uncaught exception (continuing): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.error(
+      `✖ Unhandled rejection (continuing): ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`,
+    );
+  });
+}
+
 export function createCli(): Command {
   const program = new Command();
 
@@ -1132,5 +1170,6 @@ export function createCli(): Command {
 // and calls `.parse()` itself) or by tests importing `createCli` without
 // wanting it to run.
 if (require.main === module) {
+  installProcessCrashGuards();
   createCli().parse(process.argv);
 }
