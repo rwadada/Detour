@@ -160,8 +160,26 @@ export function writeUserConfig(patch: UserConfig, configPath: string = resolveU
   const merged: UserConfig = { ...loadUserConfig(configPath) };
   for (const key of WRITABLE_KEYS) copyIfDefined(merged, patch, key);
   validateUserConfig(merged, configPath);
-  fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, `${JSON.stringify(merged, null, 2)}\n`);
+  const configDir = path.dirname(configPath);
+  // 0o700 (owner-only): this file can carry `dashboardPasswordHash`, and
+  // `recursive: true` applies `mode` to every directory mkdirSync creates in
+  // the chain, so a first-ever write also locks down `~/.detour` itself in
+  // this one call (issue #96). Meaningless on Windows (no POSIX permission
+  // bits), but harmless to still pass.
+  fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  // mkdirSync's `mode` only applies to a directory it actually creates — an
+  // existing `~/.detour` left world-readable by a version predating this fix
+  // is untouched by the call above, so re-assert the invariant explicitly on
+  // every write. No-op on Windows.
+  if (process.platform !== 'win32') fs.chmodSync(configDir, 0o700);
+  // 0o600 (owner read/write only): the file may hold `dashboardPasswordHash`,
+  // a value someone with read access could otherwise brute-force offline.
+  // `writeFileSync`'s `mode` only takes effect when it creates the file, so
+  // also re-chmod explicitly for a config.json left world-readable by a
+  // version predating this fix (issue #96). Meaningless on Windows, but
+  // harmless to still pass.
+  fs.writeFileSync(configPath, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
+  if (process.platform !== 'win32') fs.chmodSync(configPath, 0o600);
   return merged;
 }
 

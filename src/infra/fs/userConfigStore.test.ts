@@ -153,4 +153,32 @@ describe('userConfigStore (fs-backed)', () => {
       somethingFromAFutureVersion: 'kept',
     });
   });
+
+  // Windows has no POSIX permission bits — `mode`/`chmodSync` are no-ops
+  // there (see userConfigStore.ts's comments), so these only mean anything
+  // on POSIX platforms (issue #96).
+  describe.skipIf(process.platform === 'win32')('file permissions (POSIX only)', () => {
+    it('writes config.json 0600 (owner-only) and ~/.detour 0700, since the file can hold a password hash', () => {
+      writeUserConfig({ defaultDetach: true }, configPath);
+
+      expect(fs.statSync(configPath).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(path.dirname(configPath)).mode & 0o777).toBe(0o700);
+    });
+
+    it('tightens a pre-existing config left with loose permissions (by a version predating issue #96) on the next write', () => {
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({ defaultDetach: true }));
+      // Deliberately loosening permissions to simulate a config.json written
+      // by a version predating issue #96's fix — not a real permission mistake.
+      // eslint-disable-next-line sonarjs/file-permissions -- test fixture simulating a pre-fix, world-readable config.
+      fs.chmodSync(path.dirname(configPath), 0o755);
+      // eslint-disable-next-line sonarjs/file-permissions -- test fixture simulating a pre-fix, world-readable config.
+      fs.chmodSync(configPath, 0o644);
+
+      writeUserConfig({ lanAccess: true }, configPath);
+
+      expect(fs.statSync(path.dirname(configPath)).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(configPath).mode & 0o777).toBe(0o600);
+    });
+  });
 });
