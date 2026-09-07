@@ -272,15 +272,6 @@
   }
   .nav-link[aria-current="page"] .n { color: var(--accent); }
 
-  .sidebar-foot {
-    margin-top: auto;
-    padding: 10px;
-    font-size: 12px;
-    color: var(--muted-2);
-    border-top: 1px solid var(--line);
-    padding-top: 14px;
-  }
-
   /* ---------- main content ---------- */
 
   main {
@@ -551,6 +542,18 @@
   .backdrop.show { display: block; }
 
   @media print { .sidebar, .toc, .topbar { display: none; } }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
 </style>
 <!--
   The only external requests this page makes: Google Fonts, for the three
@@ -601,9 +604,9 @@
         <li><a class="nav-link" data-page="platforms" href="#platforms"><span class="n">05</span>Setup &amp; platforms</a></li>
         <li><a class="nav-link" data-page="security" href="#security"><span class="n">06</span>LAN &amp; security</a></li>
         <li><a class="nav-link" data-page="cli" href="#cli"><span class="n">07</span>CLI reference</a></li>
+        <li><a class="nav-link" data-page="troubleshooting" href="#troubleshooting"><span class="n">08</span>Troubleshooting</a></li>
       </ul>
     </div>
-    <div class="sidebar-foot">Detour is a from-scratch MITM proxy engine — no forked third-party proxy library underneath.</div>
   </nav>
 
   <main id="main">
@@ -625,6 +628,7 @@
         <span class="arrow">╌╌╌╌╌╌▶</span>
         <span class="node">localhost:9080 dashboard</span>
       </div>
+      <p class="sr-only">Diagram: a client sends a CONNECT request to detour start, which forwards it on to the real server; in parallel, a live copy of that traffic streams to the dashboard at localhost:9080.</p>
 
       <div class="cta-row">
         <a class="btn btn-primary" href="#getting-started">Get started →</a>
@@ -635,16 +639,18 @@
       <p>Charles and Proxyman are GUI-first. mitmproxy is CLI-first but keeps its web UI as an afterthought.
         Detour treats both as first-class: <code class="inline">detour start</code> from a terminal — CI job,
         SSH session, whatever — and get the same live traffic view, rule engine, and breakpoint editor a GUI
-        tool would give you, in a browser tab it opens for you.</p>
+        tool would give you — including a man-in-the-middle (MITM) view into HTTPS, not just plaintext HTTP —
+        in a browser tab it opens for you.</p>
 
       <div class="grid-2">
-        <div class="feature-card"><h3><span class="dot"></span>MITM, from scratch</h3><p>A hand-built proxy engine on Node's own http/https/http2/tls/net — not a patched third-party MITM library — so bodies stream and throttle chunk-by-chunk instead of buffering whole payloads.</p></div>
+        <div class="feature-card"><h3><span class="dot"></span>Streams, doesn't buffer</h3><p>Bodies are throttled and forwarded chunk by chunk as they arrive, so a slow-connection simulation behaves like a slow connection, not like a fast one that pauses. Large downloads don't sit in memory waiting to be complete.</p></div>
         <div class="feature-card"><h3><span class="dot"></span>Declarative rules</h3><p>Mock, route, rewrite, breakpoint, or run a JS hook — all from one <code class="inline">rules.json</code>, hot-reloaded the moment you save it.</p></div>
         <div class="feature-card"><h3><span class="dot"></span>Live dashboard</h3><p>Every exchange streams in over WebSocket as it happens. Filter, inspect, diff two requests, replay one, or pause it mid-flight.</p></div>
         <div class="feature-card"><h3><span class="dot"></span>Setup that's actually automated</h3><p><code class="inline">detour setup</code> trusts the CA cert and points the system proxy at itself for mac/Android/iOS Simulator/Linux — no more hand-copying certificates.</p></div>
       </div>
 
       <h2>Quickstart</h2>
+      <p class="muted">Requires Node 18 or newer. Detour itself runs on macOS, Linux, and Windows.</p>
       <div class="code-block">
         <div class="code-head"><span>terminal</span><button class="copy" data-copy="brew tap rwadada/detour&#10;brew install detour&#10;detour start --port 8080">copy</button></div>
         <pre><span class="tok-com"># install (Homebrew tap, self-contained build)</span>
@@ -687,11 +693,17 @@ npm start -- start --port 8080</pre>
         Decrypting HTTPS means installing it as a trusted root on whatever you're pointing at Detour —
         <code class="inline">detour cert export [path]</code> writes it out for scripting the install.</p>
 
+      <div class="callout info"><span class="mark">TIP</span><p>On macOS, Android, Linux, or the iOS Simulator, don't do this by hand —
+        <code class="inline">detour setup --target mac</code> trusts the certificate and points your system proxy
+        at Detour in one command. See <a href="#platforms">Setup &amp; platforms</a>. The manual steps below are
+        for the platforms that can't be automated, and for when you want to know what <code class="inline">setup</code>
+        is doing.</p></div>
+
       <div class="platform-grid">
-        <div class="platform-card"><div class="plat-name">macOS</div><p>Keychain Access → expand Trust → <strong>Always Trust</strong>. Adding it alone isn't enough.</p></div>
+        <div class="platform-card"><div class="plat-name">macOS</div><p>Keychain Access → expand Trust → <strong>Always Trust</strong>. Adding it to Keychain isn't enough on its own — without the Always Trust step, macOS keeps it untrusted and HTTPS will fail.</p></div>
         <div class="platform-card"><div class="plat-name">Windows</div><p><code class="inline">certmgr.msc</code> → Trusted Root Certification Authorities → Import.</p></div>
         <div class="platform-card"><div class="plat-name">iOS (device)</div><p>Install the profile, <em>then</em> flip it on separately under Certificate Trust Settings. Missing that second step is the #1 reason nothing shows up.</p></div>
-        <div class="platform-card"><div class="plat-name">Android</div><p>Settings → Install a certificate. Apps targeting API 24+ ignore user CAs unless they opt in — see <a href="#security">LAN &amp; security</a>.</p></div>
+        <div class="platform-card"><div class="plat-name">Android</div><p>Settings → Install a certificate. Since Android 7 (API 24), apps don't trust user-added CAs by default unless they opt in via a <code class="inline">network_security_config</code> — some apps still won't show decrypted traffic even once the cert is installed. A rooted device installing the cert into the <em>system</em> store instead is the more reliable path for those.</p></div>
         <div class="platform-card"><div class="plat-name">Simulators / emulators</div><p>Usually the easiest — no pinning restrictions to fight.</p></div>
       </div>
 
@@ -704,10 +716,10 @@ npm start -- start --port 8080</pre>
           <tbody>
             <tr><td class="flag">--port &lt;n&gt;</td><td>Proxy port (default <code class="inline">8080</code>)</td></tr>
             <tr><td class="flag">--dashboard-port &lt;n&gt;</td><td>Dashboard port (default <code class="inline">--port + 1000</code>)</td></tr>
-            <tr><td class="flag">--rules &lt;path&gt;</td><td>Load a rules file; hot-reloads on save. Omit it and a <code class="inline">passthrough.rule.json</code> in the current directory is loaded automatically, if one exists</td></tr>
-            <tr><td class="flag">--dump &lt;level&gt;</td><td><code class="inline">summary</code> / <code class="inline">full</code> / <code class="inline">file</code> (written to <code class="inline">~/.detour/dumps</code>) console verbosity, sensitive headers redacted</td></tr>
+            <tr><td class="flag">--rules &lt;path&gt;</td><td>Load a rules file; hot-reloads on save. Omit it and a <code class="inline">passthrough.rule.json</code> in the current directory — just a plain rules file under a conventional name — is loaded automatically, if one exists</td></tr>
+            <tr><td class="flag">--dump &lt;level&gt;</td><td>How much each exchange is logged. <code class="inline">summary</code> (default) is one line; <code class="inline">full</code> adds headers and body to the console; <code class="inline">file</code> writes that same detail to <code class="inline">~/.detour/dumps</code> instead. <code class="inline">full</code> and <code class="inline">file</code> redact sensitive headers</td></tr>
             <tr><td class="flag">--no-http2</td><td>Falls back to HTTP/1.1-only on MITM'd HTTPS</td></tr>
-            <tr><td class="flag">--proto &lt;path&gt;</td><td>.proto schema for pretty-printed gRPC dumps</td></tr>
+            <tr><td class="flag">--proto &lt;path&gt;</td><td>.proto schema for pretty-printed gRPC bodies in the CLI's <code class="inline">full</code>/<code class="inline">file</code> dumps only — the dashboard's body viewer always shows gRPC as raw bytes</td></tr>
             <tr><td class="flag">--no-open</td><td>Don't auto-open the dashboard in a browser on startup</td></tr>
           </tbody>
         </table>
@@ -728,6 +740,12 @@ npm start -- start --port 8080</pre>
         doesn't lose recent history. Filter by method, status class, or a URL substring; click a row to inspect
         headers, query params, and pretty-printed body in a resizable side panel.</p>
 
+      <div class="callout info"><span class="mark">NOTE</span><p>The body shown in the inspector is capped at
+        256 KB per exchange — past that, the display is marked truncated. That cap is display-only: the full
+        body is still streamed to the client/server untouched, and a <code class="inline">script</code> rule's
+        <code class="inline">beforeRequest</code>/<code class="inline">beforeResponse</code> hooks always see the
+        complete, uncapped body regardless of what the dashboard shows.</p></div>
+
       <div class="tbl-wrap">
         <table>
           <thead><tr><th>Time</th><th>Method</th><th>Status</th><th>URL</th><th>Size</th></tr></thead>
@@ -741,29 +759,29 @@ npm start -- start --port 8080</pre>
       </div>
 
       <h2>Traffic controls</h2>
-      <p>Four header toggles, all live for the whole proxy and synced across every connected tab:</p>
+      <p>Four controls in the header. Each one changes the <strong>proxy itself</strong>, not just your view —
+        so it takes effect immediately, for every client running through Detour, and every open dashboard tab
+        stays in sync.</p>
       <div class="grid-2">
-        <div class="feature-card"><h3><span class="dot"></span>Intercept On/Off</h3><p>Master switch for the rule engine. Off drops HTTPS to a raw TLS passthrough — no decryption, no rule can touch it — while a <code class="inline">route</code> rule still redirects the destination.</p></div>
+        <div class="feature-card"><h3><span class="dot"></span>Intercept On/Off</h3><p>The master switch for decryption. Turn it off and HTTPS passes through untouched — Detour can't read it, and no <code class="inline">mock</code>, <code class="inline">rewrite</code>, or <code class="inline">breakpoint</code> rule applies. <code class="inline">route</code> rules still redirect, since redirecting doesn't require decrypting.</p></div>
         <div class="feature-card"><h3><span class="dot"></span>Focus</h3><p>Narrows interception to a host allowlist (<code class="inline">*.example.com</code>, <code class="inline">localhost:3000</code>) instead of an all-or-nothing switch.</p></div>
         <div class="feature-card"><h3><span class="dot"></span>Throttle</h3><p>Bandwidth cap, latency, packet loss — "Fast 3G"/"Slow 3G" presets or exact numbers, for testing a client on a bad connection.</p></div>
         <div class="feature-card"><h3><span class="dot"></span>Block Hosts</h3><p>Outright denies matching hosts — <code class="inline">403</code> or a connection reset — checked before every other feature.</p></div>
       </div>
 
-      <h2>Everything else in the panel</h2>
+      <h2>Everything else the dashboard does</h2>
       <ul>
         <li><strong>Breakpoints</strong> — a paused exchange shows a live indicator; edit method/headers/body (or status/headers/body for a response) before resuming or aborting it.</li>
         <li><strong>Compare</strong> — Ctrl/Cmd-click two rows to diff their headers and bodies side by side.</li>
         <li><strong>Copy as cURL / Replay</strong> — reproduce a request in a terminal, or fire it again through the proxy as-is.</li>
         <li><strong>Create Rule</strong> — generate a mock/route/rewrite/breakpoint rule straight from a captured exchange, opened in the editor for review before saving.</li>
         <li><strong>Rule Profiles</strong> — save the active <code class="inline">rules.json</code> as a named, switchable ruleset (flip between <code class="inline">staging</code> and <code class="inline">production</code> without hand-editing).</li>
-        <li><strong>HAR / session export &amp; import</strong> — export the (filtered) log as HAR 1.2 or Detour's own JSON; "Save session" snapshots the traffic <em>and</em> the live Intercept/Focus/Throttle/Block Hosts state together. Loading a saved session re-applies that state to the live proxy, not just the traffic view — and a HAR/JSON file can also be <strong>imported</strong> for offline viewing, no running proxy needed.</li>
+        <li><strong>Export &amp; import</strong> — Export the log as HAR 1.2 (for other tools) or Detour's own JSON, honoring whatever filter is currently applied. "Save session" goes further: it captures the traffic <em>and</em> the proxy's live state — Intercept, Focus, Throttle, Block Hosts — so loading it later restores the conditions the capture happened under, not just the rows. Any HAR or JSON file can also be imported and browsed with no proxy running.</li>
         <li><strong>Group by host</strong> — collapse the log into per-host sections, with Expand all / Collapse all buttons for moving between "which hosts is this app even talking to" and the detail of one of them.</li>
         <li><strong>Tail</strong> — pauses auto-scroll, so incoming traffic doesn't yank you off the row you're reading.</li>
         <li><strong>Settings panel</strong> — the sidebar's gear icon opens a form for everything <code class="inline">detour config</code> does from the terminal (LAN access, dashboard password, run-detached-by-default) plus theme and the four traffic-control toggles, for anyone who'd rather not touch the CLI.</li>
         <li><strong>Proxy URL QR code</strong> — the sidebar's copyable Proxy URL has a "Show QR code" button next to it, for pointing a phone's Wi-Fi proxy settings at Detour by scanning instead of typing.</li>
       </ul>
-
-      <div class="callout info"><span class="mark">TIP</span><p>The dashboard's own source (React 19 + Vite + Tailwind + Zustand) lives in <code class="inline">web/</code> — run <code class="inline">npm run dev:dashboard</code> alongside <code class="inline">detour start</code> for hot-reloading UI changes.</p></div>
     </section>
 
     <!-- ============ 04 RULE ENGINE ============ -->
@@ -794,6 +812,9 @@ detour start --rules rules.json    <span class="tok-com"># start with rules appl
       </div>
 
       <h2>Matching</h2>
+      <p>Every rule has an <code class="inline">enabled</code> flag, <code class="inline">true</code> by default —
+        set it to <code class="inline">false</code> to keep a rule in the file without it ever matching, rather
+        than deleting or commenting it out.</p>
       <p><code class="inline">match.method</code> matches any method if omitted. For the URL, use exactly one of:
         wildcard <code class="inline">match.url</code> (<code class="inline">*</code> any run of characters,
         <code class="inline">?</code> any single character) or a full regular expression via
@@ -806,26 +827,43 @@ detour start --rules rules.json    <span class="tok-com"># start with rules appl
       <p>Immediate status/headers/body — object bodies are JSON-serialized, strings sent verbatim, or point
         <code class="inline">bodyFile</code> at a file. <code class="inline">statusMessage</code> overrides the
         status line's reason phrase (e.g. <code class="inline">"status": 418, "statusMessage": "I'm a teapot"</code>).
-        <code class="inline">delayMs</code> adds artificial latency; <code class="inline">simulate: "close"</code>/<code class="inline">"timeout"</code>
-        drops the connection instead of ever responding.</p>
+        <code class="inline">delayMs</code> adds artificial latency before responding — including before either
+        <code class="inline">simulate</code> option below fires. <code class="inline">simulate</code> replaces the
+        response entirely, and its two values behave differently: <code class="inline">"close"</code> drops the
+        connection immediately, same as a server that crashed mid-request; <code class="inline">"timeout"</code>
+        does nothing at all — the connection is left open and the client hangs until it hits its own read/request
+        timeout.</p>
 
       <h3><span class="status-chip s3">route</span> Redirect the destination</h3>
       <p>Sends the request to a different host/port. <code class="inline">preserveHostHeader: false</code>
         also rewrites the <code class="inline">Host</code> header to match.</p>
 
       <h3><span class="status-chip s4">rewrite</span> Adjust headers, query, status, or body in flight</h3>
-      <p>Independently for request and response: <code class="inline">headers.set</code>/<code class="inline">remove</code>,
-        request-only <code class="inline">query.set</code>/<code class="inline">remove</code>, response-only
-        <code class="inline">response.status</code> to override just the status code without switching to a full
-        <code class="inline">mock</code>, and body rewrites — wholesale <code class="inline">set</code>, sequential
-        <code class="inline">replace</code> (string/regex), or a JSON Merge Patch via <code class="inline">merge</code>.</p>
+      <p><code class="inline">request</code> and <code class="inline">response</code> each take their own
+        <code class="inline">headers</code>/<code class="inline">body</code>, plus <code class="inline">query</code>
+        (request-only) and <code class="inline">status</code> (response-only, to override just the status code
+        without switching to a full <code class="inline">mock</code>):</p>
+
+      <div class="code-block">
+        <div class="code-head"><span>rules.json (excerpt)</span><button class="copy" data-copy='{ "action": { "type": "rewrite",&#10;    "request":  { "headers": { "set": { "X-Debug": "1" }, "remove": ["X-Legacy"] }, "query": { "set": { "cache": "false" } } },&#10;    "response": { "status": 503, "body": { "merge": { "maintenance": true } } } } }'>copy</button></div>
+        <pre>{ <span class="tok-key">"action"</span>: { <span class="tok-key">"type"</span>: <span class="tok-str">"rewrite"</span>,
+    <span class="tok-key">"request"</span>:  { <span class="tok-key">"headers"</span>: { <span class="tok-key">"set"</span>: { <span class="tok-str">"X-Debug"</span>: <span class="tok-str">"1"</span> }, <span class="tok-key">"remove"</span>: [<span class="tok-str">"X-Legacy"</span>] }, <span class="tok-key">"query"</span>: { <span class="tok-key">"set"</span>: { <span class="tok-str">"cache"</span>: <span class="tok-str">"false"</span> } } },
+    <span class="tok-key">"response"</span>: { <span class="tok-key">"status"</span>: <span class="tok-num">503</span>, <span class="tok-key">"body"</span>: { <span class="tok-key">"merge"</span>: { <span class="tok-key">"maintenance"</span>: <span class="tok-num">true</span> } } } } }</pre>
+      </div>
+      <p class="muted"><code class="inline">request</code> and <code class="inline">response</code> are independent — include either one, or both. A body rewrite takes exactly one of <code class="inline">set</code> (replace the body outright), <code class="inline">replace</code> (sequential string/regex find-and-replace), or <code class="inline">merge</code> (a JSON Merge Patch: each key overwrites the same key in the body, and a <code class="inline">null</code> value deletes that key).</p>
 
       <h3><span class="status-chip s5">breakpoint</span> Pause and edit live</h3>
       <p>Stops a matching exchange mid-flight for the dashboard's breakpoint editor.
         <code class="inline">request</code>/<code class="inline">response</code> (both default <code class="inline">true</code>)
         pick which phase(s) pause. No timeout — only enable this on rules you're actively watching.</p>
 
-      <h3>script — a JS hook for anything else</h3>
+      <h3><span class="status-chip s3">script</span> A JS hook for anything else</h3>
+      <p>The rule itself just points <code class="inline">path</code> at a CommonJS module, resolved relative to
+        <code class="inline">rules.json</code> (not the current working directory):</p>
+      <div class="code-block">
+        <div class="code-head"><span>rules.json (excerpt)</span><button class="copy" data-copy='{ "name": "add-header", "match": { "url": "https://api.example.com/*" }, "action": { "type": "script", "path": "./rules.script.js" } }'>copy</button></div>
+        <pre>{ <span class="tok-key">"name"</span>: <span class="tok-str">"add-header"</span>, <span class="tok-key">"match"</span>: { <span class="tok-key">"url"</span>: <span class="tok-str">"https://api.example.com/*"</span> }, <span class="tok-key">"action"</span>: { <span class="tok-key">"type"</span>: <span class="tok-str">"script"</span>, <span class="tok-key">"path"</span>: <span class="tok-str">"./rules.script.js"</span> } }</pre>
+      </div>
       <div class="code-block">
         <div class="code-head"><span>rules.script.js</span><button class="copy" data-copy="module.exports = {&#10;  beforeRequest(req) {&#10;    return { headers: { ...req.headers, 'X-Detour': '1' } };&#10;  },&#10;  async beforeResponse(req, res) {&#10;    return { body: res.body.toString('utf8').replace('\"pending\"', '\"confirmed\"') };&#10;  },&#10;};">copy</button></div>
         <pre><span class="tok-fn">module</span>.exports = {
@@ -848,11 +886,13 @@ detour start --rules rules.json    <span class="tok-com"># start with rules appl
     <section class="page" id="page-platforms" data-title="Setup & platforms">
       <div class="eyebrow">05 · detour setup / doctor / cleanup</div>
       <h1>Setup &amp; platforms</h1>
-      <p class="lede">Trusting a cert and pointing a system proxy at Detour by hand gets old fast —
-        <code class="inline">detour setup --target &lt;target&gt;</code> automates what each platform lets it.
-        <code class="inline">--target</code> is required to actually change anything; without it, <code class="inline">setup</code>
-        only lists every reachable target and the command to set each one up (see below) — <code class="inline">doctor</code>
-        and <code class="inline">cleanup</code> are the two that act on every target at once by default.</p>
+      <p class="lede"><code class="inline">detour setup --target &lt;target&gt;</code> trusts the CA certificate and
+        points a platform's system proxy at Detour, as far as that platform allows.</p>
+      <p><code class="inline">--target</code> is required for <code class="inline">setup</code> to change anything.
+        Run <code class="inline">detour setup</code> with no target and it just <em>reports</em>: every platform it
+        could set up from this machine, and the exact command for each. <code class="inline">doctor</code> and
+        <code class="inline">cleanup</code> are safer — read-only and revert-only — so those two do act on every
+        platform at once by default.</p>
 
       <div class="platform-grid">
         <div class="platform-card"><div class="plat-name">macOS <span class="auto-badge auto-yes">automated</span></div><p>Trusts the cert in your login keychain, points the active network service's proxy at Detour — no sudo prompt.</p></div>
@@ -877,18 +917,6 @@ detour cleanup --target mac  <span class="tok-com"># revert what setup applied</
         running Detour right now doesn't stay stuck routing through a proxy that's gone. All three accept
         <code class="inline">--host &lt;host&gt;</code> to override the address they advertise/verify for a target —
         useful when auto-detecting a device's LAN IP picks the wrong network interface.</p>
-
-      <h2>Daemon mode &amp; CI</h2>
-      <p>For running unattended — a CI pipeline, a long-lived background process:</p>
-      <ul>
-        <li><code class="inline">--headless</code> — proxy only, no dashboard</li>
-        <li><code class="inline">--no-open</code> — don't auto-open the dashboard in a browser on startup</li>
-        <li><code class="inline">--exit-on-idle &lt;ms&gt;</code> — exits once traffic goes quiet for that long</li>
-        <li><code class="inline">--fail-on-running</code> — exit code <code class="inline">3</code> if already running on this port, distinguishable from any other startup failure</li>
-        <li><code class="inline">--detach</code> — background daemon; manage it with <code class="inline">detour status --port &lt;n&gt;</code> / <code class="inline">detour stop --port &lt;n&gt;</code> (logs to <code class="inline">~/.detour/logs/&lt;port&gt;.log</code>)</li>
-        <li><code class="inline">--foreground</code> — the explicit opposite of <code class="inline">--detach</code>, for one run, if <code class="inline">detour config --default-detach on</code> made detaching the default</li>
-      </ul>
-      <p class="muted">Every successful start prints a single <code class="inline">DETOUR_READY proxyPort=&lt;n&gt; dashboardPort=&lt;n&gt; pid=&lt;n&gt;</code> line once it's actually ready — a script can wait on that instead of guessing at startup time. The <code class="inline">dashboardPort</code> segment is omitted under <code class="inline">--headless</code>, since there's no dashboard to report.</p>
     </section>
 
     <!-- ============ 06 SECURITY ============ -->
@@ -924,17 +952,11 @@ detour config --dashboard-password off  <span class="tok-com"># remove it</span>
         dashboard only; the proxy itself stays open to anything configured to use it. Need to force the
         dashboard back to localhost for one run even with <code class="inline">lanAccess</code> on by default?
         <code class="inline">detour start --no-lan</code>.</p>
-      <p class="muted">All of the above — LAN access, the dashboard password, and the detach-by-default setting
-        from the previous section — also has a form in the dashboard itself: the gear icon in the sidebar opens
-        a Settings panel with the same controls, for anyone who'd rather not touch the CLI.</p>
-
-      <h2>Certificate pinning</h2>
-      <p>An app's own defense, not something Detour — or any MITM proxy — can see through from the network
-        side. It's enforced inside the app process. A production build that stopped showing decrypted traffic
-        between two of its <em>own</em> versions, with nothing changed on the proxy side, is a strong signal
-        the newer build added pinning, not a Detour regression.</p>
-      <p class="muted">The fix has to live on the app/device side: a debug- or QA-only build variant that skips
-        pinning, or — for a build whose source you don't control — a rooted device with a runtime bypass.</p>
+      <p class="muted">The gear icon in the sidebar opens a Settings panel with the same controls, so none of this
+        requires the CLI. One asymmetry to know about: the dashboard password (above) takes effect immediately
+        there too, but LAN access and the detach-by-default setting are grouped under "Startup defaults" in that
+        panel because they aren't live — like their CLI counterparts, both only apply on the <em>next</em>
+        <code class="inline">detour start</code>, not the session you're currently looking at.</p>
     </section>
 
     <!-- ============ 07 CLI ============ -->
@@ -959,6 +981,19 @@ detour config --dashboard-password off  <span class="tok-com"># remove it</span>
         </table>
       </div>
 
+      <h2>Daemon mode &amp; CI</h2>
+      <p>For running unattended — a CI pipeline, a long-lived background process:</p>
+      <ul>
+        <li><code class="inline">--headless</code> — proxy only, no dashboard</li>
+        <li><code class="inline">--no-open</code> — skip auto-opening the dashboard (see Getting started) — naturally useful here too, since a CI box usually has no browser to open one in</li>
+        <li><code class="inline">--exit-on-idle &lt;ms&gt;</code> — exits once traffic goes quiet for that long</li>
+        <li><code class="inline">--fail-on-running</code> — exit code <code class="inline">3</code> if already running on this port, distinguishable from any other startup failure</li>
+        <li><code class="inline">--detach</code> — background daemon; manage it with <code class="inline">detour status --port &lt;n&gt;</code> / <code class="inline">detour stop --port &lt;n&gt;</code> (logs to <code class="inline">~/.detour/logs/&lt;port&gt;.log</code>)</li>
+        <li><code class="inline">--foreground</code> — the explicit opposite of <code class="inline">--detach</code>, for one run, if <code class="inline">detour config --default-detach on</code> made detaching the default</li>
+      </ul>
+      <p class="muted">Every successful start prints a single <code class="inline">DETOUR_READY proxyPort=&lt;n&gt; dashboardPort=&lt;n&gt; pid=&lt;n&gt;</code> line once it's actually ready — a script can wait on that instead of guessing at startup time. The <code class="inline">dashboardPort</code> segment is omitted under <code class="inline">--headless</code>, since there's no dashboard to report.</p>
+      <p class="muted"><code class="inline">--port 0</code> (an ephemeral port) can't be combined with <code class="inline">--detach</code> or <code class="inline">--fail-on-running</code> — both need a stable, known port to reconnect to or check against later, and an ephemeral port has no fixed value until after it's already bound.</p>
+
       <h2>Checks (contributing)</h2>
       <div class="tbl-wrap">
         <table>
@@ -971,13 +1006,61 @@ detour config --dashboard-password off  <span class="tok-com"># remove it</span>
           </tbody>
         </table>
       </div>
+
+      <div class="callout info"><span class="mark">TIP</span><p>The dashboard's own source (React 19 + Vite + Tailwind + Zustand) lives in <code class="inline">web/</code> — run <code class="inline">npm run dev:dashboard</code> alongside <code class="inline">detour start</code> for hot-reloading UI changes.</p></div>
+
       <p class="muted">The proxy engine itself (CONNECT tunneling, on-the-fly per-host TLS certs, HTTP/1.1 +
         HTTP/2) is built directly on Node's <code class="inline">http</code>/<code class="inline">https</code>/<code class="inline">http2</code>/<code class="inline">tls</code>/<code class="inline">net</code>
         and <code class="inline">node-forge</code> — deliberately not a third-party MITM library, so the
         request/response pipeline can genuinely stream and throttle chunk-by-chunk.</p>
 
+      <h2>Known limitations</h2>
+      <ul>
+        <li><strong>WebSocket-over-HTTP/2</strong> (<a href="https://datatracker.ietf.org/doc/html/rfc8441" target="_blank" rel="noopener">RFC&nbsp;8441</a> extended CONNECT) isn't supported — a WebSocket connection to a host that also uses HTTP/2 for its regular traffic still works, but negotiates plain HTTP/1.1 for the WebSocket connection itself, same as most browsers do anyway.</li>
+        <li><strong>The proxy→upstream leg is always HTTP/1.1</strong>, even when the client negotiated HTTP/2 against Detour's MITM'd TLS server — <code class="inline">--no-http2</code> only affects that client-facing side.</li>
+        <li><strong>Certificate pinning</strong> defeats interception the same way it defeats any MITM proxy — see <a href="#troubleshooting">Troubleshooting</a> for what that looks like and the app/device-side workarounds.</li>
+        <li><strong>Captured body display cap</strong> — the dashboard's inspector holds up to 256 KB of a body per exchange; see <a href="#dashboard">Web dashboard</a>'s Live log section for what that does and doesn't affect.</li>
+      </ul>
+
       <hr class="rule">
       <p class="muted">Detour is licensed under the Apache License 2.0. Source and issues: <a href="https://github.com/rwadada/Detour" target="_blank" rel="noopener" style="color:var(--accent); font-weight:600;">github.com/rwadada/Detour</a>.</p>
+      <p class="muted">Detour is at 0.x — <code class="inline">rules.json</code>'s schema and the CLI's flags may still change between minor versions.</p>
+    </section>
+
+    <!-- ============ 08 TROUBLESHOOTING ============ -->
+    <section class="page" id="page-troubleshooting" data-title="Troubleshooting">
+      <div class="eyebrow">08 · First run</div>
+      <h1>Nothing is showing up</h1>
+      <p class="lede">Traffic isn't appearing in the log or the console. In rough order of how often each one
+        turns out to be it:</p>
+
+      <h2>Checklist</h2>
+      <ol>
+        <li><strong>Intercept is off, or the host is outside Focus.</strong> While Intercept is off, HTTPS passes
+          straight through undecrypted — nothing to show. If Focus has an allowlist set, a host not on it gets the
+          same treatment. See <a href="#dashboard">Web dashboard</a> → Traffic controls.</li>
+        <li><strong>The CA certificate isn't installed, or isn't trusted.</strong> See
+          <a href="#getting-started">Getting started</a> → Trust the CA certificate — or run
+          <code class="inline">detour doctor --target &lt;target&gt;</code>, which checks this without changing
+          anything.</li>
+        <li><strong>On iOS, the profile is installed but trust wasn't flipped on separately.</strong> Installing
+          the profile alone leaves it <em>un</em>trusted for TLS — it still needs a second, separate step under
+          Settings → General → About → Certificate Trust Settings. Missing this is the single most common reason
+          nothing shows up on iOS.</li>
+        <li><strong>On Android, the app targets API 24+ and doesn't trust user-added CAs.</strong> Since Android 7
+          (API 24), apps don't trust user-added CAs by default unless they opt in via a
+          <code class="inline">network_security_config</code>. A rooted device installing the cert into the
+          <em>system</em> store instead is the more reliable path for those apps.</li>
+        <li><strong>The app pins its own certificates.</strong> See below.</li>
+      </ol>
+
+      <h2>Certificate pinning</h2>
+      <p>An app's own defense, not something Detour — or any MITM proxy — can see through from the network
+        side. It's enforced inside the app process. A production build that stopped showing decrypted traffic
+        between two of its <em>own</em> versions, with nothing changed on the proxy side, is a strong signal
+        the newer build added pinning, not a Detour regression.</p>
+      <p class="muted">The fix has to live on the app/device side: a debug- or QA-only build variant that skips
+        pinning, or — for a build whose source you don't control — a rooted device with a runtime bypass.</p>
     </section>
 
   </main>
