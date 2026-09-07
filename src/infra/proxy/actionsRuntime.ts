@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { deleteHeader } from '../../domain/exchange/headers';
 import { applyBodyRewrite } from '../../domain/rules/bodyRewrite';
 import { applyHeaderRewrite } from '../../domain/rules/headerRewrite';
 import { type MockResponse } from '../../domain/rules/mockResponse';
@@ -120,7 +121,10 @@ export function applyRequestRewrite(ctx: IContext, rewrite: NonNullable<RewriteA
   applyHeaderRewrite(opts.headers, rewrite.headers);
   if (rewrite.body) {
     // The rewritten body's length is unknown up front; send chunked instead.
-    delete opts.headers['content-length'];
+    // A case-insensitive delete: `applyHeaderRewrite` above just applied
+    // `rewrite.headers.set`, which can spell this header with any casing
+    // (e.g. `Content-Length`), and a plain bracket delete would miss it.
+    deleteHeader(opts.headers, 'content-length');
     installRequestBodyRewrite(ctx, rewrite.body);
   }
 }
@@ -145,5 +149,5 @@ export function applyResponseHeaderRewrite(ctx: IContext, rewrite: NonNullable<R
   if (!res) return;
   if (rewrite.status !== undefined) res.statusCode = rewrite.status;
   applyHeaderRewrite(res.headers, rewrite.headers);
-  if (rewrite.body) delete res.headers['content-length'];
+  if (rewrite.body) deleteHeader(res.headers, 'content-length');
 }
