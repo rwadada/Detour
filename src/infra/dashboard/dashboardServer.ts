@@ -115,6 +115,21 @@ export async function startDashboardServer(
   const { ruleEngine, ruleProfileStore } = options;
   const httpRequester = options.httpRequester ?? nodeHttpRequester;
   const lanAddrs = options.lanAddresses ?? [];
+  // Whether this server itself is bound to every network interface, not
+  // just loopback — see `sendInitialPayload`'s own `dashboardOnLan` below,
+  // which this mirrors. Only in this case are `lanAddrs` actually reachable
+  // at all (a `localhost`-only bind never accepts a connection arriving on
+  // a LAN address in the first place), so it's also the gate on whether
+  // `isAllowedHost`/`isAllowedOrigin` below treat them as legitimate.
+  const dashboardOnLan = host === '0.0.0.0';
+  // The dashboard's actual bound port — `options.port` verbatim except for
+  // an ephemeral `port: 0`, which only resolves to a real port once
+  // `httpServer.listen()`'s callback fires below. `isAllowedOrigin` needs
+  // the real value (an `Origin` header's port must match what this server
+  // is actually reachable on), so this is declared as a `let` here and
+  // updated once listening starts, rather than read fresh via
+  // `httpServer.address()` on every handshake.
+  let boundPort = options.port;
   await assertPortAvailable(options.port, host);
 
   const backlog = new RingBuffer<CapturedExchange>(options.backlogSize ?? DEFAULT_BACKLOG_SIZE, (item) => item.id);
@@ -141,8 +156,92 @@ export async function startDashboardServer(
   // sync via `blockHostsChanged`.
   let blockHostsState: BlockHostsState = { hosts: [], mode: 'forbidden' };
 
-  const httpServer = http.createServer((req, res) => serveStatic(WEB_DIST_DIR, req, res));
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  // CSWSH / DNS-rebinding defenses (issue #92). A WebSocket handshake isn't
+  // subject to the browser's same-origin policy the way `fetch`/XHR are, so
+  // without these, any web page on any origin — not just ones served from
+  // this machine — could open `ws://localhost:<dashboardPort>/ws` and:
+  // eavesdrop on the decrypted-HTTPS backlog it streams (Authorization
+  // headers, cookies, ...), rewrite `rules.json` via `setRules` to reroute
+  // traffic, SSRF via `replay`, or lock the real user out via
+  // `setDashboardPassword`. `--dashboard-password` (issue #66) doesn't help
+  // here either — most sessions never set one, and even the handshake
+  // itself (before any message is sent) already leaks the backlog once
+  // `sendInitialPayload` fires. The dashboard's own port is also easily
+  // guessable (`--port + 1000`, or just tried), so "an attacker doesn't
+  // know the port" isn't a defense on its own.
+  //
+  //   - `isAllowedHost` guards both the static SPA and `/ws`: it checks the
+  //     `Host` header a *DNS-rebound* page would send (an attacker-owned
+  //     domain that a malicious DNS response points at 127.0.0.1) — that
+  //     header still names the attacker's domain regardless of which IP the
+  //     TCP connection actually landed on, so this catches what `Origin`
+  //     alone can't (a request that's missing `Origin` entirely still
+  //     carries `Host`).
+  //   - `isAllowedOrigin` guards `/ws` specifically: it checks the `Origin`
+  //     header a browser attaches to a cross-origin fetch/handshake, which
+  //     `Host` alone can't catch (a same-machine-hosted attacker page has a
+  //     legitimate `Host: localhost:<dashboardPort>` but a foreign
+  //     `Origin`). Absent entirely (no browser involved — a native app, or
+  //     the `ws` client library used by this file's own tests, which sends
+  //     none by default) is allowed through: there's no origin-confusion
+  //     risk to check when nothing claims an origin at all.
+  //
+  // Both allow `localhost`/`127.0.0.1`/`::1` unconditionally, plus this
+  // machine's own LAN address(es) only when `dashboardOnLan` — matching
+  // exactly what this server is actually bound to and thus reachable at.
+  function allowedHostnames(): readonly string[] {
+    return dashboardOnLan ? ['localhost', '127.0.0.1', '::1', ...lanAddrs] : ['localhost', '127.0.0.1', '::1'];
+  }
+
+  // Extracts the hostname portion of a `Host` header (`localhost:5173` →
+  // `localhost`, `[::1]:5173` → `::1`), lower-cased for a case-insensitive
+  // compare against `allowedHostnames()`. `undefined` for a missing header
+  // (HTTP/1.1 requires one; node's own parser already rejects a request
+  // without one before this ever runs, but there's no reason to trust that
+  // remaining true forever) or an unparseable IPv6-bracket form.
+  function hostnameOf(hostHeader: string | undefined): string | undefined {
+    if (!hostHeader) return undefined;
+    if (hostHeader.startsWith('[')) {
+      const end = hostHeader.indexOf(']');
+      return end === -1 ? undefined : hostHeader.slice(1, end).toLowerCase();
+    }
+    const lastColon = hostHeader.lastIndexOf(':');
+    return (lastColon === -1 ? hostHeader : hostHeader.slice(0, lastColon)).toLowerCase();
+  }
+
+  function isAllowedHost(hostHeader: string | undefined): boolean {
+    const hostname = hostnameOf(hostHeader);
+    return hostname !== undefined && allowedHostnames().includes(hostname);
+  }
+
+  function isAllowedOrigin(originHeader: string | undefined): boolean {
+    if (!originHeader) return true;
+    let origin: URL;
+    try {
+      origin = new URL(originHeader);
+    } catch {
+      // An `Origin` header that isn't even a valid URL can't be a
+      // legitimate browser-sent one — fail closed rather than risk treating
+      // it as absent.
+      return false;
+    }
+    if (!allowedHostnames().includes(origin.hostname)) return false;
+    if (origin.port !== '') return Number(origin.port) === boundPort;
+    const defaultPort = origin.protocol === 'https:' ? 443 : 80;
+    return defaultPort === boundPort;
+  }
+
+  const httpServer = http.createServer((req, res) => {
+    if (!isAllowedHost(req.headers.host)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Forbidden');
+      return;
+    }
+    serveStatic(WEB_DIST_DIR, req, res);
+  });
+  const verifyClient: WebSocket.VerifyClientCallbackSync = (info) =>
+    isAllowedHost(info.req.headers.host) && isAllowedOrigin(info.origin);
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws', verifyClient });
 
   // Issue #66's optional dashboard password: sockets that have proven they
   // know the current password (or connected while none was configured — see
@@ -546,7 +645,11 @@ export async function startDashboardServer(
       eventBus.on('rulesReloaded', onRulesReloaded);
 
       const address = httpServer.address();
-      const boundPort = typeof address === 'object' && address ? address.port : options.port;
+      // Reassigns the outer `let boundPort` (declared up top, alongside
+      // `isAllowedOrigin`'s doc comment on why) — not a new binding — so an
+      // ephemeral `port: 0` resolving to a real OS-assigned port here is
+      // what `isAllowedOrigin` checks handshakes against from this point on.
+      boundPort = typeof address === 'object' && address ? address.port : options.port;
       resolve({
         port: boundPort,
         stop: () =>
