@@ -11,3 +11,10 @@ reports/
 __*
 **/__*
 .claude/hooks/.stop-state/
+
+# Ad-hoc debugging/repro scripts dropped at the repo root during a session
+# (e.g. check_ws_scratch.mjs, debug_crash_scratch.mjs) — never meant to be
+# committed. Anchored to the root only, so a real source file living under
+# src/, web/, bin/, etc. is never affected.
+/*scratch*
+*.bak
