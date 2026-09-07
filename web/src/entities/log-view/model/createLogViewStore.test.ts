@@ -52,6 +52,36 @@ describe('createLogViewStore', () => {
     expect(store.getState().collapsedHosts.has('b.example.com')).toBe(true);
   });
 
+  it('expandAllHosts clears collapsedHosts entirely, regardless of how many hosts were collapsed', () => {
+    const store = createLogViewStore();
+    store.getState().toggleHostCollapsed('a.example.com');
+    store.getState().toggleHostCollapsed('b.example.com');
+    expect(store.getState().collapsedHosts.size).toBe(2);
+
+    store.getState().expandAllHosts();
+    expect(store.getState().collapsedHosts.size).toBe(0);
+  });
+
+  it('collapseAllHosts collapses exactly the given hosts, replacing whatever was collapsed before', () => {
+    const store = createLogViewStore();
+    store.getState().toggleHostCollapsed('stale.example.com');
+
+    store.getState().collapseAllHosts(['a.example.com', 'b.example.com']);
+
+    const { collapsedHosts } = store.getState();
+    expect(collapsedHosts.has('a.example.com')).toBe(true);
+    expect(collapsedHosts.has('b.example.com')).toBe(true);
+    expect(collapsedHosts.has('stale.example.com')).toBe(false);
+  });
+
+  it('collapseAllHosts with an empty list expands everything, same as expandAllHosts', () => {
+    const store = createLogViewStore();
+    store.getState().toggleHostCollapsed('a.example.com');
+
+    store.getState().collapseAllHosts([]);
+    expect(store.getState().collapsedHosts.size).toBe(0);
+  });
+
   it('setSort on a new column switches to it ascending', () => {
     const store = createLogViewStore();
     store.getState().setSort('duration');
