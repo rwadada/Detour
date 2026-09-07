@@ -819,7 +819,7 @@ export function createCli(): Command {
     )
     .option(
       '--allow-external-script-paths',
-      `Allow a rule's \`script.path\`/\`mock.bodyFile\` to resolve outside the directory rules.json lives in (including an absolute path) instead of being rejected (issue #98). SECURITY: a \`script\` module runs as arbitrary JavaScript with detour's own process permissions, and a \`mock.bodyFile\` returns any file it points to as a response body — off by default so a rules.json write from anything reaching the dashboard (e.g. \`setRules\`) can't read/execute outside its own directory. Off by default.`,
+      `Allow a rule's \`script.path\`/\`mock.bodyFile\` to resolve outside the directory rules.json lives in (including an absolute path) instead of being rejected (issue #98). SECURITY: a \`script\` module runs as arbitrary JavaScript with detour's own process permissions, and a \`mock.bodyFile\` returns any file it points to as a response body — off by default so a rules.json write from anything reaching the dashboard (e.g. \`setRules\`) can't read/execute outside its own directory.`,
     )
     .option(
       '--dump <level>',
