@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { compileRule, findMatchingRule, type CompiledRule, type MatchableRequest } from '../domain/rules/matcher';
-import type { Rule } from '../domain/rules/types';
+import type { Rule, RulesFile } from '../domain/rules/types';
 import type { FileWatcher } from './ports/fileWatcher';
 import type { RulesFileReader } from './ports/rulesFileReader';
 import type { RulesFileWriter } from './ports/rulesFileWriter';
@@ -33,22 +33,25 @@ export class RuleEngine {
   /** Directory rules.json lives in — the base for relative paths like `mock.bodyFile`. */
   readonly basePath: string;
   private compiledRules: CompiledRule[];
+  /** See `RulesFile.$activeProfile`'s doc comment — mirrors whatever the on-disk file's own field currently says, kept in sync by `reload()` the same way `compiledRules` is. */
+  private activeProfile: string | undefined;
   private stopWatching?: () => void;
   private debounceTimer?: ReturnType<typeof setTimeout>;
   private readonly options: RuleEngineOptions;
 
-  private constructor(filePath: string, rules: Rule[], options: RuleEngineOptions) {
+  private constructor(filePath: string, data: RulesFile, options: RuleEngineOptions) {
     this.filePath = filePath;
     this.basePath = path.dirname(filePath);
-    this.compiledRules = rules.map(compileRule);
+    this.compiledRules = data.rules.map(compileRule);
+    this.activeProfile = data.$activeProfile;
     this.options = options;
   }
 
   /** Loads rules.json (throwing on an invalid initial file) and starts watching it unless disabled. */
   static load(options: RuleEngineOptions): RuleEngine {
     const filePath = path.resolve(options.filePath);
-    const { rules } = options.reader.read(filePath);
-    const engine = new RuleEngine(filePath, rules, options);
+    const data = options.reader.read(filePath);
+    const engine = new RuleEngine(filePath, data, options);
     if (options.watch !== false) engine.startWatching();
     return engine;
   }
@@ -61,17 +64,27 @@ export class RuleEngine {
     return this.compiledRules.map((c) => c.rule);
   }
 
+  /** See `RulesFile.$activeProfile`'s doc comment. `undefined` when the current content isn't (or isn't known to still be) any saved profile's. */
+  getActiveProfile(): string | undefined {
+    return this.activeProfile;
+  }
+
   /**
    * Validates and saves `rules` to disk (issue #19's Rules editor). Doesn't
-   * update `compiledRules` itself — the write lands back through the same
-   * `fs.watch`-driven reload path a manual edit would (see `reload()`),
-   * keeping "edited from the dashboard" and "edited in a text editor" a
-   * single code path instead of two. Throws (without writing anything) if
-   * `rules` fails validation, or no `writer` was configured.
+   * update `compiledRules`/`activeProfile` itself — the write lands back
+   * through the same `fs.watch`-driven reload path a manual edit would (see
+   * `reload()`), keeping "edited from the dashboard" and "edited in a text
+   * editor" a single code path instead of two. Throws (without writing
+   * anything) if `rules` fails validation, or no `writer` was configured.
+   *
+   * `activeProfile` sets `RulesFile.$activeProfile` on the written file —
+   * omit it (the common case: a plain dashboard/hand edit) to clear
+   * whatever it was before, rather than carry the old one forward onto
+   * content that, post-edit, may no longer actually match it.
    */
-  write(rules: Rule[]): void {
+  write(rules: Rule[], opts?: { activeProfile?: string }): void {
     if (!this.options.writer) throw new Error('RuleEngine: a `writer` is required to save rule edits');
-    this.options.writer.write(this.filePath, { rules });
+    this.options.writer.write(this.filePath, { rules, $activeProfile: opts?.activeProfile });
   }
 
   private startWatching(): void {
@@ -92,9 +105,10 @@ export class RuleEngine {
 
   private reload(): void {
     try {
-      const { rules } = this.options.reader.read(this.filePath);
-      this.compiledRules = rules.map(compileRule);
-      this.options.onReload?.({ ruleCount: rules.length });
+      const data = this.options.reader.read(this.filePath);
+      this.compiledRules = data.rules.map(compileRule);
+      this.activeProfile = data.$activeProfile;
+      this.options.onReload?.({ ruleCount: data.rules.length });
     } catch (err) {
       // Keep serving the last known-good rules rather than crash the proxy.
       this.options.onReloadError?.(err instanceof Error ? err.message : String(err));

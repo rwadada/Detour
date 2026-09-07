@@ -1,8 +1,36 @@
 import { BookMarked } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRuleStore } from '@/entities/rule';
 import { useDismissablePopover } from '@/shared/lib/useDismissablePopover';
+import { cn } from '@/shared/lib/utils';
 import { Button, Input, PillToggle, Select } from '@/shared/ui';
+
+/**
+ * What `handleSelectChange`/`submitCreate` are waiting to confirm after
+ * dispatching an `applyProfile`/`saveActiveAsProfile`/`createProfile` — these
+ * are all fire-and-forget over WS (no per-request ack), so the *label* to
+ * show on success is decided up front, but showing it at all waits for the
+ * specific state change that action should actually produce (see the
+ * `pending`-resolving effect below) rather than firing the instant it's
+ * sent, which could show "✓ Applied" even for a request the server went on
+ * to reject.
+ *
+ * `dispatchedAt` (`Date.now()` at the moment this was created) is what lets
+ * the resolving effect tell a `lastError` that's actually about *this*
+ * request apart from one already sitting in the store from an earlier,
+ * unrelated action — `lastError` is one shared field for every
+ * `RULES_WRITE_ERROR`/`RULE_PROFILE_ERROR` this session sees, including ones
+ * from the Rules editor's own Save, or even another connected browser tab —
+ * only a `lastErrorAt` at least as new as this counts as this request's own
+ * outcome.
+ */
+type PendingConfirmation = { dispatchedAt: number } & (
+  | { kind: 'activeProfile'; name: string; label: string }
+  | { kind: 'profileCreated'; name: string; label: string }
+);
+
+/** How long a `pending` confirmation waits for its expected state change (or an error) before giving up silently — WS delivery on a live connection is effectively instant, so this is just a bailout for the unusual case (a dropped connection, say) where neither ever arrives. */
+const PENDING_CONFIRMATION_TIMEOUT_MS = 5000;
 
 /**
  * Sentinel `<option>` value that opens the create form instead of applying
@@ -15,6 +43,13 @@ const NEW_PROFILE_OPTION = '__new_profile__';
 
 type NewProfileSource = 'sample' | 'blank' | 'active';
 
+/** The pill's own label — active profile name, else a saved-profile count, else the bare feature name. Pulled out of the JSX to avoid nesting ternaries there. */
+function pillLabel(activeProfile: string | undefined, savedCount: number): string {
+  if (activeProfile) return `Profile: ${activeProfile}`;
+  if (savedCount > 0) return `Profiles: ${savedCount} saved`;
+  return 'Profiles';
+}
+
 /**
  * Header control for Rules Profiles (issue #19): switch which saved
  * ruleset is active, or create a new one. Mirrors `ThrottleControl`'s
@@ -24,27 +59,118 @@ type NewProfileSource = 'sample' | 'blank' | 'active';
  * round 4) rather than a list of profiles each with its own "Apply"
  * button: picking an existing profile applies it immediately, and picking
  * the trailing "+ New profile…" option opens the create form below instead
- * of applying anything. The select's `value` is always the empty
- * placeholder, never the just-applied profile's name — there's no
- * server-side concept of "the currently active profile" to reflect (
- * `applyProfile` just overwrites rules.json's *content*; nothing records
- * which profile it came from), so this behaves as a one-shot action menu
- * rather than a control with persistent state, resetting to the
- * placeholder the instant React re-renders it after the change fires.
+ * of applying anything. The select's own `value` is always the empty
+ * placeholder, never the just-applied profile's name, and resets to it the
+ * instant React re-renders after the change fires — it's a one-shot action
+ * menu, not a control with state of its own to hold.
+ *
+ * "Which profile is currently active" (design/PO review, round 5 — reported
+ * as unclear that switching had worked at all) is instead read off
+ * `rulesFile.$activeProfile`, which the *server* now tracks by writing that
+ * field alongside rules.json's content whenever `applyProfile`/
+ * `saveActiveAsProfile` succeed — see `RulesFile.$activeProfile`'s doc
+ * comment for exactly when it's set vs. cleared.
  */
 export function RuleProfilesControl() {
   const profiles = useRuleStore((s) => s.profiles);
+  const profilesAt = useRuleStore((s) => s.profilesAt);
   const rulesFile = useRuleStore((s) => s.rulesFile);
+  const rulesFileAt = useRuleStore((s) => s.rulesFileAt);
   const applyProfile = useRuleStore((s) => s.applyProfile);
   const saveActiveAsProfile = useRuleStore((s) => s.saveActiveAsProfile);
   const createProfile = useRuleStore((s) => s.createProfile);
   const dirtyDraft = useRuleStore((s) => s.dirtyDraft);
   const setDirtyDraft = useRuleStore((s) => s.setDirtyDraft);
+  const lastError = useRuleStore((s) => s.lastError);
+  const lastErrorAt = useRuleStore((s) => s.lastErrorAt);
+  const dismissError = useRuleStore((s) => s.dismissError);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [source, setSource] = useState<NewProfileSource>('sample');
+  // What an in-flight apply/save/create is waiting to confirm — see
+  // `PendingConfirmation`'s own doc comment.
+  const [pending, setPending] = useState<PendingConfirmation | null>(null);
+  // Set once `pending` actually resolves — a genuine success (matching
+  // `pending`'s own label) or the error the server rejected it with —
+  // cleared after a couple seconds. Not persisted state; a page reload just
+  // loses it.
+  const [banner, setBanner] = useState<{ text: string; kind: 'success' | 'error' } | null>(null);
+  // The pending auto-clear timer for `banner`, if any — tracked so a second
+  // one within the same couple seconds cancels the first instead of leaving
+  // it running alongside the new one.
+  const bannerTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  const showBanner = (text: string, kind: 'success' | 'error') => {
+    if (bannerTimer.current) clearTimeout(bannerTimer.current);
+    setBanner({ text, kind });
+    bannerTimer.current = setTimeout(() => setBanner(null), 2500);
+  };
+
+  // Clears a still-pending auto-clear timer on unmount — this component
+  // isn't currently ever conditionally unmounted while its popover could be
+  // open, but nothing prevents that changing later, and a timer outliving
+  // its component calling `setBanner` on the way out is exactly the kind of
+  // mistake that's cheap to rule out now and easy to forget to add later.
+  useEffect(() => {
+    return () => {
+      if (bannerTimer.current) clearTimeout(bannerTimer.current);
+    };
+  }, []);
+
+  // Resolves `pending` against whichever of `rulesFile`/`lastError` actually
+  // changes first — these WS commands are fire-and-forget with no
+  // per-request ack, so the only way to tell a genuine success from a
+  // server-side rejection (a `RULE_PROFILE_ERROR` bumping `lastError`,
+  // e.g. the profile was deleted after the `<select>` was rendered but
+  // before this was picked) is to wait for the specific state change the
+  // action should actually produce, rather than assuming success the
+  // instant it was sent. Neither `lastError` nor `rulesFile`/`profiles`
+  // matching the target is enough *on its own*, though — all three are
+  // shared fields this session's whole Rules editor/Rules Profiles surface
+  // writes to (including another connected browser tab), and the state a
+  // request is waiting to observe can easily already have been true
+  // *before* it was ever sent (overwriting a profile under its own current
+  // name; re-applying whatever's already active). Requiring each one's own
+  // `*At` timestamp to be no older than `pending.dispatchedAt` is what
+  // actually ties the observation to *this* request rather than a
+  // coincidence, an unrelated action, or a stale error.
+  useEffect(() => {
+    if (!pending) return;
+    // Genuinely the "subscribe to an external store, setState in response"
+    // case React's own effect docs call out as legitimate — `lastError`/
+    // `rulesFile`/`profiles` all change asynchronously from a WS message
+    // arriving, not from any event this component itself handles, so
+    // there's no synchronous event-handler callback to move this into
+    // instead.
+    if (lastError && lastErrorAt !== null && lastErrorAt >= pending.dispatchedAt) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      showBanner(lastError, 'error');
+      dismissError();
+      setPending(null);
+      return;
+    }
+    const resolved =
+      pending.kind === 'activeProfile'
+        ? rulesFileAt !== null && rulesFileAt >= pending.dispatchedAt && rulesFile?.$activeProfile === pending.name
+        : profilesAt !== null &&
+          profilesAt >= pending.dispatchedAt &&
+          profiles.some((profile) => profile.name === pending.name);
+    if (resolved) {
+      showBanner(pending.label, 'success');
+      setPending(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- showBanner/dismissError are stable-enough closures over refs/store actions, not reactive values this effect should re-run for
+  }, [pending, lastError, lastErrorAt, rulesFile, rulesFileAt, profiles, profilesAt]);
+
+  // Bails out of a `pending` confirmation that never resolved either way —
+  // see `PENDING_CONFIRMATION_TIMEOUT_MS`'s own doc comment.
+  useEffect(() => {
+    if (!pending) return;
+    const timer = setTimeout(() => setPending(null), PENDING_CONFIRMATION_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [pending]);
 
   // Resets the create form too, not just `open` — without this, dismissing
   // the popover mid-create (clicking outside, or the pill again) and later
@@ -57,6 +183,14 @@ export function RuleProfilesControl() {
     setCreating(false);
     setNewName('');
     setSource('sample');
+    // Also drops any still-unresolved `pending` confirmation — without this,
+    // a WS response arriving after the popover's already closed would still
+    // resolve it (the effect above doesn't know or care whether `open` is
+    // true), popping a stale "✓ Applied" up the *next* time the popover
+    // opens instead of never showing it at all, like closing should mean.
+    setPending(null);
+    if (bannerTimer.current) clearTimeout(bannerTimer.current);
+    setBanner(null);
   };
   useDismissablePopover(open, containerRef, closePopover);
 
@@ -73,6 +207,12 @@ export function RuleProfilesControl() {
   // the user's actual pick, in case `rulesFile` reappears before they
   // change it.
   const effectiveSource: NewProfileSource = source === 'active' && !rulesFile ? 'sample' : source;
+
+  // See `RulesFile.$activeProfile`'s doc comment — `undefined` means the
+  // active rules.json isn't (or isn't known to still be) any saved
+  // profile's, not that the feature is broken.
+  const activeProfile = rulesFile?.$activeProfile;
+  const enabledCount = rulesFile?.rules.filter((rule) => rule.enabled !== false).length ?? 0;
 
   // A dirty Rules editor draft ignores the next `rules` broadcast (see its
   // sync-from-server guard) so it can't be silently discarded by someone
@@ -108,7 +248,25 @@ export function RuleProfilesControl() {
     // discarding the in-progress create form anyway would be real data
     // loss for no reason. `cancelCreate` is a no-op if the form wasn't
     // open to begin with.
-    if (applyWithDirtyGuard(value)) cancelCreate();
+    if (applyWithDirtyGuard(value)) {
+      cancelCreate();
+      // Clears any error left over from an earlier, unrelated action —
+      // otherwise the resolving effect below would see it, assume it's
+      // this action's outcome, and report a failure that isn't this
+      // request's to report.
+      dismissError();
+      // Re-picking the profile that's already active still gets tracked (not
+      // skipped) — `rulesFileAt`'s own freshness check in the resolving
+      // effect is what actually distinguishes a genuinely-new post-dispatch
+      // `rules` broadcast from the pre-existing match, not a special case
+      // here, so this reports the real outcome (including a real failure)
+      // instead of silently assuming a no-op re-apply always succeeds.
+      // `Date.now()` here runs inside this event handler, not during
+      // render — never called until the user actually picks something —
+      // so there's no purity concern despite the lint rule flagging it.
+      // eslint-disable-next-line react-hooks/purity
+      setPending({ kind: 'activeProfile', name: value, label: `Applied "${value}"`, dispatchedAt: Date.now() });
+    }
   };
 
   const cancelCreate = () => {
@@ -140,9 +298,15 @@ export function RuleProfilesControl() {
       ) {
         return;
       }
+      // Clears any error left over from an earlier, unrelated action — see
+      // the same call in `handleSelectChange`.
+      dismissError();
       saveActiveAsProfile(name);
+      setPending({ kind: 'activeProfile', name, label: `Saved "${name}"`, dispatchedAt: Date.now() });
     } else {
+      dismissError();
       createProfile(name, effectiveSource);
+      setPending({ kind: 'profileCreated', name, label: `Saved "${name}"`, dispatchedAt: Date.now() });
     }
     cancelCreate();
   };
@@ -150,12 +314,26 @@ export function RuleProfilesControl() {
   return (
     <div className="relative" ref={containerRef}>
       <PillToggle
-        active={profiles.length > 0}
+        active={!!activeProfile}
         onClick={() => (open ? closePopover() : setOpen(true))}
         icon={<BookMarked className="h-3 w-3" />}
-        title="Rule profiles — saved rulesets you can switch between"
+        title={
+          activeProfile
+            ? `Rule profiles — "${activeProfile}" is currently active`
+            : 'Rule profiles — saved rulesets you can switch between'
+        }
       >
-        Profiles{profiles.length > 0 ? ` (${profiles.length})` : ''}
+        {/* Spelled out ("2 saved"), not a bare "(2)" — this button's count
+            is one of several similar "(N)" pills across the toolbar/sidebar
+            (Focus, Block Hosts, ...), each counting a different thing implied
+            only by that pill's own label; a bare number here was reported as
+            unclear on its own. Left as-is on the other pills (design/PO
+            review): fixing this in one place doesn't obligate matching it
+            everywhere in the same pass. Showing the active profile's name
+            here (rather than just a count) once one exists directly answers
+            "which profile is applied right now" without opening the popover
+            at all — the other half of that same round's report. */}
+        {pillLabel(activeProfile, profiles.length)}
       </PillToggle>
       {open && (
         // `left-0`, not `right-0` (which `ThrottleControl`'s popover — living
@@ -166,17 +344,40 @@ export function RuleProfilesControl() {
         <div className="absolute left-0 top-full z-10 mt-2 w-72 rounded-md border border-[var(--border)] bg-[var(--panel)] p-2.5 shadow-lg">
           <p className="mb-2 text-xs text-[var(--muted)]">Switch to a saved profile, or create a new one.</p>
 
+          {rulesFile && (
+            <p className="mb-2 text-xs text-[var(--muted)]">
+              Active:{' '}
+              {activeProfile ? (
+                <span className="font-medium text-[var(--foreground)]">{activeProfile}</span>
+              ) : (
+                <span className="italic">unnamed (edited since a profile was last applied)</span>
+              )}{' '}
+              — {enabledCount} of {rulesFile.rules.length} {rulesFile.rules.length === 1 ? 'rule' : 'rules'} enabled
+            </p>
+          )}
+
           <Select value="" onChange={(e) => handleSelectChange(e.target.value)} className="mb-2 w-full text-xs">
             <option value="" disabled>
               {profiles.length > 0 ? 'Switch profile…' : 'No saved profiles yet'}
             </option>
             {profiles.map((profile) => (
               <option key={profile.name} value={profile.name}>
-                {profile.name} ({profile.ruleCount})
+                {profile.name} — {profile.ruleCount} {profile.ruleCount === 1 ? 'rule' : 'rules'}
               </option>
             ))}
             <option value={NEW_PROFILE_OPTION}>+ New profile…</option>
           </Select>
+
+          {banner && (
+            <p
+              className={cn(
+                'mb-2 text-xs',
+                banner.kind === 'success' ? 'text-[var(--status-2xx)]' : 'text-[var(--status-5xx)]',
+              )}
+            >
+              {banner.kind === 'success' ? '✓' : '✗'} {banner.text}
+            </p>
+          )}
 
           {creating && (
             <div className="mb-1 rounded border border-[var(--border)] p-2">

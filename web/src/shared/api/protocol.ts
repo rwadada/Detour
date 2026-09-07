@@ -219,6 +219,8 @@ export interface Rule {
 
 export interface RulesFile {
   $schema?: string;
+  /** Best-effort marker of which saved rule profile was last applied/saved-as onto this content, if any — see `src/domain/rules/types.ts`'s `RulesFile.$activeProfile`. Not a guarantee the content still equals that profile's: reliably cleared by a Save from this dashboard's own Rules editor, but an external hand-edit that leaves the field alone keeps reporting it regardless of what actually changed. */
+  $activeProfile?: string;
   rules: Rule[];
 }
 

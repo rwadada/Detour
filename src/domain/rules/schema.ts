@@ -52,6 +52,10 @@ export const RULES_JSON_SCHEMA = {
   required: ['rules'],
   properties: {
     $schema: { type: 'string' },
+    // See `RulesFile.$activeProfile`'s doc comment (domain/rules/types.ts) —
+    // purely informational bookkeeping for the dashboard's Rules Profiles
+    // feature, not a rule-matching concern.
+    $activeProfile: { type: 'string' },
     rules: { type: 'array', items: { $ref: '#/definitions/rule' } },
   },
   definitions: {

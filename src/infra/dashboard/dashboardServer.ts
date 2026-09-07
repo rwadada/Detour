@@ -215,7 +215,7 @@ export async function startDashboardServer(
   // rebroadcasting after any reload.
   const rulesMessage = (): DashboardServerMessage => ({
     type: 'rules',
-    data: ruleEngine ? { rules: [...ruleEngine.getRules()] } : null,
+    data: ruleEngine ? { rules: [...ruleEngine.getRules()], $activeProfile: ruleEngine.getActiveProfile() } : null,
   });
   const ruleProfilesMessage = (): DashboardServerMessage => ({
     type: 'ruleProfiles',
@@ -480,6 +480,12 @@ export async function startDashboardServer(
     if (message.type === 'setRules') {
       if (!ruleEngine) return broadcastError('RULES_WRITE_ERROR', 'No rules file is configured for this session.');
       try {
+        // No `activeProfile` — clears `$activeProfile` on the written file
+        // even if `message.data` (the editor's own draft, synced from an
+        // earlier `rules` broadcast) still happened to carry one along.
+        // Editing and saving makes this a different, unnamed ruleset,
+        // regardless of what it used to match — see
+        // `RulesFile.$activeProfile`'s doc comment.
         ruleEngine.write(message.data.rules);
       } catch (err) {
         broadcastError('RULES_WRITE_ERROR', describeError(err));
@@ -498,7 +504,13 @@ export async function startDashboardServer(
       if (!ruleEngine || !ruleProfileStore)
         return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
       try {
-        ruleProfileStore.write(message.name, { rules: [...ruleEngine.getRules()] });
+        const rules = [...ruleEngine.getRules()];
+        ruleProfileStore.write(message.name, { rules });
+        // The active rules.json's *content* doesn't change here — only a
+        // new profile file, snapshotting it, does — but that content now
+        // does correspond to a named profile where a moment ago it may not
+        // have, so this marks it as such (see `RulesFile.$activeProfile`).
+        ruleEngine.write(rules, { activeProfile: message.name });
         broadcast(ruleProfilesMessage());
       } catch (err) {
         broadcastError('RULE_PROFILE_ERROR', describeError(err));
@@ -507,7 +519,7 @@ export async function startDashboardServer(
       if (!ruleEngine || !ruleProfileStore)
         return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
       try {
-        ruleEngine.write(ruleProfileStore.read(message.name).rules);
+        ruleEngine.write(ruleProfileStore.read(message.name).rules, { activeProfile: message.name });
       } catch (err) {
         broadcastError('RULE_PROFILE_ERROR', describeError(err));
       }

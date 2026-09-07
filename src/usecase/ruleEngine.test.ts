@@ -149,6 +149,38 @@ describe('RuleEngine', () => {
     expect(engine.getRules()).toHaveLength(2);
   });
 
+  it('getActiveProfile() reflects $activeProfile from the file at load, and after a reload', () => {
+    fs.writeFileSync(filePath, JSON.stringify({ $activeProfile: 'staging', rules: [routeRule('a')] }));
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });
+    expect(engine.getActiveProfile()).toBe('staging');
+
+    writeRules(filePath, [routeRule('a')]); // a plain hand-edit — no $activeProfile at all
+    triggerReload(engine);
+    expect(engine.getActiveProfile()).toBeUndefined();
+  });
+
+  it('write() sets $activeProfile on the file when given one, and getActiveProfile() picks it up once reloaded', () => {
+    writeRules(filePath, [routeRule('a')]);
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader, writer: fsRulesFileWriter });
+
+    engine.write([routeRule('a'), routeRule('b')], { activeProfile: 'staging' });
+
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8')).$activeProfile).toBe('staging');
+    triggerReload(engine);
+    expect(engine.getActiveProfile()).toBe('staging');
+  });
+
+  it('write() without an activeProfile clears whatever $activeProfile was on the file before, once reloaded', () => {
+    fs.writeFileSync(filePath, JSON.stringify({ $activeProfile: 'staging', rules: [routeRule('a')] }));
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader, writer: fsRulesFileWriter });
+    expect(engine.getActiveProfile()).toBe('staging');
+
+    engine.write([routeRule('a'), routeRule('b')]); // no opts — a plain edit
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8')).$activeProfile).toBeUndefined();
+    triggerReload(engine);
+    expect(engine.getActiveProfile()).toBeUndefined();
+  });
+
   it('write() throws (without touching the file) when no writer was configured', () => {
     writeRules(filePath, [routeRule('a')]);
     engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });

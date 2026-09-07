@@ -176,5 +176,25 @@ export interface Rule {
 export interface RulesFile {
   /** Optional `$schema` pointer for editor tooling; ignored by Detour itself. */
   $schema?: string;
+  /**
+   * Best-effort marker recording which saved rule profile (issue #19's
+   * Rules Profiles) was last applied/saved-as onto this file — Detour never
+   * actually verifies the content still equals that profile's, so this is
+   * a claim about provenance, not a guarantee about current equality.
+   *
+   * Only ever set by `RuleEngine.write()`'s `activeProfile` option, whose
+   * only callers are `applyRuleProfile`/`saveActiveRulesAsProfile` in
+   * `dashboardServer.ts`. The dashboard's Rules editor "Save to rules.json"
+   * goes through the same `write()` *without* that option, which reliably
+   * clears it (a plain edit is a different, unnamed ruleset even if its
+   * content happens to still look the same) — but a hand-edit made outside
+   * Detour entirely (a text editor saving the file directly, bypassing
+   * `write()`) isn't covered by that at all: if the field was already
+   * present, nothing strips or re-validates it, so it keeps being reported
+   * as "active" regardless of what the hand-edit actually changed. Purely
+   * informational either way — never read by the rule-matching engine
+   * itself.
+   */
+  $activeProfile?: string;
   rules: Rule[];
 }
