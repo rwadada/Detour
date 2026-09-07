@@ -324,6 +324,11 @@
   .page li { margin-bottom: 8px; }
   .page li::marker { color: var(--muted-2); }
   .page strong { font-weight: 600; }
+  .page p a, .page li a, .callout p a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
 
   hr.rule { border: none; border-top: 1px solid var(--line); margin: 40px 0; }
 
@@ -852,7 +857,7 @@ detour cleanup --target mac  <span class="tok-com"># revert what setup applied</
         <li><code class="inline">--fail-on-running</code> — exit code <code class="inline">3</code> if already running on this port, distinguishable from any other startup failure</li>
         <li><code class="inline">--detach</code> — background daemon; manage it with <code class="inline">detour status --port &lt;n&gt;</code> / <code class="inline">detour stop --port &lt;n&gt;</code></li>
       </ul>
-      <p class="muted">Every successful start prints a single <code class="inline">DETOUR_READY proxyPort=&lt;n&gt; pid=&lt;n&gt;</code> line once it's actually ready — a script can wait on that instead of guessing at startup time.</p>
+      <p class="muted">Every successful start prints a single <code class="inline">DETOUR_READY proxyPort=&lt;n&gt; dashboardPort=&lt;n&gt; pid=&lt;n&gt;</code> line once it's actually ready — a script can wait on that instead of guessing at startup time. The <code class="inline">dashboardPort</code> segment is omitted under <code class="inline">--headless</code>, since there's no dashboard to report.</p>
     </section>
 
     <!-- ============ 06 SECURITY ============ -->
@@ -863,16 +868,20 @@ detour cleanup --target mac  <span class="tok-com"># revert what setup applied</
         password gate if you want one.</p>
 
       <h2>Reaching Detour from another device</h2>
-      <p>By default the proxy and dashboard only bind to <code class="inline">localhost</code>.
+      <p>The proxy always binds to every network interface (<code class="inline">0.0.0.0</code>) — a proxy
+        nothing else on the network can reach isn't much of a proxy. The <strong>dashboard</strong> is the one
+        gated by a flag: it binds to <code class="inline">localhost</code> only by default, and
         <code class="inline">detour start --lan</code> (or <code class="inline">detour config --lan on</code>
-        to make it the default) binds both to every network interface, so a phone on the same Wi-Fi can point
-        its proxy settings at this machine. Once bound, the startup banner and the dashboard's sidebar list
-        every reachable address — no need to go find this machine's IP yourself.</p>
+        to make it the default) binds it to every interface too, so a phone on the same Wi-Fi can open the
+        dashboard UI directly instead of just proxying through this machine. Once the dashboard is LAN-bound,
+        the startup banner and the dashboard's sidebar list every reachable address — no need to go find this
+        machine's IP yourself.</p>
 
       <div class="callout warn">
         <span class="mark">NO AUTH BY DEFAULT</span>
-        <p>LAN access has none of its own — anyone on the network can reach the dashboard (and, through it,
-          decrypted traffic and rule edits) or use the proxy.</p>
+        <p>The proxy is reachable from the LAN unconditionally — that's not something <code class="inline">--lan</code>
+          toggles. <code class="inline">--lan</code> only extends that same no-auth-by-default reach to the
+          <strong>dashboard</strong> itself (and, through it, decrypted traffic and rule edits).</p>
       </div>
 
       <div class="code-block">
