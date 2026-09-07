@@ -574,16 +574,28 @@ function waitForBreakpoint(
 }> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
-    const payload = new Promise<BreakpointHitPayload>((resolvePayload) => {
+    const payload = new Promise<BreakpointHitPayload>((resolvePayload, rejectPayload) => {
       socket.on('message', (raw) => {
-        const message = JSON.parse(raw.toString()) as {
-          type: string;
-          payload?: { phase: string } & BreakpointHitPayload;
-        };
+        // A malformed/unexpected frame shouldn't throw out of this handler
+        // (which would otherwise leave `payload` unsettled and the test
+        // hanging until the global timeout) — just ignore it and keep
+        // waiting for a frame that actually matches.
+        let message: { type: string; payload?: { phase: string } & BreakpointHitPayload };
+        try {
+          message = JSON.parse(raw.toString());
+        } catch {
+          return;
+        }
         if (message.type === 'breakpoint' && message.payload?.phase === phase) {
           resolvePayload(message.payload);
         }
       });
+      // If the socket closes/errors before a matching breakpoint message
+      // ever arrives, reject rather than leaving `payload` pending forever —
+      // otherwise a genuine failure (dashboard crash, connection drop) hangs
+      // the test until the suite's global timeout instead of failing fast.
+      socket.on('close', () => rejectPayload(new Error('dashboard WebSocket closed before a breakpoint hit')));
+      socket.on('error', (err) => rejectPayload(err));
     });
     socket.on('open', () => resolve({ socket, payload }));
     socket.on('error', reject);
