@@ -1,7 +1,7 @@
 import { FoldVertical, Layers, UnfoldVertical } from 'lucide-react';
 import { useMemo } from 'react';
 import { matchesFilters, useExchangeStore } from '@/entities/exchange';
-import { groupExchangesByHost, useLogViewStore } from '@/entities/log-view';
+import { useLogViewStore } from '@/entities/log-view';
 import { Button, PillToggle } from '@/shared/ui';
 
 /** Toolbar control for "Group by host" (issue #24): groups the log table's rows under collapsible per-host headers instead of one flat list. */
@@ -13,20 +13,21 @@ export function GroupByHostToggle() {
   const exchanges = useExchangeStore((s) => s.exchanges);
   const filters = useExchangeStore((s) => s.filters);
 
-  // The same host set the table itself groups by (LogTable.tsx computes this
-  // independently, off its own already-sorted list — recomputing here off
-  // unsorted exchanges gets the same *set* of hosts either way, since
-  // groupExchangesByHost sorts its own output alphabetically regardless of
-  // input order, and sort order otherwise has no bearing on which hosts exist).
-  // Skipped entirely while groupByHost is off (the common case, and the only
-  // state in which "Collapse all" isn't even rendered) — otherwise this full
-  // filter+group pass would redo itself on every incoming exchange for
-  // nothing, since live traffic keeps `exchanges` changing continuously.
-  const hosts = useMemo(
-    () =>
-      groupByHost ? groupExchangesByHost(exchanges.filter((e) => matchesFilters(e, filters))).map((g) => g.host) : [],
-    [groupByHost, exchanges, filters],
-  );
+  // collapseAllHosts() only needs the unique host names, not full HostGroup
+  // objects — a plain Set avoids the per-host exchange-array allocations and
+  // sort groupExchangesByHost does for LogTable's own (separate) grouping
+  // pass. Skipped entirely while groupByHost is off (the common case, and
+  // the only state in which "Collapse all" isn't even rendered) — otherwise
+  // this would redo itself on every incoming exchange for nothing, since
+  // live traffic keeps `exchanges` changing continuously.
+  const hosts = useMemo(() => {
+    if (!groupByHost) return [];
+    const distinct = new Set<string>();
+    for (const exchange of exchanges) {
+      if (matchesFilters(exchange, filters)) distinct.add(exchange.host);
+    }
+    return [...distinct];
+  }, [groupByHost, exchanges, filters]);
 
   return (
     <div className="flex items-center gap-1">
