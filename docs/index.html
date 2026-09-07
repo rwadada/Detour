@@ -1,5 +1,10 @@
 <!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Detour</title>
+<meta name="description" content="A terminal-first HTTP debugging proxy with a real-time web dashboard — install, dashboard, rule engine, setup, and CLI docs.">
 <style>
   :root {
     --bg: #f3f1ec;
@@ -544,6 +549,8 @@
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@700;800;900&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;700&display=swap">
+</head>
+<body>
 
 <div class="backdrop" id="backdrop"></div>
 
@@ -960,7 +967,12 @@ detour config --dashboard-password off  <span class="tok-com"># remove it</span>
         a.addEventListener("click", function (e) {
           e.preventDefault();
           h.scrollIntoView({ behavior: "smooth", block: "start" });
-          history.replaceState(null, "", "#" + idFor(page));
+          // Keep the full page|heading hash (matching a.href) rather than
+          // truncating to just the page — otherwise the URL bar can't be
+          // copied/reloaded back to this exact section. replaceState (not
+          // a real navigation) doesn't fire hashchange, so showPage() won't
+          // re-run and reset the scroll position we just set above.
+          history.replaceState(null, "", a.href);
         });
         var li = document.createElement("li");
         li.appendChild(a);
@@ -994,8 +1006,22 @@ detour config --dashboard-password off  <span class="tok-com"># remove it</span>
       return raw.split("|")[0] || "overview";
     }
 
-    window.addEventListener("hashchange", function () { showPage(currentPageName()); });
+    // A shared/reloaded #page|heading URL (see buildToc's click handler
+    // above) should land on that exact heading, not just the top of the page.
+    function scrollToHashHeading() {
+      var raw = location.hash.replace("#", "");
+      var headingId = raw.split("|")[1];
+      if (!headingId) return;
+      var el = document.getElementById(headingId);
+      if (el) el.scrollIntoView({ behavior: "instant", block: "start" });
+    }
+
+    window.addEventListener("hashchange", function () {
+      showPage(currentPageName());
+      scrollToHashHeading();
+    });
     showPage(currentPageName());
+    scrollToHashHeading();
 
     // scrollspy within the active page
     var spyObserver = new IntersectionObserver(
@@ -1021,12 +1047,22 @@ detour config --dashboard-password off  <span class="tok-com"># remove it</span>
     document.querySelectorAll(".copy").forEach(function (btn) {
       btn.addEventListener("click", function () {
         var text = (btn.getAttribute("data-copy") || "").replace(/&#10;/g, "\n");
-        try {
-          navigator.clipboard.writeText(text);
-          btn.textContent = "copied";
-          btn.setAttribute("data-copied", "1");
-          setTimeout(function () { btn.textContent = "copy"; btn.removeAttribute("data-copied"); }, 1400);
-        } catch (e) {}
+        if (!navigator.clipboard) {
+          btn.textContent = "failed";
+          setTimeout(function () { btn.textContent = "copy"; }, 1400);
+          return;
+        }
+        navigator.clipboard.writeText(text).then(
+          function () {
+            btn.textContent = "copied";
+            btn.setAttribute("data-copied", "1");
+            setTimeout(function () { btn.textContent = "copy"; btn.removeAttribute("data-copied"); }, 1400);
+          },
+          function () {
+            btn.textContent = "failed";
+            setTimeout(function () { btn.textContent = "copy"; }, 1400);
+          },
+        );
       });
     });
 
@@ -1064,3 +1100,5 @@ detour config --dashboard-password off  <span class="tok-com"># remove it</span>
     navLinks.forEach(function (l) { l.addEventListener("click", closeMobileNav); });
   })();
 </script>
+</body>
+</html>
