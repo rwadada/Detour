@@ -1,7 +1,7 @@
 import { json } from '@codemirror/lang-json';
 import CodeMirror from '@uiw/react-codemirror';
 import { Plus, Trash2 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRuleStore } from '@/entities/rule';
 import { useTheme } from '@/shared/lib/theme';
 import { cn } from '@/shared/lib/utils';
@@ -31,9 +31,33 @@ export function RulesEditorPanel() {
   const setRules = useRuleStore((s) => s.setRules);
   const dirty = useRuleStore((s) => s.dirtyDraft);
   const setDirty = useRuleStore((s) => s.setDirtyDraft);
-  const [draft, setDraft] = useState<RulesFile>(rulesFile ?? { rules: [] });
+  const pendingNewRule = useRuleStore((s) => s.pendingNewRule);
+  const clearPendingNewRule = useRuleStore((s) => s.clearPendingNewRule);
+  // Seeds a queued rule (`RuleState.pendingNewRule`'s own doc comment)
+  // straight into the initial draft, already selected — read once, here,
+  // rather than in an effect, since this component remounts fresh every
+  // time `Dialog` opens it (`RulesEditorButton`'s `open` toggles whether
+  // `<RulesEditorPanel />` renders at all), so "on mount" and "the moment
+  // there's a queued rule to show" are the same event for this component.
+  const [draft, setDraft] = useState<RulesFile>(() => {
+    const base = rulesFile ?? { rules: [] };
+    return pendingNewRule ? { ...base, rules: [...base.rules, pendingNewRule] } : base;
+  });
   const [syncedFrom, setSyncedFrom] = useState(rulesFile);
-  const [selected, setSelected] = useState<number | null>(null);
+  const [selected, setSelected] = useState<number | null>(() => (pendingNewRule ? draft.rules.length - 1 : null));
+
+  // Consumes `pendingNewRule` exactly once, right after the initial draft
+  // above already baked it in — an effect (not read during render) since
+  // clearing it is a genuine side effect on shared, cross-widget state, not
+  // something derivable from this component's own props/state. Marks the
+  // draft dirty too, so Save/Discard reflect there's really something
+  // unsaved and the resync-from-server guard above leaves it alone.
+  useEffect(() => {
+    if (!pendingNewRule) return;
+    clearPendingNewRule();
+    setDirty(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once on mount to consume whatever pendingNewRule (if any) the initial draft above already captured; re-running if it somehow changed later would re-append a rule already baked into draft
+  }, []);
 
   // Re-syncs the draft from the server whenever a fresh `rulesFile` arrives
   // while nothing is unsaved — covers both the initial load (draft starts
