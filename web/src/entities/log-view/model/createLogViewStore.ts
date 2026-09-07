@@ -81,6 +81,10 @@ export interface LogViewState {
   toggleGroupByHost: () => void;
   /** Expands/collapses one host's rows under "Group by host" — see `collapsedHosts`. */
   toggleHostCollapsed: (host: string) => void;
+  /** Expands every host at once — clears `collapsedHosts` entirely, same as no host ever having been collapsed. */
+  expandAllHosts: () => void;
+  /** Collapses every host currently in view at once. Takes the caller's own host list (the currently grouped/filtered set — see `GroupByHostToggle`) rather than tracking every host ever seen, so a host that later disappears (filtered out, traffic cleared) doesn't linger in `collapsedHosts` forever. */
+  collapseAllHosts: (hosts: string[]) => void;
   /** Clicking the currently-sorted column flips direction; clicking a different one switches to it ascending. */
   setSort: (column: SortColumn) => void;
   /** Updates in-memory width only — called on every `pointermove` while dragging a resize handle, so it deliberately does *not* touch localStorage (a synchronous write per move event is a real jank risk on that hot path). See `persistColumnWidths`. */
@@ -111,6 +115,8 @@ export function createLogViewStore() {
         else next.add(host);
         return { collapsedHosts: next };
       }),
+    expandAllHosts: () => set({ collapsedHosts: new Set<string>() }),
+    collapseAllHosts: (hosts) => set({ collapsedHosts: new Set(hosts) }),
     setSort: (column) =>
       set((state) => ({
         sort:
