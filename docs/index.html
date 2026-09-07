@@ -757,7 +757,8 @@ npm start -- start --port 8080</pre>
         <li><strong>Create Rule</strong> — generate a mock/route/rewrite/breakpoint rule straight from a captured exchange, opened in the editor for review before saving.</li>
         <li><strong>Rule Profiles</strong> — save the active <code class="inline">rules.json</code> as a named, switchable ruleset (flip between <code class="inline">staging</code> and <code class="inline">production</code> without hand-editing).</li>
         <li><strong>HAR / session export &amp; import</strong> — export the (filtered) log as HAR 1.2 or Detour's own JSON; "Save session" snapshots the traffic <em>and</em> the live Intercept/Focus/Throttle/Block Hosts state together. Loading a saved session re-applies that state to the live proxy, not just the traffic view — and a HAR/JSON file can also be <strong>imported</strong> for offline viewing, no running proxy needed.</li>
-        <li><strong>Group by host</strong> — collapsible per-host sections; "Tail" pauses auto-scroll while you read.</li>
+        <li><strong>Group by host</strong> — collapse the log into per-host sections, with Expand all / Collapse all buttons for moving between "which hosts is this app even talking to" and the detail of one of them.</li>
+        <li><strong>Tail</strong> — pauses auto-scroll, so incoming traffic doesn't yank you off the row you're reading.</li>
         <li><strong>Settings panel</strong> — the sidebar's gear icon opens a form for everything <code class="inline">detour config</code> does from the terminal (LAN access, dashboard password, run-detached-by-default) plus theme and the four traffic-control toggles, for anyone who'd rather not touch the CLI.</li>
         <li><strong>Proxy URL QR code</strong> — the sidebar's copyable Proxy URL has a "Show QR code" button next to it, for pointing a phone's Wi-Fi proxy settings at Detour by scanning instead of typing.</li>
       </ul>
@@ -996,6 +997,12 @@ detour config --dashboard-password off  <span class="tok-com"># remove it</span>
     var main = document.getElementById("main");
     var sidebar = document.getElementById("sidebar");
     var backdrop = document.getElementById("backdrop");
+    // Resolved here with the other elements, not down by the mobile-nav
+    // listeners: closeMobileNav() touches it, and showPage() calls that
+    // during this script's own initialization — a later `var menuBtn = …`
+    // would still be undefined at that point and throw, taking every
+    // listener registered below down with it.
+    var menuBtn = document.getElementById("menuBtn");
 
     function idFor(page) { return page.id.replace("page-", ""); }
 
@@ -1136,8 +1143,7 @@ detour config --dashboard-password off  <span class="tok-com"># remove it</span>
       } catch (e) {}
     });
 
-    // mobile nav
-    var menuBtn = document.getElementById("menuBtn");
+    // mobile nav (menuBtn itself is resolved at the top — see the note there)
     function closeMobileNav() {
       sidebar.classList.remove("open");
       backdrop.classList.remove("show");
