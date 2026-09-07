@@ -18,9 +18,14 @@ export function GroupByHostToggle() {
   // unsorted exchanges gets the same *set* of hosts either way, since
   // groupExchangesByHost sorts its own output alphabetically regardless of
   // input order, and sort order otherwise has no bearing on which hosts exist).
+  // Skipped entirely while groupByHost is off (the common case, and the only
+  // state in which "Collapse all" isn't even rendered) — otherwise this full
+  // filter+group pass would redo itself on every incoming exchange for
+  // nothing, since live traffic keeps `exchanges` changing continuously.
   const hosts = useMemo(
-    () => groupExchangesByHost(exchanges.filter((e) => matchesFilters(e, filters))).map((g) => g.host),
-    [exchanges, filters],
+    () =>
+      groupByHost ? groupExchangesByHost(exchanges.filter((e) => matchesFilters(e, filters))).map((g) => g.host) : [],
+    [groupByHost, exchanges, filters],
   );
 
   return (
