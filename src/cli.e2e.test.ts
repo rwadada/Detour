@@ -1585,6 +1585,51 @@ describe('detour start (CLI, end-to-end)', () => {
       }
     });
 
+    it('rewrites a response body over HTTP/2 without leaving a stale content-length behind (issue #93 regression)', async () => {
+      // A `rewrite` rule that changes the response body's byte count leaves
+      // upstream's original `content-length` wrong. Over HTTP/1.1 that's
+      // masked by re-framing as `transfer-encoding: chunked`, but HTTP/2 has
+      // no such header — it still carries `content-length` as an ordinary
+      // header, and RFC 9113 §8.1.1 makes a response whose DATA frames don't
+      // match it malformed, which Node's own http2 client enforces by
+      // tearing the stream down. Before the fix, this rule (rewriting the
+      // JSON response into a much longer body) reproduced exactly that: the
+      // client never got past the stale, too-short content-length.
+      const upstream = await startHttpsUpstreamServer();
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+      const rewrittenBody = 'x'.repeat(500);
+      const rulesPath = path.join(tmpDir, 'rules.json');
+      fs.writeFileSync(
+        rulesPath,
+        JSON.stringify({
+          rules: [
+            {
+              name: 'e2e-h2-rewrite-response-body',
+              match: { url: `https://localhost:${upstream.port}/*` },
+              action: { type: 'rewrite', response: { body: { set: rewrittenBody } } },
+            },
+          ],
+        }),
+      );
+      cli = await startDetourCli(['--rules', rulesPath], insecureUpstreamEnv);
+      let session: http2.ClientHttp2Session | undefined;
+      let tlsSocket: tls.TLSSocket | undefined;
+      try {
+        const connected = await connectHttp2ThroughProxy(cli.port, 'localhost', upstream.port, cli.caCertPath);
+        session = connected.session;
+        tlsSocket = connected.tlsSocket;
+        expect(connected.tlsSocket.alpnProtocol).toBe('h2');
+
+        const result = await h2Get(session, `localhost:${upstream.port}`, '/hello');
+        expect(result.status).toBe(200);
+        expect(result.body).toBe(rewrittenBody);
+      } finally {
+        session?.close();
+        tlsSocket?.destroy();
+        await upstream.close();
+      }
+    });
+
     it('--no-http2 falls back to HTTP/1.1 only, even though the client offers h2 via ALPN', async () => {
       const upstream = await startHttpsUpstreamServer();
       cli = await startDetourCli(['--no-http2'], insecureUpstreamEnv);
