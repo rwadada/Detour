@@ -50,8 +50,14 @@ export function StatusBadge({
 }
 
 export function MethodBadge({ method }: { method: string }) {
+  // min-w fits `OPTIONS`/`CONNECT`, the longest HTTP methods this app ever
+  // shows (see the Method filter's own option list) — at the previous
+  // 3.5rem, either overflowed this badge's box, visually running into
+  // whatever sits to its left (the Time column, in the log table) with no
+  // gap. Pair any change here with `DEFAULT_COLUMN_WIDTHS.method`
+  // (`entities/log-view`), which sizes the log table's own column to match.
   return (
-    <Badge className="min-w-[3.5rem] justify-center text-[var(--method)]" style={{ color: 'var(--method)' }}>
+    <Badge className="min-w-[4.5rem] justify-center text-[var(--method)]" style={{ color: 'var(--method)' }}>
       {method}
     </Badge>
   );

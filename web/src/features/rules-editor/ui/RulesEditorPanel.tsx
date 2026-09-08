@@ -28,9 +28,13 @@ const ACTION_TYPES: RuleAction['type'][] = ['mock', 'route', 'rewrite', 'breakpo
  */
 export function RulesEditorPanel() {
   const rulesFile = useRuleStore((s) => s.rulesFile);
+  const rulesFileAt = useRuleStore((s) => s.rulesFileAt);
   const setRules = useRuleStore((s) => s.setRules);
   const dirty = useRuleStore((s) => s.dirtyDraft);
   const setDirty = useRuleStore((s) => s.setDirtyDraft);
+  const lastError = useRuleStore((s) => s.lastError);
+  const lastErrorAt = useRuleStore((s) => s.lastErrorAt);
+  const dismissError = useRuleStore((s) => s.dismissError);
   const pendingNewRule = useRuleStore((s) => s.pendingNewRule);
   const clearPendingNewRule = useRuleStore((s) => s.clearPendingNewRule);
   // Seeds a queued rule (`RuleState.pendingNewRule`'s own doc comment)
@@ -45,6 +49,21 @@ export function RulesEditorPanel() {
   });
   const [syncedFrom, setSyncedFrom] = useState(rulesFile);
   const [selected, setSelected] = useState<number | null>(() => (pendingNewRule ? draft.rules.length - 1 : null));
+  // `Date.now()` when `save()` last sent a `setRules` — `null` once that
+  // save has resolved (either way) or nothing's been sent yet. See the
+  // effect below: `setRules` is a fire-and-forget WS message with no
+  // per-request ack, so this is what ties a later `rules`/`error` message
+  // back to *this* save rather than an unrelated one from earlier or from
+  // another connected tab.
+  const [pendingSaveAt, setPendingSaveAt] = useState<number | null>(null);
+  // The server's rejection of the most recent save (e.g. failed
+  // validation), if it hasn't been superseded by a later save attempt yet.
+  // Previously `save()` cleared `dirty` unconditionally the instant it was
+  // clicked, so a rejected save (bad rule data, a duplicate name, …) looked
+  // exactly like a successful one — the draft was marked clean and the
+  // dialog gave no indication anything was wrong, even though rules.json on
+  // disk never changed.
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Consumes `pendingNewRule` exactly once, right after the initial draft
   // above already baked it in — an effect (not read during render) since
@@ -58,6 +77,31 @@ export function RulesEditorPanel() {
     setDirty(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once on mount to consume whatever pendingNewRule (if any) the initial draft above already captured; re-running if it somehow changed later would re-append a rule already baked into draft
   }, []);
+
+  // Resolves a save dispatched by `save()` below against whichever of
+  // `lastError`/`rulesFile` actually changes first, the same way
+  // `RuleProfilesControl` resolves its own fire-and-forget WS commands
+  // (see that component's matching effect for the fuller rationale): a
+  // `RULES_WRITE_ERROR` no older than `pendingSaveAt` means this specific
+  // save was rejected, so the draft stays dirty and the rejection reason is
+  // shown instead of being silently swallowed; a `rulesFile` update no
+  // older than `pendingSaveAt` means it landed, so the draft can finally be
+  // marked clean.
+  useEffect(() => {
+    if (pendingSaveAt === null) return;
+    if (lastError !== null && lastErrorAt !== null && lastErrorAt >= pendingSaveAt) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSaveError(lastError);
+      dismissError();
+      setPendingSaveAt(null);
+      return;
+    }
+    if (rulesFileAt !== null && rulesFileAt >= pendingSaveAt) {
+      setDirty(false);
+      setPendingSaveAt(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setDirty/dismissError are stable-enough store actions, not reactive values this effect should re-run for
+  }, [pendingSaveAt, lastError, lastErrorAt, rulesFileAt]);
 
   // Re-syncs the draft from the server whenever a fresh `rulesFile` arrives
   // while nothing is unsaved — covers both the initial load (draft starts
@@ -85,29 +129,35 @@ export function RulesEditorPanel() {
   const updateRule = (index: number, patch: Partial<Rule>) => {
     setDraft((d) => ({ ...d, rules: d.rules.map((r, i) => (i === index ? { ...r, ...patch } : r)) }));
     setDirty(true);
+    setSaveError(null);
   };
 
   const addRule = () => {
     setDraft((d) => ({ ...d, rules: [...d.rules, blankRule()] }));
     setSelected(draft.rules.length);
     setDirty(true);
+    setSaveError(null);
   };
 
   const removeRule = (index: number) => {
     setDraft((d) => ({ ...d, rules: d.rules.filter((_, i) => i !== index) }));
     if (selected === index) setSelected(null);
     setDirty(true);
+    setSaveError(null);
   };
 
   const discard = () => {
     setDraft(rulesFile);
     setSelected(null);
     setDirty(false);
+    setSaveError(null);
+    setPendingSaveAt(null);
   };
 
   const save = () => {
+    setSaveError(null);
+    setPendingSaveAt(Date.now());
     setRules(draft);
-    setDirty(false);
   };
 
   const editing = selected !== null ? draft.rules[selected] : undefined;
@@ -178,11 +228,12 @@ export function RulesEditorPanel() {
       )}
 
       <div className="flex shrink-0 items-center justify-end gap-2 border-t border-[var(--border)] pt-3">
-        <Button variant="ghost" onClick={discard} disabled={!dirty}>
+        {saveError && <p className="mr-auto text-xs text-[var(--status-5xx)]">Not saved — {saveError}</p>}
+        <Button variant="ghost" onClick={discard} disabled={!dirty || pendingSaveAt !== null}>
           Discard changes
         </Button>
-        <Button onClick={save} disabled={!dirty}>
-          Save to rules.json
+        <Button onClick={save} disabled={!dirty || pendingSaveAt !== null}>
+          {pendingSaveAt !== null ? 'Saving…' : 'Save to rules.json'}
         </Button>
       </div>
     </div>

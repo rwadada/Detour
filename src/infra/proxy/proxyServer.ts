@@ -556,6 +556,23 @@ export async function startProxyServer(
 
   proxy.onError((ctx, err, errorKind) => {
     if (ctx) {
+      // Finalize the exchange this error belongs to (e.g. a `route` rule
+      // pointing at a host that fails to resolve/connect) before dropping
+      // it from `inFlight` — otherwise the dashboard never learns the
+      // request failed and shows it "pending" forever, with no indication
+      // anything went wrong (see issue #109: a `route` action's connection
+      // error was logged to the console but the exchange itself stayed
+      // stuck mid-flight). Guarded on `finishedAt` being unset so a
+      // late/unrelated error after the exchange already completed
+      // normally (e.g. a response-stream error after `response` was
+      // already emitted) doesn't overwrite it.
+      const exchange = inFlight.get(ctx.uuid);
+      if (exchange && exchange.finishedAt === undefined) {
+        exchange.error = `${errorKind ?? 'UNKNOWN'}: ${err?.message ?? 'unknown proxy error'}`;
+        exchange.finishedAt = Date.now();
+        exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+        eventBus.emit('response', exchange);
+      }
       inFlight.delete(ctx.uuid);
       ruleContexts.delete(ctx.uuid);
       scriptModules.delete(ctx.uuid);
