@@ -102,9 +102,12 @@ jobs:
           sha256="$(shasum -a 256 "$tarball" | cut -d' ' -f1)"
           echo "sha256=$sha256" >> "$GITHUB_STEP_SUMMARY"
 
-          homebrew_note="sha256: \`$sha256\`
-
-          Homebrew: \`brew install rwadada/detour/detour\` (bump \`Formula/detour.rb\` in [homebrew-detour](https://github.com/rwadada/homebrew-detour) to this version/sha256 first)."
+          # Built via printf (rather than a plain multi-line quoted string)
+          # so this YAML block's own indentation doesn't end up embedded in
+          # the string's second line — bash doesn't strip that, and 4+
+          # leading spaces reads as a Markdown code block once this lands in
+          # the release notes.
+          homebrew_note="$(printf 'sha256: `%s`\n\nHomebrew: `brew install rwadada/detour/detour` (bump `Formula/detour.rb` in [homebrew-detour](https://github.com/rwadada/homebrew-detour) to this version/sha256 first).' "$sha256")"
 
           # Delimits the appended section so re-running this step for the
           # same tag (a manual workflow re-run, say) replaces it instead of

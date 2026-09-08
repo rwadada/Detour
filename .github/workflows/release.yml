@@ -7,7 +7,7 @@ name: Release (manual tag)
 # fixing a CI-runner quirk there doesn't need fixing twice.
 #
 # release-please.yml is the normal path: merging its version-bump PR tags
-# and creates the GitHub Release itself, then calls the same reusable
+# it and creates the GitHub Release itself, then calls the same reusable
 # workflow. This one only fires for a tag *not* created that way — a tag
 # push from a GITHUB_TOKEN-authenticated action (like release-please's own)
 # doesn't trigger other workflows, so there's no double-run to worry about.
