@@ -160,8 +160,34 @@ export function writeUserConfig(patch: UserConfig, configPath: string = resolveU
   const merged: UserConfig = { ...loadUserConfig(configPath) };
   for (const key of WRITABLE_KEYS) copyIfDefined(merged, patch, key);
   validateUserConfig(merged, configPath);
-  fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, `${JSON.stringify(merged, null, 2)}\n`);
+  const configDir = path.dirname(configPath);
+  // 0o700 (owner-only): this file can carry `dashboardPasswordHash`, and
+  // `recursive: true` applies `mode` to every directory mkdirSync creates in
+  // the chain, so a first-ever write also locks down `~/.detour` itself in
+  // this one call (issue #96). Meaningless on Windows (no POSIX permission
+  // bits), but harmless to still pass.
+  fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  // mkdirSync's `mode` only applies to a directory it actually creates — an
+  // existing `~/.detour` left world-readable by a version predating this fix
+  // is untouched by the call above, so re-assert the invariant explicitly on
+  // every write. No-op on Windows.
+  if (process.platform !== 'win32') fs.chmodSync(configDir, 0o700);
+  // 0o600 (owner read/write only): the file may hold `dashboardPasswordHash`,
+  // a value someone with read access could otherwise brute-force offline.
+  // `writeFileSync`'s `mode` only takes effect when it creates the file, so
+  // an existing config.json left world-readable by a version predating this
+  // fix needs an explicit chmod too (issue #96) — done *before* the write,
+  // not just after: `writeFileSync` on an existing file truncates it in
+  // place rather than replacing it, so if we wrote first and chmod'd after,
+  // the new content (this call's own `patch`, which might be the very write
+  // that first sets `dashboardPasswordHash`) would sit world-readable for
+  // the instant between those two calls. Chmod'ing after as well covers the
+  // file-didn't-exist-yet case, where there's nothing to tighten beforehand
+  // and `writeFileSync`'s own `mode` already applies. Both no-ops on
+  // Windows (no POSIX permission bits), but harmless to still pass/call.
+  if (process.platform !== 'win32' && fs.existsSync(configPath)) fs.chmodSync(configPath, 0o600);
+  fs.writeFileSync(configPath, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
+  if (process.platform !== 'win32') fs.chmodSync(configPath, 0o600);
   return merged;
 }
 
