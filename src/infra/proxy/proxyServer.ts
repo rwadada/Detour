@@ -585,10 +585,32 @@ export async function startProxyServer(
     exchange: CapturedExchange,
     callback: ErrorCallback,
   ): void {
-    const requestCapture = captureClientRequestBody(ctx, exchange);
+    // Mirrors handleScriptRequestHook: `chunks` is the real (uncapped) body
+    // that gets forwarded upstream once resumed; `displayCapture` is a
+    // separate, capped copy purely for the dashboard's `exchange.requestBody`.
+    // A single capped `BodyCapture` used for both (as this used to do) would
+    // truncate the body actually sent to the server at MAX_CAPTURED_BODY_BYTES
+    // for a request the user resumed without editing — see issue #95.
+    const displayCapture = new BodyCapture();
+    const chunks: Buffer[] = [];
+    ctx.clientToProxyRequest.on('data', (chunk: Buffer) => {
+      exchange.requestBodySize += chunk.length;
+      displayCapture.add(chunk);
+      chunks.push(chunk);
+    });
+    // See captureClientRequestBody's doc comment: without resuming the
+    // (pre-paused) stream here, it never emits 'data'/'end' at all.
+    ctx.clientToProxyRequest.resume();
 
     const pause = () => {
-      requestCapture.applyTo(exchange, 'request');
+      displayCapture.applyTo(exchange, 'request');
+      const rawBody = Buffer.concat(chunks);
+      // `chunks` (via the still-registered 'data' listener's closure) and
+      // `rawBody` would otherwise both hold the full body in memory at
+      // once — for a large upload paused at a breakpoint, that's an
+      // avoidable doubling of peak memory. The individual chunk Buffers can
+      // be GC'd once `rawBody` (its single-buffer copy) exists.
+      chunks.length = 0;
 
       const opts = ctx.proxyToServerRequestOptions;
       const payload: BreakpointRequestPayload = {
@@ -598,7 +620,10 @@ export async function startProxyServer(
         path: opts?.path ?? ctx.clientToProxyRequest.url ?? '/',
         headers: flattenHeaders(opts?.headers ?? ctx.clientToProxyRequest.headers),
         body: exchange.requestBody,
-        bodyTruncated: exchange.requestBodyTruncated ?? false,
+        // Read directly off `displayCapture` rather than the exchange field
+        // it just set — a re-wrap of an already-capped buffer later (see the
+        // `BodyCapture.of(finalBody)` below) must never be mistaken for this.
+        bodyTruncated: displayCapture.isTruncated,
       };
       eventBus.emit('breakpointHit', { exchange: { ...exchange, breakpoint: 'request' }, payload });
 
@@ -618,7 +643,7 @@ export async function startProxyServer(
         }
 
         const edits = command.edits;
-        const finalBody = edits?.body !== undefined ? Buffer.from(edits.body, 'base64') : requestCapture.toBuffer();
+        const finalBody = edits?.body !== undefined ? Buffer.from(edits.body, 'base64') : rawBody;
 
         if (opts) {
           if (edits?.method) opts.method = edits.method.toUpperCase();
@@ -782,21 +807,37 @@ export async function startProxyServer(
       return;
     }
 
-    const capture = new BodyCapture();
-    res.on('data', (chunk: Buffer) => capture.add(chunk));
+    // Mirrors handleScriptResponseHook: `chunks` is the real (uncapped)
+    // upstream body that gets forwarded to the client once resumed;
+    // `displayCapture` is a separate, capped copy purely for the dashboard.
+    // A single capped `BodyCapture` used for both (as this used to do) would
+    // truncate the body actually sent to the client at MAX_CAPTURED_BODY_BYTES
+    // for a response the user resumed without editing, and re-wrapping that
+    // already-capped buffer for the snapshot would also silently launder
+    // `responseBodyTruncated` back to `false` — see issue #95.
+    const displayCapture = new BodyCapture();
+    const chunks: Buffer[] = [];
+    res.on('data', (chunk: Buffer) => {
+      displayCapture.add(chunk);
+      chunks.push(chunk);
+    });
     // `serverToProxyResponse` is paused by ProxyEngine before this hook
     // runs; without resuming it here, it never emits 'data'/'end' and the
     // wait below deadlocks forever (same reasoning as the mock branch above).
     res.resume();
 
     const pause = () => {
-      const rawBody = capture.toBuffer();
+      const rawBody = Buffer.concat(chunks);
+      // See handleRequestBreakpoint's identical fix above: without this,
+      // `chunks` and `rawBody` both hold the full response body in memory
+      // at once for as long as this closure is alive.
+      chunks.length = 0;
       const snapshot: CapturedExchange = { ...exchange, breakpoint: 'response' };
       snapshot.statusCode = res.statusCode;
       snapshot.statusMessage = res.statusMessage;
       snapshot.responseHeaders = { ...res.headers };
       snapshot.responseBodySize = rawBody.length;
-      BodyCapture.of(rawBody).applyTo(snapshot, 'response');
+      displayCapture.applyTo(snapshot, 'response');
 
       const payload: BreakpointResponsePayload = {
         phase: 'response',
@@ -805,7 +846,10 @@ export async function startProxyServer(
         statusMessage: res.statusMessage,
         headers: flattenHeaders(res.headers),
         body: snapshot.responseBody,
-        bodyTruncated: snapshot.responseBodyTruncated ?? false,
+        // Read directly off `displayCapture` — see the request phase's
+        // identical fix above for why this must not go through a re-wrap of
+        // an already-capped buffer.
+        bodyTruncated: displayCapture.isTruncated,
       };
       eventBus.emit('breakpointHit', { exchange: snapshot, payload });
 
