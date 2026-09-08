@@ -117,6 +117,34 @@ describe('validateRulesData', () => {
     expect(result.errors.some((e) => e.includes('never pause anything'))).toBe(true);
   });
 
+  it('rejects an invalid urlRegex pattern', () => {
+    const result = validateRulesData({ rules: [baseRule({ match: { urlRegex: '(unterminated' } })] });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('invalid urlRegex/urlRegexFlags'))).toBe(true);
+  });
+
+  it('rejects an invalid urlRegexFlags value', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ match: { urlRegex: '.*', urlRegexFlags: 'q' } })],
+    });
+    expect(result.valid).toBe(false);
+  });
+
+  it('rejects urlRegexFlags with a duplicated flag (schema allows it, RegExp does not)', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ match: { urlRegex: '.*', urlRegexFlags: 'ii' } })],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('invalid urlRegex/urlRegexFlags'))).toBe(true);
+  });
+
+  it('accepts a valid urlRegex with valid flags', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ match: { urlRegex: '^/api/.*$', urlRegexFlags: 'i' } })],
+    });
+    expect(result.valid).toBe(true);
+  });
+
   it('collects every validation error rather than stopping at the first', () => {
     const result = validateRulesData({
       rules: [baseRule({ name: 'dup' }), baseRule({ name: 'dup', action: { type: 'bogus' } })],

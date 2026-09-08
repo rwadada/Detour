@@ -49,6 +49,18 @@ export class BodyCapture {
     return capture;
   }
 
+  /**
+   * Whether more than `MAX_CAPTURED_BODY_BYTES` has been fed to this
+   * capture. Lets a caller that keeps its own uncapped copy of the body (a
+   * `breakpoint` rule forwarding the real, untruncated bytes while using
+   * this capture only for the dashboard's display copy — see issue #95)
+   * report accurate truncation without re-wrapping its already-capped
+   * buffer, which would silently launder `truncated` back to `false`.
+   */
+  get isTruncated(): boolean {
+    return this.truncated;
+  }
+
   /** The captured bytes as a single buffer (capped the same as `add`/`applyTo`). */
   toBuffer(): Buffer {
     return Buffer.concat(this.chunks);

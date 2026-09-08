@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { resolveDashboardPort, shouldAutoOpenDashboard } from './cli';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  __uninstallProcessCrashGuardsForTests,
+  installProcessCrashGuards,
+  resolveDashboardPort,
+  shouldAutoOpenDashboard,
+} from './cli';
 
 /**
  * `resolveDashboardPort` is the one piece of pure, synchronous logic in
@@ -55,5 +60,55 @@ describe('shouldAutoOpenDashboard', () => {
 
   it('skips when the dashboard has not been built yet', () => {
     expect(shouldAutoOpenDashboard({ open: true, dashboardPort: 9080, built: false })).toBe(false);
+  });
+});
+
+/**
+ * `installProcessCrashGuards` (issue #94) keeps the process alive across an
+ * unanticipated `uncaughtException`/`unhandledRejection` instead of dying —
+ * but must still mark the eventual exit as a failure (`process.exitCode`),
+ * or a short-lived command that hits one would silently exit 0.
+ */
+describe('installProcessCrashGuards (issue #94)', () => {
+  const originalExitCode = process.exitCode;
+
+  afterEach(() => {
+    // Undoes exactly what `installProcessCrashGuards` itself installs — the
+    // named-listener/idempotency-flag approach that also lets it be a no-op
+    // on a second call — rather than a snapshot/diff over `process`'s
+    // listener list (which would also risk touching listeners installed by
+    // the test runner itself, e.g. vitest's own for reporting unhandled
+    // errors in other tests).
+    __uninstallProcessCrashGuardsForTests();
+    process.exitCode = originalExitCode;
+  });
+
+  it('sets a non-zero exitCode on an uncaught exception, without crashing', () => {
+    installProcessCrashGuards();
+    process.exitCode = 0;
+    process.emit('uncaughtException', new Error('boom'));
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('sets a non-zero exitCode on an unhandled rejection, without crashing', () => {
+    installProcessCrashGuards();
+    process.exitCode = 0;
+    process.emit(
+      'unhandledRejection',
+      new Error('boom'),
+      Promise.reject().catch(() => {}),
+    );
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('is idempotent: a second call does not register a duplicate pair of listeners', () => {
+    const uncaughtBefore = process.listeners('uncaughtException').length;
+    const rejectionBefore = process.listeners('unhandledRejection').length;
+
+    installProcessCrashGuards();
+    installProcessCrashGuards();
+
+    expect(process.listeners('uncaughtException')).toHaveLength(uncaughtBefore + 1);
+    expect(process.listeners('unhandledRejection')).toHaveLength(rejectionBefore + 1);
   });
 });

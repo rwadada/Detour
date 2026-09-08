@@ -5,6 +5,29 @@ import type { FileWatcher } from './ports/fileWatcher';
 import type { RulesFileReader } from './ports/rulesFileReader';
 import type { RulesFileWriter } from './ports/rulesFileWriter';
 
+/**
+ * Compiles every rule, wrapping any failure with the rules file's path and
+ * the offending rule's name/index. `validateRulesData` (domain/rules/schema.ts)
+ * already rejects an un-compilable `urlRegex`/`urlRegexFlags` before a file
+ * ever reaches here, so this should be unreachable in practice — but it's
+ * cheap insurance against a reader that skips that check (or a future
+ * `match`/`compileRule` mismatch) leaving a bare RegExp error with no clue
+ * which file or rule caused it (see issue #97).
+ */
+function compileRules(rules: readonly Rule[], filePath: string): CompiledRule[] {
+  return rules.map((rule, index) => {
+    try {
+      return compileRule(rule);
+    } catch (err) {
+      const label = rule.name ? `"${rule.name}"` : `#${index}`;
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(`Rules file failed to compile: ${filePath}\n  - rules[${index}] (${label}): ${reason}`, {
+        cause: err,
+      });
+    }
+  });
+}
+
 export interface RuleEngineOptions {
   /** Path to rules.json. Resolved relative to the current working directory if not absolute. */
   filePath: string;
@@ -54,7 +77,7 @@ export class RuleEngine {
     this.filePath = filePath;
     this.basePath = path.dirname(filePath);
     this.allowExternalScriptPaths = options.allowExternalScriptPaths ?? false;
-    this.compiledRules = data.rules.map(compileRule);
+    this.compiledRules = compileRules(data.rules, filePath);
     this.activeProfile = data.$activeProfile;
     this.options = options;
   }
@@ -118,7 +141,7 @@ export class RuleEngine {
   private reload(): void {
     try {
       const data = this.options.reader.read(this.filePath);
-      this.compiledRules = data.rules.map(compileRule);
+      this.compiledRules = compileRules(data.rules, this.filePath);
       this.activeProfile = data.$activeProfile;
       this.options.onReload?.({ ruleCount: data.rules.length });
     } catch (err) {

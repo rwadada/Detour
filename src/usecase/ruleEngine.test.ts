@@ -73,6 +73,30 @@ describe('RuleEngine', () => {
     expect(() => RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader })).toThrow();
   });
 
+  it('throws with the file path and offending rule name/index for an invalid urlRegex (issue #97)', () => {
+    writeRules(filePath, [
+      { name: 'bad-regex', match: { urlRegex: '(unterminated' }, action: { type: 'route', host: 'x' } },
+    ]);
+    expect(() => RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader })).toThrow(
+      /rules\.json[\s\S]*"bad-regex"/,
+    );
+  });
+
+  it('wraps a compile-time failure (defense in depth past schema validation) with file path and rule context', () => {
+    // A reader that skips regex-compilability validation (unlike the real
+    // fsRulesFileReader post-#97) so we can exercise RuleEngine's own
+    // wrapping of a `compileRule` failure independent of the schema check.
+    const badRule: Rule = {
+      name: 'sneaky',
+      match: { urlRegex: '(unterminated' },
+      action: { type: 'route', host: 'x' },
+    };
+    const reader = { read: () => ({ rules: [badRule] }) };
+    expect(() => RuleEngine.load({ filePath, watch: false, reader })).toThrow(
+      /Rules file failed to compile.*rules\.json[\s\S]*"sneaky"/,
+    );
+  });
+
   it('match() returns the first enabled rule matching a request', () => {
     writeRules(filePath, [routeRule('a'), routeRule('b')]);
     engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });

@@ -45,6 +45,21 @@ function isIpAddress(host: string): boolean {
 }
 
 /**
+ * Locks down an already-on-disk CA key directory/private key to the same
+ * mode a freshly-generated one gets (issue #96) — used on every `load()` of
+ * an existing CA so a user upgrading from a version that wrote these world-
+ * readable gets remediated automatically, without needing to regenerate
+ * their CA (which would mean re-trusting it on every device all over again).
+ * No-op on Windows: it has no POSIX permission bits, and `chmodSync` there
+ * only toggles the read-only attribute, which isn't the concern here.
+ */
+function tightenPrivateKeyPermissions(keysDir: string, caKeyPath: string): void {
+  if (process.platform === 'win32') return;
+  fs.chmodSync(keysDir, 0o700);
+  fs.chmodSync(caKeyPath, 0o600);
+}
+
+/**
  * Detour's local MITM root CA, plus on-the-fly leaf certificates for each
  * host it intercepts — the node-forge-based replacement for what
  * `http-mitm-proxy`'s bundled `ca.ts` used to generate (issue #42).
@@ -76,15 +91,34 @@ export class CertAuthority {
     const certsDir = path.join(dir, 'certs');
     const keysDir = path.join(dir, 'keys');
     const caCertPath = path.join(certsDir, 'ca.pem');
+    const caKeyPath = path.join(keysDir, 'ca.private.key');
 
     if (fs.existsSync(caCertPath)) {
+      // Re-assert the private key's permissions on every load, not just at
+      // creation time below — a CA generated before issue #96's fix (or
+      // otherwise copied/restored with looser permissions) would otherwise
+      // stay world-readable forever, since nothing else ever revisits it.
+      tightenPrivateKeyPermissions(keysDir, caKeyPath);
       const caCert = pki.certificateFromPem(fs.readFileSync(caCertPath, 'utf8'));
-      const caKey = pki.privateKeyFromPem(fs.readFileSync(path.join(keysDir, 'ca.private.key'), 'utf8'));
+      const caKey = pki.privateKeyFromPem(fs.readFileSync(caKeyPath, 'utf8'));
       return new CertAuthority(dir, caCert, caKey);
     }
 
-    fs.mkdirSync(certsDir, { recursive: true });
-    fs.mkdirSync(keysDir, { recursive: true });
+    // mode: 0o700 (owner-only) since keysDir is about to hold the CA private
+    // key; certsDir only ever holds the public cert but is created the same
+    // way for layout symmetry. `recursive: true` applies `mode` to every
+    // directory it creates in the chain, so this also locks down `dir`
+    // itself (`~/.detour/certs`, and `~/.detour` too on a first-ever run) —
+    // see certStore.ts's `resolveCertDir`. `mode` is meaningless on Windows,
+    // which has no POSIX permission bits, but harmless to still pass.
+    fs.mkdirSync(certsDir, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(keysDir, { recursive: true, mode: 0o700 });
+    // mkdirSync's `mode` only applies to a directory it actually creates —
+    // if `keysDir` already existed (e.g. a corrupted/partial prior run:
+    // `ca.pem` was deleted but `keys/` survived) with looser permissions,
+    // it's left as-is by the call above. Tighten it explicitly before
+    // generating a fresh private key into it (issue #96 follow-up).
+    if (process.platform !== 'win32') fs.chmodSync(keysDir, 0o700);
     const caKeys = pki.rsa.generateKeyPair(2048);
     const cert = pki.createCertificate();
     cert.publicKey = caKeys.publicKey;
@@ -100,8 +134,22 @@ export class CertAuthority {
     ]);
     cert.sign(caKeys.privateKey, md.sha256.create());
 
+    // ca.pem / ca.public.key are meant to be shared (a client installs
+    // ca.pem into its trust store; the public key derives from it anyway),
+    // so the default mode (0o644-ish, subject to umask) is fine.
     fs.writeFileSync(path.join(certsDir, 'ca.pem'), pki.certificateToPem(cert));
-    fs.writeFileSync(path.join(keysDir, 'ca.private.key'), pki.privateKeyToPem(caKeys.privateKey));
+    // 0o600 (owner read/write only): this is Detour's CA private key —
+    // anyone who can read it can mint a certificate trusted by every client
+    // that trusts this CA, i.e. a complete MITM against them (issue #96).
+    // Meaningless on Windows (no POSIX permission bits), but harmless to
+    // still pass. `writeFileSync`'s `mode` is a no-op on an existing file
+    // (the same corrupted/partial state as above: `ca.private.key` survived
+    // even though `ca.pem` didn't) — chmod it before overwriting too, so
+    // the new key material is never left under the old, looser permissions
+    // (mirrors userConfigStore.ts's writeUserConfig chmod-before-write fix).
+    if (process.platform !== 'win32' && fs.existsSync(caKeyPath)) fs.chmodSync(caKeyPath, 0o600);
+    fs.writeFileSync(caKeyPath, pki.privateKeyToPem(caKeys.privateKey), { mode: 0o600 });
+    if (process.platform !== 'win32') fs.chmodSync(caKeyPath, 0o600);
     fs.writeFileSync(path.join(keysDir, 'ca.public.key'), pki.publicKeyToPem(caKeys.publicKey));
 
     return new CertAuthority(dir, cert, caKeys.privateKey);

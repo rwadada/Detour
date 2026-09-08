@@ -423,6 +423,9 @@ export function shouldAutoOpenDashboard(info: { open: boolean; dashboardPort: nu
  * looking like it's running on this port.
  */
 async function runStart(options: StartOptions): Promise<void> {
+  // See installProcessCrashGuards's doc comment (issue #94): scoped to this
+  // long-running path specifically, not every CLI command.
+  installProcessCrashGuards();
   const port = parsePort(options.port, '--port');
   const headless = options.headless ?? false;
   const exitOnIdleMs = options.exitOnIdle !== undefined ? parseIdleMs(options.exitOnIdle) : undefined;
@@ -798,6 +801,79 @@ async function runDetached(options: StartOptions): Promise<void> {
   if (info.dashboardPort !== undefined) console.log(`  Dashboard → http://localhost:${info.dashboardPort}`);
   console.log(`  Logs      → ${logFile}`);
   console.log(`  Stop with: detour stop --port ${port}`);
+}
+
+/**
+ * Last-resort safety net (issue #94): `detour start` is meant to run for
+ * hours/days as a MITM proxy, so a single request/connection tripping an
+ * unexpected synchronous throw or rejected promise somewhere deep in the
+ * stack (a malformed percent-encoded URL hitting `decodeURIComponent`
+ * uncaught was the case that surfaced this — see `staticServer.ts`'s own
+ * guard for the actual fix) should never take the whole process — and every
+ * in-flight proxied connection along with it — down with it. Node's default
+ * behavior for an *unhandled* `uncaughtException`/`unhandledRejection` is to
+ * print a stack trace and exit; registering a listener here suppresses that
+ * exit and just logs instead, trading "crash loudly" for "stay up and keep
+ * proxying" — the right tradeoff for a long-running local dev tool, even
+ * though Node's own docs caution that continuing after an uncaught exception
+ * can leave the process in a somewhat inconsistent state. Deliberately not
+ * relied on as the primary fix for any specific bug (that's what a real
+ * try/catch at the actual throw site is for) — this only exists to keep one
+ * unanticipated one from being fatal.
+ *
+ * Called only from the top of `runStart` — deliberately *not* installed
+ * globally for every CLI command (a first version of this fix did, from
+ * both real entry points unconditionally). Continuing after an uncaught
+ * exception is explicitly unsafe per Node's own docs, which is an
+ * acceptable tradeoff for a proxy that's meant to keep running no matter
+ * what, but not for a short-lived command like `detour config`/`detour
+ * init`/etc. — those are better served by Node's default "print and exit"
+ * behavior, which surfaces the bug immediately rather than risking the
+ * command silently doing something inconsistent before an unrelated later
+ * step exits. `detour start --detach`'s daemon child re-invokes this same
+ * `start` path in its own fresh process (see `runDetached`/
+ * `spawnDaemonChild`), so it's covered too without needing its own call.
+ *
+ * Idempotent: a second call (e.g. a test exercising both this and some
+ * other path that also happens to call it) is a no-op rather than piling on
+ * a duplicate pair of listeners, which would log every crash twice and grow
+ * `process`'s listener count without bound across repeated calls.
+ */
+let processCrashGuardsInstalled = false;
+export function installProcessCrashGuards(): void {
+  if (processCrashGuardsInstalled) return;
+  processCrashGuardsInstalled = true;
+  process.on('uncaughtException', crashGuardUncaughtExceptionListener);
+  process.on('unhandledRejection', crashGuardUnhandledRejectionListener);
+}
+
+/** Test-only: undoes `installProcessCrashGuards` (removes its listeners and resets the idempotency guard) so a test can exercise it fresh, e.g. to check the exact listener it installs rather than relying on side effects from an earlier test's call. */
+export function __uninstallProcessCrashGuardsForTests(): void {
+  process.removeListener('uncaughtException', crashGuardUncaughtExceptionListener);
+  process.removeListener('unhandledRejection', crashGuardUnhandledRejectionListener);
+  processCrashGuardsInstalled = false;
+}
+
+function crashGuardUncaughtExceptionListener(err: unknown): void {
+  console.error(
+    `✖ Uncaught exception (continuing): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
+  );
+  // Keep the process alive (that's the whole point of this guard — see the
+  // doc comment above), but still mark the eventual exit as a failure.
+  // `runStart`'s own `shutdown()` explicitly calls `process.exit(0)` on a
+  // normal SIGINT/SIGTERM/--exit-on-idle stop, which overrides this — so in
+  // the common case this only actually surfaces if the process exits some
+  // other way (e.g. every open handle happens to close and Node drains the
+  // event loop on its own, without `shutdown()` ever running) rather than
+  // silently reporting success.
+  process.exitCode = 1;
+}
+
+function crashGuardUnhandledRejectionListener(reason: unknown): void {
+  console.error(
+    `✖ Unhandled rejection (continuing): ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`,
+  );
+  process.exitCode = 1;
 }
 
 export function createCli(): Command {

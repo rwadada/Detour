@@ -33,7 +33,19 @@ export function serveStatic(root: string, req: IncomingMessage, res: ServerRespo
     return;
   }
 
-  const requestedPath = decodeURIComponent((req.url ?? '/').split('?')[0] ?? '/');
+  // `decodeURIComponent` throws a `URIError` (synchronously) on a malformed
+  // percent-encoding (e.g. `/%`, `/%zz`) — this runs unauthenticated, ahead
+  // of the dashboard password gate, so a single malformed request must not
+  // be able to crash the whole process (issue #94). Treated the same as the
+  // traversal guard below: 400 Bad Request, not a 500 or an uncaught throw.
+  let requestedPath: string;
+  try {
+    requestedPath = decodeURIComponent((req.url ?? '/').split('?')[0] ?? '/');
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Bad Request');
+    return;
+  }
   const hasExtension = path.extname(requestedPath) !== '';
   const relative = requestedPath === '/' ? 'index.html' : requestedPath.replace(/^\/+/, '');
 
