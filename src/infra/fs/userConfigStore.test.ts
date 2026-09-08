@@ -206,11 +206,16 @@ describe('userConfigStore (fs-backed)', () => {
         return realWriteFileSync(target, ...rest);
       });
 
-      writeUserConfig({ dashboardPasswordHash: VALID_HASH_FIXTURE }, configPath);
-
-      chmodSpy.mockRestore();
-      writeSpy.mockRestore();
-      expect(calls).toEqual(['chmod:384', 'write', 'chmod:384']); // 0o600 === 384
+      // try/finally so a throw from writeUserConfig or the assertion itself
+      // (e.g. this test failing) can't leak these spies into later tests —
+      // matches dashboardServer.dashboardPassword.test.ts's own pattern.
+      try {
+        writeUserConfig({ dashboardPasswordHash: VALID_HASH_FIXTURE }, configPath);
+        expect(calls).toEqual(['chmod:384', 'write', 'chmod:384']); // 0o600 === 384
+      } finally {
+        chmodSpy.mockRestore();
+        writeSpy.mockRestore();
+      }
     });
   });
 });
