@@ -3,7 +3,10 @@ import WebSocket from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { DashboardServerMessage } from '../../domain/dashboard/protocol';
 import { DetourEventBus } from '../eventBus';
-import { startDashboardServer, type DashboardServerHandle } from './dashboardServer';
+import { computeAllowedHostnames, startDashboardServer, type DashboardServerHandle } from './dashboardServer';
+
+// eslint-disable-next-line sonarjs/no-hardcoded-ip -- private-range test fixture, not a real address.
+const FAKE_LAN_ADDRESS = '192.168.1.5';
 
 /**
  * Covers the `Origin`/`Host` allowlists added for issue #92 (CSWSH / DNS
@@ -139,9 +142,6 @@ describe('startDashboardServer — Origin/Host allowlist (issue #92)', () => {
     expect(backlog.type).toBe('backlog');
   });
 
-  // eslint-disable-next-line sonarjs/no-hardcoded-ip -- private-range test fixture, not a real address.
-  const FAKE_LAN_ADDRESS = '192.168.1.5';
-
   it('accepts a LAN-address Origin only once --lan (host: "0.0.0.0") is actually in effect', async () => {
     const eventBus = new DetourEventBus();
     handle = await startDashboardServer({ port: 0, host: '0.0.0.0', lanAddresses: [FAKE_LAN_ADDRESS] }, eventBus);
@@ -243,5 +243,44 @@ describe('startDashboardServer — Origin/Host allowlist (issue #92)', () => {
     });
 
     expect(status).toBe(403);
+  });
+});
+
+/**
+ * Covers `computeAllowedHostnames` directly (issue #92 follow-up): a Copilot
+ * review on the original allowlist found that binding to a single explicit
+ * non-loopback interface address — a supported case per
+ * `DashboardServerOptions.host`'s doc comment — would 403 every request,
+ * since neither `dashboardOnLan` nor the loopback names cover it. Pure-logic
+ * unit tests here, rather than an integration test that actually binds to
+ * such an address, since a real LAN/arbitrary interface address isn't
+ * something CI can be relied on to have.
+ */
+describe('computeAllowedHostnames (issue #92 follow-up)', () => {
+  it('allows an explicit non-loopback bind address even though it is neither localhost nor 0.0.0.0', () => {
+    const allowed = computeAllowedHostnames(FAKE_LAN_ADDRESS, false, []);
+    expect(allowed).toContain(FAKE_LAN_ADDRESS);
+    expect(allowed).toContain('localhost');
+  });
+
+  it('still allows the loopback names for the default localhost bind', () => {
+    const allowed = computeAllowedHostnames('localhost', false, []);
+    expect(allowed).toEqual(['localhost', '127.0.0.1', '::1', 'localhost']);
+  });
+
+  it('includes LAN addresses only when dashboardOnLan (bound to 0.0.0.0)', () => {
+    const allowed = computeAllowedHostnames('0.0.0.0', true, [FAKE_LAN_ADDRESS]);
+    expect(allowed).toContain(FAKE_LAN_ADDRESS);
+    expect(allowed).toContain('0.0.0.0');
+  });
+
+  it('omits LAN addresses when not bound to every interface', () => {
+    const allowed = computeAllowedHostnames('localhost', false, [FAKE_LAN_ADDRESS]);
+    expect(allowed).not.toContain(FAKE_LAN_ADDRESS);
+  });
+
+  it('lower-cases the bind host so a mixed-case value still matches a lower-cased Host header', () => {
+    const allowed = computeAllowedHostnames('MyHost.Local', false, []);
+    expect(allowed).toContain('myhost.local');
   });
 });

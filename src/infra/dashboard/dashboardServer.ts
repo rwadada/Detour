@@ -101,6 +101,35 @@ export interface DashboardServerHandle {
 }
 
 /**
+ * The `Host`/`Origin` hostnames a CSWSH/DNS-rebinding check (issue #92)
+ * should accept for a dashboard bound to `host`. Pulled out as pure logic —
+ * same reasoning as cli.ts's `resolveDashboardPort`/`shouldAutoOpenDashboard`
+ * — so this is testable without actually binding a socket.
+ *
+ * Always allows `localhost`/`127.0.0.1`/`::1`, plus this machine's own LAN
+ * address(es) (`lanAddrs`) only when `dashboardOnLan` — matching exactly
+ * what the server is actually bound to and thus reachable at.
+ *
+ * `host` itself (lower-cased) is also always allowed: `options.host` is a
+ * plain `string` (see `DashboardServerOptions.host`'s doc comment and
+ * `sendInitialPayload`'s own `dashboardOnLan` comment), so a caller can bind
+ * to a single explicit non-loopback interface address (`192.168.1.5`, say)
+ * rather than only `localhost`/`0.0.0.0` — `dashboardOnLan` is then `false`
+ * (it's neither), yet a legitimate client's `Host`/`Origin` will still name
+ * that address specifically, since it's the only interface the bind
+ * actually accepts connections on. Without this, every request against
+ * such a bind would 403.
+ */
+export function computeAllowedHostnames(
+  host: string,
+  dashboardOnLan: boolean,
+  lanAddrs: readonly string[],
+): readonly string[] {
+  const base = ['localhost', '127.0.0.1', '::1', host.toLowerCase()];
+  return dashboardOnLan ? [...base, ...lanAddrs] : base;
+}
+
+/**
  * Serves the built dashboard (static files + a `/ws` WebSocket feed of live
  * traffic) on `options.port`. Every exchange published on the event bus is
  * broadcast to all connected browser tabs in real time; a bounded backlog is
@@ -186,11 +215,9 @@ export async function startDashboardServer(
   //     none by default) is allowed through: there's no origin-confusion
   //     risk to check when nothing claims an origin at all.
   //
-  // Both allow `localhost`/`127.0.0.1`/`::1` unconditionally, plus this
-  // machine's own LAN address(es) only when `dashboardOnLan` — matching
-  // exactly what this server is actually bound to and thus reachable at.
+  // See `computeAllowedHostnames`'s doc comment for what this allows and why.
   function allowedHostnames(): readonly string[] {
-    return dashboardOnLan ? ['localhost', '127.0.0.1', '::1', ...lanAddrs] : ['localhost', '127.0.0.1', '::1'];
+    return computeAllowedHostnames(host, dashboardOnLan, lanAddrs);
   }
 
   // Extracts the hostname portion of a `Host` header (`localhost:5173` →
