@@ -80,17 +80,14 @@ describe('validateRulesData', () => {
     expect(result.errors.some((e) => e.includes('looks like it includes a port'))).toBe(true);
   });
 
-  it('rejects a route action whose host has a port folded into a bracketed IPv6 literal', () => {
+  it.each([
+    ['[::1]:8080', 'a port folded into a bracketed IPv6 literal'],
+    ['[::1]', 'a bracketed IPv6 literal with no port folded in — computeRouteTarget never unwraps it for the outbound connection'],
+    ['[::1', 'malformed — missing its closing bracket'],
+    ['::1]', 'malformed — missing its opening bracket'],
+  ])('rejects a route action host of %j (%s)', (host) => {
     const result = validateRulesData({
-      rules: [baseRule({ action: { type: 'route', host: '[::1]:8080' } })],
-    });
-    expect(result.valid).toBe(false);
-    expect(result.errors.some((e) => e.includes('must be a bare host without brackets'))).toBe(true);
-  });
-
-  it('rejects a bracketed IPv6 host even with no port folded in — computeRouteTarget never unwraps it for the outbound connection', () => {
-    const result = validateRulesData({
-      rules: [baseRule({ action: { type: 'route', host: '[::1]', port: 8080 } })],
+      rules: [baseRule({ action: { type: 'route', host, port: 8080 } })],
     });
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.includes('must be a bare host without brackets'))).toBe(true);

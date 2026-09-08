@@ -220,11 +220,16 @@ function validateSemantics(data: RulesFile): string[] {
     // action.host reaches `http.request`'s own `host` option verbatim for
     // the *outbound* connection, so a bracketed value would try to
     // resolve a host literally named "[::1]", brackets and all, and fail.
-    // The working spelling is the bare, unbracketed literal (`::1`), with
-    // any port in action.port instead — same as the check above, just for
-    // IPv6's own RFC 3986 pairing syntax rather than the plain host:port
-    // one.
-    if (rule.action?.type === 'route' && /^\[.*\]/.test(rule.action.host)) {
+    // Rejects a bare `[` or `]` anywhere in the string, not just a
+    // well-formed `[...]` pair — neither character is ever legal in a real
+    // hostname or IP literal, so a malformed one missing its closing
+    // bracket (a typo trimming "[::1]" down to "[::1") is exactly as
+    // broken as the well-formed case, and matching only the paired form
+    // would let it slip through unflagged. The working spelling is the
+    // bare, unbracketed literal (`::1`), with any port in action.port
+    // instead — same as the check above, just for IPv6's own RFC 3986
+    // pairing syntax rather than the plain host:port one.
+    if (rule.action?.type === 'route' && /[[\]]/.test(rule.action.host)) {
       errors.push(
         `rules[${index}] (${label}): action.host "${rule.action.host}" must be a bare host without brackets — bracketed IPv6 (e.g. "[::1]") isn't unwrapped for an outbound connection, use "::1" instead, with any port in action.port`,
       );
