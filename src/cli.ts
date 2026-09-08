@@ -299,6 +299,8 @@ interface StartOptions {
   /** Undefined when `--dashboard-port` wasn't passed — defaults to `port + 1000` rather than a fixed value, so it tracks whatever `--port` was chosen (issue #24). */
   dashboardPort?: string;
   rules?: string;
+  /** `--allow-external-script-paths` (issue #98): let `script.path`/`mock.bodyFile` resolve outside rules.json's own directory instead of being rejected — see `resolveRulePath`'s doc comment. Off by default. */
+  allowExternalScriptPaths?: boolean;
   dump: string;
   http2: boolean;
   proto: string[];
@@ -536,6 +538,7 @@ async function runStartBody({
       reader: fsRulesFileReader,
       writer: fsRulesFileWriter,
       watcher: fsFileWatcher,
+      allowExternalScriptPaths: options.allowExternalScriptPaths ?? false,
       onReload: (info) => eventBus.emit('rulesReloaded', { filePath: ruleEngine!.filePath, ruleCount: info.ruleCount }),
       onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
     });
@@ -889,6 +892,10 @@ export function createCli(): Command {
     .option(
       '--rules <path>',
       `Path to a rules file. When given, mock/route/rewrite/script rules are applied and reloaded automatically on change (when omitted, ${DEFAULT_RULES_FILENAME} in the current directory is loaded automatically if present)`,
+    )
+    .option(
+      '--allow-external-script-paths',
+      `Allow a rule's \`script.path\`/\`mock.bodyFile\` to resolve outside the directory rules.json lives in (including an absolute path) instead of being rejected (issue #98). SECURITY: a \`script\` module runs as arbitrary JavaScript with detour's own process permissions, and a \`mock.bodyFile\` returns any file it points to as a response body — off by default so a rules.json write from anything reaching the dashboard (e.g. \`setRules\`) can't read/execute outside its own directory.`,
     )
     .option(
       '--dump <level>',

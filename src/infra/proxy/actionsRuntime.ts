@@ -1,10 +1,10 @@
-import path from 'node:path';
 import { deleteHeader } from '../../domain/exchange/headers';
 import { applyBodyRewrite } from '../../domain/rules/bodyRewrite';
 import { applyHeaderRewrite } from '../../domain/rules/headerRewrite';
 import { type MockResponse } from '../../domain/rules/mockResponse';
 import { applyQueryRewrite } from '../../domain/rules/queryRewrite';
 import { computeRouteTarget } from '../../domain/rules/routeAction';
+import { resolveRulePath } from '../../domain/rules/safeRulePath';
 import type { ScriptModule } from '../../domain/rules/scriptAction';
 import type { BodyRewrite, MockAction, RewriteAction, RouteAction, ScriptAction } from '../../domain/rules/types';
 import { resolveMockAction } from '../../usecase/resolveMockAction';
@@ -14,9 +14,15 @@ import type { IContext } from './engine/types';
 
 export type { MockResponse };
 
-/** Resolves a `mock` action's `body`/`bodyFile` into bytes, reading `bodyFile` (if set) off disk via `fsMockBodyFileReader` — see `resolveMockAction`/`buildMockResponse` for the actual assembly logic. */
-export function resolveMockResponse(action: MockAction, basePath: string): MockResponse {
-  return resolveMockAction(action, basePath, fsMockBodyFileReader);
+/**
+ * Resolves a `mock` action's `body`/`bodyFile` into bytes, reading
+ * `bodyFile` (if set) off disk via `fsMockBodyFileReader` — see
+ * `resolveMockAction`/`buildMockResponse` for the actual assembly logic.
+ * `allowExternalPaths` gates whether `bodyFile` may resolve outside
+ * `basePath` — see `resolveRulePath`'s doc comment (issue #98).
+ */
+export function resolveMockResponse(action: MockAction, basePath: string, allowExternalPaths = false): MockResponse {
+  return resolveMockAction(action, basePath, fsMockBodyFileReader, allowExternalPaths);
 }
 
 /**
@@ -56,9 +62,17 @@ export function sendMockSimulate(ctx: IContext, simulate: 'timeout' | 'close'): 
   // 'timeout': no-op — the connection is intentionally left hanging.
 }
 
-/** Resolves a `script` action's `path` (relative to rules.json) and loads the module — see `fsScriptModuleLoader` for the loading/caching mechanics. */
-export function loadScriptModule(action: ScriptAction, basePath: string): ScriptModule {
-  return fsScriptModuleLoader.load(path.resolve(basePath, action.path));
+/**
+ * Resolves a `script` action's `path` (relative to rules.json) and loads
+ * the module — see `fsScriptModuleLoader` for the loading/caching
+ * mechanics. `allowExternalPaths` gates whether `path` may resolve outside
+ * `basePath` — see `resolveRulePath`'s doc comment (issue #98): without it,
+ * a rules.json that can point `path` anywhere on disk is arbitrary code
+ * execution with detour's own process permissions.
+ */
+export function loadScriptModule(action: ScriptAction, basePath: string, allowExternalPaths = false): ScriptModule {
+  const resolved = resolveRulePath(basePath, action.path, 'script.path', allowExternalPaths);
+  return fsScriptModuleLoader.load(resolved);
 }
 
 /** Redirects the outbound connection to a different host/port than the one the client addressed — see `computeRouteTarget` for the underlying decision. */

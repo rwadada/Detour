@@ -174,9 +174,14 @@ function buildBaseExchange(
  * failure (e.g. an unreadable `bodyFile`) rather than crashing the proxy
  * or silently passing the request through.
  */
-function tryResolveMock(rule: Rule, basePath: string, onError: (message: string) => void): MockResponse {
+function tryResolveMock(
+  rule: Rule,
+  basePath: string,
+  allowExternalPaths: boolean,
+  onError: (message: string) => void,
+): MockResponse {
   try {
-    return resolveMockResponse(rule.action as Extract<Rule['action'], { type: 'mock' }>, basePath);
+    return resolveMockResponse(rule.action as Extract<Rule['action'], { type: 'mock' }>, basePath, allowExternalPaths);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     onError(message);
@@ -199,10 +204,11 @@ function tryResolveMock(rule: Rule, basePath: string, onError: (message: string)
 function tryLoadScriptModule(
   rule: Rule,
   basePath: string,
+  allowExternalPaths: boolean,
   onError: (message: string) => void,
 ): ScriptModule | undefined {
   try {
-    return loadScriptModule(rule.action as Extract<Rule['action'], { type: 'script' }>, basePath);
+    return loadScriptModule(rule.action as Extract<Rule['action'], { type: 'script' }>, basePath, allowExternalPaths);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     onError(`rule "${rule.name}": failed to load script "${(rule.action as { path: string }).path}": ${message}`);
@@ -1110,7 +1116,7 @@ export async function startProxyServer(
         let mockError: string | undefined;
         const mock = simulate
           ? undefined
-          : tryResolveMock(rule, ruleEngine!.basePath, (message) => {
+          : tryResolveMock(rule, ruleEngine!.basePath, ruleEngine!.allowExternalScriptPaths, (message) => {
               mockError = message;
             });
 
@@ -1194,8 +1200,11 @@ export async function startProxyServer(
 
       if (rule?.action.type === 'script') {
         ruleContexts.set(ctx.uuid, rule);
-        const module = tryLoadScriptModule(rule, ruleEngine!.basePath, (message) =>
-          eventBus.emit('error', { id: ctx.uuid, errorKind: 'RULE_SCRIPT_ERROR', message }),
+        const module = tryLoadScriptModule(
+          rule,
+          ruleEngine!.basePath,
+          ruleEngine!.allowExternalScriptPaths,
+          (message) => eventBus.emit('error', { id: ctx.uuid, errorKind: 'RULE_SCRIPT_ERROR', message }),
         );
         // Always runs (not just when `beforeRequest` is defined) — a
         // `beforeResponse` hook (checked separately at the response phase)
@@ -1277,7 +1286,7 @@ export async function startProxyServer(
       // even has a `beforeResponse` hook — a rule with only `beforeRequest`
       // has nothing left to do at the response phase and falls through to
       // the normal capture/forwarding below, same as a `route`/no-op rule.
-      const module = tryLoadScriptModule(rule, ruleEngine!.basePath, (message) =>
+      const module = tryLoadScriptModule(rule, ruleEngine!.basePath, ruleEngine!.allowExternalScriptPaths, (message) =>
         eventBus.emit('error', { id: ctx.uuid, errorKind: 'RULE_SCRIPT_ERROR', message }),
       );
       if (module?.beforeResponse) {

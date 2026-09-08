@@ -78,6 +78,35 @@ describe('resolveMockResponse', () => {
       const res = resolveMockResponse({ type: 'mock', bodyFile: 'body.txt' }, dir);
       expect(res.headers['Content-Type']).toBeUndefined();
     });
+
+    describe('path traversal (issue #98)', () => {
+      it('rejects a bodyFile that resolves outside basePath', () => {
+        expect(() => resolveMockResponse({ type: 'mock', bodyFile: '../outside.json' }, dir)).toThrow(
+          /resolves outside/,
+        );
+      });
+
+      it('rejects an absolute bodyFile path', () => {
+        const outsideFile = path.join(os.tmpdir(), 'detour-outside-body.json');
+        fs.writeFileSync(outsideFile, '{"secret":true}');
+        try {
+          expect(() => resolveMockResponse({ type: 'mock', bodyFile: outsideFile }, dir)).toThrow(/resolves outside/);
+        } finally {
+          fs.rmSync(outsideFile, { force: true });
+        }
+      });
+
+      it('allows an absolute bodyFile path when allowExternalPaths is set', () => {
+        const outsideFile = path.join(os.tmpdir(), 'detour-outside-body-allowed.json');
+        fs.writeFileSync(outsideFile, '{"secret":true}');
+        try {
+          const res = resolveMockResponse({ type: 'mock', bodyFile: outsideFile }, dir, true);
+          expect(res.body.toString('utf8')).toBe('{"secret":true}');
+        } finally {
+          fs.rmSync(outsideFile, { force: true });
+        }
+      });
+    });
   });
 });
 
@@ -101,6 +130,33 @@ describe('loadScriptModule', () => {
 
   it('throws a descriptive error for a missing script file', () => {
     expect(() => loadScriptModule({ type: 'script', path: './nope.js' }, dir)).toThrow();
+  });
+
+  describe('path traversal (issue #98)', () => {
+    it('rejects a script path that resolves outside basePath', () => {
+      expect(() => loadScriptModule({ type: 'script', path: '../outside.js' }, dir)).toThrow(/resolves outside/);
+    });
+
+    it('rejects an absolute script path', () => {
+      const outsideFile = path.join(os.tmpdir(), 'detour-outside-script.js');
+      fs.writeFileSync(outsideFile, 'module.exports = { beforeRequest() {} };');
+      try {
+        expect(() => loadScriptModule({ type: 'script', path: outsideFile }, dir)).toThrow(/resolves outside/);
+      } finally {
+        fs.rmSync(outsideFile, { force: true });
+      }
+    });
+
+    it('allows an absolute script path when allowExternalPaths is set', () => {
+      const outsideFile = path.join(os.tmpdir(), 'detour-outside-script-allowed.js');
+      fs.writeFileSync(outsideFile, 'module.exports = { beforeRequest() {} };');
+      try {
+        const module = loadScriptModule({ type: 'script', path: outsideFile }, dir, true);
+        expect(typeof module.beforeRequest).toBe('function');
+      } finally {
+        fs.rmSync(outsideFile, { force: true });
+      }
+    });
   });
 });
 

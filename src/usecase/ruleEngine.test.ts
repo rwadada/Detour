@@ -59,6 +59,15 @@ describe('RuleEngine', () => {
     expect(engine.getRules()).toHaveLength(1);
   });
 
+  it('defaults allowExternalScriptPaths to false, and honors an explicit true (issue #98)', () => {
+    writeRules(filePath, [routeRule('r1')]);
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });
+    expect(engine.allowExternalScriptPaths).toBe(false);
+    engine.close();
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader, allowExternalScriptPaths: true });
+    expect(engine.allowExternalScriptPaths).toBe(true);
+  });
+
   it('throws on an initially invalid rules file', () => {
     writeRules(filePath, [{ name: 'bad', match: {}, action: { type: 'bogus' } }]);
     expect(() => RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader })).toThrow();
