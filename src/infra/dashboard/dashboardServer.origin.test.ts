@@ -183,13 +183,33 @@ describe('startDashboardServer — Origin/Host allowlist (issue #92)', () => {
     await expect(waitForRejection(socket)).resolves.toBe('rejected');
   });
 
-  it('rejects a static asset request with a DNS-rebound Host header', async () => {
+  it.each([
+    ['a DNS-rebound Host header naming a foreign domain', 'evil.example.com'],
+    [
+      // `::1:1234` has two colons outside of brackets. A naive "split on the
+      // last colon" parse would read this as hostname `::1` (allowed) with
+      // port `1234`, bypassing the allowlist. RFC 7230 requires IPv6
+      // literals in a Host header to be bracketed, so this must be rejected
+      // outright.
+      'an unbracketed IPv6-looking Host header',
+      // eslint-disable-next-line sonarjs/no-hardcoded-ip -- loopback address used as a malformed Host header fixture, not a real address.
+      '::1:1234',
+    ],
+    [
+      // `localhost:evil` has exactly one `:`, same as a legitimate
+      // `host:port` — a parse that only checks colon count (and not that
+      // what follows is actually a port) would slice this down to
+      // `localhost` and let it through, defeating the allowlist by accident.
+      'a Host header whose port is non-numeric',
+      'localhost:evil',
+    ],
+  ])('rejects a static asset request with %s', async (_description, hostHeaderValue) => {
     const eventBus = new DetourEventBus();
     handle = await startDashboardServer({ port: 0 }, eventBus);
 
     const status = await new Promise<number | undefined>((resolve, reject) => {
       const req = http.request(
-        { host: 'localhost', port: handle?.port, path: '/', headers: { Host: 'evil.example.com' } },
+        { host: 'localhost', port: handle?.port, path: '/', headers: { Host: hostHeaderValue } },
         (res) => {
           res.resume();
           res.on('end', () => resolve(res.statusCode));
@@ -219,30 +239,6 @@ describe('startDashboardServer — Origin/Host allowlist (issue #92)', () => {
     // 404/500 when the dashboard build isn't present in this test
     // environment) now that the Host allowlist has let the request through.
     expect(status).not.toBe(403);
-  });
-
-  it('rejects a static asset request with an unbracketed IPv6-looking Host header', async () => {
-    const eventBus = new DetourEventBus();
-    handle = await startDashboardServer({ port: 0 }, eventBus);
-
-    // `::1:1234` has two colons outside of brackets. A naive "split on the
-    // last colon" parse would read this as hostname `::1` (allowed) with
-    // port `1234`, bypassing the allowlist. RFC 7230 requires IPv6 literals
-    // in a Host header to be bracketed, so this must be rejected outright.
-    const status = await new Promise<number | undefined>((resolve, reject) => {
-      const req = http.request(
-        // eslint-disable-next-line sonarjs/no-hardcoded-ip -- loopback address used as a malformed Host header fixture, not a real address.
-        { host: 'localhost', port: handle?.port, path: '/', headers: { Host: '::1:1234' } },
-        (res) => {
-          res.resume();
-          res.on('end', () => resolve(res.statusCode));
-        },
-      );
-      req.on('error', reject);
-      req.end();
-    });
-
-    expect(status).toBe(403);
   });
 });
 

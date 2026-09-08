@@ -53,6 +53,17 @@ export const WEB_DIST_DIR = process.env.DETOUR_WEB_DIST_DIR
 
 export interface DashboardServerOptions {
   port: number;
+  /**
+   * The interface to bind to. `cli.ts`'s `resolveDashboardHost` only ever
+   * passes `'localhost'` (the default below) or `'0.0.0.0'` (`--lan`), but
+   * this is a plain `string` — a caller (a test, or a future option) can
+   * hand it a single explicit non-loopback interface address (`192.168.1.5`,
+   * say) to bind just that one NIC. `computeAllowedHostnames`'s
+   * `dashboardOnLan` check (`host === '0.0.0.0'`) is `false` for such a
+   * value, so it's handled by always allowing `host` itself regardless —
+   * see that function's doc comment.
+   * @default 'localhost'
+   */
   host?: string;
   /**
    * The proxy's own port, broadcast to clients as `proxyInfo` (issue #24's
@@ -241,7 +252,16 @@ export async function startDashboardServer(
     // header can't be parsed into something that happens to match the
     // allowlist.
     if (firstColon !== -1 && firstColon !== lastColon) return undefined;
-    return (lastColon === -1 ? hostHeader : hostHeader.slice(0, lastColon)).toLowerCase();
+    if (lastColon === -1) return hostHeader.toLowerCase();
+    // A single `:` is only legitimately `host:port` if what follows is
+    // actually a port — a value like `localhost:evil` has exactly one `:`
+    // too, but isn't of that form, and slicing it down to `localhost`
+    // regardless would parse a malformed Host header into an allowed
+    // hostname purely by accident. `/^\d+$/` (rather than also range-
+    // checking 0-65535) is enough: it's already been established this isn't
+    // an allowlisted name, so the actual port value played no role either way.
+    if (!/^\d+$/.test(hostHeader.slice(lastColon + 1))) return undefined;
+    return hostHeader.slice(0, lastColon).toLowerCase();
   }
 
   function isAllowedHost(hostHeader: string | undefined): boolean {
