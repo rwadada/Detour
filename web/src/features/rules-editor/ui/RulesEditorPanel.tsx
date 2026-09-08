@@ -150,7 +150,17 @@ export function RulesEditorPanel() {
       setSentRules(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- setDirty/dismissError are stable-enough store actions, not reactive values this effect should re-run for
-  }, [pendingSaveAt, lastError, lastErrorAt, lastErrorKind, rulesFile, rulesFileAt, savingVersion, draftVersion, sentRules]);
+  }, [
+    pendingSaveAt,
+    lastError,
+    lastErrorAt,
+    lastErrorKind,
+    rulesFile,
+    rulesFileAt,
+    savingVersion,
+    draftVersion,
+    sentRules,
+  ]);
 
   // Bails out of a save that never resolved either way — see
   // `SAVE_TIMEOUT_MS`'s own doc comment. Surfaces it as a `saveError`

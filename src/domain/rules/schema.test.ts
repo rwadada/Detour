@@ -82,7 +82,10 @@ describe('validateRulesData', () => {
 
   it.each([
     ['[::1]:8080', 'a port folded into a bracketed IPv6 literal'],
-    ['[::1]', 'a bracketed IPv6 literal with no port folded in — computeRouteTarget never unwraps it for the outbound connection'],
+    [
+      '[::1]',
+      'a bracketed IPv6 literal with no port folded in — computeRouteTarget never unwraps it for the outbound connection',
+    ],
     ['[::1', 'malformed — missing its closing bracket'],
     ['::1]', 'malformed — missing its opening bracket'],
   ])('rejects a route action host of %j (%s)', (host) => {
