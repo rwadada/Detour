@@ -203,11 +203,20 @@ function validateSemantics(data: RulesFile): string[] {
     // (there's a separate action.port field for that) — left unvalidated,
     // this reaches net/http as a literal hostname, so it fails DNS
     // resolution (`getaddrinfo ENOTFOUND host:port`) instead of connecting.
-    // A single colon followed by only digits is host:port almost by
-    // definition; an IPv6 literal never matches (it either has no colon at
-    // all as a bracketed `[::1]`-style action.host, or — unbracketed — at
-    // least two colons), so this can't false-positive on one.
-    if (rule.action?.type === 'route' && /^[^:]+:\d+$/.test(rule.action.host)) {
+    // Two shapes catch it: a single colon followed by only digits
+    // (`example.com:8080`) is host:port almost by definition, and a
+    // bracketed literal followed by `:digits` (`[::1]:8080`) is the
+    // equivalent for IPv6 — URLs bracket an IPv6 host specifically to
+    // disambiguate its own colons from a trailing :port, so anything past
+    // the closing bracket is unambiguously a port, never part of the
+    // address. Neither shape matches a bare IPv6 literal with no port
+    // (`::1`, unbracketed and un-suffixed — the correct way to spell this
+    // field when there's nothing for action.port to hold), since that has
+    // either zero colons (not IPv6) or, unbracketed, at least two.
+    if (
+      rule.action?.type === 'route' &&
+      (/^[^:]+:\d+$/.test(rule.action.host) || /^\[[^\]]*\]:\d+$/.test(rule.action.host))
+    ) {
       errors.push(
         `rules[${index}] (${label}): action.host "${rule.action.host}" looks like it includes a port — put the port in action.port instead, action.host must be a bare hostname`,
       );

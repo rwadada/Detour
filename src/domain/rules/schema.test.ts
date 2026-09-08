@@ -80,6 +80,21 @@ describe('validateRulesData', () => {
     expect(result.errors.some((e) => e.includes('looks like it includes a port'))).toBe(true);
   });
 
+  it('rejects a route action whose host has a port folded into a bracketed IPv6 literal', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'route', host: '[::1]:8080' } })],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('looks like it includes a port'))).toBe(true);
+  });
+
+  it('accepts a bracketed IPv6 host with no port folded in', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'route', host: '[::1]', port: 8080 } })],
+    });
+    expect(result.valid).toBe(true);
+  });
+
   it('does not mistake an IPv6 literal host for host:port', () => {
     const result = validateRulesData({
       rules: [baseRule({ action: { type: 'route', host: '::1', port: 8080 } })],

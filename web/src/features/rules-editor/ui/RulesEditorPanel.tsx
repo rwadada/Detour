@@ -13,6 +13,9 @@ import { ActionFields } from './ActionFields';
 
 const ACTION_TYPES: RuleAction['type'][] = ['mock', 'route', 'rewrite', 'breakpoint', 'script'];
 
+/** How long `save()` waits for the server's `rules`/`error` broadcast before giving up — WS delivery on a live connection is effectively instant, so this is just a bailout for the unusual case (a dropped connection, say) where neither ever arrives and the dialog would otherwise be stuck showing "Saving…" forever. Mirrors `RuleProfilesControl`'s own `PENDING_CONFIRMATION_TIMEOUT_MS` for the same reason. */
+const SAVE_TIMEOUT_MS = 5000;
+
 /**
  * The Rules editor's body (issue #19), rendered inside a `Dialog` by
  * `RulesEditorButton`. Edits are staged in local `draft` state and only
@@ -64,6 +67,20 @@ export function RulesEditorPanel() {
   // dialog gave no indication anything was wrong, even though rules.json on
   // disk never changed.
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Bumped by every draft edit (`updateRule`/`addRule`/`removeRule`) —
+  // `save()` snapshots the current value into `savingVersion` below.
+  // Together they're what tells the resolving effect apart a save that
+  // succeeded with nothing left unsaved from one whose success arrived
+  // *after* the user had already made more edits: naively clearing `dirty`
+  // on any success would otherwise silently drop those newer edits'
+  // "there's something unsaved" status the moment the *earlier* save's ack
+  // showed up.
+  const [draftVersion, setDraftVersion] = useState(0);
+  // `draftVersion` at the moment `save()` last dispatched — `null` when no
+  // save is in flight. `dirty` only actually clears once the resolving
+  // effect sees this still matches the (possibly since-advanced)
+  // `draftVersion`.
+  const [savingVersion, setSavingVersion] = useState<number | null>(null);
 
   // Consumes `pendingNewRule` exactly once, right after the initial draft
   // above already baked it in — an effect (not read during render) since
@@ -85,8 +102,10 @@ export function RulesEditorPanel() {
   // `RULES_WRITE_ERROR` no older than `pendingSaveAt` means this specific
   // save was rejected, so the draft stays dirty and the rejection reason is
   // shown instead of being silently swallowed; a `rulesFile` update no
-  // older than `pendingSaveAt` means it landed, so the draft can finally be
-  // marked clean.
+  // older than `pendingSaveAt` means it landed. `dirty` only actually
+  // clears then if `draftVersion` still matches what was saved — otherwise
+  // the user made more edits while this save was in flight, and clearing
+  // it would silently mark those newer, still-unsaved edits as saved too.
   useEffect(() => {
     if (pendingSaveAt === null) return;
     if (lastError !== null && lastErrorAt !== null && lastErrorAt >= pendingSaveAt) {
@@ -94,14 +113,31 @@ export function RulesEditorPanel() {
       setSaveError(lastError);
       dismissError();
       setPendingSaveAt(null);
+      setSavingVersion(null);
       return;
     }
     if (rulesFileAt !== null && rulesFileAt >= pendingSaveAt) {
-      setDirty(false);
+      if (savingVersion === draftVersion) setDirty(false);
       setPendingSaveAt(null);
+      setSavingVersion(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- setDirty/dismissError are stable-enough store actions, not reactive values this effect should re-run for
-  }, [pendingSaveAt, lastError, lastErrorAt, rulesFileAt]);
+  }, [pendingSaveAt, lastError, lastErrorAt, rulesFileAt, savingVersion, draftVersion]);
+
+  // Bails out of a save that never resolved either way — see
+  // `SAVE_TIMEOUT_MS`'s own doc comment. Surfaces it as a `saveError`
+  // (rather than silently unsticking "Saving…") since something genuinely
+  // did go wrong: the draft's own dirty status was already left untouched
+  // by the effect above, exactly as if the rejection had a message.
+  useEffect(() => {
+    if (pendingSaveAt === null) return;
+    const timer = setTimeout(() => {
+      setSaveError('No response from the server — the connection may have dropped. Try saving again.');
+      setPendingSaveAt(null);
+      setSavingVersion(null);
+    }, SAVE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [pendingSaveAt]);
 
   // Re-syncs the draft from the server whenever a fresh `rulesFile` arrives
   // while nothing is unsaved — covers both the initial load (draft starts
@@ -130,6 +166,7 @@ export function RulesEditorPanel() {
     setDraft((d) => ({ ...d, rules: d.rules.map((r, i) => (i === index ? { ...r, ...patch } : r)) }));
     setDirty(true);
     setSaveError(null);
+    setDraftVersion((v) => v + 1);
   };
 
   const addRule = () => {
@@ -137,6 +174,7 @@ export function RulesEditorPanel() {
     setSelected(draft.rules.length);
     setDirty(true);
     setSaveError(null);
+    setDraftVersion((v) => v + 1);
   };
 
   const removeRule = (index: number) => {
@@ -144,6 +182,7 @@ export function RulesEditorPanel() {
     if (selected === index) setSelected(null);
     setDirty(true);
     setSaveError(null);
+    setDraftVersion((v) => v + 1);
   };
 
   const discard = () => {
@@ -152,11 +191,13 @@ export function RulesEditorPanel() {
     setDirty(false);
     setSaveError(null);
     setPendingSaveAt(null);
+    setSavingVersion(null);
   };
 
   const save = () => {
     setSaveError(null);
     setPendingSaveAt(Date.now());
+    setSavingVersion(draftVersion);
     setRules(draft);
   };
 
