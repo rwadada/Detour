@@ -1,0 +1,41 @@
+name: release-please
+
+# Maintains an always-up-to-date "release PR" from Conventional Commits on
+# main (bumping package.json's version and writing CHANGELOG.md) — merging
+# it is the normal way to cut a release. See release-please-config.json /
+# .release-please-manifest.json for the version-tracking config, and
+# https://github.com/googleapis/release-please-action for how the action
+# itself works.
+#
+# Uses the default GITHUB_TOKEN rather than a separate PAT: a
+# GITHUB_TOKEN-authenticated push/tag doesn't trigger *other* workflows
+# (release.yml's own `on: push: tags` included), which is exactly why the
+# build-and-publish job below runs as a second job in *this* workflow —
+# chained via `needs`/`if` off release-please's own output — instead of
+# relying on the tag it creates to fire release.yml.
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+
+  build-and-publish:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    uses: ./.github/workflows/build-and-publish-release.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
