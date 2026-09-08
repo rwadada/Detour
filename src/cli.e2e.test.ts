@@ -752,6 +752,46 @@ describe('detour start (CLI, end-to-end)', () => {
     expect(JSON.parse(result.body)).toEqual({ mocked: true });
   });
 
+  it('finalizes an exchange with the connection error, instead of leaving it "pending" forever, when a route rule targets a host that refuses the connection', async () => {
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    const url = `http://127.0.0.1:${echo.port}/unreachable`;
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-route-unreachable',
+            match: { url },
+            // Port 1 on loopback: nothing listens there, so the proxy's own
+            // outbound connection fails immediately with ECONNREFUSED —
+            // deterministic, unlike relying on a DNS lookup to fail.
+            action: { type: 'route', host: '127.0.0.1', port: 1 },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    // Connects (and starts listening) before the request below can trigger
+    // the broadcast — see `waitForExchange`'s own doc comment on why that
+    // ordering matters.
+    const { exchange } = await waitForExchange(cli.dashboardPort, 'response', url);
+    const result = await requestThroughProxy(cli.port, echo.port, '/unreachable');
+
+    // The proxy already told the client something went wrong...
+    expect(result.status).toBeGreaterThanOrEqual(500);
+    // ...but before this fix, the dashboard's own copy of the exchange
+    // never learned that: `proxy.onError` deleted it from `inFlight`
+    // without ever finalizing it, so it broadcast nothing and this
+    // `await exchange` would hang until the test's own timeout — visible
+    // in the dashboard as a request stuck "pending" forever, though the
+    // proxy itself had already logged the error to the console.
+    const finalExchange = await exchange;
+    expect(finalExchange.error).toBeTruthy();
+  });
+
   it("transforms a request and response via a script rule's beforeRequest/beforeResponse hooks (issue #9)", async () => {
     echo = await startEchoServer();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));

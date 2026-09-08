@@ -199,6 +199,19 @@ function validateSemantics(data: RulesFile): string[] {
         `rules[${index}] (${label}): action.request and action.response cannot both be false — this breakpoint would never pause anything`,
       );
     }
+    // Catches the natural mistake of typing "host:port" into action.host
+    // (there's a separate action.port field for that) — left unvalidated,
+    // this reaches net/http as a literal hostname, so it fails DNS
+    // resolution (`getaddrinfo ENOTFOUND host:port`) instead of connecting.
+    // A single colon followed by only digits is host:port almost by
+    // definition; an IPv6 literal never matches (it either has no colon at
+    // all as a bracketed `[::1]`-style action.host, or — unbracketed — at
+    // least two colons), so this can't false-positive on one.
+    if (rule.action?.type === 'route' && /^[^:]+:\d+$/.test(rule.action.host)) {
+      errors.push(
+        `rules[${index}] (${label}): action.host "${rule.action.host}" looks like it includes a port — put the port in action.port instead, action.host must be a bare hostname`,
+      );
+    }
     if (rule.match?.urlRegex !== undefined) {
       try {
         new RegExp(rule.match.urlRegex, rule.match.urlRegexFlags);

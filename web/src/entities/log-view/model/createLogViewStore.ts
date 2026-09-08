@@ -13,10 +13,18 @@ export interface SortState {
   direction: SortDirection;
 }
 
-/** Matches the fixed pixel widths the log table used before column resize existed (issue #24), so resizing is purely additive — nothing shifts on first load. */
+/**
+ * Matches the fixed pixel widths the log table used before column resize
+ * existed (issue #24), so resizing is purely additive — nothing shifts on
+ * first load. `method` is sized for `OPTIONS`/`CONNECT` (the longest HTTP
+ * methods this app ever shows — see the Method filter's own option list),
+ * not just the common short ones: at the old 64px, `MethodBadge`'s content
+ * (see its own doc comment) overflowed its column for either, visually
+ * running into the Time column with no gap.
+ */
 export const DEFAULT_COLUMN_WIDTHS: Record<ResizableColumn, number> = {
   time: 80,
-  method: 64,
+  method: 84,
   status: 56,
   duration: 64,
   size: 64,

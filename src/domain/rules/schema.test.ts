@@ -65,6 +65,28 @@ describe('validateRulesData', () => {
     expect(result.valid).toBe(true);
   });
 
+  it('accepts a route action whose host is a bare hostname with no port field set', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'route', host: 'staging.example.com' } })],
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects a route action whose host has a port folded into it, rather than using action.port', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'route', host: 'localhost:18101' } })],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('looks like it includes a port'))).toBe(true);
+  });
+
+  it('does not mistake an IPv6 literal host for host:port', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'route', host: '::1', port: 8080 } })],
+    });
+    expect(result.valid).toBe(true);
+  });
+
   it('accepts a rewrite action touching request and response', () => {
     const result = validateRulesData({
       rules: [
