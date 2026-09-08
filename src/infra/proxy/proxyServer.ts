@@ -605,6 +605,12 @@ export async function startProxyServer(
     const pause = () => {
       displayCapture.applyTo(exchange, 'request');
       const rawBody = Buffer.concat(chunks);
+      // `chunks` (via the still-registered 'data' listener's closure) and
+      // `rawBody` would otherwise both hold the full body in memory at
+      // once — for a large upload paused at a breakpoint, that's an
+      // avoidable doubling of peak memory. The individual chunk Buffers can
+      // be GC'd once `rawBody` (its single-buffer copy) exists.
+      chunks.length = 0;
 
       const opts = ctx.proxyToServerRequestOptions;
       const payload: BreakpointRequestPayload = {
@@ -822,6 +828,10 @@ export async function startProxyServer(
 
     const pause = () => {
       const rawBody = Buffer.concat(chunks);
+      // See handleRequestBreakpoint's identical fix above: without this,
+      // `chunks` and `rawBody` both hold the full response body in memory
+      // at once for as long as this closure is alive.
+      chunks.length = 0;
       const snapshot: CapturedExchange = { ...exchange, breakpoint: 'response' };
       snapshot.statusCode = res.statusCode;
       snapshot.statusMessage = res.statusMessage;
