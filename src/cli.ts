@@ -823,26 +823,45 @@ async function runDetached(options: StartOptions): Promise<void> {
  * point handling makes `require.main === module` for) — rather than
  * installed unconditionally at module load, so importing `createCli` for
  * tests doesn't also install process-wide handlers no test expects.
+ *
+ * Idempotent: a second call (e.g. a test exercising both this and some
+ * other path that also happens to call it) is a no-op rather than piling on
+ * a duplicate pair of listeners, which would log every crash twice and grow
+ * `process`'s listener count without bound across repeated calls.
  */
+let processCrashGuardsInstalled = false;
 export function installProcessCrashGuards(): void {
-  process.on('uncaughtException', (err) => {
-    console.error(
-      `✖ Uncaught exception (continuing): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
-    );
-    // Keep the process alive (that's the whole point of this guard — see the
-    // doc comment above), but still mark the eventual exit as a failure. A
-    // long-running `detour start` never reaches an implicit exit at all, so
-    // this only matters for a short-lived command (e.g. `detour config`)
-    // that happens to hit an unanticipated error and would otherwise exit 0,
-    // silently telling scripts/CI the command succeeded.
-    process.exitCode = 1;
-  });
-  process.on('unhandledRejection', (reason) => {
-    console.error(
-      `✖ Unhandled rejection (continuing): ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`,
-    );
-    process.exitCode = 1;
-  });
+  if (processCrashGuardsInstalled) return;
+  processCrashGuardsInstalled = true;
+  process.on('uncaughtException', crashGuardUncaughtExceptionListener);
+  process.on('unhandledRejection', crashGuardUnhandledRejectionListener);
+}
+
+/** Test-only: undoes `installProcessCrashGuards` (removes its listeners and resets the idempotency guard) so a test can exercise it fresh, e.g. to check the exact listener it installs rather than relying on side effects from an earlier test's call. */
+export function __uninstallProcessCrashGuardsForTests(): void {
+  process.removeListener('uncaughtException', crashGuardUncaughtExceptionListener);
+  process.removeListener('unhandledRejection', crashGuardUnhandledRejectionListener);
+  processCrashGuardsInstalled = false;
+}
+
+function crashGuardUncaughtExceptionListener(err: unknown): void {
+  console.error(
+    `✖ Uncaught exception (continuing): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
+  );
+  // Keep the process alive (that's the whole point of this guard — see the
+  // doc comment above), but still mark the eventual exit as a failure. A
+  // long-running `detour start` never reaches an implicit exit at all, so
+  // this only matters for a short-lived command (e.g. `detour config`)
+  // that happens to hit an unanticipated error and would otherwise exit 0,
+  // silently telling scripts/CI the command succeeded.
+  process.exitCode = 1;
+}
+
+function crashGuardUnhandledRejectionListener(reason: unknown): void {
+  console.error(
+    `✖ Unhandled rejection (continuing): ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`,
+  );
+  process.exitCode = 1;
 }
 
 export function createCli(): Command {

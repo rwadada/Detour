@@ -1,5 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { installProcessCrashGuards, resolveDashboardPort, shouldAutoOpenDashboard } from './cli';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  __uninstallProcessCrashGuardsForTests,
+  installProcessCrashGuards,
+  resolveDashboardPort,
+  shouldAutoOpenDashboard,
+} from './cli';
 
 /**
  * `resolveDashboardPort` is the one piece of pure, synchronous logic in
@@ -66,26 +71,15 @@ describe('shouldAutoOpenDashboard', () => {
  */
 describe('installProcessCrashGuards (issue #94)', () => {
   const originalExitCode = process.exitCode;
-  // Snapshotting and removing only the listeners *this suite* adds, rather
-  // than `removeAllListeners` — the latter would also wipe out listeners
-  // installed by the test runner itself (vitest registers its own for
-  // reporting unhandled errors in other tests), a global side effect this
-  // suite has no business causing.
-  let uncaughtBefore: readonly NodeJS.UncaughtExceptionListener[];
-  let rejectionBefore: readonly NodeJS.UnhandledRejectionListener[];
-
-  beforeEach(() => {
-    uncaughtBefore = process.listeners('uncaughtException');
-    rejectionBefore = process.listeners('unhandledRejection');
-  });
 
   afterEach(() => {
-    for (const listener of process.listeners('uncaughtException')) {
-      if (!uncaughtBefore.includes(listener)) process.removeListener('uncaughtException', listener);
-    }
-    for (const listener of process.listeners('unhandledRejection')) {
-      if (!rejectionBefore.includes(listener)) process.removeListener('unhandledRejection', listener);
-    }
+    // Undoes exactly what `installProcessCrashGuards` itself installs — the
+    // named-listener/idempotency-flag approach that also lets it be a no-op
+    // on a second call — rather than a snapshot/diff over `process`'s
+    // listener list (which would also risk touching listeners installed by
+    // the test runner itself, e.g. vitest's own for reporting unhandled
+    // errors in other tests).
+    __uninstallProcessCrashGuardsForTests();
     process.exitCode = originalExitCode;
   });
 
@@ -105,5 +99,16 @@ describe('installProcessCrashGuards (issue #94)', () => {
       Promise.reject().catch(() => {}),
     );
     expect(process.exitCode).toBe(1);
+  });
+
+  it('is idempotent: a second call does not register a duplicate pair of listeners', () => {
+    const uncaughtBefore = process.listeners('uncaughtException').length;
+    const rejectionBefore = process.listeners('unhandledRejection').length;
+
+    installProcessCrashGuards();
+    installProcessCrashGuards();
+
+    expect(process.listeners('uncaughtException')).toHaveLength(uncaughtBefore + 1);
+    expect(process.listeners('unhandledRejection')).toHaveLength(rejectionBefore + 1);
   });
 });
