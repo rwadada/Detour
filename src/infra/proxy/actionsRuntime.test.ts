@@ -211,6 +211,18 @@ describe('applyRequestRewrite', () => {
     expect(opts.headers['X-Keep']).toBe('1');
     expect(opts.headers['X-Detour']).toBe('1');
   });
+
+  it('drops a differently-cased Content-Length re-added by rewrite.headers.set (issue #93)', () => {
+    // rewrite.headers.set runs before the content-length cleanup, and can
+    // spell the header with any casing the rules.json author chose — a
+    // case-sensitive delete would miss it, leaving a stale length that
+    // desyncs from the rewritten body an HTTP/2 client would then reject.
+    const { ctx, opts } = fakeRequestBodyContext();
+    opts.headers['Content-Length'] = '999';
+    applyRequestRewrite(ctx, { headers: { set: { 'Content-Length': '999' } }, body: { set: { a: 1 } } });
+    expect(opts.headers['content-length']).toBeUndefined();
+    expect(opts.headers['Content-Length']).toBeUndefined();
+  });
 });
 
 describe('applyResponseHeaderRewrite', () => {
@@ -228,6 +240,14 @@ describe('applyResponseHeaderRewrite', () => {
     const ctx = fakeContext({ serverToProxyResponse: res });
     applyResponseHeaderRewrite(ctx, { headers: { set: { 'X-Detour': '1' } } });
     expect(res.statusCode).toBe(200);
+  });
+
+  it('drops a differently-cased Content-Length re-added by rewrite.headers.set (issue #93)', () => {
+    const res = { statusCode: 200, headers: { 'content-length': '14' } as Record<string, string> };
+    const ctx = fakeContext({ serverToProxyResponse: res });
+    applyResponseHeaderRewrite(ctx, { headers: { set: { 'Content-Length': '999' } }, body: { set: { a: 1 } } });
+    expect(res.headers['content-length']).toBeUndefined();
+    expect(res.headers['Content-Length']).toBeUndefined();
   });
 });
 

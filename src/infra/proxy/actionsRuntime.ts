@@ -1,3 +1,4 @@
+import { deleteHeader } from '../../domain/exchange/headers';
 import { applyBodyRewrite } from '../../domain/rules/bodyRewrite';
 import { applyHeaderRewrite } from '../../domain/rules/headerRewrite';
 import { type MockResponse } from '../../domain/rules/mockResponse';
@@ -134,7 +135,10 @@ export function applyRequestRewrite(ctx: IContext, rewrite: NonNullable<RewriteA
   applyHeaderRewrite(opts.headers, rewrite.headers);
   if (rewrite.body) {
     // The rewritten body's length is unknown up front; send chunked instead.
-    delete opts.headers['content-length'];
+    // A case-insensitive delete: `applyHeaderRewrite` above just applied
+    // `rewrite.headers.set`, which can spell this header with any casing
+    // (e.g. `Content-Length`), and a plain bracket delete would miss it.
+    deleteHeader(opts.headers, 'content-length');
     installRequestBodyRewrite(ctx, rewrite.body);
   }
 }
@@ -144,10 +148,20 @@ export function applyRequestRewrite(ctx: IContext, rewrite: NonNullable<RewriteA
  * the proxy-level `onResponseHeaders` hook (see proxyServer.ts) — the only
  * point at which status/headers can still be edited, since ProxyEngine
  * flushes them to the client as soon as that hook's callback fires.
+ *
+ * When `rewrite.body` is set, `installResponseBodyRewrite` (registered
+ * separately, from `proxyServer.ts`'s `onRequest` handler, for onResponseData
+ * ordering reasons — see its call site) will change the response's byte
+ * count, so the upstream `content-length` is dropped here too, same as
+ * `applyRequestRewrite` does for the request side — rather than relying
+ * solely on ProxyEngine's own generic re-framing (`onUpstreamResponse`'s
+ * `responseContentPotentiallyModified` check), which runs *before* this
+ * hook and so wouldn't survive a `rewrite.headers` edit re-adding the header.
  */
 export function applyResponseHeaderRewrite(ctx: IContext, rewrite: NonNullable<RewriteAction['response']>): void {
   const res = ctx.serverToProxyResponse;
   if (!res) return;
   if (rewrite.status !== undefined) res.statusCode = rewrite.status;
   applyHeaderRewrite(res.headers, rewrite.headers);
+  if (rewrite.body) deleteHeader(res.headers, 'content-length');
 }
