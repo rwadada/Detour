@@ -113,6 +113,12 @@ export class CertAuthority {
     // which has no POSIX permission bits, but harmless to still pass.
     fs.mkdirSync(certsDir, { recursive: true, mode: 0o700 });
     fs.mkdirSync(keysDir, { recursive: true, mode: 0o700 });
+    // mkdirSync's `mode` only applies to a directory it actually creates —
+    // if `keysDir` already existed (e.g. a corrupted/partial prior run:
+    // `ca.pem` was deleted but `keys/` survived) with looser permissions,
+    // it's left as-is by the call above. Tighten it explicitly before
+    // generating a fresh private key into it (issue #96 follow-up).
+    if (process.platform !== 'win32') fs.chmodSync(keysDir, 0o700);
     const caKeys = pki.rsa.generateKeyPair(2048);
     const cert = pki.createCertificate();
     cert.publicKey = caKeys.publicKey;
@@ -136,8 +142,14 @@ export class CertAuthority {
     // anyone who can read it can mint a certificate trusted by every client
     // that trusts this CA, i.e. a complete MITM against them (issue #96).
     // Meaningless on Windows (no POSIX permission bits), but harmless to
-    // still pass.
+    // still pass. `writeFileSync`'s `mode` is a no-op on an existing file
+    // (the same corrupted/partial state as above: `ca.private.key` survived
+    // even though `ca.pem` didn't) — chmod it before overwriting too, so
+    // the new key material is never left under the old, looser permissions
+    // (mirrors userConfigStore.ts's writeUserConfig chmod-before-write fix).
+    if (process.platform !== 'win32' && fs.existsSync(caKeyPath)) fs.chmodSync(caKeyPath, 0o600);
     fs.writeFileSync(caKeyPath, pki.privateKeyToPem(caKeys.privateKey), { mode: 0o600 });
+    if (process.platform !== 'win32') fs.chmodSync(caKeyPath, 0o600);
     fs.writeFileSync(path.join(keysDir, 'ca.public.key'), pki.publicKeyToPem(caKeys.publicKey));
 
     return new CertAuthority(dir, cert, caKeys.privateKey);

@@ -120,5 +120,29 @@ describe('CertAuthority', () => {
       expect(fs.statSync(keysDir).mode & 0o777).toBe(0o700);
       expect(fs.statSync(keyPath).mode & 0o777).toBe(0o600);
     });
+
+    it('tightens a pre-existing world-readable keys/ca.private.key it is about to regenerate into (ca.pem missing/corrupted state)', () => {
+      // A Copilot review follow-up on issue #96: `load()` takes the
+      // *generation* branch (not the load-and-tighten branch above)
+      // whenever ca.pem is missing, regardless of whether keys/ survived —
+      // e.g. a corrupted/partial prior run, or someone deleting only
+      // ca.pem. `mkdirSync`'s/`writeFileSync`'s `mode` option is a no-op on
+      // a directory/file that already exists, so without an explicit
+      // chmod beforehand, the freshly-generated key would be written into
+      // (and inherit) the old, world-readable permissions.
+      CertAuthority.load(dir);
+      const keysDir = path.join(dir, 'keys');
+      const keyPath = path.join(keysDir, 'ca.private.key');
+      // eslint-disable-next-line sonarjs/file-permissions -- test fixture simulating a pre-fix, world-readable CA.
+      fs.chmodSync(keysDir, 0o755);
+      // eslint-disable-next-line sonarjs/file-permissions -- test fixture simulating a pre-fix, world-readable CA.
+      fs.chmodSync(keyPath, 0o644);
+      fs.rmSync(path.join(dir, 'certs', 'ca.pem'));
+
+      CertAuthority.load(dir);
+
+      expect(fs.statSync(keysDir).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(keyPath).mode & 0o777).toBe(0o600);
+    });
   });
 });
