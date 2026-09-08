@@ -85,14 +85,15 @@ describe('validateRulesData', () => {
       rules: [baseRule({ action: { type: 'route', host: '[::1]:8080' } })],
     });
     expect(result.valid).toBe(false);
-    expect(result.errors.some((e) => e.includes('looks like it includes a port'))).toBe(true);
+    expect(result.errors.some((e) => e.includes('must be a bare host without brackets'))).toBe(true);
   });
 
-  it('accepts a bracketed IPv6 host with no port folded in', () => {
+  it('rejects a bracketed IPv6 host even with no port folded in — computeRouteTarget never unwraps it for the outbound connection', () => {
     const result = validateRulesData({
       rules: [baseRule({ action: { type: 'route', host: '[::1]', port: 8080 } })],
     });
-    expect(result.valid).toBe(true);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('must be a bare host without brackets'))).toBe(true);
   });
 
   it('does not mistake an IPv6 literal host for host:port', () => {
