@@ -856,11 +856,13 @@ function crashGuardUncaughtExceptionListener(err: unknown): void {
     `✖ Uncaught exception (continuing): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
   );
   // Keep the process alive (that's the whole point of this guard — see the
-  // doc comment above), but still mark the eventual exit as a failure. A
-  // long-running `detour start` never reaches an implicit exit at all, so
-  // this only matters for a short-lived command (e.g. `detour config`)
-  // that happens to hit an unanticipated error and would otherwise exit 0,
-  // silently telling scripts/CI the command succeeded.
+  // doc comment above), but still mark the eventual exit as a failure.
+  // `runStart`'s own `shutdown()` explicitly calls `process.exit(0)` on a
+  // normal SIGINT/SIGTERM/--exit-on-idle stop, which overrides this — so in
+  // the common case this only actually surfaces if the process exits some
+  // other way (e.g. every open handle happens to close and Node drains the
+  // event loop on its own, without `shutdown()` ever running) rather than
+  // silently reporting success.
   process.exitCode = 1;
 }
 
