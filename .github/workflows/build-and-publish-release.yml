@@ -1,0 +1,135 @@
+name: Build and publish release asset
+
+# Reusable workflow: builds the self-contained release tarball (see
+# scripts/build-release.mjs and issue #52) and attaches it to the GitHub
+# Release for `tag`. Called from two places:
+#   - release.yml, when someone pushes a `vX.Y.Z` tag by hand.
+#   - release-please.yml, when release-please's own PR (opened from
+#     Conventional Commits on every push to main) gets merged and it tags
+#     + creates the release itself.
+# Kept as one reusable workflow rather than duplicated steps in both
+# callers so the build logic (and its accumulated CI-runner workarounds)
+# only needs fixing in one place.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The `vX.Y.Z` tag to check out, build, and publish a release asset for.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          # The CLI's own `engines.node` stays >=18 (esbuild targets node18,
+          # and that's all end users need to *run* the release build) — but
+          # building the dashboard SPA needs Vite 7, which requires Node
+          # 20.19+/22.12+. Pinned to the exact floor of that range (rather
+          # than a bare "22") so a resolver change can't silently pick an
+          # early-22.x that predates it.
+          node-version: "22.12.0"
+
+      - name: Verify tag matches package.json version
+        run: |
+          tag="${{ inputs.tag }}"
+          tag="${tag#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag ${{ inputs.tag }} does not match package.json version $pkg"
+            exit 1
+          fi
+
+      # `npm ci` for a deterministic install matching the committed lockfile
+      # exactly — the one package it doesn't get right (the next step) is
+      # handled explicitly below rather than by loosening this to `npm
+      # install`.
+      - run: npm ci
+
+      # Found it (issue #52 PR history has the full trail): the "Cannot find
+      # native binding" error — despite citing npm/cli#4828 in its own text —
+      # actually comes from `@tailwindcss/oxide/index.js`'s own loader, not
+      # from lightningcss or Rollup (both `require()` fine standalone; oxide
+      # is what `web/postcss.config.js`'s `@tailwindcss/postcss` plugin pulls
+      # in). `@tailwindcss/oxide-linux-x64-gnu` is what it needs on this
+      # runner, and it really is missing here — turns out package-lock.json
+      # never gets a top-level `packages` entry for it at all, because every
+      # `npm install` that touched this lockfile ran on macOS (this repo's
+      # dev machine), and npm only records resolved-package entries for
+      # optional deps matching the platform that ran the install (the actual
+      # shape of npm/cli#4828 here). Read the version off the *main*
+      # `@tailwindcss/oxide` package instead — that one installs and resolves
+      # on every platform, and platform variants are always released in
+      # lockstep with it — rather than off this platform package's own
+      # (absent) lockfile entry.
+      - name: Ensure @tailwindcss/oxide-linux-x64-gnu is installed
+        run: |
+          pkg="@tailwindcss/oxide-linux-x64-gnu"
+          if [ ! -d "node_modules/$pkg" ]; then
+            version="$(node -p "require('@tailwindcss/oxide/package.json').version")"
+            echo "Missing node_modules/$pkg — force-installing $pkg@$version"
+            # --no-package-lock here (on top of an npm-ci-built tree) trips
+            # a different npm crash — "Cannot read properties of null
+            # (reading 'edgesOut')" in npm's arborist — confirmed by
+            # actually running it in CI. --no-save alone is sufficient: this
+            # job never commits its checkout back, so an incidental
+            # package-lock.json rewrite here has no effect either way.
+            npm install --no-save "$pkg@$version"
+          else
+            echo "node_modules/$pkg already present"
+          fi
+          node -e "require('@tailwindcss/oxide')" && echo "@tailwindcss/oxide loads OK"
+
+      - name: Build release tarball
+        run: npm run build:release
+
+      - name: Publish release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.tag }}"
+          version="${tag#v}"
+          tarball="release/detour-${version}.tar.gz"
+          sha256="$(shasum -a 256 "$tarball" | cut -d' ' -f1)"
+          echo "sha256=$sha256" >> "$GITHUB_STEP_SUMMARY"
+
+          # Built via printf (rather than a plain multi-line quoted string)
+          # so this YAML block's own indentation doesn't end up embedded in
+          # the string's second line — bash doesn't strip that, and 4+
+          # leading spaces reads as a Markdown code block once this lands in
+          # the release notes.
+          homebrew_note="$(printf 'sha256: `%s`\n\nHomebrew: `brew install rwadada/detour/detour` (bump `Formula/detour.rb` in [homebrew-detour](https://github.com/rwadada/homebrew-detour) to this version/sha256 first).' "$sha256")"
+
+          # Delimits the appended section so re-running this step for the
+          # same tag (a manual workflow re-run, say) replaces it instead of
+          # appending a second copy on top of the first.
+          marker="<!-- build-and-publish-release: sha256/homebrew note -->"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # release-please already created this release (with a
+            # Conventional-Commits-derived changelog body) — attach the
+            # tarball and append the sha256/Homebrew note rather than
+            # clobbering its notes.
+            gh release upload "$tag" "$tarball" --clobber
+            existing_body="$(gh release view "$tag" --json body -q .body)"
+            base_body="${existing_body%%"$marker"*}"
+            printf '%s\n\n%s\n\n%s\n' "$base_body" "$marker" "$homebrew_note" > /tmp/release-notes.md
+            gh release edit "$tag" --notes-file /tmp/release-notes.md
+          else
+            # No release yet (a tag pushed by hand rather than via
+            # release-please) — create one from scratch, same as before.
+            printf '%s\n' "$homebrew_note" > /tmp/release-notes.md
+            gh release create "$tag" "$tarball" \
+              --title "$tag" \
+              --generate-notes \
+              --notes-file /tmp/release-notes.md
+          fi

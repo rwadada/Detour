@@ -1,8 +1,16 @@
-name: Release
+name: Release (manual tag)
 
-# Publishes the self-contained release tarball Homebrew (and anyone else)
-# installs from — see scripts/build-release.mjs and issue #52. Triggered by
-# pushing a `vX.Y.Z` tag matching package.json's version.
+# Manual fallback: pushing a `vX.Y.Z` tag by hand (e.g. a hotfix release, or
+# re-publishing after a failed run) builds and publishes the release asset
+# the same way release-please.yml's own release does. See
+# build-and-publish-release.yml for the actual steps — kept in one place so
+# fixing a CI-runner quirk there doesn't need fixing twice.
+#
+# release-please.yml is the normal path: merging its version-bump PR tags
+# it and creates the GitHub Release itself, then calls the same reusable
+# workflow. This one only fires for a tag *not* created that way — a tag
+# push from a GITHUB_TOKEN-authenticated action (like release-please's own)
+# doesn't trigger other workflows, so there's no double-run to worry about.
 on:
   push:
     tags:
@@ -12,90 +20,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          # The CLI's own `engines.node` stays >=18 (esbuild targets node18,
-          # and that's all end users need to *run* the release build) — but
-          # building the dashboard SPA needs Vite 7, which requires Node
-          # 20.19+/22.12+. Pinned to the exact floor of that range (rather
-          # than a bare "22") so a resolver change can't silently pick an
-          # early-22.x that predates it.
-          node-version: "22.12.0"
-
-      - name: Verify tag matches package.json version
-        run: |
-          tag="${GITHUB_REF_NAME#v}"
-          pkg="$(node -p "require('./package.json').version")"
-          if [ "$tag" != "$pkg" ]; then
-            echo "::error::Tag v$tag does not match package.json version $pkg"
-            exit 1
-          fi
-
-      # `npm ci` for a deterministic install matching the committed lockfile
-      # exactly — the one package it doesn't get right (the next step) is
-      # handled explicitly below rather than by loosening this to `npm
-      # install`.
-      - run: npm ci
-
-      # Found it (issue #52 PR history has the full trail): the "Cannot find
-      # native binding" error — despite citing npm/cli#4828 in its own text —
-      # actually comes from `@tailwindcss/oxide/index.js`'s own loader, not
-      # from lightningcss or Rollup (both `require()` fine standalone; oxide
-      # is what `web/postcss.config.js`'s `@tailwindcss/postcss` plugin pulls
-      # in). `@tailwindcss/oxide-linux-x64-gnu` is what it needs on this
-      # runner, and it really is missing here — turns out package-lock.json
-      # never gets a top-level `packages` entry for it at all, because every
-      # `npm install` that touched this lockfile ran on macOS (this repo's
-      # dev machine), and npm only records resolved-package entries for
-      # optional deps matching the platform that ran the install (the actual
-      # shape of npm/cli#4828 here). Read the version off the *main*
-      # `@tailwindcss/oxide` package instead — that one installs and resolves
-      # on every platform, and platform variants are always released in
-      # lockstep with it — rather than off this platform package's own
-      # (absent) lockfile entry.
-      - name: Ensure @tailwindcss/oxide-linux-x64-gnu is installed
-        run: |
-          pkg="@tailwindcss/oxide-linux-x64-gnu"
-          if [ ! -d "node_modules/$pkg" ]; then
-            version="$(node -p "require('@tailwindcss/oxide/package.json').version")"
-            echo "Missing node_modules/$pkg — force-installing $pkg@$version"
-            # --no-package-lock here (on top of an npm-ci-built tree) trips
-            # a different npm crash — "Cannot read properties of null
-            # (reading 'edgesOut')" in npm's arborist — confirmed by
-            # actually running it in CI. --no-save alone is sufficient: this
-            # job never commits its checkout back, so an incidental
-            # package-lock.json rewrite here has no effect either way.
-            npm install --no-save "$pkg@$version"
-          else
-            echo "node_modules/$pkg already present"
-          fi
-          node -e "require('@tailwindcss/oxide')" && echo "@tailwindcss/oxide loads OK"
-
-      - name: Build release tarball
-        run: npm run build:release
-
-      - name: Publish GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          version="$(node -p "require('./package.json').version")"
-          tarball="release/detour-${version}.tar.gz"
-          sha256="$(shasum -a 256 "$tarball" | cut -d' ' -f1)"
-          echo "sha256=$sha256" >> "$GITHUB_STEP_SUMMARY"
-
-          notes_file="$(mktemp)"
-          {
-            echo "sha256: \`$sha256\`"
-            echo ""
-            echo "Homebrew: \`brew install rwadada/detour/detour\` (bump \`Formula/detour.rb\` in [homebrew-detour](https://github.com/rwadada/homebrew-detour) to this version/sha256 first)."
-          } > "$notes_file"
-
-          gh release create "${GITHUB_REF_NAME}" "$tarball" \
-            --title "${GITHUB_REF_NAME}" \
-            --generate-notes \
-            --notes-file "$notes_file"
+  build-and-publish:
+    uses: ./.github/workflows/build-and-publish-release.yml
+    with:
+      tag: ${{ github.ref_name }}
