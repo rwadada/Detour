@@ -37,6 +37,7 @@ export function RulesEditorPanel() {
   const setDirty = useRuleStore((s) => s.setDirtyDraft);
   const lastError = useRuleStore((s) => s.lastError);
   const lastErrorAt = useRuleStore((s) => s.lastErrorAt);
+  const lastErrorKind = useRuleStore((s) => s.lastErrorKind);
   const dismissError = useRuleStore((s) => s.dismissError);
   const pendingNewRule = useRuleStore((s) => s.pendingNewRule);
   const clearPendingNewRule = useRuleStore((s) => s.clearPendingNewRule);
@@ -109,19 +110,27 @@ export function RulesEditorPanel() {
   // `lastError`/`rulesFile` actually changes first, the same way
   // `RuleProfilesControl` resolves its own fire-and-forget WS commands
   // (see that component's matching effect for the fuller rationale): a
-  // `RULES_WRITE_ERROR` no older than `pendingSaveAt` means this specific
-  // save was rejected, so the draft stays dirty and the rejection reason is
-  // shown instead of being silently swallowed; a `rulesFile` update no
-  // older than `pendingSaveAt` *and* whose `rules` match `sentRules` means
-  // this save specifically landed (see that field's own doc comment on why
-  // freshness alone can't tell that apart from an unrelated broadcast).
-  // `dirty` only actually clears then if `draftVersion` still matches what
-  // was saved — otherwise the user made more edits while this save was in
-  // flight, and clearing it would silently mark those newer, still-unsaved
-  // edits as saved too.
+  // `RULES_WRITE_ERROR` — specifically that kind, not a same-window
+  // `RULE_PROFILE_ERROR` from an unrelated profile action sharing the same
+  // `lastError`/`lastErrorAt` fields (`RuleProfilesControl` might be the
+  // one that's actually supposed to consume that one) — no older than
+  // `pendingSaveAt` means this specific save was rejected, so the draft
+  // stays dirty and the rejection reason is shown instead of being
+  // silently swallowed; a `rulesFile` update no older than `pendingSaveAt`
+  // *and* whose `rules` match `sentRules` means this save specifically
+  // landed (see that field's own doc comment on why freshness alone can't
+  // tell that apart from an unrelated broadcast). `dirty` only actually
+  // clears then if `draftVersion` still matches what was saved — otherwise
+  // the user made more edits while this save was in flight, and clearing
+  // it would silently mark those newer, still-unsaved edits as saved too.
   useEffect(() => {
     if (pendingSaveAt === null) return;
-    if (lastError !== null && lastErrorAt !== null && lastErrorAt >= pendingSaveAt) {
+    if (
+      lastError !== null &&
+      lastErrorAt !== null &&
+      lastErrorAt >= pendingSaveAt &&
+      lastErrorKind === 'RULES_WRITE_ERROR'
+    ) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setSaveError(lastError);
       dismissError();
@@ -141,7 +150,7 @@ export function RulesEditorPanel() {
       setSentRules(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- setDirty/dismissError are stable-enough store actions, not reactive values this effect should re-run for
-  }, [pendingSaveAt, lastError, lastErrorAt, rulesFile, rulesFileAt, savingVersion, draftVersion, sentRules]);
+  }, [pendingSaveAt, lastError, lastErrorAt, lastErrorKind, rulesFile, rulesFileAt, savingVersion, draftVersion, sentRules]);
 
   // Bails out of a save that never resolved either way — see
   // `SAVE_TIMEOUT_MS`'s own doc comment. Surfaces it as a `saveError`

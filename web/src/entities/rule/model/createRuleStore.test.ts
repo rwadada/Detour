@@ -47,13 +47,16 @@ describe('createRuleStore', () => {
     emit({ type: 'error', event: { errorKind: 'RULES_WRITE_ERROR', message: 'bad rule' } });
     expect(store.getState().lastError).toBe('bad rule');
     expect(store.getState().lastErrorAt).toEqual(expect.any(Number));
+    expect(store.getState().lastErrorKind).toBe('RULES_WRITE_ERROR');
 
     store.getState().dismissError();
     expect(store.getState().lastError).toBeNull();
     expect(store.getState().lastErrorAt).toBeNull();
+    expect(store.getState().lastErrorKind).toBeNull();
 
     emit({ type: 'error', event: { errorKind: 'RULE_PROFILE_ERROR', message: 'name taken' } });
     expect(store.getState().lastError).toBe('name taken');
+    expect(store.getState().lastErrorKind).toBe('RULE_PROFILE_ERROR');
   });
 
   it('lastErrorAt moves forward on each new error, letting a consumer tell a fresh one from a stale one it already saw', () => {
