@@ -8,11 +8,12 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 ### Homebrew (recommended)
 
 ```bash
-brew install rwadada/detour/detour
+brew tap rwadada/detour
+brew install detour
 detour start --port 8080
 ```
 
-This installs from [rwadada/homebrew-detour](https://github.com/rwadada/homebrew-detour), which ships a self-contained release build — no `npm install` or Node toolchain setup required beyond Node itself (pulled in automatically as the formula's dependency).
+This installs from [rwadada/homebrew-detour](https://github.com/rwadada/homebrew-detour), which ships a self-contained release build — no `npm install` or Node toolchain setup required beyond Node itself (pulled in automatically as the formula's dependency). `brew tap` only needs to run once; `brew install detour`/`brew upgrade detour` work with no `rwadada/` prefix from then on.
 
 ### From source
 
