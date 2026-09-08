@@ -65,9 +65,12 @@ export function resolveRulePath(
   // names a directory either (reading one throws EISDIR), so rejecting
   // early here applies to both actions without needing to special-case one.
   if (!fs.statSync(realResolved).isFile()) {
+    // Not necessarily a directory specifically — a socket, device, FIFO,
+    // etc. would also fail `isFile()` — so the message describes the actual
+    // condition checked rather than naming one particular non-file kind.
     throw new Error(
-      `${fieldLabel} "${relativePath}" resolves to a directory ("${resolved}"), not a file — refusing to use it ` +
-        '(a directory\'s own package.json "main" could point outside the rules.json directory).',
+      `${fieldLabel} "${relativePath}" does not resolve to a regular file ("${resolved}") — refusing to use it ` +
+        '(a directory\'s own package.json "main" could point outside the rules.json directory, for example).',
     );
   }
   return resolved;

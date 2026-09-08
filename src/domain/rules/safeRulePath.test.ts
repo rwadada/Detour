@@ -34,7 +34,7 @@ describe('resolveRulePath (issue #98)', () => {
   // the purely-lexical fallback. See the real-filesystem describe block
   // below for what actually happens once `basePath` exists (it's always a
   // real, existing directory in practice), including that `.` is rejected
-  // there since it resolves to a directory.
+  // there since it does not resolve to a regular file.
   it('returns the lexical basePath itself when nothing exists on disk to check', () => {
     expect(resolveRulePath('/base/rules', '.', 'script.path', false)).toBe(path.resolve('/base/rules'));
   });
@@ -110,7 +110,7 @@ describe('resolveRulePath (issue #98)', () => {
       expect(resolveRulePath(root, 'real.js', 'script.path', false)).toBe(target);
     });
 
-    it('rejects a path that resolves to a directory', () => {
+    it('rejects a path that does not resolve to a regular file', () => {
       // scriptModuleLoader.ts ultimately calls require() on script.path —
       // require(someDir) follows someDir/package.json's "main", which can
       // point anywhere, including outside basePath entirely. A contained
@@ -118,11 +118,11 @@ describe('resolveRulePath (issue #98)', () => {
       // it passes every check above.
       fs.mkdirSync(path.join(root, 'subdir'));
 
-      expect(() => resolveRulePath(root, 'subdir', 'script.path', false)).toThrow(/resolves to a directory/);
+      expect(() => resolveRulePath(root, 'subdir', 'script.path', false)).toThrow(/does not resolve to a regular file/);
     });
 
-    it('rejects basePath itself (".") since it resolves to a directory', () => {
-      expect(() => resolveRulePath(root, '.', 'script.path', false)).toThrow(/resolves to a directory/);
+    it('rejects basePath itself (".") since it does not resolve to a regular file', () => {
+      expect(() => resolveRulePath(root, '.', 'script.path', false)).toThrow(/does not resolve to a regular file/);
     });
 
     it('allows a directory when allowExternal is true', () => {
