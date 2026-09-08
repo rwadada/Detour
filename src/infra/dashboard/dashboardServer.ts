@@ -53,6 +53,17 @@ export const WEB_DIST_DIR = process.env.DETOUR_WEB_DIST_DIR
 
 export interface DashboardServerOptions {
   port: number;
+  /**
+   * The interface to bind to. `cli.ts`'s `resolveDashboardHost` only ever
+   * passes `'localhost'` (the default below) or `'0.0.0.0'` (`--lan`), but
+   * this is a plain `string` — a caller (a test, or a future option) can
+   * hand it a single explicit non-loopback interface address (`192.168.1.5`,
+   * say) to bind just that one NIC. `computeAllowedHostnames`'s
+   * `dashboardOnLan` check (`host === '0.0.0.0'`) is `false` for such a
+   * value, so it's handled by always allowing `host` itself regardless —
+   * see that function's doc comment.
+   * @default 'localhost'
+   */
   host?: string;
   /**
    * The proxy's own port, broadcast to clients as `proxyInfo` (issue #24's
@@ -101,6 +112,35 @@ export interface DashboardServerHandle {
 }
 
 /**
+ * The `Host`/`Origin` hostnames a CSWSH/DNS-rebinding check (issue #92)
+ * should accept for a dashboard bound to `host`. Pulled out as pure logic —
+ * same reasoning as cli.ts's `resolveDashboardPort`/`shouldAutoOpenDashboard`
+ * — so this is testable without actually binding a socket.
+ *
+ * Always allows `localhost`/`127.0.0.1`/`::1`, plus this machine's own LAN
+ * address(es) (`lanAddrs`) only when `dashboardOnLan` — matching exactly
+ * what the server is actually bound to and thus reachable at.
+ *
+ * `host` itself (lower-cased) is also always allowed: `options.host` is a
+ * plain `string` (see `DashboardServerOptions.host`'s doc comment and
+ * `sendInitialPayload`'s own `dashboardOnLan` comment), so a caller can bind
+ * to a single explicit non-loopback interface address (`192.168.1.5`, say)
+ * rather than only `localhost`/`0.0.0.0` — `dashboardOnLan` is then `false`
+ * (it's neither), yet a legitimate client's `Host`/`Origin` will still name
+ * that address specifically, since it's the only interface the bind
+ * actually accepts connections on. Without this, every request against
+ * such a bind would 403.
+ */
+export function computeAllowedHostnames(
+  host: string,
+  dashboardOnLan: boolean,
+  lanAddrs: readonly string[],
+): readonly string[] {
+  const base = ['localhost', '127.0.0.1', '::1', host.toLowerCase()];
+  return dashboardOnLan ? [...base, ...lanAddrs] : base;
+}
+
+/**
  * Serves the built dashboard (static files + a `/ws` WebSocket feed of live
  * traffic) on `options.port`. Every exchange published on the event bus is
  * broadcast to all connected browser tabs in real time; a bounded backlog is
@@ -115,6 +155,21 @@ export async function startDashboardServer(
   const { ruleEngine, ruleProfileStore } = options;
   const httpRequester = options.httpRequester ?? nodeHttpRequester;
   const lanAddrs = options.lanAddresses ?? [];
+  // Whether this server itself is bound to every network interface, not
+  // just loopback — see `sendInitialPayload`'s own `dashboardOnLan` below,
+  // which this mirrors. Only in this case are `lanAddrs` actually reachable
+  // at all (a `localhost`-only bind never accepts a connection arriving on
+  // a LAN address in the first place), so it's also the gate on whether
+  // `isAllowedHost`/`isAllowedOrigin` below treat them as legitimate.
+  const dashboardOnLan = host === '0.0.0.0';
+  // The dashboard's actual bound port — `options.port` verbatim except for
+  // an ephemeral `port: 0`, which only resolves to a real port once
+  // `httpServer.listen()`'s callback fires below. `isAllowedOrigin` needs
+  // the real value (an `Origin` header's port must match what this server
+  // is actually reachable on), so this is declared as a `let` here and
+  // updated once listening starts, rather than read fresh via
+  // `httpServer.address()` on every handshake.
+  let boundPort = options.port;
   await assertPortAvailable(options.port, host);
 
   const backlog = new RingBuffer<CapturedExchange>(options.backlogSize ?? DEFAULT_BACKLOG_SIZE, (item) => item.id);
@@ -141,8 +196,121 @@ export async function startDashboardServer(
   // sync via `blockHostsChanged`.
   let blockHostsState: BlockHostsState = { hosts: [], mode: 'forbidden' };
 
-  const httpServer = http.createServer((req, res) => serveStatic(WEB_DIST_DIR, req, res));
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  // CSWSH / DNS-rebinding defenses (issue #92). A WebSocket handshake isn't
+  // subject to the browser's same-origin policy the way `fetch`/XHR are, so
+  // without these, any web page on any origin — not just ones served from
+  // this machine — could open `ws://localhost:<dashboardPort>/ws` and:
+  // eavesdrop on the decrypted-HTTPS backlog it streams (Authorization
+  // headers, cookies, ...), rewrite `rules.json` via `setRules` to reroute
+  // traffic, SSRF via `replay`, or lock the real user out via
+  // `setDashboardPassword`. `--dashboard-password` (issue #66) doesn't help
+  // here either — most sessions never set one, and even the handshake
+  // itself (before any message is sent) already leaks the backlog once
+  // `sendInitialPayload` fires. The dashboard's own port is also easily
+  // guessable (`--port + 1000`, or just tried), so "an attacker doesn't
+  // know the port" isn't a defense on its own.
+  //
+  //   - `isAllowedHost` guards both the static SPA and `/ws`: it checks the
+  //     `Host` header a *DNS-rebound* page would send (an attacker-owned
+  //     domain that a malicious DNS response points at 127.0.0.1) — that
+  //     header still names the attacker's domain regardless of which IP the
+  //     TCP connection actually landed on, so this catches what `Origin`
+  //     alone can't (a request that's missing `Origin` entirely still
+  //     carries `Host`).
+  //   - `isAllowedOrigin` guards `/ws` specifically: it checks the `Origin`
+  //     header a browser attaches to a cross-origin fetch/handshake, which
+  //     `Host` alone can't catch (a same-machine-hosted attacker page has a
+  //     legitimate `Host: localhost:<dashboardPort>` but a foreign
+  //     `Origin`). Absent entirely (no browser involved — a native app, or
+  //     the `ws` client library used by this file's own tests, which sends
+  //     none by default) is allowed through: there's no origin-confusion
+  //     risk to check when nothing claims an origin at all.
+  //
+  // See `computeAllowedHostnames`'s doc comment for what this allows and why.
+  function allowedHostnames(): readonly string[] {
+    return computeAllowedHostnames(host, dashboardOnLan, lanAddrs);
+  }
+
+  // Extracts the hostname portion of a `Host` header (`localhost:5173` →
+  // `localhost`, `[::1]:5173` → `::1`), lower-cased for a case-insensitive
+  // compare against `allowedHostnames()`. `undefined` for a missing header
+  // (HTTP/1.1 requires one; node's own parser already rejects a request
+  // without one before this ever runs, but there's no reason to trust that
+  // remaining true forever) or an unparseable IPv6-bracket form.
+  function hostnameOf(hostHeader: string | undefined): string | undefined {
+    if (!hostHeader) return undefined;
+    if (hostHeader.startsWith('[')) {
+      const end = hostHeader.indexOf(']');
+      if (end === -1) return undefined;
+      // Same reasoning as the non-numeric-port check below, applied to the
+      // bracketed form: whatever follows `]` must be empty (no port) or
+      // `:<digits>` — a value like `[::1]:evil` shouldn't parse down to the
+      // allowed hostname `::1` just because the bracket itself was well-formed.
+      const rest = hostHeader.slice(end + 1);
+      if (rest !== '' && !/^:\d+$/.test(rest)) return undefined;
+      return hostHeader.slice(1, end).toLowerCase();
+    }
+    const firstColon = hostHeader.indexOf(':');
+    const lastColon = hostHeader.lastIndexOf(':');
+    // More than one `:` outside of brackets means this isn't `host` or
+    // `host:port` — it's an unbracketed IPv6 literal (e.g. `::1:1234`),
+    // which RFC 7230 doesn't permit as a bare Host value. Reject rather than
+    // guess which segment is the "hostname", so a malformed/ambiguous Host
+    // header can't be parsed into something that happens to match the
+    // allowlist.
+    if (firstColon !== -1 && firstColon !== lastColon) return undefined;
+    if (lastColon === -1) return hostHeader.toLowerCase();
+    // A single `:` is only legitimately `host:port` if what follows is
+    // actually a port — a value like `localhost:evil` has exactly one `:`
+    // too, but isn't of that form, and slicing it down to `localhost`
+    // regardless would parse a malformed Host header into an allowed
+    // hostname purely by accident. `/^\d+$/` (rather than also range-
+    // checking 0-65535) is enough: it's already been established this isn't
+    // an allowlisted name, so the actual port value played no role either way.
+    if (!/^\d+$/.test(hostHeader.slice(lastColon + 1))) return undefined;
+    return hostHeader.slice(0, lastColon).toLowerCase();
+  }
+
+  function isAllowedHost(hostHeader: string | undefined): boolean {
+    const hostname = hostnameOf(hostHeader);
+    return hostname !== undefined && allowedHostnames().includes(hostname);
+  }
+
+  function isAllowedOrigin(originHeader: string | undefined): boolean {
+    if (!originHeader) return true;
+    let origin: URL;
+    try {
+      origin = new URL(originHeader);
+    } catch {
+      // An `Origin` header that isn't even a valid URL can't be a
+      // legitimate browser-sent one — fail closed rather than risk treating
+      // it as absent.
+      return false;
+    }
+    // This dashboard is only ever served over http(s) — a browser-sent
+    // `Origin` is always one of those two (or the literal string `null`,
+    // already handled by the `new URL` throwing above), but a forged one
+    // could claim any scheme. Fail closed rather than let `protocol !==
+    // 'https:' → defaultPort 80` treat e.g. `chrome-extension://<id>` as an
+    // http origin with no explicit port.
+    if (origin.protocol !== 'http:' && origin.protocol !== 'https:') return false;
+    if (!allowedHostnames().includes(origin.hostname)) return false;
+    if (origin.port !== '') return Number(origin.port) === boundPort;
+    const defaultPort = origin.protocol === 'https:' ? 443 : 80;
+    return defaultPort === boundPort;
+  }
+
+  const httpServer = http.createServer((req, res) => {
+    if (!isAllowedHost(req.headers.host)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Forbidden');
+      return;
+    }
+    serveStatic(WEB_DIST_DIR, req, res);
+  });
+  const verifyClient: WebSocket.VerifyClientCallbackSync = (info) =>
+    isAllowedHost(info.req.headers.host) && isAllowedOrigin(info.origin);
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws', verifyClient });
 
   // Issue #66's optional dashboard password: sockets that have proven they
   // know the current password (or connected while none was configured — see
@@ -546,7 +714,11 @@ export async function startDashboardServer(
       eventBus.on('rulesReloaded', onRulesReloaded);
 
       const address = httpServer.address();
-      const boundPort = typeof address === 'object' && address ? address.port : options.port;
+      // Reassigns the outer `let boundPort` (declared up top, alongside
+      // `isAllowedOrigin`'s doc comment on why) — not a new binding — so an
+      // ephemeral `port: 0` resolving to a real OS-assigned port here is
+      // what `isAllowedOrigin` checks handshakes against from this point on.
+      boundPort = typeof address === 'object' && address ? address.port : options.port;
       resolve({
         port: boundPort,
         stop: () =>
