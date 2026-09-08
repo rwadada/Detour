@@ -559,12 +559,16 @@ export class ProxyEngine {
       // unconditionally by `proxyServer.ts`, to size/capture every
       // exchange) may leave upstream's own `content-length` framing wrong —
       // e.g. Throttle or a `rewrite` rule changing byte counts — so once
-      // that's in play, always re-frame as chunked instead of trusting it.
-      // HTTP/2 has no such headers at all (framing is native to the
-      // protocol), so this only matters for an HTTP/1.1 client.
-      if (!clientIsHttp2 && ctx.responseContentPotentiallyModified) {
-        res.headers['transfer-encoding'] = 'chunked';
+      // that's in play, the stale value must never reach the client.
+      // HTTP/1.1 re-frames as chunked; HTTP/2 has no `transfer-encoding`
+      // (framing is native to the protocol, and the header is forbidden —
+      // see the `clientIsHttp2` cleanup below), but it does carry
+      // `content-length` as an ordinary header, and RFC 9113 §8.1.1 makes a
+      // response whose DATA frames don't match it malformed — so h2 still
+      // needs the stale header dropped, just without the h1-only re-framing.
+      if (ctx.responseContentPotentiallyModified) {
         delete res.headers['content-length'];
+        if (!clientIsHttp2) res.headers['transfer-encoding'] = 'chunked';
       }
       // Detour never keeps upstream/downstream connections alive across
       // requests (`keepAlive: false` on both agents above) — telling an
