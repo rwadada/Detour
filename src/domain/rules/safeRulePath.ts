@@ -55,5 +55,20 @@ export function resolveRulePath(
         'Pass --allow-external-script-paths to `detour start` to allow paths outside this directory.',
     );
   }
+  // A directory (or any other non-regular-file: a socket, a device, ...)
+  // passing containment isn't enough on its own for `script.path`:
+  // `scriptModuleLoader.ts` ultimately calls `require()` on this value, and
+  // `require(someDir)` follows `someDir/package.json`'s "main" field —
+  // which can itself point anywhere, including outside `root` entirely
+  // (e.g. `"main": "../../../etc/passwd"`), bypassing containment even
+  // though `someDir` itself checked out. `mock.bodyFile` never legitimately
+  // names a directory either (reading one throws EISDIR), so rejecting
+  // early here applies to both actions without needing to special-case one.
+  if (!fs.statSync(realResolved).isFile()) {
+    throw new Error(
+      `${fieldLabel} "${relativePath}" resolves to a directory ("${resolved}"), not a file — refusing to use it ` +
+        '(a directory\'s own package.json "main" could point outside the rules.json directory).',
+    );
+  }
   return resolved;
 }

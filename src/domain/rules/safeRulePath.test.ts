@@ -29,7 +29,13 @@ describe('resolveRulePath (issue #98)', () => {
     expect(resolveRulePath('/base/rules', '/etc/passwd', 'mock.bodyFile', true)).toBe('/etc/passwd');
   });
 
-  it('allows a path that resolves to basePath itself', () => {
+  // `/base/rules` doesn't exist on disk, so there's nothing for
+  // `fs.realpathSync` to check (symlink or directory) — this only pins down
+  // the purely-lexical fallback. See the real-filesystem describe block
+  // below for what actually happens once `basePath` exists (it's always a
+  // real, existing directory in practice), including that `.` is rejected
+  // there since it resolves to a directory.
+  it('returns the lexical basePath itself when nothing exists on disk to check', () => {
     expect(resolveRulePath('/base/rules', '.', 'script.path', false)).toBe(path.resolve('/base/rules'));
   });
 
@@ -102,6 +108,30 @@ describe('resolveRulePath (issue #98)', () => {
       fs.writeFileSync(target, 'module.exports = {};');
 
       expect(resolveRulePath(root, 'real.js', 'script.path', false)).toBe(target);
+    });
+
+    it('rejects a path that resolves to a directory', () => {
+      // scriptModuleLoader.ts ultimately calls require() on script.path —
+      // require(someDir) follows someDir/package.json's "main", which can
+      // point anywhere, including outside basePath entirely. A contained
+      // *directory* is therefore not itself safe to hand back, even though
+      // it passes every check above.
+      fs.mkdirSync(path.join(root, 'subdir'));
+
+      expect(() => resolveRulePath(root, 'subdir', 'script.path', false)).toThrow(/resolves to a directory/);
+    });
+
+    it('rejects basePath itself (".") since it resolves to a directory', () => {
+      expect(() => resolveRulePath(root, '.', 'script.path', false)).toThrow(/resolves to a directory/);
+    });
+
+    it('allows a directory when allowExternal is true', () => {
+      // allowExternal is an explicit, deliberate opt-out of every
+      // containment check this module applies — the directory guard is no
+      // exception, consistent with the symlink-escape tests above.
+      fs.mkdirSync(path.join(root, 'subdir'));
+
+      expect(resolveRulePath(root, 'subdir', 'script.path', true)).toBe(path.join(root, 'subdir'));
     });
   });
 });
