@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { installProcessCrashGuards, resolveDashboardPort, shouldAutoOpenDashboard } from './cli';
 
 /**
@@ -66,10 +66,26 @@ describe('shouldAutoOpenDashboard', () => {
  */
 describe('installProcessCrashGuards (issue #94)', () => {
   const originalExitCode = process.exitCode;
+  // Snapshotting and removing only the listeners *this suite* adds, rather
+  // than `removeAllListeners` — the latter would also wipe out listeners
+  // installed by the test runner itself (vitest registers its own for
+  // reporting unhandled errors in other tests), a global side effect this
+  // suite has no business causing.
+  let uncaughtBefore: readonly NodeJS.UncaughtExceptionListener[];
+  let rejectionBefore: readonly NodeJS.UnhandledRejectionListener[];
+
+  beforeEach(() => {
+    uncaughtBefore = process.listeners('uncaughtException');
+    rejectionBefore = process.listeners('unhandledRejection');
+  });
 
   afterEach(() => {
-    process.removeAllListeners('uncaughtException');
-    process.removeAllListeners('unhandledRejection');
+    for (const listener of process.listeners('uncaughtException')) {
+      if (!uncaughtBefore.includes(listener)) process.removeListener('uncaughtException', listener);
+    }
+    for (const listener of process.listeners('unhandledRejection')) {
+      if (!rejectionBefore.includes(listener)) process.removeListener('unhandledRejection', listener);
+    }
     process.exitCode = originalExitCode;
   });
 
