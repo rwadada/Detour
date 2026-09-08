@@ -65,6 +65,44 @@ describe('validateRulesData', () => {
     expect(result.valid).toBe(true);
   });
 
+  it('accepts a route action whose host is a bare hostname with no port field set', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'route', host: 'staging.example.com' } })],
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects a route action whose host has a port folded into it, rather than using action.port', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'route', host: 'localhost:18101' } })],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('looks like it includes a port'))).toBe(true);
+  });
+
+  it.each([
+    ['[::1]:8080', 'a port folded into a bracketed IPv6 literal'],
+    [
+      '[::1]',
+      'a bracketed IPv6 literal with no port folded in — computeRouteTarget never unwraps it for the outbound connection',
+    ],
+    ['[::1', 'malformed — missing its closing bracket'],
+    ['::1]', 'malformed — missing its opening bracket'],
+  ])('rejects a route action host of %j (%s)', (host) => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'route', host, port: 8080 } })],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('must be a bare host without brackets'))).toBe(true);
+  });
+
+  it('does not mistake an IPv6 literal host for host:port', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'route', host: '::1', port: 8080 } })],
+    });
+    expect(result.valid).toBe(true);
+  });
+
   it('accepts a rewrite action touching request and response', () => {
     const result = validateRulesData({
       rules: [

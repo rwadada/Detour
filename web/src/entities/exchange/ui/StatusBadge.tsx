@@ -50,8 +50,17 @@ export function StatusBadge({
 }
 
 export function MethodBadge({ method }: { method: string }) {
+  // min-w fits `OPTIONS` (the longest method in the Method filter's own
+  // option list — see `web/src/widgets/toolbar/ui/Toolbar.tsx`'s
+  // `METHODS`) and `CONNECT` (not filterable there, but still a real
+  // method a captured exchange can carry — proxyServer.ts records one for
+  // every CONNECT tunnel, and it renders through this same badge). At the
+  // previous 3.5rem, either overflowed this badge's box, visually running
+  // into whatever sits to its left (the Time column, in the log table)
+  // with no gap. Pair any change here with `DEFAULT_COLUMN_WIDTHS.method`
+  // (`entities/log-view`), which sizes the log table's own column to match.
   return (
-    <Badge className="min-w-[3.5rem] justify-center text-[var(--method)]" style={{ color: 'var(--method)' }}>
+    <Badge className="min-w-[4.5rem] justify-center text-[var(--method)]" style={{ color: 'var(--method)' }}>
       {method}
     </Badge>
   );

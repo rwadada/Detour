@@ -83,6 +83,7 @@ export function RuleProfilesControl() {
   const setDirtyDraft = useRuleStore((s) => s.setDirtyDraft);
   const lastError = useRuleStore((s) => s.lastError);
   const lastErrorAt = useRuleStore((s) => s.lastErrorAt);
+  const lastErrorKind = useRuleStore((s) => s.lastErrorKind);
   const dismissError = useRuleStore((s) => s.dismissError);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -135,7 +136,11 @@ export function RuleProfilesControl() {
   // name; re-applying whatever's already active). Requiring each one's own
   // `*At` timestamp to be no older than `pending.dispatchedAt` is what
   // actually ties the observation to *this* request rather than a
-  // coincidence, an unrelated action, or a stale error.
+  // coincidence, an unrelated action, or a stale error — and `lastErrorKind`
+  // being specifically `RULE_PROFILE_ERROR` (not `RulesEditorPanel`'s own
+  // `RULES_WRITE_ERROR`, sharing the same `lastError`/`lastErrorAt` fields)
+  // rules out misattributing *that* control's unrelated save failure to
+  // whatever's pending here.
   useEffect(() => {
     if (!pending) return;
     // Genuinely the "subscribe to an external store, setState in response"
@@ -144,7 +149,12 @@ export function RuleProfilesControl() {
     // arriving, not from any event this component itself handles, so
     // there's no synchronous event-handler callback to move this into
     // instead.
-    if (lastError && lastErrorAt !== null && lastErrorAt >= pending.dispatchedAt) {
+    if (
+      lastError &&
+      lastErrorAt !== null &&
+      lastErrorAt >= pending.dispatchedAt &&
+      lastErrorKind === 'RULE_PROFILE_ERROR'
+    ) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       showBanner(lastError, 'error');
       dismissError();
@@ -162,7 +172,7 @@ export function RuleProfilesControl() {
       setPending(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- showBanner/dismissError are stable-enough closures over refs/store actions, not reactive values this effect should re-run for
-  }, [pending, lastError, lastErrorAt, rulesFile, rulesFileAt, profiles, profilesAt]);
+  }, [pending, lastError, lastErrorAt, lastErrorKind, rulesFile, rulesFileAt, profiles, profilesAt]);
 
   // Bails out of a `pending` confirmation that never resolved either way —
   // see `PENDING_CONFIRMATION_TIMEOUT_MS`'s own doc comment.

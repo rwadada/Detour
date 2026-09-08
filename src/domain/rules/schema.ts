@@ -199,6 +199,41 @@ function validateSemantics(data: RulesFile): string[] {
         `rules[${index}] (${label}): action.request and action.response cannot both be false — this breakpoint would never pause anything`,
       );
     }
+    // Catches the natural mistake of typing "host:port" into action.host
+    // (there's a separate action.port field for that) — left unvalidated,
+    // this reaches net/http as a literal hostname, so it fails DNS
+    // resolution (`getaddrinfo ENOTFOUND host:port`) instead of connecting.
+    // A single colon followed by only digits is host:port almost by
+    // definition; a bare IPv6 literal (`::1`, two-plus colons, no
+    // brackets — the *correct* way to spell this field, per the next
+    // check below) never matches, since splitting on its last colon would
+    // wrongly treat part of the address as a port.
+    if (rule.action?.type === 'route' && /^[^:]+:\d+$/.test(rule.action.host)) {
+      errors.push(
+        `rules[${index}] (${label}): action.host "${rule.action.host}" looks like it includes a port — put the port in action.port instead, action.host must be a bare host (hostname or IP) without a port`,
+      );
+    }
+    // A bracketed IPv6 literal (`[::1]`, `[::1]:8080`) is how a URL or
+    // Host header pairs an IPv6 address with an explicit port —
+    // `ProxyEngine.parseHost` unwraps exactly that form when parsing an
+    // *inbound* request. `computeRouteTarget`/`applyRouteAction` don't:
+    // action.host reaches `http.request`'s own `host` option verbatim for
+    // the *outbound* connection, so a bracketed value would try to
+    // resolve a host literally named "[::1]", brackets and all, and fail.
+    // Rejects a bare `[` or `]` anywhere in the string, not just a
+    // well-formed `[...]` pair — neither character is ever legal in a real
+    // hostname or IP literal, so a malformed one missing its closing
+    // bracket (a typo trimming "[::1]" down to "[::1") is exactly as
+    // broken as the well-formed case, and matching only the paired form
+    // would let it slip through unflagged. The working spelling is the
+    // bare, unbracketed literal (`::1`), with any port in action.port
+    // instead — same as the check above, just for IPv6's own RFC 3986
+    // pairing syntax rather than the plain host:port one.
+    if (rule.action?.type === 'route' && /[[\]]/.test(rule.action.host)) {
+      errors.push(
+        `rules[${index}] (${label}): action.host "${rule.action.host}" must be a bare host without brackets — bracketed IPv6 (e.g. "[::1]") isn't unwrapped for an outbound connection, use "::1" instead, with any port in action.port`,
+      );
+    }
     if (rule.match?.urlRegex !== undefined) {
       try {
         new RegExp(rule.match.urlRegex, rule.match.urlRegexFlags);
