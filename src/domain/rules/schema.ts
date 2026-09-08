@@ -87,7 +87,10 @@ export const RULES_JSON_SCHEMA = {
         },
         url: { type: 'string', minLength: 1 },
         urlRegex: { type: 'string', minLength: 1 },
-        urlRegexFlags: { type: 'string' },
+        // Catches obvious typos at the schema stage; `validateSemantics` below
+        // still compiles the regex to catch flag *combinations* RegExp itself
+        // rejects (e.g. duplicate flags) and invalid `urlRegex` patterns.
+        urlRegexFlags: { type: 'string', pattern: '^[dgimsuvy]*$' },
       },
       oneOf: [{ required: ['url'] }, { required: ['urlRegex'] }],
     },
@@ -195,6 +198,14 @@ function validateSemantics(data: RulesFile): string[] {
       errors.push(
         `rules[${index}] (${label}): action.request and action.response cannot both be false — this breakpoint would never pause anything`,
       );
+    }
+    if (rule.match?.urlRegex !== undefined) {
+      try {
+        new RegExp(rule.match.urlRegex, rule.match.urlRegexFlags);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        errors.push(`rules[${index}] (${label}): invalid urlRegex/urlRegexFlags: ${reason}`);
+      }
     }
   }
   return errors;
