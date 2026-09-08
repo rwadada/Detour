@@ -421,6 +421,9 @@ export function shouldAutoOpenDashboard(info: { open: boolean; dashboardPort: nu
  * looking like it's running on this port.
  */
 async function runStart(options: StartOptions): Promise<void> {
+  // See installProcessCrashGuards's doc comment (issue #94): scoped to this
+  // long-running path specifically, not every CLI command.
+  installProcessCrashGuards();
   const port = parsePort(options.port, '--port');
   const headless = options.headless ?? false;
   const exitOnIdleMs = options.exitOnIdle !== undefined ? parseIdleMs(options.exitOnIdle) : undefined;
@@ -815,14 +818,18 @@ async function runDetached(options: StartOptions): Promise<void> {
  * try/catch at the actual throw site is for) — this only exists to keep one
  * unanticipated one from being fatal.
  *
- * Called from both real entry points — `bin/detour.js` (the npm-installed
- * CLI, which `require()`s the compiled `dist/cli.js` rather than running it
- * directly, so `cli.ts`'s own `require.main === module` guard below never
- * fires there) and this file's own guard (covers `tsx src/cli.ts` in dev, and
- * `scripts/build-release.mjs`'s single-file bundle, which esbuild's entry-
- * point handling makes `require.main === module` for) — rather than
- * installed unconditionally at module load, so importing `createCli` for
- * tests doesn't also install process-wide handlers no test expects.
+ * Called only from the top of `runStart` — deliberately *not* installed
+ * globally for every CLI command (a first version of this fix did, from
+ * both real entry points unconditionally). Continuing after an uncaught
+ * exception is explicitly unsafe per Node's own docs, which is an
+ * acceptable tradeoff for a proxy that's meant to keep running no matter
+ * what, but not for a short-lived command like `detour config`/`detour
+ * init`/etc. — those are better served by Node's default "print and exit"
+ * behavior, which surfaces the bug immediately rather than risking the
+ * command silently doing something inconsistent before an unrelated later
+ * step exits. `detour start --detach`'s daemon child re-invokes this same
+ * `start` path in its own fresh process (see `runDetached`/
+ * `spawnDaemonChild`), so it's covered too without needing its own call.
  *
  * Idempotent: a second call (e.g. a test exercising both this and some
  * other path that also happens to call it) is a no-op rather than piling on
@@ -1199,6 +1206,5 @@ export function createCli(): Command {
 // and calls `.parse()` itself) or by tests importing `createCli` without
 // wanting it to run.
 if (require.main === module) {
-  installProcessCrashGuards();
   createCli().parse(process.argv);
 }
