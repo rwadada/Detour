@@ -241,7 +241,14 @@ export async function startDashboardServer(
     if (!hostHeader) return undefined;
     if (hostHeader.startsWith('[')) {
       const end = hostHeader.indexOf(']');
-      return end === -1 ? undefined : hostHeader.slice(1, end).toLowerCase();
+      if (end === -1) return undefined;
+      // Same reasoning as the non-numeric-port check below, applied to the
+      // bracketed form: whatever follows `]` must be empty (no port) or
+      // `:<digits>` — a value like `[::1]:evil` shouldn't parse down to the
+      // allowed hostname `::1` just because the bracket itself was well-formed.
+      const rest = hostHeader.slice(end + 1);
+      if (rest !== '' && !/^:\d+$/.test(rest)) return undefined;
+      return hostHeader.slice(1, end).toLowerCase();
     }
     const firstColon = hostHeader.indexOf(':');
     const lastColon = hostHeader.lastIndexOf(':');
@@ -280,6 +287,13 @@ export async function startDashboardServer(
       // it as absent.
       return false;
     }
+    // This dashboard is only ever served over http(s) — a browser-sent
+    // `Origin` is always one of those two (or the literal string `null`,
+    // already handled by the `new URL` throwing above), but a forged one
+    // could claim any scheme. Fail closed rather than let `protocol !==
+    // 'https:' → defaultPort 80` treat e.g. `chrome-extension://<id>` as an
+    // http origin with no explicit port.
+    if (origin.protocol !== 'http:' && origin.protocol !== 'https:') return false;
     if (!allowedHostnames().includes(origin.hostname)) return false;
     if (origin.port !== '') return Number(origin.port) === boundPort;
     const defaultPort = origin.protocol === 'https:' ? 443 : 80;

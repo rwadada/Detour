@@ -101,6 +101,22 @@ describe('startDashboardServer — Origin/Host allowlist (issue #92)', () => {
     await expect(waitForRejection(socket)).resolves.toBe('rejected');
   });
 
+  it('rejects a /ws handshake whose Origin uses a non-http(s) scheme, even with an otherwise-allowed hostname', async () => {
+    const eventBus = new DetourEventBus();
+    handle = await startDashboardServer({ port: 0 }, eventBus);
+    // `new URL('chrome-extension://localhost')` parses to hostname
+    // `localhost`, port `''` — without an explicit protocol check, the "no
+    // explicit port" branch would compute a default port for it as though
+    // it were plain http (any non-`https:` protocol → 80), so this could be
+    // accepted purely by coincidence if the dashboard ever happened to bind
+    // to port 80. This dashboard only ever serves http(s); fail closed for
+    // every other scheme regardless of hostname/port.
+    const socket = new WebSocket(`ws://localhost:${handle.port}/ws`, { origin: 'chrome-extension://localhost' });
+    sockets = [socket];
+
+    await expect(waitForRejection(socket)).resolves.toBe('rejected');
+  });
+
   it('accepts a /ws handshake with no Origin header at all (non-browser clients)', async () => {
     const eventBus = new DetourEventBus();
     handle = await startDashboardServer({ port: 0 }, eventBus);
@@ -202,6 +218,14 @@ describe('startDashboardServer — Origin/Host allowlist (issue #92)', () => {
       // `localhost` and let it through, defeating the allowlist by accident.
       'a Host header whose port is non-numeric',
       'localhost:evil',
+    ],
+    [
+      // Same concern as 'localhost:evil' above, but for the bracketed IPv6
+      // form: whatever follows the closing `]` must be empty or `:<digits>`,
+      // not just accepted because the bracket itself parsed cleanly.
+      'a bracketed IPv6 Host header whose port is non-numeric',
+      // eslint-disable-next-line sonarjs/no-hardcoded-ip -- loopback address used as a malformed Host header fixture, not a real address.
+      '[::1]:evil',
     ],
   ])('rejects a static asset request with %s', async (_description, hostHeaderValue) => {
     const eventBus = new DetourEventBus();
