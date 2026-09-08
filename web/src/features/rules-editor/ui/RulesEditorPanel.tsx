@@ -81,6 +81,16 @@ export function RulesEditorPanel() {
   // effect sees this still matches the (possibly since-advanced)
   // `draftVersion`.
   const [savingVersion, setSavingVersion] = useState<number | null>(null);
+  // The exact `rules` `save()` last sent — `null` when no save is in
+  // flight. `rulesFileAt` alone isn't enough to tell *this* save's ack
+  // apart from a same-timing-window `rules` broadcast for something else
+  // entirely (another connected tab's own edit, a profile switch, someone
+  // hand-editing rules.json — `createRuleStore`'s own docs note `rules`
+  // is shared across all of those): only a `rulesFile` whose `rules`
+  // actually match what was sent is genuinely this save landing, mirroring
+  // how `RuleProfilesControl` requires content, not just freshness, before
+  // treating its own fire-and-forget commands as resolved.
+  const [sentRules, setSentRules] = useState<Rule[] | null>(null);
 
   // Consumes `pendingNewRule` exactly once, right after the initial draft
   // above already baked it in — an effect (not read during render) since
@@ -102,10 +112,13 @@ export function RulesEditorPanel() {
   // `RULES_WRITE_ERROR` no older than `pendingSaveAt` means this specific
   // save was rejected, so the draft stays dirty and the rejection reason is
   // shown instead of being silently swallowed; a `rulesFile` update no
-  // older than `pendingSaveAt` means it landed. `dirty` only actually
-  // clears then if `draftVersion` still matches what was saved — otherwise
-  // the user made more edits while this save was in flight, and clearing
-  // it would silently mark those newer, still-unsaved edits as saved too.
+  // older than `pendingSaveAt` *and* whose `rules` match `sentRules` means
+  // this save specifically landed (see that field's own doc comment on why
+  // freshness alone can't tell that apart from an unrelated broadcast).
+  // `dirty` only actually clears then if `draftVersion` still matches what
+  // was saved — otherwise the user made more edits while this save was in
+  // flight, and clearing it would silently mark those newer, still-unsaved
+  // edits as saved too.
   useEffect(() => {
     if (pendingSaveAt === null) return;
     if (lastError !== null && lastErrorAt !== null && lastErrorAt >= pendingSaveAt) {
@@ -114,15 +127,21 @@ export function RulesEditorPanel() {
       dismissError();
       setPendingSaveAt(null);
       setSavingVersion(null);
+      setSentRules(null);
       return;
     }
-    if (rulesFileAt !== null && rulesFileAt >= pendingSaveAt) {
+    const landed =
+      rulesFileAt !== null &&
+      rulesFileAt >= pendingSaveAt &&
+      JSON.stringify(rulesFile?.rules) === JSON.stringify(sentRules);
+    if (landed) {
       if (savingVersion === draftVersion) setDirty(false);
       setPendingSaveAt(null);
       setSavingVersion(null);
+      setSentRules(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- setDirty/dismissError are stable-enough store actions, not reactive values this effect should re-run for
-  }, [pendingSaveAt, lastError, lastErrorAt, rulesFileAt, savingVersion, draftVersion]);
+  }, [pendingSaveAt, lastError, lastErrorAt, rulesFile, rulesFileAt, savingVersion, draftVersion, sentRules]);
 
   // Bails out of a save that never resolved either way — see
   // `SAVE_TIMEOUT_MS`'s own doc comment. Surfaces it as a `saveError`
@@ -135,6 +154,7 @@ export function RulesEditorPanel() {
       setSaveError('No response from the server — the connection may have dropped. Try saving again.');
       setPendingSaveAt(null);
       setSavingVersion(null);
+      setSentRules(null);
     }, SAVE_TIMEOUT_MS);
     return () => clearTimeout(timer);
   }, [pendingSaveAt]);
@@ -192,12 +212,14 @@ export function RulesEditorPanel() {
     setSaveError(null);
     setPendingSaveAt(null);
     setSavingVersion(null);
+    setSentRules(null);
   };
 
   const save = () => {
     setSaveError(null);
     setPendingSaveAt(Date.now());
     setSavingVersion(draftVersion);
+    setSentRules(draft.rules);
     setRules(draft);
   };
 
