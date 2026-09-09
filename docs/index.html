@@ -636,9 +636,9 @@
       </div>
 
       <h2>Why Detour</h2>
-      <p>Charles and Proxyman are GUI-first. mitmproxy is CLI-first but keeps its web UI as an afterthought.
-        Detour treats both as first-class: <code class="inline">detour start</code> from a terminal — CI job,
-        SSH session, whatever — and get the same live traffic view, rule engine, and breakpoint editor a GUI
+      <p>Detour treats the terminal and the browser as equally first-class:
+        <code class="inline">detour start</code> from a terminal — CI job,
+        SSH session, whatever — and get a live traffic view, rule engine, and breakpoint editor a GUI
         tool would give you — including a man-in-the-middle (MITM) view into HTTPS, not just plaintext HTTP —
         in a browser tab it opens for you.</p>
 
@@ -652,13 +652,13 @@
       <h2>Quickstart</h2>
       <p class="muted">Requires Node 18 or newer. Detour itself runs on macOS, Linux, and Windows.</p>
       <div class="code-block">
-        <div class="code-head"><span>terminal</span><button class="copy" data-copy="brew tap rwadada/detour&#10;brew install detour&#10;detour start --port 8080">copy</button></div>
+        <div class="code-head"><span>terminal</span><button class="copy" data-copy="brew tap rwadada/detour&#10;brew install detour&#10;detour start">copy</button></div>
         <pre><span class="tok-com"># install (Homebrew tap, self-contained build)</span>
 brew tap rwadada/detour
 brew install detour
 
 <span class="tok-com"># run it</span>
-detour start --port 8080</pre>
+detour start</pre>
       </div>
       <p class="muted">The dashboard opens automatically at <code class="inline">http://localhost:9080</code>. Point any HTTP(S) client at <code class="inline">localhost:8080</code> and watch its traffic show up live.</p>
     </section>
@@ -672,20 +672,20 @@ detour start --port 8080</pre>
       <h2>Install</h2>
       <h3>Homebrew (recommended)</h3>
       <div class="code-block">
-        <div class="code-head"><span>terminal</span><button class="copy" data-copy="brew tap rwadada/detour&#10;brew install detour&#10;detour start --port 8080">copy</button></div>
+        <div class="code-head"><span>terminal</span><button class="copy" data-copy="brew tap rwadada/detour&#10;brew install detour&#10;detour start">copy</button></div>
         <pre>brew tap rwadada/detour
 brew install detour
-detour start --port 8080</pre>
+detour start</pre>
       </div>
       <p>Ships a self-contained release build — no Node toolchain needed beyond Node itself, pulled in
         automatically as the formula's dependency.</p>
 
       <h3>From source</h3>
       <div class="code-block">
-        <div class="code-head"><span>terminal</span><button class="copy" data-copy="npm install&#10;npm run build&#10;npm start -- start --port 8080">copy</button></div>
+        <div class="code-head"><span>terminal</span><button class="copy" data-copy="npm install&#10;npm run build&#10;npm start -- start">copy</button></div>
         <pre>npm install
 npm run build
-npm start -- start --port 8080</pre>
+npm start -- start</pre>
       </div>
 
       <h2>Trust the CA certificate</h2>

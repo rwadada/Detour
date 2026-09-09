@@ -1,7 +1,7 @@
 {
   "name": "detour",
   "version": "0.2.0",
-  "description": "A terminal-first, lightweight HTTP debugging proxy for mobile and web. A modern CLI alternative to Charles Proxy with real-time web dashboard.",
+  "description": "A terminal-first, lightweight HTTP debugging proxy for mobile and web, with a real-time web dashboard.",
   "license": "Apache-2.0",
   "type": "commonjs",
   "bin": {

@@ -7,7 +7,7 @@
 }
 
 /*
- * Dark-first devtools palette (Charles / Chrome DevTools / VS Code lineage) —
+ * Dark-first devtools palette (proxy-tool / browser-devtools / code-editor lineage) —
  * matches the project's design guide token-for-token. `.light` on <html> —
  * toggled by setTheme (src/lib/theme.ts) and applied synchronously by the
  * inline script in index.html to avoid a flash — switches to the light
