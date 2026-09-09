@@ -82,8 +82,9 @@ export interface MockAction {
   delayMs?: number;
   /**
    * Simulates a broken connection instead of ever sending a response —
-   * useful for testing a client's own error handling (Charles' "Map Local"
-   * has the same pair of options). Wins over `status`/`statusMessage`/
+   * useful for testing a client's own error handling (other proxy tools'
+   * local-response-mocking features tend to offer the same pair of
+   * options). Wins over `status`/`statusMessage`/
    * `headers`/`body`/`bodyFile`, which are ignored when set.
    *
    * `'close'`: drops the connection immediately, no response at all — the
