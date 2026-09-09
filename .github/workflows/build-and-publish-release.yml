@@ -107,7 +107,7 @@ jobs:
           # the string's second line — bash doesn't strip that, and 4+
           # leading spaces reads as a Markdown code block once this lands in
           # the release notes.
-          homebrew_note="$(printf 'sha256: `%s`\n\nHomebrew: `brew install rwadada/detour/detour` (bump `Formula/detour.rb` in [homebrew-detour](https://github.com/rwadada/homebrew-detour) to this version/sha256 first).' "$sha256")"
+          homebrew_note="$(printf 'sha256: `%s`\n\nHomebrew: `brew install rwadada/detour/detour` — the "Update Homebrew tap formula" step below bumps [homebrew-detour](https://github.com/rwadada/homebrew-detour)'"'"'s `Formula/detour.rb` to this version/sha256 automatically.' "$sha256")"
 
           # Delimits the appended section so re-running this step for the
           # same tag (a manual workflow re-run, say) replaces it instead of
@@ -133,3 +133,47 @@ jobs:
               --generate-notes \
               --notes-file /tmp/release-notes.md
           fi
+
+      # Keeps homebrew-detour's Formula/detour.rb in lockstep with every
+      # release, automatically — this used to be a manual step ("bump the
+      # formula by hand after each release") that reliably got forgotten,
+      # leaving `brew install` on a stale version until someone noticed.
+      # GITHUB_TOKEN can't push here: it's scoped to *this* repo only, and
+      # a cross-repo push needs a PAT with write access to homebrew-detour
+      # specifically. Fails loudly (rather than skipping quietly) when
+      # that secret is missing, since a silent skip is exactly the
+      # "forgotten" failure mode this step exists to close off — the release
+      # itself is already published by this point either way, so a red X
+      # here means "go bump the formula by hand for this one release and
+      # fix the secret", not "the release failed".
+      - name: Update Homebrew tap formula
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN repo secret is not set, so homebrew-detour's Formula/detour.rb was NOT updated (the release itself published fine). Create a PAT with 'Contents: write' access to rwadada/homebrew-detour and add it as a repository secret named HOMEBREW_TAP_TOKEN on rwadada/Detour, then re-run this job — or bump Formula/detour.rb by hand for this one release."
+            exit 1
+          fi
+
+          tag="${{ inputs.tag }}"
+          version="${tag#v}"
+          tarball="release/detour-${version}.tar.gz"
+          sha256="$(shasum -a 256 "$tarball" | cut -d' ' -f1)"
+
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/rwadada/homebrew-detour.git" /tmp/homebrew-detour
+          cd /tmp/homebrew-detour
+
+          formula="Formula/detour.rb"
+          sed -i -E "s|url \"[^\"]*\"|url \"https://github.com/rwadada/Detour/releases/download/${tag}/detour-${version}.tar.gz\"|" "$formula"
+          sed -i -E "s|sha256 \"[^\"]*\"|sha256 \"${sha256}\"|" "$formula"
+
+          if git diff --quiet -- "$formula"; then
+            echo "Formula already at ${tag}; nothing to update."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$formula"
+          git commit -m "fix: bump formula to ${tag}"
+          git push origin main

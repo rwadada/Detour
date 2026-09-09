@@ -39,3 +39,7 @@ jobs:
     uses: ./.github/workflows/build-and-publish-release.yml
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
+    # Passes HOMEBREW_TAP_TOKEN (among any other repo/org secrets) through
+    # to the reusable workflow's "Update Homebrew tap formula" step — a
+    # `uses:` job gets none of the caller's secrets by default.
+    secrets: inherit
