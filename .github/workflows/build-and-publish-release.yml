@@ -17,6 +17,17 @@ on:
         description: The `vX.Y.Z` tag to check out, build, and publish a release asset for.
         required: true
         type: string
+    secrets:
+      HOMEBREW_TAP_TOKEN:
+        description: >-
+          PAT with write access to rwadada/homebrew-detour, used only by the
+          "Update Homebrew tap formula" step below to push the formula bump.
+          Declared explicitly (rather than the caller using `secrets: inherit`)
+          so this workflow only ever sees the one secret it actually needs,
+          not every secret available to the caller. Not required: everything
+          else in this workflow works fine without it, and that one step
+          fails with a clear message instead if it's unset.
+        required: false
 
 permissions:
   contents: write
@@ -159,13 +170,34 @@ jobs:
           version="${tag#v}"
           tarball="release/detour-${version}.tar.gz"
           sha256="$(shasum -a 256 "$tarball" | cut -d' ' -f1)"
+          new_url="https://github.com/rwadada/Detour/releases/download/${tag}/detour-${version}.tar.gz"
 
-          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/rwadada/homebrew-detour.git" /tmp/homebrew-detour
+          # No token here: the tap is public, so a plain clone can read it —
+          # the token is needed only to push back, further down. Cloning
+          # with it embedded instead would persist it into this checkout's
+          # own .git/config as the origin URL, where any later command that
+          # prints remotes/debug output (a failed step's log, `git remote
+          # -v`, ...) could leak it.
+          git clone --depth 1 "https://github.com/rwadada/homebrew-detour.git" /tmp/homebrew-detour
           cd /tmp/homebrew-detour
 
           formula="Formula/detour.rb"
-          sed -i -E "s|url \"[^\"]*\"|url \"https://github.com/rwadada/Detour/releases/download/${tag}/detour-${version}.tar.gz\"|" "$formula"
+          sed -i -E "s|url \"[^\"]*\"|url \"${new_url}\"|" "$formula"
           sed -i -E "s|sha256 \"[^\"]*\"|sha256 \"${sha256}\"|" "$formula"
+
+          # Confirms the substitution actually landed the intended values —
+          # not just that *something* in the file changed (a sed pattern
+          # that stopped matching, or matched the wrong thing, would still
+          # leave `git diff` non-empty further down while silently NOT
+          # updating to the version this release actually published).
+          if ! grep -qF "url \"${new_url}\"" "$formula"; then
+            echo "::error::Formula update failed — expected url line (${new_url}) not found after substitution."
+            exit 1
+          fi
+          if ! grep -qF "sha256 \"${sha256}\"" "$formula"; then
+            echo "::error::Formula update failed — expected sha256 line (${sha256}) not found after substitution."
+            exit 1
+          fi
 
           if git diff --quiet -- "$formula"; then
             echo "Formula already at ${tag}; nothing to update."
@@ -176,4 +208,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$formula"
           git commit -m "fix: bump formula to ${tag}"
-          git push origin main
+          # The token appears only as this one push URL's own argument —
+          # never written to .git/config the way `git remote add`/`clone`
+          # with it embedded would.
+          git push "https://x-access-token:${TAP_TOKEN}@github.com/rwadada/homebrew-detour.git" main
