@@ -4,6 +4,13 @@
   "include-component-in-tag": false,
   "bump-minor-pre-major": true,
   "packages": {
-    ".": {}
+    ".": {
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "docs/index.html"
+        }
+      ]
+    }
   }
 }
