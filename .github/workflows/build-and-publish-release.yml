@@ -160,17 +160,37 @@ jobs:
       - name: Update Homebrew tap formula
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -z "$TAP_TOKEN" ]; then
-            echo "::error::HOMEBREW_TAP_TOKEN repo secret is not set, so homebrew-detour's Formula/detour.rb was NOT updated (the release itself published fine). Create a PAT with 'Contents: write' access to rwadada/homebrew-detour and add it as a repository secret named HOMEBREW_TAP_TOKEN on rwadada/Detour, then re-run this job — or bump Formula/detour.rb by hand for this one release."
-            exit 1
-          fi
-
           tag="${{ inputs.tag }}"
           version="${tag#v}"
           tarball="release/detour-${version}.tar.gz"
           sha256="$(shasum -a 256 "$tarball" | cut -d' ' -f1)"
           new_url="https://github.com/rwadada/Detour/releases/download/${tag}/detour-${version}.tar.gz"
+          marker="<!-- build-and-publish-release: sha256/homebrew note -->"
+
+          # The "Publish release asset" step above already published notes
+          # claiming this step bumps the tap formula automatically — written
+          # before this step even runs, so any failure below (a missing
+          # secret, a rejected push, ...) would otherwise leave that claim
+          # standing even though it didn't happen, which is misleading to
+          # anyone reading the release. Rewrites the note after that same
+          # marker on any failure here, so the published notes never assert
+          # an automatic bump that didn't actually land.
+          fail_and_correct_note() {
+            local reason="$1"
+            local body corrected
+            body="$(gh release view "$tag" --json body -q .body)"
+            corrected="$(printf 'sha256: `%s`\n\nHomebrew: the automatic tap formula bump did NOT happen for this release (%s) — bump [homebrew-detour](https://github.com/rwadada/homebrew-detour)'"'"'s `Formula/detour.rb` by hand.' "$sha256" "$reason")"
+            printf '%s\n\n%s\n\n%s\n' "${body%%"$marker"*}" "$marker" "$corrected" > /tmp/release-notes.md
+            gh release edit "$tag" --notes-file /tmp/release-notes.md
+            echo "::error::$reason — release notes corrected to stop claiming an automatic Homebrew bump happened."
+            exit 1
+          }
+
+          if [ -z "$TAP_TOKEN" ]; then
+            fail_and_correct_note "HOMEBREW_TAP_TOKEN repo secret is not set"
+          fi
 
           # No token here: the tap is public, so a plain clone can read it —
           # the token is needed only to push back, further down. Cloning
@@ -178,12 +198,22 @@ jobs:
           # own .git/config as the origin URL, where any later command that
           # prints remotes/debug output (a failed step's log, `git remote
           # -v`, ...) could leak it.
-          git clone --depth 1 "https://github.com/rwadada/homebrew-detour.git" /tmp/homebrew-detour
+          git clone --depth 1 "https://github.com/rwadada/homebrew-detour.git" /tmp/homebrew-detour \
+            || fail_and_correct_note "could not clone homebrew-detour"
           cd /tmp/homebrew-detour
 
           formula="Formula/detour.rb"
-          sed -i -E "s|url \"[^\"]*\"|url \"${new_url}\"|" "$formula"
-          sed -i -E "s|sha256 \"[^\"]*\"|sha256 \"${sha256}\"|" "$formula"
+          # Restricted to the lines before a `head do ... end` block (if the
+          # formula ever grows one) via the `1,/head do/` address range —
+          # such a block has its own `url`/(rarely) `sha256` line for the
+          # source checkout, which an unanchored substitution would also
+          # rewrite (or rewrite instead of the stable one), corrupting it.
+          # Currently a no-op restriction (the formula has no `head do`
+          # block yet — see homebrew-detour's Formula/detour.rb — so the
+          # range simply runs to EOF), but keeps this safe if one's ever
+          # added.
+          sed -i -E "1,/head do/{s|url \"[^\"]*\"|url \"${new_url}\"|}" "$formula"
+          sed -i -E "1,/head do/{s|sha256 \"[^\"]*\"|sha256 \"${sha256}\"|}" "$formula"
 
           # Confirms the substitution actually landed the intended values —
           # not just that *something* in the file changed (a sed pattern
@@ -191,12 +221,10 @@ jobs:
           # leave `git diff` non-empty further down while silently NOT
           # updating to the version this release actually published).
           if ! grep -qF "url \"${new_url}\"" "$formula"; then
-            echo "::error::Formula update failed — expected url line (${new_url}) not found after substitution."
-            exit 1
+            fail_and_correct_note "formula substitution did not produce the expected url line"
           fi
           if ! grep -qF "sha256 \"${sha256}\"" "$formula"; then
-            echo "::error::Formula update failed — expected sha256 line (${sha256}) not found after substitution."
-            exit 1
+            fail_and_correct_note "formula substitution did not produce the expected sha256 line"
           fi
 
           if git diff --quiet -- "$formula"; then
@@ -211,4 +239,5 @@ jobs:
           # The token appears only as this one push URL's own argument —
           # never written to .git/config the way `git remote add`/`clone`
           # with it embedded would.
-          git push "https://x-access-token:${TAP_TOKEN}@github.com/rwadada/homebrew-detour.git" main
+          git push "https://x-access-token:${TAP_TOKEN}@github.com/rwadada/homebrew-detour.git" main \
+            || fail_and_correct_note "git push to homebrew-detour failed"
