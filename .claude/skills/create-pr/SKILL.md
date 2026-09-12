@@ -20,15 +20,17 @@ with a thin body.
 Run the checks relevant to what changed (don't skip this to save time — a
 red `npm run verify` after opening the PR is worse than a slower open):
 
-- Small/non-behavioral change: at least `npm run typecheck` and
-  `npm run lint`.
+- Small/non-behavioral change: at least `npm run format:check`,
+  `npm run typecheck`, and `npm run lint` — CI's `verify` job runs
+  `format:check` first, so a Markdown/whitespace-only issue that a
+  typecheck/lint pass wouldn't catch can still fail CI on its own.
 - Anything touching `src/`, `bin/`, or `web/src/`: `npm run verify` (runs
   format check, typecheck, lint, FSD/dep-cruise boundaries, dup-check,
   unit+coverage, dashboard tests, and CLI e2e — see `.github/workflows/pr.yml`).
 - Note the actual commands you ran and their pass/fail result — this goes
   verbatim into the PR's Verification section, not a generic "tests pass".
-- If you also exercised the change manually (e.g. via the `run` skill,
-  `detour start`, or a curl/dashboard check), record the concrete steps and
+- If you also exercised the change manually (e.g. `npm start -- start`,
+  `npm run dev`, or a curl/dashboard check), record the concrete steps and
   what you observed.
 
 ## 3. Decide if this is a UI change
@@ -39,10 +41,10 @@ branch, and gives a wrong or empty answer). If it touches anything under
 `web/src/` (the dashboard SPA) or otherwise changes rendered output, it's a
 UI change and the PR **must** include before/after screenshots:
 
-- Use the `run` skill (or `npm run dev:dashboard` / `detour start`) to view
-  the dashboard before and after the change, or check out the base branch,
-  screenshot, then check out the PR branch and screenshot again. Save both
-  as local files, e.g. `before.png` / `after.png`.
+- Run `npm run dev:dashboard` (or `detour start`) to view the dashboard
+  before and after the change, or check out the base branch, screenshot,
+  then check out the PR branch and screenshot again. Save both as local
+  files, e.g. `before.png` / `after.png`.
 - Reference both local paths in the Screenshots section's before/after
   table in the PR body (e.g. `![before](./before.png)` /
   `![after](./after.png)`), then pass `--attach ./before.png --attach ./after.png`
@@ -75,10 +77,10 @@ section — never leave the HTML comments in place unanswered:
 - Look for a PR template as described above (already handled here) and use
   it as the body's structure.
 - Create the PR against `main` unless told otherwise.
-- After creating it, subscribe to its activity (`subscribe_pr_activity` /
-  `gh pr view --json` + watching, depending on environment) so CI failures
-  and review comments get picked up, per this session's PR-babysitting
-  rules.
+- After creating it, start watching for CI failures and review comments so
+  they get picked up promptly — GitHub's own Watch/notification settings,
+  or whatever PR-activity tooling the current environment provides (this
+  session's PR-subscription tool, `gh pr checks --watch`, etc.).
 
 ## 6. Report back
 
