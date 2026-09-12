@@ -39,3 +39,11 @@ jobs:
     uses: ./.github/workflows/build-and-publish-release.yml
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
+    # Passes only HOMEBREW_TAP_TOKEN through to the reusable workflow's
+    # "Update Homebrew tap formula" step — a `uses:` job gets none of the
+    # caller's secrets by default. `secrets: inherit` would forward every
+    # repo/org secret instead of just the one this workflow actually
+    # declares (see its own `on.workflow_call.secrets`), widening the
+    # blast radius of a future compromise or bug there for no reason.
+    secrets:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
