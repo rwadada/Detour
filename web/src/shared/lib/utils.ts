@@ -60,9 +60,24 @@ const DECOMPRESSIBLE_ENCODINGS: Record<string, string> = {
   br: 'br',
 };
 
-/** `contentEncoding`'s first coding, normalized to a `DecompressionStream` format name — `undefined` for absent, `identity`, or anything `DECOMPRESSIBLE_ENCODINGS` doesn't recognize. A `Content-Encoding` can in principle list more than one coding (rare in practice); only the first is meaningful here — decoding a chain isn't supported. */
+/**
+ * `contentEncoding`'s outermost coding, normalized to a `DecompressionStream`
+ * format name — `undefined` for absent, `identity`, or anything
+ * `DECOMPRESSIBLE_ENCODINGS` doesn't recognize.
+ *
+ * A `Content-Encoding` lists codings in the order they were *applied* (RFC
+ * 9110 §8.4.1), so the *last* one listed is the outermost — the one that
+ * has to be reversed first. The first token is the *inner* coding, which
+ * only means anything once the outer one has already been stripped —
+ * reading it instead would pick a coding guaranteed to fail decompression
+ * whenever more than one is actually present. Only this outermost layer is
+ * reversed here; a response chained through more than one coding (rare in
+ * practice) still isn't fully decodable, but this at least strips the one
+ * layer that's actually next, rather than a coding certain to fail either
+ * way.
+ */
 function decompressibleFormat(contentEncoding: string | undefined): string | undefined {
-  const coding = contentEncoding?.trim().toLowerCase().split(',')[0]?.trim();
+  const coding = contentEncoding?.trim().toLowerCase().split(',').pop()?.trim();
   return coding ? DECOMPRESSIBLE_ENCODINGS[coding] : undefined;
 }
 
@@ -122,7 +137,18 @@ async function decompress(bytes: Uint8Array, format: string): Promise<Uint8Array
  * aren't valid UTF-8.
  */
 export async function decodeCapturedBodyAsync(base64: string, contentEncoding?: string): Promise<string | undefined> {
-  const bytes = base64ToBytes(base64);
+  // `atob` throws synchronously on malformed base64 — inside an `async`
+  // function that becomes a *rejected* promise, not a resolved `undefined`
+  // one like `decodeCapturedBody` returns for the same input. Left
+  // uncaught, `BodyViewer`'s `.then(...)` (with no matching `.catch`) would
+  // never fire, permanently stuck showing "Decoding…" instead of reporting
+  // the body as unreadable (PR #118 review).
+  let bytes: Uint8Array;
+  try {
+    bytes = base64ToBytes(base64);
+  } catch {
+    return undefined;
+  }
   const format = decompressibleFormat(contentEncoding);
 
   if (format) {

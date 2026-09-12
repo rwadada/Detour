@@ -40,9 +40,19 @@ function useDecodedBody(body: string | undefined, contentEncoding: string | unde
   useEffect(() => {
     if (!decompressing || !body) return;
     let cancelled = false;
-    decodeCapturedBodyAsync(body, contentEncoding).then((decoded) => {
-      if (!cancelled) setResult({ body, contentEncoding, decoded });
-    });
+    decodeCapturedBodyAsync(body, contentEncoding)
+      .then((decoded) => {
+        if (!cancelled) setResult({ body, contentEncoding, decoded });
+      })
+      .catch(() => {
+        // `decodeCapturedBodyAsync` itself resolves rather than rejects for
+        // every input it knows how to fail on (PR #118 review) — this is
+        // pure defense-in-depth against a future change reintroducing an
+        // unhandled rejection here, which would otherwise strand `result`
+        // unset and this body stuck showing "Decoding…" forever. Reported
+        // the same way a genuinely undecodable body already is.
+        if (!cancelled) setResult({ body, contentEncoding, decoded: undefined });
+      });
     return () => {
       cancelled = true;
     };

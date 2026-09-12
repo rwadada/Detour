@@ -63,6 +63,33 @@ describe('decodeCapturedBodyAsync', () => {
     const base64 = bytesToBase64(new Uint8Array([0xff, 0xfe, 0x00, 0x01]));
     await expect(decodeCapturedBodyAsync(base64)).resolves.toBeUndefined();
   });
+
+  // Regression test for a PR review comment: `atob` throws synchronously on
+  // malformed base64, which — inside an `async` function, uncaught — became
+  // a *rejected* promise rather than the resolved `undefined` every other
+  // undecodable-body case here returns. BodyViewer's `.then(...)` had no
+  // matching `.catch`, so this would have left the body stuck showing
+  // "Decoding…" forever instead of reporting it as unreadable.
+  it('resolves to undefined (never rejects) for malformed base64', async () => {
+    await expect(decodeCapturedBodyAsync('not valid base64!!!')).resolves.toBeUndefined();
+    await expect(decodeCapturedBodyAsync('not valid base64!!!', 'gzip')).resolves.toBeUndefined();
+  });
+
+  // Regression test for a PR review comment: `Content-Encoding` lists
+  // codings in the order they were *applied*, so the *last* one is the
+  // outermost — the one that actually needs reversing first. The previous
+  // implementation read the first token instead, which would try (and
+  // fail) to decode using the wrong, inner coding whenever more than one
+  // was listed — here, an unrecognized first token would otherwise mean no
+  // decompression is attempted at all even though the real (last) coding is
+  // one this can handle.
+  it('decodes using the last (outermost) Content-Encoding token, not the first', async () => {
+    const json = JSON.stringify({ ok: true });
+    const gzipped = zlib.gzipSync(Buffer.from(json, 'utf-8'));
+    const base64 = bytesToBase64(new Uint8Array(gzipped));
+
+    await expect(decodeCapturedBodyAsync(base64, 'bogus, gzip')).resolves.toBe(json);
+  });
 });
 
 // Regression coverage for a PR review comment on issue #115's fix: BodyViewer
