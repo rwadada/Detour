@@ -161,6 +161,17 @@ jobs:
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           GH_TOKEN: ${{ github.token }}
+          # `gh` otherwise infers the repo to operate on from the current
+          # working directory's git remote — fine everywhere in this step
+          # *except* `fail_and_correct_note`, which can run after `cd
+          # /tmp/homebrew-detour` below (a clone/substitution/push failure
+          # all happen from in there). Without this pinned explicitly, its
+          # `gh release view/edit` calls would target rwadada/homebrew-detour
+          # instead of this repo's own release, so the note correction
+          # would silently fail against the wrong repo (or the right tag
+          # coincidentally existing in the wrong place) instead of fixing
+          # the actual Detour release notes (PR #114 review).
+          GH_REPO: ${{ github.repository }}
         run: |
           tag="${{ inputs.tag }}"
           version="${tag#v}"
