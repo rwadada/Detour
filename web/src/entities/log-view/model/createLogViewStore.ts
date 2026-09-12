@@ -84,22 +84,73 @@ export interface LogViewState {
    * this store triggers.
    */
   collapsedHosts: ReadonlySet<string>;
+  /**
+   * True from a `collapseAllHosts` call until the next `expandAllHosts` —
+   * while true, `noteHostsSeen` auto-collapses a host the *first* time it
+   * shows up, not just the ones that already existed at the moment
+   * "Collapse all" was clicked (issue #117). Without this, a host whose
+   * first exchange arrived *after* that click rendered expanded by
+   * default — indistinguishable, from the user's seat, from "collapse all
+   * didn't stick" — since `collapsedHosts` on its own only ever remembers
+   * hosts it was explicitly told about.
+   */
+  collapseNewHostsByDefault: boolean;
+  /**
+   * Every host `noteHostsSeen` has already accounted for, whatever its
+   * current collapsed/expanded state — including one the user explicitly
+   * re-expanded after "Collapse all" (`toggleHostCollapsed` never touches
+   * this set, so re-expanding a host doesn't make it look "new" again and
+   * get auto-collapsed right back). Lets `noteHostsSeen` tell a genuinely
+   * new host apart from one it's simply being handed again on a later,
+   * unrelated re-render.
+   */
+  knownHosts: ReadonlySet<string>;
   /** `time`/`asc` reproduces the table's pre-sort behavior (exchanges arrive in roughly chronological order already), so leaving this untouched changes nothing. */
   sort: SortState;
   columnWidths: Record<ResizableColumn, number>;
   toggleGroupByHost: () => void;
   /** Expands/collapses one host's rows under "Group by host" — see `collapsedHosts`. */
   toggleHostCollapsed: (host: string) => void;
-  /** Expands every host at once — clears `collapsedHosts` entirely, same as no host ever having been collapsed. */
+  /** Expands every host at once — clears `collapsedHosts` entirely, same as no host ever having been collapsed. Also turns off `collapseNewHostsByDefault` — "expand all" is as much a statement about hosts that haven't shown up yet as "collapse all" is. */
   expandAllHosts: () => void;
-  /** Collapses every host currently in view at once. Takes the caller's own host list (the currently grouped/filtered set — see `GroupByHostToggle`) rather than tracking every host ever seen, so a host that later disappears (filtered out, traffic cleared) doesn't linger in `collapsedHosts` forever. */
+  /** Collapses every host currently in view at once, and arms `collapseNewHostsByDefault` (see its own doc comment) so a host that shows up afterward starts collapsed too. Takes the caller's own host list (the currently grouped/filtered set — see `GroupByHostToggle`) rather than tracking every host ever seen, so a host that later disappears (filtered out, traffic cleared) doesn't linger in `collapsedHosts`/`knownHosts` forever. */
   collapseAllHosts: (hosts: string[]) => void;
+  /**
+   * Tells the store about every host currently in view, so a genuinely new
+   * one (issue #117 — see `collapseNewHostsByDefault`) gets collapsed
+   * up front instead of rendering expanded until someone notices and fixes
+   * it by hand. Called by `GroupByHostToggle` whenever its own filtered
+   * host list changes; a no-op once every host given is already in
+   * `knownHosts` (in particular, while `collapseNewHostsByDefault` is
+   * `false` and nothing has ever collapsed anything).
+   */
+  noteHostsSeen: (hosts: string[]) => void;
   /** Clicking the currently-sorted column flips direction; clicking a different one switches to it ascending. */
   setSort: (column: SortColumn) => void;
   /** Updates in-memory width only — called on every `pointermove` while dragging a resize handle, so it deliberately does *not* touch localStorage (a synchronous write per move event is a real jank risk on that hot path). See `persistColumnWidths`. */
   setColumnWidth: (column: ResizableColumn, width: number) => void;
   /** Writes the current `columnWidths` to localStorage — called once on `pointerup`, after a resize drag finishes. */
   persistColumnWidths: () => void;
+}
+
+/**
+ * `noteHostsSeen`'s update logic, pulled out to a plain function (rather
+ * than nesting the `.filter`/`for` loops below directly inside its
+ * `set((state) => ...)` callback) to keep the store definition under
+ * `sonarjs/no-nested-functions`'s max nesting depth.
+ */
+function applyNoteHostsSeen(
+  state: Pick<LogViewState, 'knownHosts' | 'collapsedHosts' | 'collapseNewHostsByDefault'>,
+  hosts: string[],
+): Partial<LogViewState> {
+  const newHosts = hosts.filter((host) => !state.knownHosts.has(host));
+  if (newHosts.length === 0) return {};
+  const knownHosts = new Set(state.knownHosts);
+  for (const host of newHosts) knownHosts.add(host);
+  if (!state.collapseNewHostsByDefault) return { knownHosts };
+  const collapsedHosts = new Set(state.collapsedHosts);
+  for (const host of newHosts) collapsedHosts.add(host);
+  return { knownHosts, collapsedHosts };
 }
 
 /**
@@ -114,6 +165,8 @@ export function createLogViewStore() {
   return create<LogViewState>((set, get) => ({
     groupByHost: false,
     collapsedHosts: new Set<string>(),
+    collapseNewHostsByDefault: false,
+    knownHosts: new Set<string>(),
     sort: { column: 'time', direction: 'asc' },
     columnWidths: loadColumnWidths(),
     toggleGroupByHost: () => set((state) => ({ groupByHost: !state.groupByHost })),
@@ -124,8 +177,10 @@ export function createLogViewStore() {
         else next.add(host);
         return { collapsedHosts: next };
       }),
-    expandAllHosts: () => set({ collapsedHosts: new Set<string>() }),
-    collapseAllHosts: (hosts) => set({ collapsedHosts: new Set(hosts) }),
+    expandAllHosts: () => set({ collapsedHosts: new Set<string>(), collapseNewHostsByDefault: false }),
+    collapseAllHosts: (hosts) =>
+      set({ collapsedHosts: new Set(hosts), collapseNewHostsByDefault: true, knownHosts: new Set(hosts) }),
+    noteHostsSeen: (hosts) => set((state) => applyNoteHostsSeen(state, hosts)),
     setSort: (column) =>
       set((state) => ({
         sort:

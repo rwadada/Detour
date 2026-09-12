@@ -1,5 +1,5 @@
 import { FoldVertical, Layers, UnfoldVertical } from 'lucide-react';
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { matchesFilters, useExchangeStore } from '@/entities/exchange';
 import { useLogViewStore } from '@/entities/log-view';
 import type { CapturedExchange } from '@/shared/api';
@@ -18,6 +18,7 @@ export function GroupByHostToggle() {
   const toggleGroupByHost = useLogViewStore((s) => s.toggleGroupByHost);
   const expandAllHosts = useLogViewStore((s) => s.expandAllHosts);
   const collapseAllHosts = useLogViewStore((s) => s.collapseAllHosts);
+  const noteHostsSeen = useLogViewStore((s) => s.noteHostsSeen);
   // Reads through to the live `exchanges` array only while groupByHost is on
   // — see EMPTY_EXCHANGES above. filters stays a plain selector since it
   // only changes on a deliberate user action, not on every exchange.
@@ -36,6 +37,18 @@ export function GroupByHostToggle() {
     }
     return [...distinct];
   }, [groupByHost, exchanges, filters]);
+
+  // Keeps `knownHosts` current so a genuinely new host is auto-collapsed
+  // while "Collapse all" is still in effect (issue #117) — see
+  // `noteHostsSeen`'s own doc comment. An effect (rather than a plain call
+  // during render) since this is a side effect on a store shared with other
+  // components (`LogTable`'s own `collapsedHosts` read among them), not
+  // something this component's own render output depends on; `[hosts, ...]`
+  // means it only actually runs `noteHostsSeen` when the filtered host list
+  // changes, not on every unrelated re-render.
+  useEffect(() => {
+    if (hosts.length > 0) noteHostsSeen(hosts);
+  }, [hosts, noteHostsSeen]);
 
   return (
     <div className="flex items-center gap-1">
