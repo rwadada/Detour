@@ -138,7 +138,14 @@ jobs:
           else
             # No release yet (a tag pushed by hand rather than via
             # release-please) — create one from scratch, same as before.
-            printf '%s\n' "$homebrew_note" > /tmp/release-notes.md
+            # Includes the same marker the other branch delimits its note
+            # with (rather than just `$homebrew_note` on its own) — without
+            # it, `fail_and_correct_note` below (build-and-publish-release's
+            # "Update Homebrew tap formula" step) would find no marker to
+            # split on for a release created this way, and its correction
+            # would land *after* this now-false claim instead of replacing
+            # it (PR #114 review).
+            printf '%s\n\n%s\n' "$marker" "$homebrew_note" > /tmp/release-notes.md
             gh release create "$tag" "$tarball" \
               --title "$tag" \
               --generate-notes \
