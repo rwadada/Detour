@@ -33,9 +33,11 @@ red `npm run verify` after opening the PR is worse than a slower open):
 
 ## 3. Decide if this is a UI change
 
-Check `git diff --stat` against the base branch. If it touches anything
-under `web/src/` (the dashboard SPA) or otherwise changes rendered output,
-it's a UI change and the PR **must** include before/after screenshots:
+Check `git diff --stat origin/main...HEAD` (an explicit base ref — a bare
+`git diff --stat` compares against the working tree/index, not the base
+branch, and gives a wrong or empty answer). If it touches anything under
+`web/src/` (the dashboard SPA) or otherwise changes rendered output, it's a
+UI change and the PR **must** include before/after screenshots:
 
 - Use the `run` skill (or `npm run dev:dashboard` / `detour start`) to view
   the dashboard before and after the change, or check out the base branch,
