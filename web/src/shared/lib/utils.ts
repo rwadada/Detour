@@ -52,8 +52,32 @@ function base64ToBytes(base64: string): Uint8Array {
   return bytes;
 }
 
-/** The `Content-Encoding` values `decodeCapturedBodyAsync` knows how to reverse. */
-const DECOMPRESSIBLE_ENCODINGS = ['gzip', 'x-gzip', 'deflate', 'br'] as const;
+/** The `Content-Encoding` values `decodeCapturedBodyAsync` knows how to reverse, as the `DecompressionStream` format name each maps to. */
+const DECOMPRESSIBLE_ENCODINGS: Record<string, string> = {
+  gzip: 'gzip',
+  'x-gzip': 'gzip',
+  deflate: 'deflate',
+  br: 'br',
+};
+
+/** `contentEncoding`'s first coding, normalized to a `DecompressionStream` format name — `undefined` for absent, `identity`, or anything `DECOMPRESSIBLE_ENCODINGS` doesn't recognize. A `Content-Encoding` can in principle list more than one coding (rare in practice); only the first is meaningful here — decoding a chain isn't supported. */
+function decompressibleFormat(contentEncoding: string | undefined): string | undefined {
+  const coding = contentEncoding?.trim().toLowerCase().split(',')[0]?.trim();
+  return coding ? DECOMPRESSIBLE_ENCODINGS[coding] : undefined;
+}
+
+/**
+ * Whether `contentEncoding` names a coding `decodeCapturedBodyAsync` will
+ * actually try to reverse — exported so a caller like `BodyViewer` can take
+ * a synchronous fast path for the common case (no compression) instead of
+ * always going through `decodeCapturedBodyAsync`'s `DecompressionStream`
+ * round trip, which — being async — means at least one render with nothing
+ * decoded yet even when the body never needed decompressing in the first
+ * place.
+ */
+export function needsDecompression(contentEncoding: string | undefined): boolean {
+  return decompressibleFormat(contentEncoding) !== undefined;
+}
 
 /**
  * Case-insensitively reads a single-value header out of a captured
@@ -99,11 +123,10 @@ async function decompress(bytes: Uint8Array, format: string): Promise<Uint8Array
  */
 export async function decodeCapturedBodyAsync(base64: string, contentEncoding?: string): Promise<string | undefined> {
   const bytes = base64ToBytes(base64);
-  const coding = contentEncoding?.trim().toLowerCase().split(',')[0]?.trim();
+  const format = decompressibleFormat(contentEncoding);
 
-  if (coding && (DECOMPRESSIBLE_ENCODINGS as readonly string[]).includes(coding)) {
+  if (format) {
     try {
-      const format = coding === 'x-gzip' ? 'gzip' : coding;
       const decompressed = await decompress(bytes, format);
       return new TextDecoder('utf-8', { fatal: true }).decode(decompressed);
     } catch {

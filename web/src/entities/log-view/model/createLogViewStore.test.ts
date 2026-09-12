@@ -130,6 +130,26 @@ describe('createLogViewStore', () => {
       expect(store.getState().collapsedHosts.size).toBe(0);
     });
 
+    // A PR review on issue #117's fix pointed out that knownHosts grew
+    // without bound for the (most common) case of never using "Collapse
+    // all" at all, since noteHostsSeen used to record every host it was
+    // ever handed regardless of collapseNewHostsByDefault.
+    it('noteHostsSeen without collapseNewHostsByDefault does not grow knownHosts either', () => {
+      const store = createLogViewStore();
+      store.getState().noteHostsSeen(['a.example.com', 'b.example.com']);
+      expect(store.getState().knownHosts.size).toBe(0);
+    });
+
+    it('expandAllHosts clears knownHosts, not just collapsedHosts', () => {
+      const store = createLogViewStore();
+      store.getState().collapseAllHosts(['a.example.com']);
+      expect(store.getState().knownHosts.size).toBe(1);
+
+      store.getState().expandAllHosts();
+
+      expect(store.getState().knownHosts.size).toBe(0);
+    });
+
     it('noteHostsSeen is a no-op once every given host is already known', () => {
       const store = createLogViewStore();
       store.getState().collapseAllHosts(['a.example.com']);

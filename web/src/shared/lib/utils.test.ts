@@ -1,6 +1,6 @@
 import zlib from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { decodeCapturedBody, decodeCapturedBodyAsync, findHeaderValue } from './utils';
+import { decodeCapturedBody, decodeCapturedBodyAsync, findHeaderValue, needsDecompression } from './utils';
 
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -62,6 +62,29 @@ describe('decodeCapturedBodyAsync', () => {
   it('still reports genuinely binary bodies as undefined', async () => {
     const base64 = bytesToBase64(new Uint8Array([0xff, 0xfe, 0x00, 0x01]));
     await expect(decodeCapturedBodyAsync(base64)).resolves.toBeUndefined();
+  });
+});
+
+// Regression coverage for a PR review comment on issue #115's fix: BodyViewer
+// uses this to take a synchronous fast path for the common (uncompressed)
+// case instead of always flashing "Decoding…" through decodeCapturedBodyAsync's
+// async DecompressionStream round trip, even when nothing needs decompressing.
+describe('needsDecompression', () => {
+  it('is true for a recognized compression coding', () => {
+    expect(needsDecompression('gzip')).toBe(true);
+    expect(needsDecompression('x-gzip')).toBe(true);
+    expect(needsDecompression('deflate')).toBe(true);
+    expect(needsDecompression('br')).toBe(true);
+  });
+
+  it('is false when absent, identity, or unrecognized', () => {
+    expect(needsDecompression(undefined)).toBe(false);
+    expect(needsDecompression('identity')).toBe(false);
+    expect(needsDecompression('bogus')).toBe(false);
+  });
+
+  it('is case-insensitive and tolerates surrounding whitespace', () => {
+    expect(needsDecompression('  GZIP  ')).toBe(true);
   });
 });
 

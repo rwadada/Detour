@@ -2,7 +2,14 @@ import { json } from '@codemirror/lang-json';
 import CodeMirror, { EditorView } from '@uiw/react-codemirror';
 import { useEffect, useState } from 'react';
 import { useTheme } from '@/shared/lib/theme';
-import { capturedByteLength, decodeCapturedBodyAsync, formatBytes, tryPrettyJson } from '@/shared/lib/utils';
+import {
+  capturedByteLength,
+  decodeCapturedBody,
+  decodeCapturedBodyAsync,
+  formatBytes,
+  needsDecompression,
+  tryPrettyJson,
+} from '@/shared/lib/utils';
 import { CopyIconButton } from '@/shared/ui';
 
 const readOnlyView = EditorView.editable.of(false);
@@ -10,13 +17,20 @@ const readOnlyView = EditorView.editable.of(false);
 /**
  * Decodes a captured body, reversing `contentEncoding` (gzip/br) when
  * present, so a compressed JSON response isn't mistaken for binary (issue
- * #115). Decompression is async (`DecompressionStream`), so this returns
- * `'pending'` until the decode for the current `(body, contentEncoding)`
- * pair resolves — kept as a stale/current comparison, rather than an
- * effect that resets state synchronously on every body change, per the
- * react-hooks/set-state-in-effect rule.
+ * #115).
+ *
+ * The overwhelming common case — no (recognized) `Content-Encoding` — takes
+ * a synchronous fast path straight through `decodeCapturedBody`, exactly
+ * like before this feature existed: only a body that actually needs
+ * decompressing goes through `decodeCapturedBodyAsync`'s async
+ * `DecompressionStream` round trip, and only *that* case can return
+ * `'pending'` for the render or two before it resolves. Without this split,
+ * every body — compressed or not — would flash "Decoding…" on first render,
+ * a regression a review on this PR caught for the (far more common)
+ * uncompressed case.
  */
 function useDecodedBody(body: string | undefined, contentEncoding: string | undefined): string | undefined | 'pending' {
+  const decompressing = !!body && needsDecompression(contentEncoding);
   const [result, setResult] = useState<{
     body: string;
     contentEncoding: string | undefined;
@@ -24,7 +38,7 @@ function useDecodedBody(body: string | undefined, contentEncoding: string | unde
   }>();
 
   useEffect(() => {
-    if (!body) return;
+    if (!decompressing || !body) return;
     let cancelled = false;
     decodeCapturedBodyAsync(body, contentEncoding).then((decoded) => {
       if (!cancelled) setResult({ body, contentEncoding, decoded });
@@ -32,9 +46,10 @@ function useDecodedBody(body: string | undefined, contentEncoding: string | unde
     return () => {
       cancelled = true;
     };
-  }, [body, contentEncoding]);
+  }, [decompressing, body, contentEncoding]);
 
   if (!body) return undefined;
+  if (!decompressing) return decodeCapturedBody(body);
   if (!result || result.body !== body || result.contentEncoding !== contentEncoding) return 'pending';
   return result.decoded;
 }

@@ -111,18 +111,21 @@ export interface LogViewState {
   toggleGroupByHost: () => void;
   /** Expands/collapses one host's rows under "Group by host" — see `collapsedHosts`. */
   toggleHostCollapsed: (host: string) => void;
-  /** Expands every host at once — clears `collapsedHosts` entirely, same as no host ever having been collapsed. Also turns off `collapseNewHostsByDefault` — "expand all" is as much a statement about hosts that haven't shown up yet as "collapse all" is. */
+  /** Expands every host at once — clears `collapsedHosts` entirely, same as no host ever having been collapsed. Also turns off `collapseNewHostsByDefault` and clears `knownHosts` — "expand all" is as much a statement about hosts that haven't shown up yet as "collapse all" is, and `knownHosts`'s bookkeeping has nothing left to do once that policy is off (see `noteHostsSeen`). */
   expandAllHosts: () => void;
-  /** Collapses every host currently in view at once, and arms `collapseNewHostsByDefault` (see its own doc comment) so a host that shows up afterward starts collapsed too. Takes the caller's own host list (the currently grouped/filtered set — see `GroupByHostToggle`) rather than tracking every host ever seen, so a host that later disappears (filtered out, traffic cleared) doesn't linger in `collapsedHosts`/`knownHosts` forever. */
+  /** Collapses every host currently in view at once, and arms `collapseNewHostsByDefault` (see its own doc comment) so a host that shows up afterward starts collapsed too. Takes the caller's own host list (the currently grouped/filtered set — see `GroupByHostToggle`) rather than tracking every host ever seen, so a host that later disappears (filtered out, traffic cleared) doesn't linger in `collapsedHosts`/`knownHosts` past the next "Collapse all"/"Expand all". */
   collapseAllHosts: (hosts: string[]) => void;
   /**
    * Tells the store about every host currently in view, so a genuinely new
    * one (issue #117 — see `collapseNewHostsByDefault`) gets collapsed
    * up front instead of rendering expanded until someone notices and fixes
    * it by hand. Called by `GroupByHostToggle` whenever its own filtered
-   * host list changes; a no-op once every host given is already in
-   * `knownHosts` (in particular, while `collapseNewHostsByDefault` is
-   * `false` and nothing has ever collapsed anything).
+   * host list changes. A no-op whenever `collapseNewHostsByDefault` is
+   * `false` — there's nothing for `knownHosts` to do until the next
+   * "Collapse all" reseeds it anyway, and tracking every host seen in the
+   * meantime would just grow `knownHosts` without bound over a long
+   * session for the common case where "Collapse all" is never used at all
+   * — or once every host given is already in `knownHosts`.
    */
   noteHostsSeen: (hosts: string[]) => void;
   /** Clicking the currently-sorted column flips direction; clicking a different one switches to it ascending. */
@@ -143,13 +146,19 @@ function applyNoteHostsSeen(
   state: Pick<LogViewState, 'knownHosts' | 'collapsedHosts' | 'collapseNewHostsByDefault'>,
   hosts: string[],
 ): Partial<LogViewState> {
+  // Bookkeeping only matters while the policy it serves is armed — with it
+  // off, a host noted here has nothing to do until the next
+  // `collapseAllHosts` wholesale-reseeds `knownHosts` anyway, so skip
+  // growing it in the meantime (see `noteHostsSeen`'s own doc comment).
+  if (!state.collapseNewHostsByDefault) return {};
   const newHosts = hosts.filter((host) => !state.knownHosts.has(host));
   if (newHosts.length === 0) return {};
   const knownHosts = new Set(state.knownHosts);
-  for (const host of newHosts) knownHosts.add(host);
-  if (!state.collapseNewHostsByDefault) return { knownHosts };
   const collapsedHosts = new Set(state.collapsedHosts);
-  for (const host of newHosts) collapsedHosts.add(host);
+  for (const host of newHosts) {
+    knownHosts.add(host);
+    collapsedHosts.add(host);
+  }
   return { knownHosts, collapsedHosts };
 }
 
@@ -177,7 +186,8 @@ export function createLogViewStore() {
         else next.add(host);
         return { collapsedHosts: next };
       }),
-    expandAllHosts: () => set({ collapsedHosts: new Set<string>(), collapseNewHostsByDefault: false }),
+    expandAllHosts: () =>
+      set({ collapsedHosts: new Set<string>(), collapseNewHostsByDefault: false, knownHosts: new Set<string>() }),
     collapseAllHosts: (hosts) =>
       set({ collapsedHosts: new Set(hosts), collapseNewHostsByDefault: true, knownHosts: new Set(hosts) }),
     noteHostsSeen: (hosts) => set((state) => applyNoteHostsSeen(state, hosts)),
