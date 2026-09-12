@@ -23,8 +23,17 @@ import { Button, Input, PillToggle, Select } from '@/shared/ui';
  * from the Rules editor's own Save, or even another connected browser tab —
  * only a `lastErrorAt` at least as new as this counts as this request's own
  * outcome.
+ *
+ * `closesCreateForm` (issue #116): true only for a `submitCreate()` dispatch
+ * (creating/overwriting a profile from the still-open create form) — the
+ * resolving effect closes that form once this specific request is confirmed
+ * to have actually landed, never before. `handleSelectChange`'s own apply
+ * (switching to an already-saved profile from the `<select>`) leaves this
+ * `false`/absent: that action has nothing to do with the create form, which
+ * closes synchronously the moment it's dispatched instead (see
+ * `handleSelectChange`'s own comment on why that one's fine to do eagerly).
  */
-type PendingConfirmation = { dispatchedAt: number } & (
+type PendingConfirmation = { dispatchedAt: number; closesCreateForm?: boolean } & (
   | { kind: 'activeProfile'; name: string; label: string }
   | { kind: 'profileCreated'; name: string; label: string }
 );
@@ -109,6 +118,12 @@ export function RuleProfilesControl() {
     bannerTimer.current = setTimeout(() => setBanner(null), 2500);
   };
 
+  const cancelCreate = () => {
+    setCreating(false);
+    setNewName('');
+    setSource('sample');
+  };
+
   // Clears a still-pending auto-clear timer on unmount — this component
   // isn't currently ever conditionally unmounted while its popover could be
   // open, but nothing prevents that changing later, and a timer outliving
@@ -159,6 +174,16 @@ export function RuleProfilesControl() {
       showBanner(lastError, 'error');
       dismissError();
       setPending(null);
+      // Deliberately does NOT touch the create form here (issue #116): it
+      // used to close (and clear `newName`/`source`) the instant
+      // `submitCreate` dispatched, regardless of whether the server went on
+      // to accept or reject it — a rejected create (an invalid profile
+      // name, a filesystem error, …) still wiped the form, forcing a full
+      // retype for even a one-character fix. Leaving it open with whatever
+      // the user typed still in it lets them see the error, fix it, and
+      // retry immediately. `handleSelectChange`'s own dispatch is unaffected
+      // — it doesn't set `closesCreateForm`, so it already closed the form
+      // synchronously (see that function's own comment).
       return;
     }
     const resolved =
@@ -170,8 +195,12 @@ export function RuleProfilesControl() {
     if (resolved) {
       showBanner(pending.label, 'success');
       setPending(null);
+      // Only now — confirmed to have actually landed — does a create-form
+      // dispatch get to close the form; see `PendingConfirmation.closesCreateForm`'s
+      // doc comment.
+      if (pending.closesCreateForm) cancelCreate();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- showBanner/dismissError are stable-enough closures over refs/store actions, not reactive values this effect should re-run for
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- showBanner/dismissError/cancelCreate are stable-enough closures over refs/store actions, not reactive values this effect should re-run for
   }, [pending, lastError, lastErrorAt, lastErrorKind, rulesFile, rulesFileAt, profiles, profilesAt]);
 
   // Bails out of a `pending` confirmation that never resolved either way —
@@ -217,6 +246,13 @@ export function RuleProfilesControl() {
   // the user's actual pick, in case `rulesFile` reappears before they
   // change it.
   const effectiveSource: NewProfileSource = source === 'active' && !rulesFile ? 'sample' : source;
+
+  // Whether a `submitCreate()` dispatch is still waiting to be confirmed
+  // (issue #116) — disables the form's own inputs/buttons so a second click
+  // while the first is still in flight can't fire a duplicate create, and
+  // swaps "Save" to "Saving…" the same way `RulesEditorPanel`'s own Save
+  // button does.
+  const creatingInFlight = !!pending?.closesCreateForm;
 
   // See `RulesFile.$activeProfile`'s doc comment — `undefined` means the
   // active rules.json isn't (or isn't known to still be) any saved
@@ -271,18 +307,8 @@ export function RuleProfilesControl() {
       // `rules` broadcast from the pre-existing match, not a special case
       // here, so this reports the real outcome (including a real failure)
       // instead of silently assuming a no-op re-apply always succeeds.
-      // `Date.now()` here runs inside this event handler, not during
-      // render — never called until the user actually picks something —
-      // so there's no purity concern despite the lint rule flagging it.
-      // eslint-disable-next-line react-hooks/purity
       setPending({ kind: 'activeProfile', name: value, label: `Applied "${value}"`, dispatchedAt: Date.now() });
     }
-  };
-
-  const cancelCreate = () => {
-    setCreating(false);
-    setNewName('');
-    setSource('sample');
   };
 
   // `source: 'active'` captures the server's current rules.json (the last
@@ -296,6 +322,14 @@ export function RuleProfilesControl() {
   // `'active'` without `rulesFile` also being set (see its own doc
   // comment), so this never needs its own separate "is there actually
   // something active to save" check.
+  //
+  // Deliberately does NOT call `cancelCreate()` itself (issue #116) — unlike
+  // the old behavior, the create form now stays open (Save disabled, name/
+  // source preserved) until the resolving effect above confirms this
+  // specific dispatch actually landed, and only then closes it. A rejected
+  // create (an invalid profile name, say) instead leaves the form exactly
+  // as the user left it, with the server's rejection shown right there, so
+  // fixing it and retrying doesn't mean retyping the whole thing.
   const submitCreate = () => {
     const name = newName.trim();
     if (!name) return;
@@ -312,13 +346,24 @@ export function RuleProfilesControl() {
       // the same call in `handleSelectChange`.
       dismissError();
       saveActiveAsProfile(name);
-      setPending({ kind: 'activeProfile', name, label: `Saved "${name}"`, dispatchedAt: Date.now() });
+      setPending({
+        kind: 'activeProfile',
+        name,
+        label: `Saved "${name}"`,
+        dispatchedAt: Date.now(),
+        closesCreateForm: true,
+      });
     } else {
       dismissError();
       createProfile(name, effectiveSource);
-      setPending({ kind: 'profileCreated', name, label: `Saved "${name}"`, dispatchedAt: Date.now() });
+      setPending({
+        kind: 'profileCreated',
+        name,
+        label: `Saved "${name}"`,
+        dispatchedAt: Date.now(),
+        closesCreateForm: true,
+      });
     }
-    cancelCreate();
   };
 
   return (
@@ -396,11 +441,13 @@ export function RuleProfilesControl() {
                 onChange={(e) => setNewName(e.target.value)}
                 placeholder="profile-name"
                 autoFocus
+                disabled={creatingInFlight}
                 className="mb-1.5 h-7 w-full text-xs"
               />
               <Select
                 value={effectiveSource}
                 onChange={(e) => setSource(e.target.value as NewProfileSource)}
+                disabled={creatingInFlight}
                 className="mb-1.5 w-full text-xs"
               >
                 <option value="sample">Start from: Sample rules</option>
@@ -408,11 +455,22 @@ export function RuleProfilesControl() {
                 {rulesFile && <option value="active">Start from: Currently active rules.json</option>}
               </Select>
               <div className="flex gap-1">
-                <Button variant="outline" size="sm" className="flex-1" onClick={cancelCreate}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1"
+                  onClick={cancelCreate}
+                  disabled={creatingInFlight}
+                >
                   Cancel
                 </Button>
-                <Button size="sm" className="flex-1" onClick={submitCreate} disabled={!newName.trim()}>
-                  Save
+                <Button
+                  size="sm"
+                  className="flex-1"
+                  onClick={submitCreate}
+                  disabled={!newName.trim() || creatingInFlight}
+                >
+                  {creatingInFlight ? 'Saving…' : 'Save'}
                 </Button>
               </div>
             </div>

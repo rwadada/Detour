@@ -82,6 +82,88 @@ describe('createLogViewStore', () => {
     expect(store.getState().collapsedHosts.size).toBe(0);
   });
 
+  // Regression coverage for issue #117: "Collapse all" only used to
+  // remember the hosts that existed at the moment it was clicked, so a host
+  // whose first exchange arrived afterward rendered expanded — a genuinely
+  // new group looked exactly like "collapse all" hadn't stuck.
+  describe('collapseNewHostsByDefault / noteHostsSeen (issue #117)', () => {
+    it('collapseAllHosts arms collapseNewHostsByDefault, and noteHostsSeen auto-collapses a host seen for the first time afterward', () => {
+      const store = createLogViewStore();
+      store.getState().collapseAllHosts(['a.example.com']);
+      expect(store.getState().collapseNewHostsByDefault).toBe(true);
+
+      // A brand-new host's first exchange arrives — GroupByHostToggle's own
+      // effect reports the full currently-visible host list, `a.example.com`
+      // included, not just the new one.
+      store.getState().noteHostsSeen(['a.example.com', 'new.example.com']);
+
+      expect(store.getState().collapsedHosts.has('new.example.com')).toBe(true);
+    });
+
+    it('expandAllHosts turns collapseNewHostsByDefault back off, so a later new host renders expanded', () => {
+      const store = createLogViewStore();
+      store.getState().collapseAllHosts(['a.example.com']);
+      store.getState().expandAllHosts();
+      expect(store.getState().collapseNewHostsByDefault).toBe(false);
+
+      store.getState().noteHostsSeen(['new.example.com']);
+
+      expect(store.getState().collapsedHosts.has('new.example.com')).toBe(false);
+    });
+
+    it('does not re-collapse a host the user explicitly re-expanded after collapseAllHosts', () => {
+      const store = createLogViewStore();
+      store.getState().collapseAllHosts(['a.example.com']);
+      store.getState().toggleHostCollapsed('a.example.com'); // user re-expands it by hand
+
+      // A later, unrelated re-render hands noteHostsSeen the same host list
+      // again — this must not look like "a.example.com is new" and put it
+      // right back in collapsedHosts.
+      store.getState().noteHostsSeen(['a.example.com']);
+
+      expect(store.getState().collapsedHosts.has('a.example.com')).toBe(false);
+    });
+
+    it('noteHostsSeen without collapseNewHostsByDefault leaves collapsedHosts untouched (the ordinary, never-collapsed-all case)', () => {
+      const store = createLogViewStore();
+      store.getState().noteHostsSeen(['a.example.com', 'b.example.com']);
+      expect(store.getState().collapsedHosts.size).toBe(0);
+    });
+
+    // A PR review on issue #117's fix pointed out that knownHosts grew
+    // without bound for the (most common) case of never using "Collapse
+    // all" at all, since noteHostsSeen used to record every host it was
+    // ever handed regardless of collapseNewHostsByDefault.
+    it('noteHostsSeen without collapseNewHostsByDefault does not grow knownHosts either', () => {
+      const store = createLogViewStore();
+      store.getState().noteHostsSeen(['a.example.com', 'b.example.com']);
+      expect(store.getState().knownHosts.size).toBe(0);
+    });
+
+    it('expandAllHosts clears knownHosts, not just collapsedHosts', () => {
+      const store = createLogViewStore();
+      store.getState().collapseAllHosts(['a.example.com']);
+      expect(store.getState().knownHosts.size).toBe(1);
+
+      store.getState().expandAllHosts();
+
+      expect(store.getState().knownHosts.size).toBe(0);
+    });
+
+    it('noteHostsSeen is a no-op once every given host is already known', () => {
+      const store = createLogViewStore();
+      store.getState().collapseAllHosts(['a.example.com']);
+      const before = store.getState();
+
+      store.getState().noteHostsSeen(['a.example.com']);
+
+      // Same references, not just equal content — confirms no state update
+      // (and thus no extra re-render) happened for an already-known host.
+      expect(store.getState().collapsedHosts).toBe(before.collapsedHosts);
+      expect(store.getState().knownHosts).toBe(before.knownHosts);
+    });
+  });
+
   it('setSort on a new column switches to it ascending', () => {
     const store = createLogViewStore();
     store.getState().setSort('duration');

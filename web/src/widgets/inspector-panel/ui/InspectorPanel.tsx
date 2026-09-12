@@ -4,7 +4,15 @@ import { isPassthroughDone, MethodBadge, StatusBadge, useExchangeStore } from '@
 import { BreakpointEditor, useBreakpointResumeStore } from '@/features/breakpoint-resume';
 import { CopyAsCurlButton } from '@/features/copy-as-curl';
 import { ReplayButton } from '@/features/replay';
-import { cn, formatBytes, formatDuration, headerRows, headerRowsToText, parseQueryParams } from '@/shared/lib/utils';
+import {
+  cn,
+  findHeaderValue,
+  formatBytes,
+  formatDuration,
+  headerRows,
+  headerRowsToText,
+  parseQueryParams,
+} from '@/shared/lib/utils';
 import { Button, CopyIconButton, Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui';
 import { CreateRuleButton } from './CreateRuleButton';
 
@@ -133,9 +141,11 @@ export function InspectorPanel() {
             requestBody={exchange.requestBody}
             requestBodySize={exchange.requestBodySize}
             requestBodyTruncated={exchange.requestBodyTruncated}
+            requestContentEncoding={findHeaderValue(exchange.requestHeaders, 'content-encoding')}
             responseBody={exchange.responseBody}
             responseBodySize={exchange.responseBodySize}
             responseBodyTruncated={exchange.responseBodyTruncated}
+            responseContentEncoding={findHeaderValue(exchange.responseHeaders, 'content-encoding')}
           />
         </TabsContent>
       </Tabs>
@@ -147,9 +157,11 @@ function BodyTab(props: {
   requestBody?: string;
   requestBodySize: number;
   requestBodyTruncated?: boolean;
+  requestContentEncoding?: string;
   responseBody?: string;
   responseBodySize: number;
   responseBodyTruncated?: boolean;
+  responseContentEncoding?: string;
 }) {
   const [which, setWhich] = useState<'request' | 'response'>(props.responseBodySize > 0 ? 'response' : 'request');
 
@@ -178,12 +190,14 @@ function BodyTab(props: {
               body={props.requestBody}
               bodySize={props.requestBodySize}
               truncated={props.requestBodyTruncated}
+              contentEncoding={props.requestContentEncoding}
             />
           ) : (
             <BodyViewer
               body={props.responseBody}
               bodySize={props.responseBodySize}
               truncated={props.responseBodyTruncated}
+              contentEncoding={props.responseContentEncoding}
             />
           )}
         </Suspense>

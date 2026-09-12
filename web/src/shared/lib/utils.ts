@@ -39,9 +39,132 @@ export function capturedByteLength(base64: string): number {
 /** Decodes a base64-captured body to text. Returns undefined for bodies that aren't valid UTF-8 (likely binary). */
 export function decodeCapturedBody(base64: string): string | undefined {
   try {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new TextDecoder('utf-8', { fatal: true }).decode(base64ToBytes(base64));
+  } catch {
+    return undefined;
+  }
+}
+
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/** The `Content-Encoding` values `decodeCapturedBodyAsync` knows how to reverse, as the `DecompressionStream` format name each maps to. */
+const DECOMPRESSIBLE_ENCODINGS: Record<string, string> = {
+  gzip: 'gzip',
+  'x-gzip': 'gzip',
+  deflate: 'deflate',
+  br: 'br',
+};
+
+/**
+ * `contentEncoding`'s outermost coding, normalized to a `DecompressionStream`
+ * format name — `undefined` for absent, `identity`, or anything
+ * `DECOMPRESSIBLE_ENCODINGS` doesn't recognize.
+ *
+ * A `Content-Encoding` lists codings in the order they were *applied* (RFC
+ * 9110 §8.4.1), so the *last* one listed is the outermost — the one that
+ * has to be reversed first. The first token is the *inner* coding, which
+ * only means anything once the outer one has already been stripped —
+ * reading it instead would pick a coding guaranteed to fail decompression
+ * whenever more than one is actually present. Only this outermost layer is
+ * reversed here; a response chained through more than one coding (rare in
+ * practice) still isn't fully decodable, but this at least strips the one
+ * layer that's actually next, rather than a coding certain to fail either
+ * way.
+ */
+function decompressibleFormat(contentEncoding: string | undefined): string | undefined {
+  const coding = contentEncoding?.trim().toLowerCase().split(',').pop()?.trim();
+  return coding ? DECOMPRESSIBLE_ENCODINGS[coding] : undefined;
+}
+
+/**
+ * Whether `contentEncoding` names a coding `decodeCapturedBodyAsync` will
+ * actually try to reverse — exported so a caller like `BodyViewer` can take
+ * a synchronous fast path for the common case (no compression) instead of
+ * always going through `decodeCapturedBodyAsync`'s `DecompressionStream`
+ * round trip, which — being async — means at least one render with nothing
+ * decoded yet even when the body never needed decompressing in the first
+ * place.
+ */
+export function needsDecompression(contentEncoding: string | undefined): boolean {
+  return decompressibleFormat(contentEncoding) !== undefined;
+}
+
+/**
+ * Case-insensitively reads a single-value header out of a captured
+ * exchange's header map (which stores multi-value headers, e.g.
+ * `set-cookie`, as an array) — a captured exchange's own headers come off
+ * the wire already lowercased, but a `rewrite` rule or mock response can
+ * spell a name with any casing.
+ */
+export function findHeaderValue(
+  headers: Record<string, string | string[] | undefined> | undefined,
+  name: string,
+): string | undefined {
+  if (!headers) return undefined;
+  const lower = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== lower) continue;
+    return Array.isArray(value) ? value[0] : value;
+  }
+  return undefined;
+}
+
+/**
+ * Decompresses `bytes` per a single `Content-Encoding` coding using the
+ * browser's native `DecompressionStream`. Unknown/unsupported formats (or a
+ * runtime without brotli support) reject — callers fall back to treating
+ * the body as uncompressed.
+ */
+async function decompress(bytes: Uint8Array, format: string): Promise<Uint8Array> {
+  // `Uint8Array` overlaps `BufferSource`, but the DOM lib's `BlobPart` type
+  // doesn't say so — a cast is needed, not a real type mismatch.
+  const stream = new Blob([bytes as BufferSource]).stream().pipeThrough(new DecompressionStream(format as never));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/**
+ * Decodes a base64-captured body to text, first reversing a `Content-Encoding`
+ * the server applied — otherwise a gzipped/brotli JSON response (extremely
+ * common for real APIs) is just opaque compressed bytes, which fail the
+ * plain UTF-8 decode and get reported as "binary" even though the logical
+ * body is perfectly readable text (issue #115). Returns undefined only when
+ * the bytes — decompressed, if `contentEncoding` named a coding — still
+ * aren't valid UTF-8.
+ */
+export async function decodeCapturedBodyAsync(base64: string, contentEncoding?: string): Promise<string | undefined> {
+  // `atob` throws synchronously on malformed base64 — inside an `async`
+  // function that becomes a *rejected* promise, not a resolved `undefined`
+  // one like `decodeCapturedBody` returns for the same input. Left
+  // uncaught, `BodyViewer`'s `.then(...)` (with no matching `.catch`) would
+  // never fire, permanently stuck showing "Decoding…" instead of reporting
+  // the body as unreadable (PR #118 review).
+  let bytes: Uint8Array;
+  try {
+    bytes = base64ToBytes(base64);
+  } catch {
+    return undefined;
+  }
+  const format = decompressibleFormat(contentEncoding);
+
+  if (format) {
+    try {
+      const decompressed = await decompress(bytes, format);
+      return new TextDecoder('utf-8', { fatal: true }).decode(decompressed);
+    } catch {
+      // Decompression failed — a truncated capture (the stream was cut off
+      // mid-compression), a mislabeled encoding, or a format this runtime's
+      // DecompressionStream doesn't support (e.g. older brotli support).
+      // Fall through and try the raw bytes as plain UTF-8 instead of giving
+      // up outright.
+    }
+  }
+
+  try {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   } catch {
     return undefined;

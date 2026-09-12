@@ -1,13 +1,82 @@
 import { json } from '@codemirror/lang-json';
 import CodeMirror, { EditorView } from '@uiw/react-codemirror';
+import { useEffect, useState } from 'react';
 import { useTheme } from '@/shared/lib/theme';
-import { capturedByteLength, decodeCapturedBody, formatBytes, tryPrettyJson } from '@/shared/lib/utils';
+import {
+  capturedByteLength,
+  decodeCapturedBody,
+  decodeCapturedBodyAsync,
+  formatBytes,
+  needsDecompression,
+  tryPrettyJson,
+} from '@/shared/lib/utils';
 import { CopyIconButton } from '@/shared/ui';
 
 const readOnlyView = EditorView.editable.of(false);
 
-export function BodyViewer({ body, bodySize, truncated }: { body?: string; bodySize: number; truncated?: boolean }) {
+/**
+ * Decodes a captured body, reversing `contentEncoding` (gzip/br) when
+ * present, so a compressed JSON response isn't mistaken for binary (issue
+ * #115).
+ *
+ * The overwhelming common case — no (recognized) `Content-Encoding` — takes
+ * a synchronous fast path straight through `decodeCapturedBody`, exactly
+ * like before this feature existed: only a body that actually needs
+ * decompressing goes through `decodeCapturedBodyAsync`'s async
+ * `DecompressionStream` round trip, and only *that* case can return
+ * `'pending'` for the render or two before it resolves. Without this split,
+ * every body — compressed or not — would flash "Decoding…" on first render,
+ * a regression a review on this PR caught for the (far more common)
+ * uncompressed case.
+ */
+function useDecodedBody(body: string | undefined, contentEncoding: string | undefined): string | undefined | 'pending' {
+  const decompressing = !!body && needsDecompression(contentEncoding);
+  const [result, setResult] = useState<{
+    body: string;
+    contentEncoding: string | undefined;
+    decoded: string | undefined;
+  }>();
+
+  useEffect(() => {
+    if (!decompressing || !body) return;
+    let cancelled = false;
+    decodeCapturedBodyAsync(body, contentEncoding)
+      .then((decoded) => {
+        if (!cancelled) setResult({ body, contentEncoding, decoded });
+      })
+      .catch(() => {
+        // `decodeCapturedBodyAsync` itself resolves rather than rejects for
+        // every input it knows how to fail on (PR #118 review) — this is
+        // pure defense-in-depth against a future change reintroducing an
+        // unhandled rejection here, which would otherwise strand `result`
+        // unset and this body stuck showing "Decoding…" forever. Reported
+        // the same way a genuinely undecodable body already is.
+        if (!cancelled) setResult({ body, contentEncoding, decoded: undefined });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [decompressing, body, contentEncoding]);
+
+  if (!body) return undefined;
+  if (!decompressing) return decodeCapturedBody(body);
+  if (!result || result.body !== body || result.contentEncoding !== contentEncoding) return 'pending';
+  return result.decoded;
+}
+
+export function BodyViewer({
+  body,
+  bodySize,
+  truncated,
+  contentEncoding,
+}: {
+  body?: string;
+  bodySize: number;
+  truncated?: boolean;
+  contentEncoding?: string;
+}) {
   const dark = useTheme() === 'dark';
+  const decoded = useDecodedBody(body, contentEncoding);
 
   if (bodySize === 0) {
     return <EmptyState message="No body." />;
@@ -16,8 +85,9 @@ export function BodyViewer({ body, bodySize, truncated }: { body?: string; bodyS
     // Size > 0 but nothing captured: happened before the body could be read (e.g. request event fired pre-body) rather than genuinely empty.
     return <EmptyState message="Body not captured." />;
   }
-
-  const decoded = decodeCapturedBody(body);
+  if (decoded === 'pending') {
+    return <EmptyState message="Decoding…" />;
+  }
   if (decoded === undefined) {
     return <EmptyState message={`Binary or non-UTF-8 body (${formatBytes(bodySize)} captured).`} />;
   }
