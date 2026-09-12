@@ -230,8 +230,16 @@ jobs:
           # block yet — see homebrew-detour's Formula/detour.rb — so the
           # range simply runs to EOF), but keeps this safe if one's ever
           # added.
-          sed -i -E "1,/head do/{s|url \"[^\"]*\"|url \"${new_url}\"|}" "$formula"
-          sed -i -E "1,/head do/{s|sha256 \"[^\"]*\"|sha256 \"${sha256}\"|}" "$formula"
+          # Actions' `run:` steps default to `bash -e`, so a failing `sed`
+          # (an unexpected exit rather than a merely-unmatched pattern,
+          # which `sed` itself doesn't treat as failure) would otherwise
+          # exit this whole step immediately, skipping `fail_and_correct_note`
+          # below and leaving the release notes misreporting success —
+          # chained the same way `git clone`/`push` already are.
+          sed -i -E "1,/head do/{s|url \"[^\"]*\"|url \"${new_url}\"|}" "$formula" \
+            || fail_and_correct_note "sed failed rewriting the formula's url"
+          sed -i -E "1,/head do/{s|sha256 \"[^\"]*\"|sha256 \"${sha256}\"|}" "$formula" \
+            || fail_and_correct_note "sed failed rewriting the formula's sha256"
 
           # Confirms the substitution actually landed the intended values —
           # not just that *something* in the file changed (a sed pattern
@@ -253,7 +261,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$formula"
-          git commit -m "fix: bump formula to ${tag}"
+          # Same `bash -e` reasoning as the `sed` calls above — a failed
+          # commit (a branch-protection/signing policy on the tap repo,
+          # say) must not skip straight past the note correction either.
+          git commit -m "fix: bump formula to ${tag}" \
+            || fail_and_correct_note "git commit in homebrew-detour failed"
           # The token appears only as this one push URL's own argument —
           # never written to .git/config the way `git remote add`/`clone`
           # with it embedded would.
