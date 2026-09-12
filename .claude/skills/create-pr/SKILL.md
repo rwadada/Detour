@@ -41,9 +41,20 @@ UI change and the PR **must** include before/after screenshots:
 
 - Use the `run` skill (or `npm run dev:dashboard` / `detour start`) to view
   the dashboard before and after the change, or check out the base branch,
-  screenshot, then check out the PR branch and screenshot again.
-- Attach both images in the PR body's Screenshots section as a before/after
-  pair, not just an "after" shot.
+  screenshot, then check out the PR branch and screenshot again. Save both
+  as local files, e.g. `before.png` / `after.png`.
+- Reference both local paths in the Screenshots section's before/after
+  table in the PR body (e.g. `![before](./before.png)` /
+  `![after](./after.png)`), then pass `--attach ./before.png --attach ./after.png`
+  to `gh pr create`/`gh pr edit` (requires `gh` >= 2.99.0) — it uploads each
+  file and rewrites the matching local-path reference in the body to the
+  uploaded URL. `--attach` is repeatable (up to 50 files per command) and
+  also works on `gh pr comment` for screenshots added after the PR is open.
+  Add alt text with `--attach './before.png#Before: dashboard list view'`.
+  When using the GitHub MCP tools instead of `gh` (no local `--attach`
+  equivalent there), tell the user which local screenshot files to drag
+  into the PR body/comment box themselves, since the API path can't upload
+  images.
 - If there's no UI change, delete the Screenshots section from the
   template rather than leaving it as boilerplate.
 
