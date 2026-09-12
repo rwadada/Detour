@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.1](https://github.com/rwadada/Detour/compare/v0.2.0...v0.2.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* address Copilot review on [#118](https://github.com/rwadada/Detour/issues/118) — knownHosts leak and body-decode flicker ([94381a4](https://github.com/rwadada/Detour/commit/94381a49173935725ae006e2ef9778668b5e51c5))
+* address Copilot review on PR [#114](https://github.com/rwadada/Detour/issues/114) ([960fd47](https://github.com/rwadada/Detour/commit/960fd47637881133ab6c2c6ca5f296bce0a7f12e))
+* address remaining Copilot review on PR [#114](https://github.com/rwadada/Detour/issues/114) ([d7b8847](https://github.com/rwadada/Detour/commit/d7b88473a5aa0fe762266b9436947414a17d3772))
+* chain sed/git commit failures into fail_and_correct_note too ([99bebf6](https://github.com/rwadada/Detour/commit/99bebf6a01362c17a0c0a011d04352da6bbf31a2))
+* keep newly-arriving host groups collapsed after Collapse all ([80ca2b0](https://github.com/rwadada/Detour/commit/80ca2b014be6862eb4be7e4cca74bea72c5fceae)), closes [#117](https://github.com/rwadada/Detour/issues/117)
+* keep the new-profile form open with its input after a failed create ([a0bdc39](https://github.com/rwadada/Detour/commit/a0bdc39f4b688ab3af4ed91a52765b5f9037c834)), closes [#116](https://github.com/rwadada/Detour/issues/116)
+* never reject decodeCapturedBodyAsync; pick the outermost Content-Encoding ([b356ed2](https://github.com/rwadada/Detour/commit/b356ed217208dcd9ce471e4a3051dad0014f1f7b))
+* pin GH_REPO so failure-path note correction targets the right repo ([5e6c339](https://github.com/rwadada/Detour/commit/5e6c33944335a0567966bc77ac17963caeb4e729))
+* stop the docs site's version badge from going stale too ([1ce4e2a](https://github.com/rwadada/Detour/commit/1ce4e2a1cd5fc4555b6738e8f5e56cb6c2443429))
+* transparently decompress gzip/deflate/br bodies before display ([08c3589](https://github.com/rwadada/Detour/commit/08c358951cf7f19068af621889f71a222a2b59e4)), closes [#115](https://github.com/rwadada/Detour/issues/115)
+* write the idempotency marker on the gh release create path too ([1e85055](https://github.com/rwadada/Detour/commit/1e85055d6fc5ad7bdaa62417cc874181ba7bd324))
+
 ## [0.2.0](https://github.com/rwadada/Detour/compare/v0.1.13...v0.2.0) (2026-09-09)
 
 
