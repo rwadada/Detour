@@ -814,6 +814,46 @@ describe('detour start (CLI, end-to-end)', () => {
     });
   });
 
+  /**
+   * Copilot review, PR #123 (follow-up): the fix above stops
+   * `createDefaultRuleEngine()` from clobbering a rules file that appeared
+   * after startup, but its console message still unconditionally said
+   * "Created" — misleading in exactly that case, since nothing was actually
+   * written. This covers the *valid*-file half of that same race (the
+   * invalid-file case above never reaches the log line at all, since
+   * `RuleEngine.load` throws first), where `createDefaultRuleEngine`
+   * succeeds against content it didn't write itself.
+   */
+  it('logs "Loaded existing", not "Created", when applying a Rule Profile picks up a valid rules file that appeared after startup', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    cli = await startDetourCli([], undefined, tmpDir);
+
+    const rulesPath = path.join(tmpDir, 'passthrough.rule.json');
+    fs.writeFileSync(rulesPath, JSON.stringify({ rules: [] }));
+
+    await new Promise<void>((resolve, reject) => {
+      const socket = new WebSocket(`ws://localhost:${cli!.dashboardPort}/ws`);
+      socket.on('open', () => socket.send(JSON.stringify({ type: 'createRuleProfile', name: 'p', template: 'blank' })));
+      socket.on('message', (raw) => {
+        const message = JSON.parse(raw.toString()) as { type: string; data?: { $activeProfile?: string } | null };
+        if (message.type === 'ruleProfiles') {
+          socket.send(JSON.stringify({ type: 'applyRuleProfile', name: 'p' }));
+        }
+        // Not the initial post-connect `rules` snapshot (`data: null`, sent
+        // before `applyRuleProfile` is even dispatched) — specifically the
+        // one confirming this apply actually landed.
+        if (message.type === 'rules' && message.data?.$activeProfile === 'p') {
+          socket.close();
+          resolve();
+        }
+      });
+      socket.on('error', reject);
+    });
+
+    expect(cli.stdout()).toMatch(/Loaded existing passthrough\.rule\.json/);
+    expect(cli.stdout()).not.toMatch(/Created passthrough\.rule\.json/);
+  });
+
   it('finalizes an exchange with the connection error, instead of leaving it "pending" forever, when a route rule targets a host that refuses the connection', async () => {
     echo = await startEchoServer();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));

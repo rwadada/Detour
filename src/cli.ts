@@ -569,7 +569,13 @@ async function runStartBody({
    */
   function createDefaultRuleEngine(): RuleEngine {
     const filePath = path.resolve(process.cwd(), DEFAULT_RULES_FILENAME);
-    if (!fs.existsSync(filePath)) fsRulesFileWriter.write(filePath, { rules: [] });
+    // Tracked rather than assumed: the file may already exist (see the
+    // `!fs.existsSync` guard just below, and its own doc comment above) if
+    // something other than this session created it between startup and now
+    // — the log message right after this shouldn't claim to have "created"
+    // it when it actually just picked up what was already there.
+    const bootstrapped = !fs.existsSync(filePath);
+    if (bootstrapped) fsRulesFileWriter.write(filePath, { rules: [] });
     const engine = RuleEngine.load({
       filePath,
       reader: fsRulesFileReader,
@@ -580,7 +586,9 @@ async function runStartBody({
       onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
     });
     console.log(
-      `ℹ Created ${DEFAULT_RULES_FILENAME} to apply this rule profile (auto-loaded from now on; pass --rules to use a different file)`,
+      bootstrapped
+        ? `ℹ Created ${DEFAULT_RULES_FILENAME} to apply this rule profile (auto-loaded from now on; pass --rules to use a different file)`
+        : `ℹ Loaded existing ${DEFAULT_RULES_FILENAME} to apply this rule profile (auto-loaded from now on; pass --rules to use a different file)`,
     );
     handle.setRuleEngine(engine);
     return engine;
