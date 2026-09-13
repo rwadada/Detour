@@ -4,6 +4,7 @@ import {
   blankBodyReplace,
   bodyRewriteMode,
   bodyValueToText,
+  describeJsonBodyText,
   isEmptySetRemove,
   parseBodyValue,
   parseOptionalInt,
@@ -113,6 +114,42 @@ describe('parseBodyValue / bodyValueToText', () => {
 
   it('renders undefined as an empty string', () => {
     expect(bodyValueToText(undefined)).toBe('');
+  });
+});
+
+describe('describeJsonBodyText', () => {
+  it('reports valid JSON, with the parsed value', () => {
+    expect(describeJsonBodyText('{"id": 1}')).toEqual({ validJson: true, parsed: { id: 1 }, status: '✓ Valid JSON' });
+    expect(describeJsonBodyText('[1, 2, 3]')).toEqual({ validJson: true, parsed: [1, 2, 3], status: '✓ Valid JSON' });
+  });
+
+  it('reports blank text as "Empty", not invalid', () => {
+    expect(describeJsonBodyText('')).toEqual({ validJson: false, status: 'Empty' });
+    expect(describeJsonBodyText('   ')).toEqual({ validJson: false, status: 'Empty' });
+  });
+
+  // The exact case the field's own doc comment calls out: `parseBodyValue`
+  // silently accepts this same text as the literal string body it is, so
+  // the status caption is what actually tells a user their JSON has a typo
+  // instead of just quietly sending it as-is.
+  it('reports a JSON-typo (e.g. a truncated object) as not valid, not as an error', () => {
+    const result = describeJsonBodyText('{"id": 1');
+    expect(result.validJson).toBe(false);
+    expect(result.parsed).toBeUndefined();
+    expect(result.status).toMatch(/not valid json/i);
+  });
+
+  it('reports genuinely plain text (never meant to be JSON) as not valid, same as a typo', () => {
+    const result = describeJsonBodyText('hello world');
+    expect(result.validJson).toBe(false);
+    expect(result.status).toMatch(/not valid json/i);
+  });
+
+  it('agrees with parseBodyValue on which inputs actually parse as JSON', () => {
+    for (const text of ['{"a":1}', '[1,2,3]', '42', 'hello world', '{"a":1', '']) {
+      const validByParse = typeof parseBodyValue(text) !== 'string' && parseBodyValue(text) !== undefined;
+      expect(describeJsonBodyText(text).validJson).toBe(validByParse);
+    }
   });
 });
 

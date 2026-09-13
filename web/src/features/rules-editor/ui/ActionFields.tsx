@@ -1,3 +1,6 @@
+import { json } from '@codemirror/lang-json';
+import { EditorView } from '@codemirror/view';
+import CodeMirror from '@uiw/react-codemirror';
 import { Plus, Trash2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
@@ -13,12 +16,15 @@ import type {
   RuleAction,
   ScriptAction,
 } from '@/shared/api';
+import { useTheme } from '@/shared/lib/theme';
+import { cn } from '@/shared/lib/utils';
 import { Button, Input, Select } from '@/shared/ui';
 import {
   type BodyRewriteMode,
   blankBodyReplace,
   bodyRewriteMode,
   bodyValueToText,
+  describeJsonBodyText,
   isEmptySetRemove,
   parseBodyValue,
   parseOptionalInt,
@@ -55,6 +61,70 @@ function Checkbox({
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
       {children}
     </label>
+  );
+}
+
+/**
+ * A body-value editor shared by Mock's response body and Body Rewrite's
+ * "set"/"merge" fields — all three accept the same free-text shape
+ * (`parseBodyValue`/`bodyValueToText`'s own doc comment: valid JSON becomes
+ * a parsed value, anything else is kept as a literal string). A plain
+ * `<textarea>` here made a hand-written object painful in the way any JSON
+ * without an editor is — no syntax highlighting or bracket matching to
+ * catch a stray comma/quote — and, worse, made that mistake invisible: a
+ * body that was *meant* to be `{"id": 1}` but has a typo silently becomes
+ * the literal string `{"id": 1` instead of failing loudly, since that
+ * fallback is deliberately how a genuine plain-text body (this field's
+ * other legitimate use) is allowed to work at all.
+ *
+ * This reuses `JsonActionField`'s own CodeMirror setup for the editing
+ * surface — line numbers and fold gutter included, since a hand-written
+ * mock body is exactly the case that tends to run long enough that "which
+ * line is the stray comma on" and "collapse this nested object I'm not
+ * touching right now" both start to matter — then adds a status line making
+ * which of those two outcomes is about to be saved explicit, plus a
+ * one-click reformat once it's valid, so getting a long JSON body right
+ * doesn't depend on manually eyeballing brackets or re-typing indentation
+ * by hand.
+ */
+function JsonBodyField({
+  value,
+  onChange,
+  placeholder,
+  className,
+}: {
+  value: string;
+  onChange: (text: string) => void;
+  placeholder?: string;
+  className?: string;
+}) {
+  const dark = useTheme() === 'dark';
+  const { validJson, parsed, status } = describeJsonBodyText(value);
+
+  return (
+    <div className="flex flex-col gap-1">
+      <CodeMirror
+        value={value}
+        extensions={[json(), EditorView.lineWrapping]}
+        theme={dark ? 'dark' : 'light'}
+        basicSetup={{ lineNumbers: true, foldGutter: true }}
+        placeholder={placeholder}
+        onChange={onChange}
+        className={cn('overflow-hidden rounded-md border border-[var(--border)] text-xs', className ?? 'h-40')}
+      />
+      <div className="flex items-center justify-between text-[10px] text-[var(--muted)]">
+        <span>{status}</span>
+        {validJson && (
+          <button
+            type="button"
+            onClick={() => onChange(JSON.stringify(parsed, null, 2))}
+            className="underline decoration-dotted hover:text-[var(--foreground)]"
+          >
+            Format
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -163,14 +233,12 @@ function MockActionFields({ action, onChange }: { action: MockAction; onChange: 
               <option value="file">Read from a file</option>
             </Select>
             {bodySource === 'inline' ? (
-              <textarea
-                className={textareaClass}
-                rows={4}
+              <JsonBodyField
                 value={bodyText}
                 placeholder='Plain text, or JSON like {"id": 1}'
-                onChange={(e) => {
-                  setBodyText(e.target.value);
-                  patch({ body: parseBodyValue(e.target.value) });
+                onChange={(text) => {
+                  setBodyText(text);
+                  patch({ body: parseBodyValue(text) });
                 }}
               />
             ) : (
@@ -397,14 +465,12 @@ function BodyRewriteFields({
       </Field>
 
       {mode === 'set' && (
-        <textarea
-          className={textareaClass}
-          rows={4}
+        <JsonBodyField
           value={setText}
           placeholder='Plain text, or JSON like {"id": 1}'
-          onChange={(e) => {
-            setSetText(e.target.value);
-            emit('set', { setText: e.target.value });
+          onChange={(text) => {
+            setSetText(text);
+            emit('set', { setText: text });
           }}
         />
       )}
@@ -454,14 +520,13 @@ function BodyRewriteFields({
           </div>
 
           <Field label="Then merge into the JSON body (optional)">
-            <textarea
-              className={textareaClass}
-              rows={3}
+            <JsonBodyField
               value={mergeText}
               placeholder='{"status": "confirmed"} — a null value deletes that key'
-              onChange={(e) => {
-                setMergeText(e.target.value);
-                emitTransform({ mergeText: e.target.value });
+              className="h-20"
+              onChange={(text) => {
+                setMergeText(text);
+                emitTransform({ mergeText: text });
               }}
             />
           </Field>
