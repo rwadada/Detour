@@ -420,13 +420,20 @@ function JsonActionField({ action, onChange }: { action: RuleAction; onChange: (
 
   return (
     <div className="flex flex-col gap-1">
+      {/* `height` (not a Tailwind height class on `className`) — CodeMirror
+          sizes `.cm-editor` to its full content height regardless of any
+          height set on an ancestor element, so a long action's JSON just
+          silently became unreachable by scrolling or by cursor keys past
+          10rem worth of content without this — see `JsonBodyField`'s own,
+          more detailed doc comment on the same fix in ActionFields.tsx. */}
       <CodeMirror
         value={text}
         extensions={[json()]}
         theme={dark ? 'dark' : 'light'}
         basicSetup={{ lineNumbers: true, foldGutter: true }}
         onChange={commit}
-        className="h-40 rounded border border-[var(--border)] text-xs"
+        height="10rem"
+        className="rounded border border-[var(--border)] text-xs"
       />
       {error && <p className="text-xs text-[var(--status-5xx)]">{error}</p>}
     </div>

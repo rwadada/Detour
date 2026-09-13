@@ -17,7 +17,6 @@ import type {
   ScriptAction,
 } from '@/shared/api';
 import { useTheme } from '@/shared/lib/theme';
-import { cn } from '@/shared/lib/utils';
 import { Button, Input, Select } from '@/shared/ui';
 import {
   type BodyRewriteMode,
@@ -91,18 +90,33 @@ function JsonBodyField({
   value,
   onChange,
   placeholder,
-  className,
+  height = '10rem',
 }: {
   value: string;
   onChange: (text: string) => void;
   placeholder?: string;
-  className?: string;
+  /** Passed straight through to `CodeMirror`'s own `height` prop — see this component's own height/scrolling doc comment below for why a Tailwind height class on the wrapper `className` doesn't work here. */
+  height?: string;
 }) {
   const dark = useTheme() === 'dark';
   const { validJson, parsed, status } = describeJsonBodyText(value);
 
   return (
     <div className="flex flex-col gap-1">
+      {/* `height` (not a Tailwind height class on `className`) is required
+          for a long value to actually scroll: CodeMirror sizes `.cm-editor`
+          to its full content height by default regardless of any height set
+          on an ancestor element, and only a `height`/`maxHeight` *prop*
+          (which `@uiw/react-codemirror` turns into an `EditorView.theme`
+          rule directly on `.cm-editor`, matched by its own always-on
+          `.cm-scroller { height: 100% }` rule) makes `.cm-scroller` an
+          actually-shorter-than-its-content scroll container. Without this,
+          a wrapper `className="h-40 overflow-hidden"` still visually clips
+          the editor at 10rem like intended, but CodeMirror itself never
+          sees anything to scroll — so once the content exceeds that height,
+          the rest becomes permanently unreachable by scrolling *or* by
+          arrow keys walking the cursor down into it (a bug report caught
+          this: cursor keys and scrolling both silently stopped working). */}
       <CodeMirror
         value={value}
         extensions={[json(), EditorView.lineWrapping]}
@@ -110,7 +124,8 @@ function JsonBodyField({
         basicSetup={{ lineNumbers: true, foldGutter: true }}
         placeholder={placeholder}
         onChange={onChange}
-        className={cn('overflow-hidden rounded-md border border-[var(--border)] text-xs', className ?? 'h-40')}
+        height={height}
+        className="overflow-hidden rounded-md border border-[var(--border)] text-xs"
       />
       <div className="flex items-center justify-between text-[10px] text-[var(--muted)]">
         <span>{status}</span>
@@ -544,7 +559,7 @@ function BodyRewriteFields({
             <JsonBodyField
               value={mergeText}
               placeholder='{"status": "confirmed"} — a null value deletes that key'
-              className="h-20"
+              height="5rem"
               onChange={(text) => {
                 setMergeText(text);
                 emitTransform({ mergeText: text });
