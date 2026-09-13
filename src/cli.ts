@@ -552,17 +552,24 @@ async function runStartBody({
    * `DashboardServerOptions.createRuleEngine`'s own doc comment (issue
    * #123). Bootstraps `DEFAULT_RULES_FILENAME` with an empty ruleset so
    * `RuleEngine.load` (which reads its file eagerly) has something valid to
-   * read; the caller's very next `RuleEngine.write()` (applying the profile
-   * that triggered this in the first place) immediately overwrites it with
-   * real content, so the empty ruleset is never actually visible to a
-   * client. Also wires the new engine into the already-running proxy (see
-   * `ProxyServerHandle.setRuleEngine`'s own doc comment) — without that,
-   * the dashboard would show a profile as "applied" while the proxy quietly
-   * kept treating every request as ruleless passthrough.
+   * read *only if the file doesn't already exist* — `!rulesPath` above just
+   * means this session's own startup didn't load one, not that nothing has
+   * been written there since (by hand, or another process) with content
+   * this shouldn't clobber. Whatever's already there, valid or not, is what
+   * `RuleEngine.load` sees; a validation failure now surfaces as a normal
+   * `RULE_PROFILE_ERROR` (see `ensureRuleEngine`'s own doc comment in
+   * dashboardServer.ts) instead of being silently overwritten. Once loaded,
+   * the caller's very next `RuleEngine.write()` (applying the profile that
+   * triggered this in the first place) overwrites it with real content
+   * regardless, so an empty ruleset bootstrapped here is never actually
+   * visible to a client. Also wires the new engine into the already-running
+   * proxy (see `ProxyServerHandle.setRuleEngine`'s own doc comment) —
+   * without that, the dashboard would show a profile as "applied" while the
+   * proxy quietly kept treating every request as ruleless passthrough.
    */
   function createDefaultRuleEngine(): RuleEngine {
     const filePath = path.resolve(process.cwd(), DEFAULT_RULES_FILENAME);
-    fsRulesFileWriter.write(filePath, { rules: [] });
+    if (!fs.existsSync(filePath)) fsRulesFileWriter.write(filePath, { rules: [] });
     const engine = RuleEngine.load({
       filePath,
       reader: fsRulesFileReader,

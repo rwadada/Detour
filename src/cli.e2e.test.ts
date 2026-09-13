@@ -643,6 +643,7 @@ function requestThroughProxy(
 async function startDetourCli(
   args: string[] = [],
   env?: NodeJS.ProcessEnv,
+  cwd: string = REPO_ROOT,
 ): Promise<{
   port: number;
   dashboardPort: number;
@@ -651,8 +652,16 @@ async function startDetourCli(
   stderr: () => string;
   kill: () => Promise<void>;
 }> {
-  const subprocess = runTsx(['src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', ...args], {
-    cwd: REPO_ROOT,
+  // An absolute path to `cli.ts`, not the `src/cli.ts` every other caller
+  // gets away with — those all run with `cwd: REPO_ROOT` (the default
+  // here too), where that relative path and REPO_ROOT-relative resolution
+  // coincide. A caller overriding `cwd` (issue #123's "no rules file at
+  // startup" tests, which need `process.cwd()` inside the CLI itself to be
+  // some other, rules-file-free directory) would otherwise fail to spawn
+  // at all once cwd no longer happens to be this repo's root.
+  const cliEntry = path.join(REPO_ROOT, 'src/cli.ts');
+  const subprocess = runTsx([cliEntry, 'start', '--port', '0', '--dashboard-port', '0', ...args], {
+    cwd,
     reject: false,
     env: env ? { ...process.env, ...env } : undefined,
   });
@@ -750,6 +759,59 @@ describe('detour start (CLI, end-to-end)', () => {
     const result = await requestThroughProxy(cli.port, echo.port, '/mocked');
     expect(result.status).toBe(200);
     expect(JSON.parse(result.body)).toEqual({ mocked: true });
+  });
+
+  /**
+   * Copilot review, PR #123: applying a Rule Profile with no `ruleEngine`
+   * configured lazily bootstraps `passthrough.rule.json` — this covers the
+   * race that finding called out, where something *other* than this
+   * session (a hand edit, another process) writes that file after `detour
+   * start` already committed to running without one (no `--rules`, and the
+   * file didn't exist yet at startup) but before a profile is ever applied.
+   * The fix loads whatever's already there instead of blindly overwriting
+   * it with an empty ruleset — an invalid file (as here) now surfaces as a
+   * normal `RULE_PROFILE_ERROR`, rather than being silently replaced,
+   * clearing the way for the very same profile apply that would otherwise
+   * have failed to instead quietly succeed over content someone else owns.
+   */
+  it("applying a Rule Profile doesn't clobber a rules file that appeared after startup but is invalid", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    // No `--rules`, and nothing at `passthrough.rule.json` yet — `cli`
+    // starts with no `ruleEngine` configured, same as the bug report.
+    cli = await startDetourCli([], undefined, tmpDir);
+
+    // Appears *after* startup, as if from another process/hand edit — too
+    // late for `cli`'s own auto-detection, which only ever runs once, at
+    // startup.
+    const rulesPath = path.join(tmpDir, 'passthrough.rule.json');
+    fs.writeFileSync(rulesPath, JSON.stringify({ rules: [{ name: 'bad', match: {}, action: { type: 'bogus' } }] }));
+
+    const error = await new Promise<{ errorKind: string; message: string }>((resolve, reject) => {
+      const socket = new WebSocket(`ws://localhost:${cli!.dashboardPort}/ws`);
+      socket.on('open', () => socket.send(JSON.stringify({ type: 'applyRuleProfile', name: 'nonexistent' })));
+      socket.on('message', (raw) => {
+        const message = JSON.parse(raw.toString()) as { type: string; event?: { errorKind: string; message: string } };
+        if (message.type === 'error' && message.event) {
+          socket.close();
+          resolve(message.event);
+        }
+      });
+      socket.on('error', reject);
+    });
+
+    // The profile itself doesn't even exist — were the fix regressed
+    // (unconditionally overwriting the file with `{ rules: [] }` before
+    // ever reading it), this would still be the very same error, just for
+    // an unrelated reason (`ruleProfileStore.read` failing to find
+    // "nonexistent"): the only thing that actually distinguishes "loaded
+    // the existing invalid file" from "silently replaced it" is the
+    // message's content.
+    expect(error.errorKind).toBe('RULE_PROFILE_ERROR');
+    expect(error.message).toMatch(/failed validation/i);
+    // Untouched — proof nothing was ever written to it.
+    expect(JSON.parse(fs.readFileSync(rulesPath, 'utf8'))).toEqual({
+      rules: [{ name: 'bad', match: {}, action: { type: 'bogus' } }],
+    });
   });
 
   it('finalizes an exchange with the connection error, instead of leaving it "pending" forever, when a route rule targets a host that refuses the connection', async () => {

@@ -723,9 +723,24 @@ export async function startDashboardServer(
         broadcastError('RULE_PROFILE_ERROR', describeError(err));
       }
     } else if (message.type === 'applyRuleProfile') {
-      const engine = ensureRuleEngine();
-      if (!engine || !ruleProfileStore) return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
+      // Checked *before* `ensureRuleEngine()` — that call can have the real
+      // side effect of writing a rules file and starting a watcher on it
+      // (see `DashboardServerOptions.createRuleEngine`'s own doc comment);
+      // nothing about this request can succeed without `ruleProfileStore`
+      // regardless, so there's no reason to provision an engine only to
+      // then reject it.
+      if (!ruleProfileStore) return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
       try {
+        // Inside the `try`, not before it: `ensureRuleEngine()` can throw
+        // (a `createRuleEngine` factory failing to write/load its rules
+        // file) just as readily as `engine.write()`/`ruleProfileStore.read()`
+        // below can — leaving it uncaught would silently drop the whole
+        // message (the outer `socket.on('message', ...)` handler's own
+        // catch exists only to survive a malformed frame, not to report a
+        // real failure), leaving the client with no `RULE_PROFILE_ERROR`
+        // and the dashboard looking stuck rather than told why.
+        const engine = ensureRuleEngine();
+        if (!engine) return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
         engine.write(ruleProfileStore.read(message.name).rules, { activeProfile: message.name });
       } catch (err) {
         broadcastError('RULE_PROFILE_ERROR', describeError(err));

@@ -323,4 +323,56 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
     });
     expect(created).toBe(1);
   });
+
+  /**
+   * Copilot review, PR #123: `createRuleEngine` provisioning (a real
+   * filesystem write, then `RuleEngine.load`) can throw — the initial fix
+   * called it outside `applyRuleProfile`'s own `try`/`catch`, so that
+   * exception reached the outer `socket.on('message', ...)` handler's own
+   * catch-and-ignore (meant only for a malformed frame), silently dropping
+   * the whole message instead of ever broadcasting a `RULE_PROFILE_ERROR` —
+   * the dashboard would just look stuck, with nothing telling the user why.
+   */
+  it('applyRuleProfile broadcasts a RULE_PROFILE_ERROR (not a dropped message) when createRuleEngine itself throws', async () => {
+    writeRuleProfile('two-rules', { rules: [routeRule('a'), routeRule('b')] }, profilesDir);
+    const createRuleEngine = (): RuleEngine => {
+      throw new Error('boom: disk full');
+    };
+    handle = await startDashboardServer({ port: 0, ruleProfileStore, createRuleEngine }, eventBus);
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'rules' && m.data === null);
+
+    socket.send(JSON.stringify({ type: 'applyRuleProfile', name: 'two-rules' }));
+    const error = await waitForMessage(socket, (m) => m.type === 'error');
+
+    expect(error).toMatchObject({
+      type: 'error',
+      event: { errorKind: 'RULE_PROFILE_ERROR', message: expect.stringContaining('boom: disk full') },
+    });
+  });
+
+  /**
+   * Copilot review, PR #123: the initial fix called `ensureRuleEngine()`
+   * (and so `createRuleEngine`, with its real side effect of writing a
+   * rules file and starting a file watcher) *before* checking whether
+   * `ruleProfileStore` was even configured — provisioning an engine for a
+   * request that was always going to be rejected regardless, in a session
+   * that's missing the *other* half of Rule Profiles entirely.
+   */
+  it('applyRuleProfile with no ruleProfileStore never calls createRuleEngine', async () => {
+    let called = false;
+    const createRuleEngine = (): RuleEngine => {
+      called = true;
+      throw new Error('should never be reached');
+    };
+    handle = await startDashboardServer({ port: 0, createRuleEngine }, eventBus);
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'rules' && m.data === null);
+
+    socket.send(JSON.stringify({ type: 'applyRuleProfile', name: 'anything' }));
+    const error = await waitForMessage(socket, (m) => m.type === 'error');
+
+    expect(error).toMatchObject({ type: 'error', event: { errorKind: 'RULE_PROFILE_ERROR' } });
+    expect(called).toBe(false);
+  });
 });
