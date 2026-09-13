@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.1](https://github.com/rwadada/Detour/compare/v1.0.0...v1.0.1) (2026-09-13)
+
+
+### Bug Fixes
+
+* **rules-editor:** JSON editors silently stopped scrolling/handling cursor keys past ~10 lines ([8eeff38](https://github.com/rwadada/Detour/commit/8eeff388bfffc6c846ae93d1d8a03f45c5807b49))
+* **rules-editor:** JSON editors silently stopped scrolling/handling cursor keys past ~10 lines ([4f40849](https://github.com/rwadada/Detour/commit/4f4084945eb3542d19ff86241b83a50723f78a85))
+
 ## [1.0.0](https://github.com/rwadada/Detour/compare/v0.3.0...v1.0.0) (2026-09-13)
 
 
