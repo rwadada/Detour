@@ -145,6 +145,16 @@ describe('describeJsonBodyText', () => {
     expect(result.status).toMatch(/not valid json/i);
   });
 
+  // Copilot review, PR #125: `validJson: true` means `text` parsed *as
+  // JSON*, not that the result is an object/array/number — a quoted JSON
+  // string literal is itself valid JSON and still parses to a plain
+  // (unquoted) string, same `typeof` as the "not valid" fallback case above
+  // would produce. `JsonBodyStatus.validJson`'s own doc comment calls this
+  // out explicitly.
+  it('reports a quoted JSON string literal as valid, even though it parses to a plain string', () => {
+    expect(describeJsonBodyText('"hello"')).toEqual({ validJson: true, parsed: 'hello', status: '✓ Valid JSON' });
+  });
+
   it('agrees with parseBodyValue on which inputs actually parse as JSON', () => {
     for (const text of ['{"a":1}', '[1,2,3]', '42', 'hello world', '{"a":1', '']) {
       const validByParse = typeof parseBodyValue(text) !== 'string' && parseBodyValue(text) !== undefined;

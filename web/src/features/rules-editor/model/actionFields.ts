@@ -73,7 +73,15 @@ export function bodyValueToText(value: unknown): string {
 
 /** `JsonBodyField`'s (ActionFields.tsx) status caption plus what a "Format" click would reformat to — pulled out here, alongside `parseBodyValue` itself, so the exact same "does this actually parse" question that field asks about has one pure, tested answer instead of the component re-deriving it inline. */
 export interface JsonBodyStatus {
-  /** Whether `text` parses as JSON (blank doesn't count) — this is exactly what decides whether `parseBodyValue` on the same text would save an object/array/number/etc. rather than the literal string. */
+  /**
+   * Whether `JSON.parse` succeeds on `text` (blank doesn't count) — this is
+   * exactly the condition `parseBodyValue` itself branches on. Note this
+   * isn't quite "will be saved as something other than a string": a
+   * quoted JSON string literal (`"hello"`) is itself valid JSON and still
+   * parses to a plain string (unquoted) — `validJson` only tells you
+   * whether `text` was interpreted *as JSON* at all, not what type the
+   * result happens to be.
+   */
   validJson: boolean;
   /** The parsed value, present only when `validJson` is true. */
   parsed?: unknown;
