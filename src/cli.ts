@@ -546,6 +546,54 @@ async function runStartBody({
 
   const dashboardHost = resolveDashboardHost(options);
   const handle = await startProxyServer({ port, host: PROXY_HOST, ruleEngine, http2Enabled: options.http2 }, eventBus);
+
+  /**
+   * Provisions a `RuleEngine` for a session that started with none — see
+   * `DashboardServerOptions.createRuleEngine`'s own doc comment (issue
+   * #123). Bootstraps `DEFAULT_RULES_FILENAME` with an empty ruleset so
+   * `RuleEngine.load` (which reads its file eagerly) has something valid to
+   * read *only if the file doesn't already exist* — `!rulesPath` above just
+   * means this session's own startup didn't load one, not that nothing has
+   * been written there since (by hand, or another process) with content
+   * this shouldn't clobber. Whatever's already there, valid or not, is what
+   * `RuleEngine.load` sees; a validation failure now surfaces as a normal
+   * `RULE_PROFILE_ERROR` (see `ensureRuleEngine`'s own doc comment in
+   * dashboardServer.ts) instead of being silently overwritten. Once loaded,
+   * the caller's very next `RuleEngine.write()` (applying the profile that
+   * triggered this in the first place) overwrites it with real content
+   * regardless, so an empty ruleset bootstrapped here is never actually
+   * visible to a client. Also wires the new engine into the already-running
+   * proxy (see `ProxyServerHandle.setRuleEngine`'s own doc comment) —
+   * without that, the dashboard would show a profile as "applied" while the
+   * proxy quietly kept treating every request as ruleless passthrough.
+   */
+  function createDefaultRuleEngine(): RuleEngine {
+    const filePath = path.resolve(process.cwd(), DEFAULT_RULES_FILENAME);
+    // Tracked rather than assumed: the file may already exist (see the
+    // `!fs.existsSync` guard just below, and its own doc comment above) if
+    // something other than this session created it between startup and now
+    // — the log message right after this shouldn't claim to have "created"
+    // it when it actually just picked up what was already there.
+    const bootstrapped = !fs.existsSync(filePath);
+    if (bootstrapped) fsRulesFileWriter.write(filePath, { rules: [] });
+    const engine = RuleEngine.load({
+      filePath,
+      reader: fsRulesFileReader,
+      writer: fsRulesFileWriter,
+      watcher: fsFileWatcher,
+      allowExternalScriptPaths: options.allowExternalScriptPaths ?? false,
+      onReload: (info) => eventBus.emit('rulesReloaded', { filePath, ruleCount: info.ruleCount }),
+      onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
+    });
+    console.log(
+      bootstrapped
+        ? `ℹ Created ${DEFAULT_RULES_FILENAME} to apply this rule profile (auto-loaded from now on; pass --rules to use a different file)`
+        : `ℹ Loaded existing ${DEFAULT_RULES_FILENAME} to apply this rule profile (auto-loaded from now on; pass --rules to use a different file)`,
+    );
+    handle.setRuleEngine(engine);
+    return engine;
+  }
+
   // `--headless` (issue #20): CI/scripted use has no need for the web
   // dashboard — skip starting it entirely rather than starting it and just
   // not opening a browser to it.
@@ -570,6 +618,13 @@ async function runStartBody({
           proxyPort: handle.port,
           ruleEngine,
           ruleProfileStore: fsRuleProfileStore,
+          // Lets the dashboard provision a `RuleEngine` itself the first time
+          // one's actually needed (issue #123: applying a just-created Rule
+          // Profile from a session that started with no rules file at all —
+          // `ruleEngine` above is `undefined` in exactly that case). Omitted
+          // when one already exists; see `DashboardServerOptions.createRuleEngine`'s
+          // own doc comment for why only that one case needs this.
+          createRuleEngine: ruleEngine ? undefined : () => createDefaultRuleEngine(),
           // Passed regardless of `dashboardHost` — the proxy this dashboard
           // fronts always binds to every interface, so its LAN address(es)
           // are always worth knowing. See `DashboardServerOptions.lanAddresses`'s
