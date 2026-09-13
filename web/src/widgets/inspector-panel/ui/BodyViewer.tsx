@@ -91,6 +91,15 @@ function useGrpcDecode(params: {
 }): GrpcBodyDecodeResult | 'pending' | undefined {
   const { body, call, direction, grpcEncoding, bodyTruncated } = params;
   const schema = useGrpcSchemaStore((s) => s.schema);
+  // `schema` alone can't tell "no --proto configured" apart from "the
+  // initial `protoSchema` message hasn't arrived yet" — both look like
+  // `null` (see `GrpcSchemaState.schema`'s own doc comment). Without this,
+  // opening a gRPC exchange's body right as the dashboard connects could
+  // flash "No --proto configured" even when `--proto` *is* set, until the
+  // real message lands a moment later — the same class of premature-message
+  // flash a past review caught for `useDecodedBody`'s compressed-body case
+  // above. `schemaAt` is only ever `null` before that first message.
+  const schemaAt = useGrpcSchemaStore((s) => s.schemaAt);
   const [result, setResult] = useState<{
     body: string | undefined;
     schema: typeof schema;
@@ -98,7 +107,7 @@ function useGrpcDecode(params: {
   }>();
 
   useEffect(() => {
-    if (!call || !direction) return;
+    if (!call || !direction || schemaAt === null) return;
     let cancelled = false;
     decodeGrpcBody({ body, schema, service: call.service, method: call.method, direction, grpcEncoding, bodyTruncated })
       .then((value) => {
@@ -115,9 +124,10 @@ function useGrpcDecode(params: {
     return () => {
       cancelled = true;
     };
-  }, [call, direction, body, schema, grpcEncoding, bodyTruncated]);
+  }, [call, direction, body, schema, schemaAt, grpcEncoding, bodyTruncated]);
 
   if (!call) return undefined;
+  if (schemaAt === null) return 'pending';
   if (!result || result.body !== body || result.schema !== schema) return 'pending';
   return result.value;
 }

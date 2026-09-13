@@ -42,6 +42,16 @@ describe('buildSchemaRoot / resolveGrpcMethod', () => {
     const root = buildSchemaRoot(schemaJson());
     expect(resolveGrpcMethod(root, 'helloworld.Greeter', 'NoSuchMethod')).toBeUndefined();
   });
+
+  it('caches the resolved Root per schema object identity, rebuilding only for a different object', () => {
+    const schema = schemaJson();
+    const first = buildSchemaRoot(schema);
+    const second = buildSchemaRoot(schema);
+    expect(second).toBe(first);
+
+    const otherSchema = schemaJson();
+    expect(buildSchemaRoot(otherSchema)).not.toBe(first);
+  });
 });
 
 describe('decodeGrpcFrames', () => {
@@ -98,6 +108,20 @@ describe('decodeGrpcFrames', () => {
     );
 
     const decoded = await decodeGrpcFrames([messageFrame(gzipped, true)], requestType, 'gzip');
+    expect(decoded).toEqual([{ json: { name: 'compressed' } }]);
+  });
+
+  it('tolerates a grpc-encoding header with different casing or surrounding whitespace', async () => {
+    const root = buildSchemaRoot(schemaJson());
+    const { requestType } = resolveGrpcMethod(root, 'helloworld.Greeter', 'SayHello')!;
+    const encoded = requestType.encode({ name: 'compressed' }).finish();
+    const gzipped = new Uint8Array(
+      await new Response(
+        new Blob([encoded as BufferSource]).stream().pipeThrough(new CompressionStream('gzip')),
+      ).arrayBuffer(),
+    );
+
+    const decoded = await decodeGrpcFrames([messageFrame(gzipped, true)], requestType, ' GZIP ');
     expect(decoded).toEqual([{ json: { name: 'compressed' } }]);
   });
 

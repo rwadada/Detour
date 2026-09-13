@@ -1,8 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeDashboardConnection } from '@/shared/api';
 import { createGrpcSchemaStore } from './createGrpcSchemaStore';
 
 describe('createGrpcSchemaStore', () => {
+  // Faked only for the one test below that asserts `schemaAt` advances
+  // between two `emit`s in the same test — real time can land both within
+  // the same `Date.now()` millisecond on a fast machine.
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
   it('starts with no schema', () => {
     const { connection } = fakeDashboardConnection();
     const store = createGrpcSchemaStore(connection);
@@ -19,6 +25,7 @@ describe('createGrpcSchemaStore', () => {
     const first = store.getState().schemaAt;
     expect(first).toEqual(expect.any(Number));
 
+    vi.advanceTimersByTime(1);
     emit({ type: 'protoSchema', schema: null });
     expect(store.getState().schema).toBeNull();
     expect(store.getState().schemaAt).not.toBeNull();

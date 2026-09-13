@@ -12,6 +12,16 @@ export interface ResolvedGrpcMethod {
   responseType: Type;
 }
 
+// `buildSchemaRoot` is called once per `decodeGrpcBody` call — and
+// `BodyViewer` calls it independently for the request and response tabs of
+// every exchange the user selects. `Root.fromJSON` + `resolveAll()` isn't
+// free for a larger schema, but the schema object itself is referentially
+// stable (it only changes when a new `protoSchema` message arrives, which
+// happens at most once per session — see `protoSchema`'s own doc comment),
+// so caching the resolved `Root` by that reference avoids redoing the same
+// work on every decode without needing any cache invalidation.
+const rootCache = new WeakMap<Record<string, unknown>, Root>();
+
 /**
  * Reconstructs a usable schema from the JSON descriptor the dashboard
  * server sent as `protoSchema` (`ProtoRegistry.toJSON()`'s output —
@@ -21,8 +31,11 @@ export interface ResolvedGrpcMethod {
  * descriptor needs no parsing, only `Root.fromJSON` + reflection.
  */
 export function buildSchemaRoot(schema: Record<string, unknown>): Root {
+  const cached = rootCache.get(schema);
+  if (cached) return cached;
   const root = Root.fromJSON(schema);
   root.resolveAll();
+  rootCache.set(schema, root);
   return root;
 }
 
@@ -50,11 +63,14 @@ export function resolveGrpcMethod(root: Root, service: string, method: string): 
  * separate mechanism (a dedicated `grpc-encoding` header plus each frame's
  * own compression flag byte, not `Content-Encoding`), but the underlying
  * browser API doing the actual decompression work is the same one either
- * way.
+ * way. `grpc-encoding` is an HTTP header value — normalize case/whitespace
+ * before comparing (and in the error message) so e.g. "GZIP" or " gzip "
+ * aren't mistaken for an unsupported encoding.
  */
 async function decompress(payload: Uint8Array, encoding: string | undefined): Promise<Uint8Array> {
-  if (encoding !== 'gzip') {
-    throw new Error(`compressed frame uses unsupported grpc-encoding "${encoding ?? '(unknown)'}"`);
+  const normalized = encoding?.trim().toLowerCase();
+  if (normalized !== 'gzip') {
+    throw new Error(`compressed frame uses unsupported grpc-encoding "${normalized ?? '(unknown)'}"`);
   }
   const stream = new Blob([payload as BufferSource]).stream().pipeThrough(new DecompressionStream('gzip'));
   return new Uint8Array(await new Response(stream).arrayBuffer());
