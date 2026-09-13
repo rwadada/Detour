@@ -1,6 +1,7 @@
 import { lazy, Suspense, useMemo, useState } from 'react';
 import { X } from 'lucide-react';
 import { isPassthroughDone, MethodBadge, StatusBadge, useExchangeStore } from '@/entities/exchange';
+import { isGrpcContentType, parseGrpcPath } from '@/entities/grpc';
 import { BreakpointEditor, useBreakpointResumeStore } from '@/features/breakpoint-resume';
 import { CopyAsCurlButton } from '@/features/copy-as-curl';
 import { ReplayButton } from '@/features/replay';
@@ -28,6 +29,25 @@ export function InspectorPanel() {
   const select = useExchangeStore((s) => s.select);
   const pausedBreakpoints = useBreakpointResumeStore((s) => s.pausedBreakpoints);
   const exchange = useMemo(() => exchanges.find((e) => e.id === selectedId), [exchanges, selectedId]);
+  // Detects a gRPC call from its request `content-type` (the actual
+  // protocol negotiation — gRPC has no such thing per-direction, so this
+  // one result covers both the Body tab's Request and Response views) and
+  // its URL path (`/{service}/{method}`, gRPC's own fixed convention).
+  // `undefined` for anything else — the Body tab then falls back to its
+  // normal text/JSON rendering, same as before this feature existed.
+  // Computed here, unconditionally, rather than inside the `!exchange`
+  // check below: every hook in this component must run every render
+  // regardless of `exchange`'s own presence (Rules of Hooks), so the guard
+  // moves inside the memo callback instead.
+  const grpcCall = useMemo(() => {
+    if (!exchange) return undefined;
+    if (!isGrpcContentType(findHeaderValue(exchange.requestHeaders, 'content-type'))) return undefined;
+    try {
+      return parseGrpcPath(new URL(exchange.url).pathname);
+    } catch {
+      return undefined;
+    }
+  }, [exchange]);
 
   if (!exchange) {
     return (
@@ -146,6 +166,9 @@ export function InspectorPanel() {
             responseBodySize={exchange.responseBodySize}
             responseBodyTruncated={exchange.responseBodyTruncated}
             responseContentEncoding={findHeaderValue(exchange.responseHeaders, 'content-encoding')}
+            grpcCall={grpcCall}
+            requestGrpcEncoding={findHeaderValue(exchange.requestHeaders, 'grpc-encoding')}
+            responseGrpcEncoding={findHeaderValue(exchange.responseHeaders, 'grpc-encoding')}
           />
         </TabsContent>
       </Tabs>
@@ -162,6 +185,10 @@ function BodyTab(props: {
   responseBodySize: number;
   responseBodyTruncated?: boolean;
   responseContentEncoding?: string;
+  /** Set when the request's `content-type` and URL identify this exchange as a gRPC call (issue #18's dashboard follow-up) — see `InspectorPanel`'s own `grpcCall` doc comment. Passed through to both `BodyViewer`s below; which of `requestType`/`responseType` it resolves to differs, but the RPC it names doesn't. */
+  grpcCall?: { service: string; method: string };
+  requestGrpcEncoding?: string;
+  responseGrpcEncoding?: string;
 }) {
   const [which, setWhich] = useState<'request' | 'response'>(props.responseBodySize > 0 ? 'response' : 'request');
 
@@ -191,6 +218,9 @@ function BodyTab(props: {
               bodySize={props.requestBodySize}
               truncated={props.requestBodyTruncated}
               contentEncoding={props.requestContentEncoding}
+              grpcCall={props.grpcCall}
+              grpcDirection="request"
+              grpcEncoding={props.requestGrpcEncoding}
             />
           ) : (
             <BodyViewer
@@ -198,6 +228,9 @@ function BodyTab(props: {
               bodySize={props.responseBodySize}
               truncated={props.responseBodyTruncated}
               contentEncoding={props.responseContentEncoding}
+              grpcCall={props.grpcCall}
+              grpcDirection="response"
+              grpcEncoding={props.responseGrpcEncoding}
             />
           )}
         </Suspense>

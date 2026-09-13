@@ -165,7 +165,19 @@ export type DashboardServerMessage =
    * sent once right after connecting and again after every `setUserConfig`
    * (whether from this client or another connected tab).
    */
-  | { type: 'userConfig'; state: UserConfigState };
+  | { type: 'userConfig'; state: UserConfigState }
+  /**
+   * JSON descriptor of the `--proto` schema loaded for this session (issue
+   * #18's gRPC decoding, extended to the dashboard) — `protobufjs`'s
+   * `Root.toJSON()` output, which the browser reconstructs client-side via
+   * `protobufjs/light`'s `Root.fromJSON()` to decode a gRPC exchange's
+   * message frames in the Body tab, the same way the CLI's `--dump full`
+   * already does server-side (see `infra/grpc/grpcExchangeInfo.ts`). `null`
+   * when no `--proto` was given for this session. Sent once, right after
+   * connecting — unlike `rules`, there's no live-reload: a `.proto` schema
+   * is fixed for the process's whole lifetime.
+   */
+  | { type: 'protoSchema'; schema: Record<string, unknown> | null };
 
 /**
  * Messages sent from a connected browser client to the dashboard server over

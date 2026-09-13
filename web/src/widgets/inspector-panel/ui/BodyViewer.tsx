@@ -1,6 +1,7 @@
 import { json } from '@codemirror/lang-json';
 import CodeMirror, { EditorView } from '@uiw/react-codemirror';
 import { useEffect, useState } from 'react';
+import { decodeGrpcBody, useGrpcSchemaStore, type GrpcBodyDecodeResult, type GrpcDecodedFrame } from '@/entities/grpc';
 import { useTheme } from '@/shared/lib/theme';
 import {
   capturedByteLength,
@@ -64,19 +65,90 @@ function useDecodedBody(body: string | undefined, contentEncoding: string | unde
   return result.decoded;
 }
 
+/**
+ * Decodes a captured gRPC exchange's body into its individual message
+ * frames (issue #18's dashboard follow-up), delegating the actual
+ * orchestration to `entities/grpc`'s `decodeGrpcBody` — see that function's
+ * own doc comment. Mirrors `useDecodedBody`'s own "does this result still
+ * match what's currently asked for" staleness check (comparing `body` *and*
+ * `schema`, since either can change independently: a new exchange
+ * selected, or the schema having just now arrived over the WS on a slow
+ * connection).
+ *
+ * Called unconditionally by `BodyViewer` regardless of whether this
+ * exchange is actually gRPC (`call`/`direction` both `undefined` when it
+ * isn't) — Rules of Hooks requires every hook to run in the same order on
+ * every render of a given component instance, so the actual gRPC-or-not
+ * branch has to live in the *return value* `BodyViewer` renders, not in
+ * whether this hook itself gets called.
+ */
+function useGrpcDecode(params: {
+  body: string | undefined;
+  call: { service: string; method: string } | undefined;
+  direction: 'request' | 'response' | undefined;
+  grpcEncoding: string | undefined;
+  bodyTruncated: boolean | undefined;
+}): GrpcBodyDecodeResult | 'pending' | undefined {
+  const { body, call, direction, grpcEncoding, bodyTruncated } = params;
+  const schema = useGrpcSchemaStore((s) => s.schema);
+  const [result, setResult] = useState<{
+    body: string | undefined;
+    schema: typeof schema;
+    value: GrpcBodyDecodeResult;
+  }>();
+
+  useEffect(() => {
+    if (!call || !direction) return;
+    let cancelled = false;
+    decodeGrpcBody({ body, schema, service: call.service, method: call.method, direction, grpcEncoding, bodyTruncated })
+      .then((value) => {
+        if (!cancelled) setResult({ body, schema, value });
+      })
+      .catch(() => {
+        // `decodeGrpcBody` doesn't reject on any input it knows how to fail
+        // on — same defensive belt-and-suspenders as `useDecodedBody`'s own
+        // `.catch` above, against a future change reintroducing one.
+        if (!cancelled) {
+          setResult({ body, schema, value: { kind: 'unavailable', reason: 'Failed to decode this message.' } });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [call, direction, body, schema, grpcEncoding, bodyTruncated]);
+
+  if (!call) return undefined;
+  if (!result || result.body !== body || result.schema !== schema) return 'pending';
+  return result.value;
+}
+
 export function BodyViewer({
   body,
   bodySize,
   truncated,
   contentEncoding,
+  grpcCall,
+  grpcDirection,
+  grpcEncoding,
 }: {
   body?: string;
   bodySize: number;
   truncated?: boolean;
   contentEncoding?: string;
+  /** Set when `InspectorPanel` identified this exchange as a gRPC call — see its own `grpcCall` doc comment. `grpcDirection` is only actually `undefined` when this is too (both come from the same caller), never independently. */
+  grpcCall?: { service: string; method: string };
+  grpcDirection?: 'request' | 'response';
+  grpcEncoding?: string;
 }) {
   const dark = useTheme() === 'dark';
   const decoded = useDecodedBody(body, contentEncoding);
+  const grpcResult = useGrpcDecode({
+    body,
+    call: grpcCall,
+    direction: grpcDirection,
+    grpcEncoding,
+    bodyTruncated: truncated,
+  });
 
   if (bodySize === 0) {
     return <EmptyState message="No body." />;
@@ -85,6 +157,24 @@ export function BodyViewer({
     // Size > 0 but nothing captured: happened before the body could be read (e.g. request event fired pre-body) rather than genuinely empty.
     return <EmptyState message="Body not captured." />;
   }
+
+  // A gRPC message body is never meaningfully readable as plain UTF-8/JSON
+  // text — it's raw length-framed Protobuf bytes — so this bypasses
+  // `decoded`'s normal text/JSON rendering below entirely rather than
+  // trying to fold gRPC decoding into that pipeline.
+  if (grpcCall) {
+    if (grpcResult === 'pending' || grpcResult === undefined) {
+      return <EmptyState message="Decoding…" />;
+    }
+    if (grpcResult.kind === 'unavailable') {
+      return <EmptyState message={grpcResult.reason} />;
+    }
+    if (grpcResult.frames.length === 0) {
+      return <EmptyState message="No gRPC messages captured." />;
+    }
+    return <GrpcFrameList frames={grpcResult.frames} framesTruncated={grpcResult.framesTruncated} dark={dark} />;
+  }
+
   if (decoded === 'pending') {
     return <EmptyState message="Decoding…" />;
   }
@@ -111,6 +201,53 @@ export function BodyViewer({
           basicSetup={{ lineNumbers: true, foldGutter: isJson, highlightActiveLine: false }}
           className="h-full text-xs"
         />
+      </div>
+    </div>
+  );
+}
+
+/** Renders a decoded gRPC message list — one collapsible-looking block per frame, each its own read-only JSON view (or, if that one frame failed to decode, just its error text) so one bad message in a streaming call doesn't hide the rest. */
+function GrpcFrameList({
+  frames,
+  framesTruncated,
+  dark,
+}: {
+  frames: GrpcDecodedFrame[];
+  framesTruncated: boolean;
+  dark: boolean;
+}) {
+  return (
+    <div className="flex h-full flex-col overflow-auto">
+      <div className="border-b border-[var(--border)] px-3 py-1 text-xs text-[var(--muted)]">
+        {frames.length} message{frames.length === 1 ? '' : 's'}
+        {framesTruncated && ' — truncated, showing what was captured before the cutoff'}
+      </div>
+      <div className="flex flex-col gap-2 p-2">
+        {frames.map((frame, index) => (
+          <div key={index} className="overflow-hidden rounded border border-[var(--border)]">
+            <div className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--row-hover)] px-2 py-1 text-xs text-[var(--muted)]">
+              <span>Message [{index}]</span>
+              {!frame.error && (
+                <CopyIconButton
+                  getText={() => JSON.stringify(frame.json, null, 2)}
+                  title="Copy message"
+                  className="h-5 w-5"
+                />
+              )}
+            </div>
+            {frame.error ? (
+              <p className="p-2 text-xs text-[var(--status-5xx)]">{frame.error}</p>
+            ) : (
+              <CodeMirror
+                value={JSON.stringify(frame.json, null, 2)}
+                extensions={[json(), readOnlyView]}
+                theme={dark ? 'dark' : 'light'}
+                basicSetup={{ lineNumbers: false, foldGutter: true, highlightActiveLine: false }}
+                className="text-xs"
+              />
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );

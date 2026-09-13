@@ -269,7 +269,15 @@ export type DashboardServerMessage =
   /** The saved rule profiles available to switch to or apply. */
   | { type: 'ruleProfiles'; profiles: RuleProfileSummary[] }
   /** The current persistent `detour start` defaults — sent once on connect and again after every `setUserConfig`. */
-  | { type: 'userConfig'; state: UserConfigState };
+  | { type: 'userConfig'; state: UserConfigState }
+  /**
+   * JSON descriptor of the `--proto` schema loaded for this session
+   * (`protobufjs`'s `Root.toJSON()` output) — reconstructed client-side via
+   * `protobufjs/light`'s `Root.fromJSON()` to decode a gRPC exchange's
+   * message frames. `null` when no `--proto` was given. Sent once, right
+   * after connecting — a `.proto` schema doesn't live-reload.
+   */
+  | { type: 'protoSchema'; schema: Record<string, unknown> | null };
 
 export type DashboardClientMessage =
   /** Answers an `authRequired` message with the password the user typed (issue #66). The server replies with either the normal just-connected snapshot (success) or `authFailed`. Ignored — like every other message type — before the socket has authenticated. */

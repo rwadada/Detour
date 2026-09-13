@@ -625,6 +625,7 @@ async function runStartBody({
           // when one already exists; see `DashboardServerOptions.createRuleEngine`'s
           // own doc comment for why only that one case needs this.
           createRuleEngine: ruleEngine ? undefined : () => createDefaultRuleEngine(),
+          protoRegistry,
           // Passed regardless of `dashboardHost` — the proxy this dashboard
           // fronts always binds to every interface, so its LAN address(es)
           // are always worth knowing. See `DashboardServerOptions.lanAddresses`'s
