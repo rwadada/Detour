@@ -258,4 +258,69 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
 
     expect(error).toMatchObject({ type: 'error', event: { errorKind: 'RULE_PROFILE_ERROR' } });
   });
+
+  it('applyRuleProfile with no ruleEngine and no createRuleEngine broadcasts RULE_PROFILE_ERROR (old behavior, unchanged)', async () => {
+    writeRuleProfile('two-rules', { rules: [routeRule('a'), routeRule('b')] }, profilesDir);
+    handle = await startDashboardServer({ port: 0, ruleProfileStore }, eventBus);
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'rules' && m.data === null);
+
+    socket.send(JSON.stringify({ type: 'applyRuleProfile', name: 'two-rules' }));
+    const error = await waitForMessage(socket, (m) => m.type === 'error');
+
+    expect(error).toMatchObject({ type: 'error', event: { errorKind: 'RULE_PROFILE_ERROR' } });
+  });
+
+  /**
+   * Issue #123: a session started with no `--rules`/auto-detected file has
+   * `ruleEngine: undefined` — before `createRuleEngine` existed,
+   * `applyRuleProfile` failed outright here even though the profile being
+   * switched to had just been created successfully in the very same
+   * session (`createRuleProfile` never needed a `ruleEngine` to begin
+   * with). This exercises the fix directly against `startDashboardServer`,
+   * mirroring how `cli.ts`'s own `createDefaultRuleEngine` behaves: lazily
+   * loads a real `RuleEngine` backed by a real file the first time it's
+   * needed, at most once.
+   */
+  it('applyRuleProfile lazily provisions a RuleEngine via createRuleEngine when the session started with none', async () => {
+    writeRuleProfile('two-rules', { rules: [routeRule('a'), routeRule('b')] }, profilesDir);
+    writeRuleProfile('three-rules', { rules: [routeRule('a'), routeRule('b'), routeRule('c')] }, profilesDir);
+    let created = 0;
+    const lazyPath = path.join(dir, 'lazy-rules.json');
+    const createRuleEngine = () => {
+      created++;
+      fsRulesFileWriter.write(lazyPath, { rules: [] });
+      ruleEngine = RuleEngine.load({
+        filePath: lazyPath,
+        reader: fsRulesFileReader,
+        writer: fsRulesFileWriter,
+        watcher: fsFileWatcher,
+        debounceMs: 10,
+        onReload: (info) => eventBus.emit('rulesReloaded', { filePath: lazyPath, ruleCount: info.ruleCount }),
+        onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
+      });
+      return ruleEngine;
+    };
+    handle = await startDashboardServer({ port: 0, ruleProfileStore, createRuleEngine }, eventBus);
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'rules' && m.data === null);
+
+    socket.send(JSON.stringify({ type: 'applyRuleProfile', name: 'two-rules' }));
+    const first = await waitForMessage(socket, (m) => m.type === 'rules' && m.data?.rules.length === 2);
+    expect(first).toEqual({
+      type: 'rules',
+      data: { rules: [routeRule('a'), routeRule('b')], $activeProfile: 'two-rules' },
+    });
+    expect(created).toBe(1);
+    expect(fs.existsSync(lazyPath)).toBe(true);
+
+    // A second apply reuses the same engine rather than provisioning another.
+    socket.send(JSON.stringify({ type: 'applyRuleProfile', name: 'three-rules' }));
+    const second = await waitForMessage(socket, (m) => m.type === 'rules' && m.data?.rules.length === 3);
+    expect(second).toEqual({
+      type: 'rules',
+      data: { rules: [routeRule('a'), routeRule('b'), routeRule('c')], $activeProfile: 'three-rules' },
+    });
+    expect(created).toBe(1);
+  });
 });

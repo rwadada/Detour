@@ -89,6 +89,22 @@ export interface ProxyServerHandle {
   port: number;
   /** Path to the auto-generated root CA, for the user to install/trust. */
   caCertPath: string;
+  /**
+   * Wires a `RuleEngine` into an already-running proxy that started without
+   * one (`options.ruleEngine` was `undefined`) — every request/CONNECT
+   * handler below reads the engine through a closure variable rather than
+   * `options.ruleEngine` directly, so calling this makes already-matched
+   * rule types (mock/route/rewrite/script) apply to traffic from this point
+   * on, with no restart. Used by `cli.ts` to hand the dashboard's
+   * lazily-created engine (issue #123 — applying a Rule Profile with no
+   * `--rules`/auto-detected file yet configured) to the proxy that's
+   * actually serving traffic, since the two are otherwise independent
+   * modules that would each end up with their own engine instance
+   * disagreeing about what's active. Overwrites any previously-set engine
+   * rather than merging — there's only ever meant to be one active at a
+   * time.
+   */
+  setRuleEngine(engine: RuleEngine): void;
   stop(): Promise<void>;
 }
 
@@ -230,7 +246,12 @@ export async function startProxyServer(
 
   const proxy = new ProxyEngine();
   const sslCaDir = resolveCertDir();
-  const ruleEngine = options.ruleEngine;
+  // `let`, not `const`: `setRuleEngine` (see `ProxyServerHandle`'s own doc
+  // comment) reassigns this after startup, and every closure below that
+  // reads `ruleEngine` does so lazily (inside a request/CONNECT handler, not
+  // at this line) — reassigning it here is enough for a subsequent request
+  // to see the new engine, with no further wiring per call site.
+  let ruleEngine = options.ruleEngine;
   // Keyed by ctx.uuid so the request-phase and response-phase handlers
   // (which fire as separate callbacks) can agree on the same exchange.
   const inFlight = new Map<string, CapturedExchange>();
@@ -1382,6 +1403,9 @@ export async function startProxyServer(
         resolve({
           port: proxy.httpPort,
           caCertPath: proxy.ca.getCACertPath(),
+          setRuleEngine: (engine) => {
+            ruleEngine = engine;
+          },
           stop: () =>
             new Promise<void>((res) => {
               eventBus.off('breakpointResume', handleBreakpointResume);

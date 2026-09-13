@@ -83,6 +83,20 @@ export interface DashboardServerOptions {
   ruleEngine?: RuleEngine;
   /** Powers Rules Profiles (issue #19): listing/creating/applying saved rule profiles, independent of whether `ruleEngine` is configured (profiles can be created even before any is applied). */
   ruleProfileStore?: RuleProfileStore;
+  /**
+   * Lazily provisions a `RuleEngine` for a session that started with none
+   * (no `--rules`, no auto-detected file) — called at most once, the first
+   * time a client actually needs one: switching to a saved profile from a
+   * fresh install with nothing active yet (issue #123). Before this existed,
+   * `applyRuleProfile` on such a session failed outright with "Rule
+   * profiles are unavailable", even for a profile the same session had just
+   * created — profile *creation* only ever needed `ruleProfileStore`, so
+   * that half of the feature worked while the other silently couldn't
+   * follow through. Omit to keep the old behavior (surfacing that error)
+   * when this session has nowhere to create a rules file — e.g. a test
+   * double with no real filesystem behind it.
+   */
+  createRuleEngine?: () => RuleEngine;
   /** Performs the real outbound request for `replay` (issue #19). Injectable for tests; defaults to a real `node:http`/`node:https` request. */
   httpRequester?: HttpRequester;
   /** Backs `userConfig`/`setUserConfig` (the dashboard Settings panel's `defaultDetach`/`lanAccess` toggles). Injectable for tests; defaults to `~/.detour/config.json` (`resolveUserConfigPath()`). */
@@ -152,7 +166,14 @@ export async function startDashboardServer(
   eventBus: DetourEventBus,
 ): Promise<DashboardServerHandle> {
   const host = options.host ?? 'localhost';
-  const { ruleEngine, ruleProfileStore } = options;
+  // `let`, not `const`: `ensureRuleEngine` below (see its own doc comment)
+  // reassigns this the first time it's actually needed — every read of
+  // `ruleEngine` elsewhere in this function happens lazily inside a message
+  // handler or a `broadcast()` callback, not at this line, so reassigning it
+  // here is enough for those to see the newly-provisioned engine from that
+  // point on.
+  let ruleEngine = options.ruleEngine;
+  const { ruleProfileStore, createRuleEngine } = options;
   const httpRequester = options.httpRequester ?? nodeHttpRequester;
   const lanAddrs = options.lanAddresses ?? [];
   // Whether this server itself is bound to every network interface, not
@@ -644,6 +665,24 @@ export async function startDashboardServer(
     }
   }
 
+  /**
+   * Returns the session's `ruleEngine`, provisioning one via
+   * `createRuleEngine` (issue #123) the first time it's actually needed —
+   * see `DashboardServerOptions.createRuleEngine`'s own doc comment. Only
+   * `applyRuleProfile` calls this: it's the one action reachable with no
+   * active rules file at all (the "Switch profile…" `<select>` lists saved
+   * profiles regardless of whether one's currently applied), whereas
+   * `setRules`/`saveActiveRulesAsProfile` are both inherently about editing
+   * or snapshotting an *already*-active ruleset, with nothing for a freshly
+   * created empty one to meaningfully contribute.
+   */
+  function ensureRuleEngine(): RuleEngine | undefined {
+    if (ruleEngine) return ruleEngine;
+    if (!createRuleEngine) return undefined;
+    ruleEngine = createRuleEngine();
+    return ruleEngine;
+  }
+
   function handleRulesMessage(message: DashboardClientMessage): void {
     if (message.type === 'setRules') {
       if (!ruleEngine) return broadcastError('RULES_WRITE_ERROR', 'No rules file is configured for this session.');
@@ -684,10 +723,10 @@ export async function startDashboardServer(
         broadcastError('RULE_PROFILE_ERROR', describeError(err));
       }
     } else if (message.type === 'applyRuleProfile') {
-      if (!ruleEngine || !ruleProfileStore)
-        return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
+      const engine = ensureRuleEngine();
+      if (!engine || !ruleProfileStore) return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
       try {
-        ruleEngine.write(ruleProfileStore.read(message.name).rules, { activeProfile: message.name });
+        engine.write(ruleProfileStore.read(message.name).rules, { activeProfile: message.name });
       } catch (err) {
         broadcastError('RULE_PROFILE_ERROR', describeError(err));
       }
