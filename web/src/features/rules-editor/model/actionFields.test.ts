@@ -155,10 +155,22 @@ describe('describeJsonBodyText', () => {
     expect(describeJsonBodyText('"hello"')).toEqual({ validJson: true, parsed: 'hello', status: '✓ Valid JSON' });
   });
 
-  it('agrees with parseBodyValue on which inputs actually parse as JSON', () => {
-    for (const text of ['{"a":1}', '[1,2,3]', '42', 'hello world', '{"a":1', '']) {
-      const validByParse = typeof parseBodyValue(text) !== 'string' && parseBodyValue(text) !== undefined;
-      expect(describeJsonBodyText(text).validJson).toBe(validByParse);
+  // Copilot review, PR #125: the original version of this test inferred
+  // "did this parse as JSON" from `typeof parseBodyValue(text) !== 'string'`
+  // — the same wrong assumption `validJson`'s old doc comment made, and
+  // just as wrong here: it misclassified a quoted JSON string literal
+  // (`'"hello"'`, `typeof` string despite being valid JSON) as not having
+  // parsed. Checking `parseBodyValue`'s actual *value* against `describeJsonBodyText`'s
+  // own `parsed` (on the valid side) or the raw input (on the invalid
+  // side — `parseBodyValue`'s fallback) instead ties this to the real
+  // contract both functions share, not a type-based proxy for it. Blank
+  // text is excluded — `parseBodyValue`'s `undefined` and
+  // `describeJsonBodyText`'s "Empty" are already covered by their own
+  // tests above and don't fit either branch here.
+  it('agrees with parseBodyValue: valid text parses to the same value, invalid text falls back to the literal input', () => {
+    for (const text of ['{"a":1}', '[1,2,3]', '42', 'hello world', '{"a":1', '"hello"']) {
+      const { validJson, parsed } = describeJsonBodyText(text);
+      expect(parseBodyValue(text)).toEqual(validJson ? parsed : text);
     }
   });
 });
