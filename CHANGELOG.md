@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/rwadada/Detour/compare/v0.2.2...v0.3.0) (2026-09-13)
+
+
+### Features
+
+* **rules-editor:** syntax-highlighted JSON editor for body fields ([89e6f5c](https://github.com/rwadada/Detour/commit/89e6f5cf79db72afbc5cab58a62397b45d6f1d67))
+* **rules-editor:** syntax-highlighted JSON editor for body fields ([d35bf5b](https://github.com/rwadada/Detour/commit/d35bf5b1c16813d74cd5a08ed6406985be3bba63))
+
 ## [0.2.2](https://github.com/rwadada/Detour/compare/v0.2.1...v0.2.2) (2026-09-13)
 
 
