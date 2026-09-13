@@ -219,7 +219,11 @@ function BodyTab(props: {
               truncated={props.requestBodyTruncated}
               contentEncoding={props.requestContentEncoding}
               grpcCall={props.grpcCall}
-              grpcDirection="request"
+              // Only set alongside `grpcCall` (never on its own) — `BodyViewer`/
+              // `useGrpcDecode`'s own doc comments assume the two are either
+              // both set or both undefined (a Copilot review on PR #127 caught
+              // this passing "request" unconditionally, gRPC call or not).
+              grpcDirection={props.grpcCall ? 'request' : undefined}
               grpcEncoding={props.requestGrpcEncoding}
             />
           ) : (
@@ -229,7 +233,7 @@ function BodyTab(props: {
               truncated={props.responseBodyTruncated}
               contentEncoding={props.responseContentEncoding}
               grpcCall={props.grpcCall}
-              grpcDirection="response"
+              grpcDirection={props.grpcCall ? 'response' : undefined}
               grpcEncoding={props.responseGrpcEncoding}
             />
           )}

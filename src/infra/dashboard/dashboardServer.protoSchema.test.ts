@@ -46,7 +46,11 @@ function writeProtoFile(): string {
  */
 describe('startDashboardServer — protoSchema (issue #18)', () => {
   let handle: DashboardServerHandle | undefined;
-  let sockets: WebSocket[];
+  // Initialized here (not just per-`it`) so `afterEach` can safely iterate
+  // it even if a test throws before reaching its own `sockets = []` — an
+  // unset array there would mask the real failure behind a `TypeError` in
+  // cleanup instead (a Copilot review on PR #127 caught this).
+  let sockets: WebSocket[] = [];
   const dirs: string[] = [];
 
   afterEach(async () => {
