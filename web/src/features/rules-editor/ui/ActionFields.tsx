@@ -225,8 +225,14 @@ function MockActionFields({ action, onChange }: { action: MockAction; onChange: 
               labelable control, so it never claims that click itself —
               every click meant for the editor was instead focusing (and
               typing into) the `Select` sitting next to it. `BodyRewriteFields`'s
-              own "set"/"merge" `JsonBodyField`s already avoid this by never
-              sharing a `Field` with a `Select` to begin with. */}
+              own "merge" `JsonBodyField` already avoids this by never
+              sharing a `Field` with a `Select` to begin with. The value
+              editor/input below gets its *own* `Field` too (rather than no
+              `Field` at all) — each label ends up wrapping exactly one
+              control either way, so the click-forwarding bug above can't
+              recur, but the value control still has a real associated
+              label instead of none (a review on this PR caught the
+              no-label version as its own, new accessibility regression). */}
           <Field label="Response body">
             <Select
               value={bodySource}
@@ -245,23 +251,27 @@ function MockActionFields({ action, onChange }: { action: MockAction; onChange: 
             </Select>
           </Field>
           {bodySource === 'inline' ? (
-            <JsonBodyField
-              value={bodyText}
-              placeholder='Plain text, or JSON like {"id": 1}'
-              onChange={(text) => {
-                setBodyText(text);
-                patch({ body: parseBodyValue(text) });
-              }}
-            />
+            <Field label="Response body value">
+              <JsonBodyField
+                value={bodyText}
+                placeholder='Plain text, or JSON like {"id": 1}'
+                onChange={(text) => {
+                  setBodyText(text);
+                  patch({ body: parseBodyValue(text) });
+                }}
+              />
+            </Field>
           ) : (
-            <Input
-              value={bodyFileText}
-              placeholder="path/to/body.json (relative to rules.json)"
-              onChange={(e) => {
-                setBodyFileText(e.target.value);
-                patch({ bodyFile: e.target.value || undefined });
-              }}
-            />
+            <Field label="Response body file path">
+              <Input
+                value={bodyFileText}
+                placeholder="path/to/body.json (relative to rules.json)"
+                onChange={(e) => {
+                  setBodyFileText(e.target.value);
+                  patch({ bodyFile: e.target.value || undefined });
+                }}
+              />
+            </Field>
           )}
         </>
       )}
