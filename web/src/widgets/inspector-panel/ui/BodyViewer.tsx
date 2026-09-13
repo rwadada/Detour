@@ -180,7 +180,19 @@ export function BodyViewer({
       return <EmptyState message={grpcResult.reason} />;
     }
     if (grpcResult.frames.length === 0) {
-      return <EmptyState message="No gRPC messages captured." />;
+      // `framesTruncated` here means frame-splitting itself gave up partway
+      // through (a truncated capture, or a still-in-flight streaming call) —
+      // distinct from "nothing was ever sent", which a review on this PR
+      // pointed out the single generic message below used to conflate.
+      return (
+        <EmptyState
+          message={
+            grpcResult.framesTruncated
+              ? 'The captured body ended mid-frame — no complete gRPC message to decode yet.'
+              : 'No gRPC messages captured.'
+          }
+        />
+      );
     }
     return <GrpcFrameList frames={grpcResult.frames} framesTruncated={grpcResult.framesTruncated} dark={dark} />;
   }
@@ -216,7 +228,14 @@ export function BodyViewer({
   );
 }
 
-/** Renders a decoded gRPC message list — one collapsible-looking block per frame, each its own read-only JSON view (or, if that one frame failed to decode, just its error text) so one bad message in a streaming call doesn't hide the rest. */
+/**
+ * Renders a decoded gRPC frame list — one collapsible-looking block per
+ * frame. A `'message'` frame gets its own read-only JSON view (or, if it
+ * failed to decode, just its error text) so one bad message in a streaming
+ * call doesn't hide the rest; a trailer frame (see `GrpcDecodedFrame.trailer`'s
+ * own doc comment) gets a plain-text block labeled "Trailer" instead, since
+ * it's gRPC-Web's own status/message metadata, not a Protobuf message.
+ */
 function GrpcFrameList({
   frames,
   framesTruncated,
@@ -226,38 +245,47 @@ function GrpcFrameList({
   framesTruncated: boolean;
   dark: boolean;
 }) {
+  const messageCount = frames.filter((frame) => frame.trailer === undefined).length;
+  const trailerCount = frames.length - messageCount;
+  let messageIndex = 0;
+
   return (
     <div className="flex h-full flex-col overflow-auto">
       <div className="border-b border-[var(--border)] px-3 py-1 text-xs text-[var(--muted)]">
-        {frames.length} message{frames.length === 1 ? '' : 's'}
+        {messageCount} message{messageCount === 1 ? '' : 's'}
+        {trailerCount > 0 && `, ${trailerCount} trailer${trailerCount === 1 ? '' : 's'}`}
         {framesTruncated && ' — truncated, showing what was captured before the cutoff'}
       </div>
       <div className="flex flex-col gap-2 p-2">
-        {frames.map((frame, index) => (
-          <div key={index} className="overflow-hidden rounded border border-[var(--border)]">
-            <div className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--row-hover)] px-2 py-1 text-xs text-[var(--muted)]">
-              <span>Message [{index}]</span>
-              {!frame.error && (
-                <CopyIconButton
-                  getText={() => JSON.stringify(frame.json, null, 2)}
-                  title="Copy message"
-                  className="h-5 w-5"
+        {frames.map((frame, index) => {
+          const isTrailer = frame.trailer !== undefined;
+          const label = isTrailer ? 'Trailer' : `Message [${messageIndex++}]`;
+          return (
+            <div key={index} className="overflow-hidden rounded border border-[var(--border)]">
+              <div className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--row-hover)] px-2 py-1 text-xs text-[var(--muted)]">
+                <span>{label}</span>
+                {!frame.error && (
+                  <CopyIconButton
+                    getText={() => (isTrailer ? (frame.trailer ?? '') : JSON.stringify(frame.json, null, 2))}
+                    title={isTrailer ? 'Copy trailer' : 'Copy message'}
+                    className="h-5 w-5"
+                  />
+                )}
+              </div>
+              {frame.error ? (
+                <p className="p-2 text-xs text-[var(--status-5xx)]">{frame.error}</p>
+              ) : (
+                <CodeMirror
+                  value={isTrailer ? frame.trailer : JSON.stringify(frame.json, null, 2)}
+                  extensions={isTrailer ? [readOnlyView] : [json(), readOnlyView]}
+                  theme={dark ? 'dark' : 'light'}
+                  basicSetup={{ lineNumbers: false, foldGutter: !isTrailer, highlightActiveLine: false }}
+                  className="text-xs"
                 />
               )}
             </div>
-            {frame.error ? (
-              <p className="p-2 text-xs text-[var(--status-5xx)]">{frame.error}</p>
-            ) : (
-              <CodeMirror
-                value={JSON.stringify(frame.json, null, 2)}
-                extensions={[json(), readOnlyView]}
-                theme={dark ? 'dark' : 'light'}
-                basicSetup={{ lineNumbers: false, foldGutter: true, highlightActiveLine: false }}
-                className="text-xs"
-              />
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

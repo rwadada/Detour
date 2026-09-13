@@ -68,18 +68,18 @@ describe('decodeGrpcFrames', () => {
     expect(decoded).toEqual([{ json: { name: 'world' } }]);
   });
 
-  it('skips trailer frames — a .proto schema has nothing to say about them', async () => {
+  it("decodes a trailer frame as text instead of attempting to parse it as a message — a .proto schema has nothing to say about it, and dropping it would hide a grpc-web call's actual outcome (often reported only in the trailer, with an HTTP 200 on the wire)", async () => {
     const root = buildSchemaRoot(schemaJson());
     const { requestType } = resolveGrpcMethod(root, 'helloworld.Greeter', 'SayHello')!;
     const encoded = requestType.encode({ name: 'x' }).finish();
     const trailer: GrpcFrame = {
       kind: 'trailer',
       compressed: false,
-      payload: new TextEncoder().encode('grpc-status:0'),
+      payload: new TextEncoder().encode('grpc-status:0\r\n'),
     };
 
     const decoded = await decodeGrpcFrames([messageFrame(encoded), trailer], requestType, undefined);
-    expect(decoded).toEqual([{ json: { name: 'x' } }]);
+    expect(decoded).toEqual([{ json: { name: 'x' } }, { trailer: 'grpc-status:0\r\n' }]);
   });
 
   it('reports a per-frame error for a payload that fails to decode, without aborting the rest', async () => {
@@ -133,6 +133,19 @@ describe('decodeGrpcFrames', () => {
     const decoded = await decodeGrpcFrames([messageFrame(encoded, true)], requestType, 'br');
     expect(decoded[0]!.json).toBeUndefined();
     expect(decoded[0]!.error).toMatch(/unsupported grpc-encoding "br"/);
+  });
+
+  it('decodes a body consisting of only a trailer (e.g. a failed grpc-web call with no message frames)', async () => {
+    const root = buildSchemaRoot(schemaJson());
+    const { requestType } = resolveGrpcMethod(root, 'helloworld.Greeter', 'SayHello')!;
+    const trailer: GrpcFrame = {
+      kind: 'trailer',
+      compressed: false,
+      payload: new TextEncoder().encode('grpc-status:2\r\ngrpc-message:boom\r\n'),
+    };
+
+    const decoded = await decodeGrpcFrames([trailer], requestType, undefined);
+    expect(decoded).toEqual([{ trailer: 'grpc-status:2\r\ngrpc-message:boom\r\n' }]);
   });
 
   it('returns an empty list for no frames', async () => {

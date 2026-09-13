@@ -1,10 +1,25 @@
 import { Root, type Type } from 'protobufjs/light';
 import type { GrpcFrame } from './grpcFraming';
 
-/** One gRPC message frame, decoded to a plain object — or, if that failed, why. Mirrors `src/domain/grpc/grpcDumpFormat.ts`'s `GrpcDecodedFrame` (the CLI's own dump format for the same data), so a frame looks the same whether it came from `--dump full` or this dashboard. */
+/**
+ * One gRPC frame, decoded for display — a `'message'` frame becomes a plain
+ * object (`json`) or, if that failed, why (`error`); a `'trailer'` frame
+ * (gRPC-Web's way of embedding HTTP-style trailing headers, e.g.
+ * `grpc-status`/`grpc-message`, as a final frame in the body) becomes its
+ * raw payload decoded as text (`trailer`) instead, since a `.proto` schema
+ * has nothing to say about it as a message — dropping it entirely would
+ * hide a call's actual outcome even when its data frames decoded fine (a
+ * grpc-web call very often reports failure only in its trailer, with an
+ * HTTP 200 on the wire). Loosely mirrors `src/domain/grpc/grpcDumpFormat.ts`'s
+ * `GrpcDecodedFrame` (the CLI's own dump format for the same data) — the two
+ * are independently declared, same as the rest of this module's framing
+ * logic, so this one is free to carry `trailer` without the CLI's needing
+ * to grow it too.
+ */
 export interface GrpcDecodedFrame {
   json?: unknown;
   error?: string;
+  trailer?: string;
 }
 
 export interface ResolvedGrpcMethod {
@@ -76,22 +91,27 @@ async function decompress(payload: Uint8Array, encoding: string | undefined): Pr
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
+const textDecoder = new TextDecoder();
+
 /**
- * Decodes every `'message'` frame in `frames` (trailer frames — gRPC-Web's
- * way of embedding HTTP-style trailing headers — are skipped; a `.proto`
- * schema has nothing to say about those) as a message of `type`, mirroring
- * `infra/grpc/grpcExchangeInfo.ts`'s own `decodeFrames` server-side. A
- * frame that fails to decompress or parse gets its own `error` instead of
- * aborting the whole batch, so one bad message doesn't hide the rest.
+ * Decodes every frame in `frames` as a message of `type` — except a
+ * `'trailer'` frame, which becomes its payload decoded as plain text
+ * instead (see `GrpcDecodedFrame.trailer`'s own doc comment for why it's
+ * kept rather than dropped). A trailer's own compression flag, if any per
+ * the wire format, is not honored here — gRPC-Web trailers are not
+ * compressed in practice, and a compressed one would just come back as
+ * garbled text rather than crash the batch. A `'message'` frame that fails
+ * to decompress or parse gets its own `error` instead of aborting the whole
+ * batch, so one bad message doesn't hide the rest.
  */
 export async function decodeGrpcFrames(
   frames: GrpcFrame[],
   type: Type,
   encoding: string | undefined,
 ): Promise<GrpcDecodedFrame[]> {
-  const messageFrames = frames.filter((frame) => frame.kind === 'message');
   return Promise.all(
-    messageFrames.map(async (frame) => {
+    frames.map(async (frame) => {
+      if (frame.kind === 'trailer') return { trailer: textDecoder.decode(frame.payload) };
       try {
         const payload = frame.compressed ? await decompress(frame.payload, encoding) : frame.payload;
         const message = type.decode(payload);
