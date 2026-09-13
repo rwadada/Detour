@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/rwadada/Detour/compare/v0.2.1...v0.2.2) (2026-09-13)
+
+
+### Bug Fixes
+
+* let switching a Rule Profile provision a rules file if none exists yet ([bfa63f7](https://github.com/rwadada/Detour/commit/bfa63f782f4a8f9385482b94229690131fa048ac))
+* let switching a Rule Profile provision a rules file if none exists yet ([ee74d6e](https://github.com/rwadada/Detour/commit/ee74d6e4d00932acc86be253a4392eca972a0ebb))
+
 ## [0.2.1](https://github.com/rwadada/Detour/compare/v0.2.0...v0.2.1) (2026-09-12)
 
 
