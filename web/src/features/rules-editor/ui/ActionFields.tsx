@@ -215,6 +215,18 @@ function MockActionFields({ action, onChange }: { action: MockAction; onChange: 
             />
           </Field>
 
+          {/* `Select` deliberately gets its own `Field`/`<label>`, not one
+              shared with the editor below (issue #126) — a `<label>`
+              wrapping more than one native form control redirects a click
+              anywhere inside it that doesn't land on an interactive element
+              of its own to that label's implicit target (the first
+              labelable descendant, here the `Select`). `JsonBodyField`'s
+              CodeMirror instance is a `contentEditable` div, not a native
+              labelable control, so it never claims that click itself —
+              every click meant for the editor was instead focusing (and
+              typing into) the `Select` sitting next to it. `BodyRewriteFields`'s
+              own "set"/"merge" `JsonBodyField`s already avoid this by never
+              sharing a `Field` with a `Select` to begin with. */}
           <Field label="Response body">
             <Select
               value={bodySource}
@@ -227,31 +239,30 @@ function MockActionFields({ action, onChange }: { action: MockAction; onChange: 
                     : { bodyFile: bodyFileText || undefined, body: undefined },
                 );
               }}
-              className="mb-1"
             >
               <option value="inline">Type it in below</option>
               <option value="file">Read from a file</option>
             </Select>
-            {bodySource === 'inline' ? (
-              <JsonBodyField
-                value={bodyText}
-                placeholder='Plain text, or JSON like {"id": 1}'
-                onChange={(text) => {
-                  setBodyText(text);
-                  patch({ body: parseBodyValue(text) });
-                }}
-              />
-            ) : (
-              <Input
-                value={bodyFileText}
-                placeholder="path/to/body.json (relative to rules.json)"
-                onChange={(e) => {
-                  setBodyFileText(e.target.value);
-                  patch({ bodyFile: e.target.value || undefined });
-                }}
-              />
-            )}
           </Field>
+          {bodySource === 'inline' ? (
+            <JsonBodyField
+              value={bodyText}
+              placeholder='Plain text, or JSON like {"id": 1}'
+              onChange={(text) => {
+                setBodyText(text);
+                patch({ body: parseBodyValue(text) });
+              }}
+            />
+          ) : (
+            <Input
+              value={bodyFileText}
+              placeholder="path/to/body.json (relative to rules.json)"
+              onChange={(e) => {
+                setBodyFileText(e.target.value);
+                patch({ bodyFile: e.target.value || undefined });
+              }}
+            />
+          )}
         </>
       )}
 
