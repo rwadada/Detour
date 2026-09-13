@@ -71,6 +71,34 @@ export function bodyValueToText(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
+/** `JsonBodyField`'s (ActionFields.tsx) status caption plus what a "Format" click would reformat to — pulled out here, alongside `parseBodyValue` itself, so the exact same "does this actually parse" question that field asks about has one pure, tested answer instead of the component re-deriving it inline. */
+export interface JsonBodyStatus {
+  /**
+   * Whether `JSON.parse` succeeds on `text` (blank doesn't count) — this is
+   * exactly the condition `parseBodyValue` itself branches on. Note this
+   * isn't quite "will be saved as something other than a string": a
+   * quoted JSON string literal (`"hello"`) is itself valid JSON and still
+   * parses to a plain string (unquoted) — `validJson` only tells you
+   * whether `text` was interpreted *as JSON* at all, not what type the
+   * result happens to be.
+   */
+  validJson: boolean;
+  /** The parsed value, present only when `validJson` is true. */
+  parsed?: unknown;
+  /** A short caption for display next to the editor. */
+  status: string;
+}
+
+export function describeJsonBodyText(text: string): JsonBodyStatus {
+  const trimmed = text.trim();
+  if (trimmed === '') return { validJson: false, status: 'Empty' };
+  try {
+    return { validJson: true, parsed: JSON.parse(trimmed), status: '✓ Valid JSON' };
+  } catch {
+    return { validJson: false, status: 'Not valid JSON — will be sent as a literal string, as-is' };
+  }
+}
+
 /**
  * `set` wins outright and skips the rest (mutually exclusive with the
  * other two, per `BodyRewrite`'s own doc comment) — but `replace` and

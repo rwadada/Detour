@@ -4,6 +4,7 @@ import {
   blankBodyReplace,
   bodyRewriteMode,
   bodyValueToText,
+  describeJsonBodyText,
   isEmptySetRemove,
   parseBodyValue,
   parseOptionalInt,
@@ -113,6 +114,64 @@ describe('parseBodyValue / bodyValueToText', () => {
 
   it('renders undefined as an empty string', () => {
     expect(bodyValueToText(undefined)).toBe('');
+  });
+});
+
+describe('describeJsonBodyText', () => {
+  it('reports valid JSON, with the parsed value', () => {
+    expect(describeJsonBodyText('{"id": 1}')).toEqual({ validJson: true, parsed: { id: 1 }, status: '✓ Valid JSON' });
+    expect(describeJsonBodyText('[1, 2, 3]')).toEqual({ validJson: true, parsed: [1, 2, 3], status: '✓ Valid JSON' });
+  });
+
+  it('reports blank text as "Empty", not invalid', () => {
+    expect(describeJsonBodyText('')).toEqual({ validJson: false, status: 'Empty' });
+    expect(describeJsonBodyText('   ')).toEqual({ validJson: false, status: 'Empty' });
+  });
+
+  // The exact case the field's own doc comment calls out: `parseBodyValue`
+  // silently accepts this same text as the literal string body it is, so
+  // the status caption is what actually tells a user their JSON has a typo
+  // instead of just quietly sending it as-is.
+  it('reports a JSON-typo (e.g. a truncated object) as not valid, not as an error', () => {
+    const result = describeJsonBodyText('{"id": 1');
+    expect(result.validJson).toBe(false);
+    expect(result.parsed).toBeUndefined();
+    expect(result.status).toMatch(/not valid json/i);
+  });
+
+  it('reports genuinely plain text (never meant to be JSON) as not valid, same as a typo', () => {
+    const result = describeJsonBodyText('hello world');
+    expect(result.validJson).toBe(false);
+    expect(result.status).toMatch(/not valid json/i);
+  });
+
+  // Copilot review, PR #125: `validJson: true` means `text` parsed *as
+  // JSON*, not that the result is an object/array/number — a quoted JSON
+  // string literal is itself valid JSON and still parses to a plain
+  // (unquoted) string, same `typeof` as the "not valid" fallback case above
+  // would produce. `JsonBodyStatus.validJson`'s own doc comment calls this
+  // out explicitly.
+  it('reports a quoted JSON string literal as valid, even though it parses to a plain string', () => {
+    expect(describeJsonBodyText('"hello"')).toEqual({ validJson: true, parsed: 'hello', status: '✓ Valid JSON' });
+  });
+
+  // Copilot review, PR #125: the original version of this test inferred
+  // "did this parse as JSON" from `typeof parseBodyValue(text) !== 'string'`
+  // — the same wrong assumption `validJson`'s old doc comment made, and
+  // just as wrong here: it misclassified a quoted JSON string literal
+  // (`'"hello"'`, `typeof` string despite being valid JSON) as not having
+  // parsed. Checking `parseBodyValue`'s actual *value* against `describeJsonBodyText`'s
+  // own `parsed` (on the valid side) or the raw input (on the invalid
+  // side — `parseBodyValue`'s fallback) instead ties this to the real
+  // contract both functions share, not a type-based proxy for it. Blank
+  // text is excluded — `parseBodyValue`'s `undefined` and
+  // `describeJsonBodyText`'s "Empty" are already covered by their own
+  // tests above and don't fit either branch here.
+  it('agrees with parseBodyValue: valid text parses to the same value, invalid text falls back to the literal input', () => {
+    for (const text of ['{"a":1}', '[1,2,3]', '42', 'hello world', '{"a":1', '"hello"']) {
+      const { validJson, parsed } = describeJsonBodyText(text);
+      expect(parseBodyValue(text)).toEqual(validJson ? parsed : text);
+    }
   });
 });
 
