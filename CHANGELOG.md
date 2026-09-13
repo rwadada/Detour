@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.0.0](https://github.com/rwadada/Detour/compare/v0.3.0...v1.0.0) (2026-09-13)
+
+
+### Features
+
+* **dashboard:** decode gRPC message bodies given a --proto schema ([49c177b](https://github.com/rwadada/Detour/commit/49c177be28dd02f76bacb8636f93f4ce48f1c4cb))
+* **dashboard:** decode gRPC message bodies given a --proto schema ([fa75a80](https://github.com/rwadada/Detour/commit/fa75a803a9b451808d421ac703a3ec1d974579eb))
+
+
+### Bug Fixes
+
+* address Copilot findings on test cleanup and gRPC prop wiring ([3c94450](https://github.com/rwadada/Detour/commit/3c944506ffe1bde3b57c2301beda7d2b04919935))
+* **dashboard:** address Copilot review findings on gRPC decoding ([f4383cb](https://github.com/rwadada/Detour/commit/f4383cb48f68751652436e34b051dd6f546c82e2))
+* **dashboard:** surface gRPC-Web trailer frames instead of dropping them ([1afa1c9](https://github.com/rwadada/Detour/commit/1afa1c90a99b5f5a3725b0f36e9caad5eea4e1e4))
+* **rules-editor:** clicking the Mock body editor was focusing the body-source dropdown instead ([f77518d](https://github.com/rwadada/Detour/commit/f77518dca4ae716dacb2eff7aed14fe43847d7fe))
+* **rules-editor:** restore a label on the Mock body value editor/input ([3a21074](https://github.com/rwadada/Detour/commit/3a210741926f1af6113dd63d375b1e8721ab0452))
+
+
+### Miscellaneous Chores
+
+* release this as v1.0.0 ([98822e3](https://github.com/rwadada/Detour/commit/98822e348815761e3f7bca690ee261cdca2aa9ef))
+
 ## [0.3.0](https://github.com/rwadada/Detour/compare/v0.2.2...v0.3.0) (2026-09-13)
 
 
