@@ -45,7 +45,8 @@ export function decodeCapturedBody(base64: string): string | undefined {
   }
 }
 
-function base64ToBytes(base64: string): Uint8Array {
+/** Decodes a base64-captured body to raw bytes — the same first step `decodeCapturedBody`/`decodeCapturedBodyAsync` take before text-decoding, exported for a consumer (e.g. `entities/grpc`) that needs the bytes themselves rather than text. Throws on malformed base64, same as `atob` itself. */
+export function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);

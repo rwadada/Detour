@@ -99,6 +99,26 @@ describe('ProtoRegistry', () => {
     const resolved = registry.resolveMethod('shared.Pinger', 'Ping');
     expect(resolved?.requestType.name).toBe('Empty');
   });
+
+  // Issue #18's dashboard follow-up: `toJSON()` is what `dashboardServer.ts`
+  // sends to the browser as `protoSchema`, so it can reconstruct an
+  // equivalent schema client-side (via `protobufjs/light`'s
+  // `Root.fromJSON()`) and decode gRPC frames itself — this only covers
+  // that the descriptor genuinely round-trips back into a usable schema,
+  // not the dashboard wiring itself (see `dashboardServer.protoSchema.test.ts`).
+  it('toJSON() produces a descriptor that round-trips back into an equivalent, resolvable schema', async () => {
+    const file = writeProtoFile();
+    dirs.push(file);
+    const registry = await ProtoRegistry.load([file]);
+
+    const json = registry.toJSON();
+    const rebuilt = protobuf.Root.fromJSON(json);
+    rebuilt.resolveAll();
+    const rpc = rebuilt.lookupService('helloworld.Greeter').methods.SayHello!;
+
+    expect(rpc.resolvedRequestType?.name).toBe('HelloRequest');
+    expect(rpc.resolvedResponseType?.name).toBe('HelloReply');
+  });
 });
 
 // Sanity check that protobufjs itself is wired the way this test suite

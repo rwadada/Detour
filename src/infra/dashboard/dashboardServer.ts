@@ -20,6 +20,7 @@ import { replayExchange } from '../../usecase/replayExchange';
 import type { RuleEngine } from '../../usecase/ruleEngine';
 import type { DetourEventBus } from '../eventBus';
 import { loadUserConfig, writeUserConfig } from '../fs/userConfigStore';
+import type { ProtoRegistry } from '../grpc/protoRegistry';
 import { assertPortAvailable } from '../portCheck';
 import { nodeHttpRequester } from '../proxy/nodeHttpRequester';
 import { hashDashboardPassword, verifyDashboardPassword } from './dashboardPasswordHash';
@@ -97,6 +98,15 @@ export interface DashboardServerOptions {
    * double with no real filesystem behind it.
    */
   createRuleEngine?: () => RuleEngine;
+  /**
+   * The session's `--proto` schema, if any (gRPC decoding extended to the
+   * dashboard) — its JSON descriptor (`ProtoRegistry.toJSON()`) is sent to
+   * every connecting client as `protoSchema`, so the Body tab can decode a
+   * gRPC exchange's message frames client-side the same way `--dump full`
+   * already does for the CLI. Omitted (dashboard shows raw gRPC bytes,
+   * same as no `--proto` at all) when this session has none configured.
+   */
+  protoRegistry?: ProtoRegistry;
   /** Performs the real outbound request for `replay` (issue #19). Injectable for tests; defaults to a real `node:http`/`node:https` request. */
   httpRequester?: HttpRequester;
   /** Backs `userConfig`/`setUserConfig` (the dashboard Settings panel's `defaultDetach`/`lanAccess` toggles). Injectable for tests; defaults to `~/.detour/config.json` (`resolveUserConfigPath()`). */
@@ -176,6 +186,15 @@ export async function startDashboardServer(
   const { ruleProfileStore, createRuleEngine } = options;
   const httpRequester = options.httpRequester ?? nodeHttpRequester;
   const lanAddrs = options.lanAddresses ?? [];
+  // Computed once, not per-connection like `rulesMessage()`/`ruleProfilesMessage()`
+  // below — a `--proto` schema has no live-reload (see `protoSchema`'s own
+  // doc comment on `DashboardServerMessage`), so there's nothing for a later
+  // call to pick up that this one wouldn't already have.
+  // `protobuf.INamespace` (a plain-data description of protobufjs's own
+  // schema types) has no index signature TypeScript will structurally match
+  // against `Record<string, unknown>` — but it's genuinely just JSON going
+  // out over the wire either way, so the cast is safe.
+  const protoSchema = (options.protoRegistry?.toJSON() as Record<string, unknown> | undefined) ?? null;
   // Whether this server itself is bound to every network interface, not
   // just loopback — see `sendInitialPayload`'s own `dashboardOnLan` below,
   // which this mirrors. Only in this case are `lanAddrs` actually reachable
@@ -531,6 +550,8 @@ export async function startDashboardServer(
     socket.send(JSON.stringify(rulesMessage()));
     socket.send(JSON.stringify(ruleProfilesMessage()));
     socket.send(JSON.stringify(userConfigMessage()));
+    const protoSchemaMessage: DashboardServerMessage = { type: 'protoSchema', schema: protoSchema };
+    socket.send(JSON.stringify(protoSchemaMessage));
   };
 
   wss.on('connection', (socket: WebSocket) => {

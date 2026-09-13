@@ -60,6 +60,22 @@ export default defineConfig([
     rules: { 'fsd/insignificant-slice': 'off' },
   },
   {
+    // `grpc` (issue #18's dashboard follow-up: decoding a gRPC exchange's
+    // body client-side, given the `--proto` schema the server broadcasts as
+    // `protoSchema`) has exactly one consumer today — `widgets/inspector-panel`
+    // (`BodyViewer`/`InspectorPanel`) — which is exactly what
+    // `fsd/insignificant-slice` flags as "just merge it in". Kept as its
+    // own entity anyway: the framing/schema-decoding logic here has nothing
+    // to do with `BodyViewer`'s own rendering concerns, is independently
+    // unit-testable without mounting a component (see its own `.test.ts`
+    // files), and mirrors the CLI's own `infra/grpc/` split for the same
+    // reason — a second UI surface wanting the same decode (a future
+    // WebSocket-frame body viewer, say) shouldn't need `BodyViewer` as a
+    // detour to get it.
+    files: ['./src/entities/grpc/**'],
+    rules: { 'fsd/insignificant-slice': 'off' },
+  },
+  {
     // `rule` genuinely has two consumers (`features/rules-editor` and
     // `features/rules-profiles` both import `useRuleStore` from it —
     // `grep -rn "@/entities/rule" src` confirms it, and both `tsc` and

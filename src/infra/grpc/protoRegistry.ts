@@ -51,4 +51,16 @@ export class ProtoRegistry {
     const message = type.decode(payload);
     return type.toObject(message, { longs: String, enums: String, bytes: String, defaults: false });
   }
+
+  /**
+   * The loaded schema as a plain JSON descriptor (`protobufjs`'s own
+   * serialization of a `Root`) — sent to the dashboard so the browser can
+   * reconstruct an equivalent `Root` client-side (via `protobufjs/light`'s
+   * `Root.fromJSON()`) and decode gRPC message frames itself, the same way
+   * `decode()` above does server-side for the CLI dump. Plain data, not a
+   * live reference — mutating the result has no effect on this registry.
+   */
+  toJSON(): protobuf.INamespace {
+    return this.root.toJSON();
+  }
 }
