@@ -1,5 +1,5 @@
 import Ajv, { type ErrorObject } from 'ajv';
-import type { Rule, RulesFile } from './types';
+import type { BodyReplace, Rule, RulesFile } from './types';
 
 const headerRewriteSchema = {
   type: 'object',
@@ -19,25 +19,46 @@ const queryRewriteSchema = {
   },
 };
 
+const bodyReplaceSchema = {
+  type: 'array',
+  items: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['find', 'replacement'],
+    properties: {
+      find: { type: 'string' },
+      replacement: { type: 'string' },
+      regex: { type: 'boolean' },
+      // Catches obvious typos at the schema stage, same as match.urlRegexFlags
+      // above; `validateSemantics` below still compiles `find`/`flags` (when
+      // `regex` is set) to catch flag *combinations* RegExp itself rejects
+      // (e.g. duplicate flags), which this charset check alone can't.
+      flags: { type: 'string', pattern: '^[dgimsuvy]*$' },
+    },
+  },
+};
+
+const pathRewriteSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    // No schema-level charset restriction here (unlike bodyReplaceSchema's
+    // `flags` above) — `applyPathRewrite` appends the request's existing
+    // query string onto `set` verbatim, so a `set` that already carries a
+    // "?"/"#" would produce a path with two query strings (or a stray
+    // fragment); `validateSemantics` below rejects that with a message
+    // naming the actual problem, which a bare ajv pattern mismatch wouldn't.
+    set: { type: 'string', minLength: 1 },
+    replace: bodyReplaceSchema,
+  },
+};
+
 const bodyRewriteSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
     set: {},
-    replace: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['find', 'replacement'],
-        properties: {
-          find: { type: 'string' },
-          replacement: { type: 'string' },
-          regex: { type: 'boolean' },
-          flags: { type: 'string' },
-        },
-      },
-    },
+    replace: bodyReplaceSchema,
     // Merge patches only make sense as an object (RFC 7396) — a bare
     // scalar/array would just be a confusing spelling of `set`.
     merge: { type: 'object' },
@@ -129,7 +150,12 @@ export const RULES_JSON_SCHEMA = {
         request: {
           type: 'object',
           additionalProperties: false,
-          properties: { query: queryRewriteSchema, headers: headerRewriteSchema, body: bodyRewriteSchema },
+          properties: {
+            path: pathRewriteSchema,
+            query: queryRewriteSchema,
+            headers: headerRewriteSchema,
+            body: bodyRewriteSchema,
+          },
         },
         response: {
           type: 'object',
@@ -170,6 +196,30 @@ const validateFn = ajv.compile(RULES_JSON_SCHEMA);
 function formatAjvError(err: ErrorObject): string {
   const at = err.instancePath || '(root)';
   return `${at}: ${err.message ?? 'invalid value'}`;
+}
+
+/**
+ * Compiles each `regex: true` replace step's `find`/`flags`, appending a
+ * labeled error for any RegExp the schema's charset-only `flags` pattern
+ * can't catch (e.g. duplicate flags like `"gg"`) — same reasoning as
+ * `match.urlRegex`'s compile check below.
+ */
+function validateReplaceSteps(
+  steps: BodyReplace[] | undefined,
+  index: number,
+  label: string,
+  location: string,
+  errors: string[],
+): void {
+  for (const [stepIndex, step] of (steps ?? []).entries()) {
+    if (!step.regex) continue;
+    try {
+      new RegExp(step.find, step.flags);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      errors.push(`rules[${index}] (${label}): invalid ${location}.replace[${stepIndex}] regex/flags: ${reason}`);
+    }
+  }
 }
 
 /** Rules a schema alone can't express (duplicate names, ambiguous mock body). */
@@ -241,6 +291,27 @@ function validateSemantics(data: RulesFile): string[] {
         const reason = err instanceof Error ? err.message : String(err);
         errors.push(`rules[${index}] (${label}): invalid urlRegex/urlRegexFlags: ${reason}`);
       }
+    }
+    if (rule.action?.type === 'rewrite') {
+      const pathSet = rule.action.request?.path?.set;
+      // See pathRewriteSchema's `set` doc comment (schema.ts above) for why
+      // this isn't a schema-level pattern instead.
+      if (pathSet !== undefined && /[?#]/.test(pathSet)) {
+        errors.push(
+          `rules[${index}] (${label}): action.request.path.set "${pathSet}" must not contain "?"/"#" — the request's existing query string is preserved and appended automatically, so path.set must be a bare pathname`,
+        );
+      }
+      // A pathname sent as an HTTP request-target must start with "/" (RFC
+      // 7230 origin-form) — omitting it (e.g. "people/1") would reach
+      // net/http as a malformed request line to the upstream server.
+      if (pathSet !== undefined && !pathSet.startsWith('/')) {
+        errors.push(
+          `rules[${index}] (${label}): action.request.path.set "${pathSet}" must start with "/" — it replaces the request's URL path, which always begins with "/"`,
+        );
+      }
+      validateReplaceSteps(rule.action.request?.path?.replace, index, label, 'action.request.path', errors);
+      validateReplaceSteps(rule.action.request?.body?.replace, index, label, 'action.request.body', errors);
+      validateReplaceSteps(rule.action.response?.body?.replace, index, label, 'action.response.body', errors);
     }
   }
   return errors;

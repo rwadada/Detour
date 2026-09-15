@@ -39,6 +39,21 @@ export interface QueryRewrite {
   remove?: string[];
 }
 
+/**
+ * Rewrites a request URL's path (the part before the query string, e.g.
+ * `/users/1` in `/users/1?x=2`), which is how a path *parameter* like the
+ * `1` above gets changed — `query` only ever touches what comes after `?`.
+ * `set` (if present) replaces the whole pathname outright and skips
+ * `replace`; otherwise `replace` runs as sequential find/replace passes,
+ * same semantics as `BodyReplace` (regex supported, with capture groups
+ * usable in `replacement`, e.g. `find: "/users/(\\d+)"`, `replacement:
+ * "/people/$1"`). The query string, if any, is left untouched either way.
+ */
+export interface PathRewrite {
+  set?: string;
+  replace?: BodyReplace[];
+}
+
 /** A single textual find/replace applied to a body. */
 export interface BodyReplace {
   find: string;
@@ -113,6 +128,8 @@ export interface RouteAction {
 export interface RewriteAction {
   type: 'rewrite';
   request?: {
+    /** Rewrites the request URL's path, e.g. to change a path parameter. Response has no URL, so this only applies to requests. */
+    path?: PathRewrite;
     /** Rewrites the request URL's query string. Response has no URL, so this only applies to requests. */
     query?: QueryRewrite;
     headers?: HeaderRewrite;

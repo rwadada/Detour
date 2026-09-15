@@ -44,6 +44,21 @@ export const SAMPLE_RULES_FILE = `{
       }
     },
     {
+      "name": "rewrite-example-path",
+      "enabled": false,
+      "match": {
+        "url": "https://api.example.com/*"
+      },
+      "action": {
+        "type": "rewrite",
+        "request": {
+          "path": {
+            "replace": [{ "find": "/users/(\\\\d+)", "replacement": "/people/$1", "regex": true }]
+          }
+        }
+      }
+    },
+    {
       "name": "rewrite-example-query",
       "enabled": false,
       "match": {
