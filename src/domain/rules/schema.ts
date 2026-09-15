@@ -19,25 +19,36 @@ const queryRewriteSchema = {
   },
 };
 
+const bodyReplaceSchema = {
+  type: 'array',
+  items: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['find', 'replacement'],
+    properties: {
+      find: { type: 'string' },
+      replacement: { type: 'string' },
+      regex: { type: 'boolean' },
+      flags: { type: 'string' },
+    },
+  },
+};
+
+const pathRewriteSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    set: { type: 'string', minLength: 1 },
+    replace: bodyReplaceSchema,
+  },
+};
+
 const bodyRewriteSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
     set: {},
-    replace: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['find', 'replacement'],
-        properties: {
-          find: { type: 'string' },
-          replacement: { type: 'string' },
-          regex: { type: 'boolean' },
-          flags: { type: 'string' },
-        },
-      },
-    },
+    replace: bodyReplaceSchema,
     // Merge patches only make sense as an object (RFC 7396) — a bare
     // scalar/array would just be a confusing spelling of `set`.
     merge: { type: 'object' },
@@ -129,7 +140,12 @@ export const RULES_JSON_SCHEMA = {
         request: {
           type: 'object',
           additionalProperties: false,
-          properties: { query: queryRewriteSchema, headers: headerRewriteSchema, body: bodyRewriteSchema },
+          properties: {
+            path: pathRewriteSchema,
+            query: queryRewriteSchema,
+            headers: headerRewriteSchema,
+            body: bodyRewriteSchema,
+          },
         },
         response: {
           type: 'object',

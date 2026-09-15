@@ -118,6 +118,27 @@ describe('validateRulesData', () => {
     expect(result.valid).toBe(true);
   });
 
+  it('accepts a rewrite action with a request.path rewrite', () => {
+    const result = validateRulesData({
+      rules: [
+        baseRule({
+          action: {
+            type: 'rewrite',
+            request: { path: { replace: [{ find: '/users/(\\d+)', replacement: '/people/$1', regex: true }] } },
+          },
+        }),
+      ],
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects a request.path rewrite with unknown extra properties', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'rewrite', request: { path: { set: '/x', bogus: true } } } })],
+    });
+    expect(result.valid).toBe(false);
+  });
+
   it('accepts a script action', () => {
     const result = validateRulesData({
       rules: [baseRule({ action: { type: 'script', path: './rules.script.js' } })],

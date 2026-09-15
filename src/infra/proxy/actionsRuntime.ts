@@ -2,6 +2,7 @@ import { deleteHeader } from '../../domain/exchange/headers';
 import { applyBodyRewrite } from '../../domain/rules/bodyRewrite';
 import { applyHeaderRewrite } from '../../domain/rules/headerRewrite';
 import { type MockResponse } from '../../domain/rules/mockResponse';
+import { applyPathRewrite } from '../../domain/rules/pathRewrite';
 import { applyQueryRewrite } from '../../domain/rules/queryRewrite';
 import { computeRouteTarget } from '../../domain/rules/routeAction';
 import { resolveRulePath } from '../../domain/rules/safeRulePath';
@@ -127,10 +128,11 @@ export function installResponseBodyRewrite(
   });
 }
 
-/** Applies a rewrite rule's query-string/header changes, and sets up body rewriting if requested. */
+/** Applies a rewrite rule's path/query-string/header changes, and sets up body rewriting if requested. */
 export function applyRequestRewrite(ctx: IContext, rewrite: NonNullable<RewriteAction['request']>): void {
   const opts = ctx.proxyToServerRequestOptions;
   if (!opts) return;
+  applyPathRewrite(opts, rewrite.path);
   applyQueryRewrite(opts, rewrite.query);
   applyHeaderRewrite(opts.headers, rewrite.headers);
   if (rewrite.body) {
