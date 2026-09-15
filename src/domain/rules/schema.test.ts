@@ -139,6 +139,67 @@ describe('validateRulesData', () => {
     expect(result.valid).toBe(false);
   });
 
+  it('rejects a request.path.set containing a query string, naming the field', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'rewrite', request: { path: { set: '/x?y=1' } } } })],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('action.request.path.set') && e.includes('must not contain'))).toBe(
+      true,
+    );
+  });
+
+  it('rejects a request.path.set containing a fragment', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'rewrite', request: { path: { set: '/x#frag' } } } })],
+    });
+    expect(result.valid).toBe(false);
+  });
+
+  it('rejects a replace step whose flags contain an invalid character', () => {
+    const result = validateRulesData({
+      rules: [
+        baseRule({
+          action: {
+            type: 'rewrite',
+            request: { path: { replace: [{ find: 'a', replacement: 'b', regex: true, flags: 'q' }] } },
+          },
+        }),
+      ],
+    });
+    expect(result.valid).toBe(false);
+  });
+
+  it('rejects a replace step whose flags are a valid charset but an invalid combination', () => {
+    const result = validateRulesData({
+      rules: [
+        baseRule({
+          action: {
+            type: 'rewrite',
+            request: { body: { replace: [{ find: 'a', replacement: 'b', regex: true, flags: 'gg' }] } },
+          },
+        }),
+      ],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('action.request.body.replace[0]'))).toBe(true);
+  });
+
+  it('rejects an invalid regex source in a request.path.replace step', () => {
+    const result = validateRulesData({
+      rules: [
+        baseRule({
+          action: {
+            type: 'rewrite',
+            request: { path: { replace: [{ find: '(unterminated', replacement: 'b', regex: true }] } },
+          },
+        }),
+      ],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('action.request.path.replace[0]'))).toBe(true);
+  });
+
   it('accepts a script action', () => {
     const result = validateRulesData({
       rules: [baseRule({ action: { type: 'script', path: './rules.script.js' } })],
