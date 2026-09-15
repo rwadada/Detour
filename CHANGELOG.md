@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0](https://github.com/rwadada/Detour/compare/v1.1.0...v1.2.0) (2026-09-15)
+
+
+### Features
+
+* **rules-editor:** add a GUI form for the rewrite action's path rewrite ([828ea78](https://github.com/rwadada/Detour/commit/828ea786e2bb57ff81d889257e03f6dd240252e0))
+* **rules-editor:** add a GUI form for the rewrite action's path rewrite ([04e370e](https://github.com/rwadada/Detour/commit/04e370e46cbd1db8fd556347938db60e5a2b85ce))
+
+
+### Bug Fixes
+
+* **rules-editor:** address Copilot review findings on Path rewrite UI ([c761795](https://github.com/rwadada/Detour/commit/c7617959e622c0fa9c617a9093e262ac39626706))
+
 ## [1.1.0](https://github.com/rwadada/Detour/compare/v1.0.1...v1.1.0) (2026-09-15)
 
 
