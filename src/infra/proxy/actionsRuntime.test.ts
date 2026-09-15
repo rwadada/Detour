@@ -223,6 +223,15 @@ describe('applyRequestRewrite', () => {
     expect(opts.headers['content-length']).toBeUndefined();
     expect(opts.headers['Content-Length']).toBeUndefined();
   });
+
+  it('rewrites the path, preserving the query string', () => {
+    const opts = { path: '/users/1?x=2', headers: {} as Record<string, string> };
+    const ctx = fakeContext({ proxyToServerRequestOptions: opts });
+    applyRequestRewrite(ctx, {
+      path: { replace: [{ find: '/users/(\\d+)', replacement: '/people/$1', regex: true }] },
+    });
+    expect(opts.path).toBe('/people/1?x=2');
+  });
 });
 
 describe('applyResponseHeaderRewrite', () => {

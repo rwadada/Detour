@@ -301,6 +301,14 @@ function validateSemantics(data: RulesFile): string[] {
           `rules[${index}] (${label}): action.request.path.set "${pathSet}" must not contain "?"/"#" — the request's existing query string is preserved and appended automatically, so path.set must be a bare pathname`,
         );
       }
+      // A pathname sent as an HTTP request-target must start with "/" (RFC
+      // 7230 origin-form) — omitting it (e.g. "people/1") would reach
+      // net/http as a malformed request line to the upstream server.
+      if (pathSet !== undefined && !pathSet.startsWith('/')) {
+        errors.push(
+          `rules[${index}] (${label}): action.request.path.set "${pathSet}" must start with "/" — it replaces the request's URL path, which always begins with "/"`,
+        );
+      }
       validateReplaceSteps(rule.action.request?.path?.replace, index, label, 'action.request.path', errors);
       validateReplaceSteps(rule.action.request?.body?.replace, index, label, 'action.request.body', errors);
       validateReplaceSteps(rule.action.response?.body?.replace, index, label, 'action.response.body', errors);

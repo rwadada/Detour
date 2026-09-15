@@ -26,7 +26,7 @@ describe('applyPathRewrite', () => {
     expect(opts.path).toBe('/override');
   });
 
-  it('leaves a path with no query string alone', () => {
+  it('rewrites the pathname even when there is no query string to preserve', () => {
     const opts = { path: '/users/1' };
     applyPathRewrite(opts, { set: '/people/1' });
     expect(opts.path).toBe('/people/1');

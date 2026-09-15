@@ -156,6 +156,23 @@ describe('validateRulesData', () => {
     expect(result.valid).toBe(false);
   });
 
+  it('rejects a request.path.set not starting with "/"', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'rewrite', request: { path: { set: 'people/1' } } } })],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('action.request.path.set') && e.includes('must start with'))).toBe(
+      true,
+    );
+  });
+
+  it('accepts a request.path.set that starts with "/"', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'rewrite', request: { path: { set: '/people/1' } } } })],
+    });
+    expect(result.valid).toBe(true);
+  });
+
   it('rejects a replace step whose flags contain an invalid character', () => {
     const result = validateRulesData({
       rules: [
