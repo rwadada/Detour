@@ -1,4 +1,4 @@
-import type { BodyReplace, BodyRewrite, HeaderRewrite, QueryRewrite, RuleAction } from '@/shared/api';
+import type { BodyReplace, BodyRewrite, HeaderRewrite, PathRewrite, QueryRewrite, RuleAction } from '@/shared/api';
 import { headersToEditableText, parseEditableHeaders } from '@/shared/lib/utils';
 
 /** A fresh action of the given type, with sensible defaults — used both as `blankRule()`'s starter action and when the editor's Type selector switches a rule to a different action type (the previous action's fields don't carry over; the shapes are too different to guess a mapping). */
@@ -121,6 +121,22 @@ export function bodyRewriteMode(body: BodyRewrite | undefined): BodyRewriteMode 
 /** A blank row for a `replace` list's find/replacement editor. */
 export function blankBodyReplace(): BodyReplace {
   return { find: '', replacement: '' };
+}
+
+/**
+ * `PathRewrite` has no `merge` (unlike `BodyRewrite`) — `set` and `replace`
+ * are the only two shapes, and `set` still wins outright per its own doc
+ * comment, so this only ever needs two non-`'none'` modes rather than
+ * `BodyRewriteMode`'s three.
+ */
+export type PathRewriteMode = 'none' | 'set' | 'replace';
+
+/** Which of `PathRewrite`'s shapes a value currently uses, for seeding the mode selector. */
+export function pathRewriteMode(path: PathRewrite | undefined): PathRewriteMode {
+  if (!path) return 'none';
+  if (path.set !== undefined) return 'set';
+  if (path.replace && path.replace.length > 0) return 'replace';
+  return 'none';
 }
 
 /** Parses a number field's text, treating blank as "unset" rather than `NaN`/`0` — e.g. a delay/port/status input the user cleared out. */

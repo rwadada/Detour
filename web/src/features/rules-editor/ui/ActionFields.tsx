@@ -10,6 +10,7 @@ import type {
   BreakpointAction,
   HeaderRewrite,
   MockAction,
+  PathRewrite,
   QueryRewrite,
   RewriteAction,
   RouteAction,
@@ -20,6 +21,7 @@ import { useTheme } from '@/shared/lib/theme';
 import { Button, Input, Select } from '@/shared/ui';
 import {
   type BodyRewriteMode,
+  type PathRewriteMode,
   blankBodyReplace,
   bodyRewriteMode,
   bodyValueToText,
@@ -27,6 +29,7 @@ import {
   isEmptySetRemove,
   parseBodyValue,
   parseOptionalInt,
+  pathRewriteMode,
   removeListToText,
   setMapToText,
   textToRemoveList,
@@ -435,6 +438,73 @@ function SetRemoveFields({
   );
 }
 
+/**
+ * Shared find/replace list editor for a `BodyReplace[]` — the row shape and
+ * semantics (`find`/`replacement`/`regex`/`flags`) are identical wherever
+ * find/replace applies, whether to a body (`applyBodyRewrite`) or a URL path
+ * (`applyPathRewrite`); both explicitly document reusing the same
+ * semantics. Used by `BodyRewriteFields`'s "transform" mode and
+ * `PathRewriteFields`'s "replace" mode.
+ */
+function ReplaceRowsEditor({
+  rows,
+  onChange,
+  helpText,
+}: {
+  rows: BodyReplace[];
+  onChange: (rows: BodyReplace[]) => void;
+  helpText: ReactNode;
+}) {
+  const updateRow = (index: number, patch: Partial<BodyReplace>) =>
+    onChange(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+  const addRow = () => onChange([...rows, blankBodyReplace()]);
+  const removeRow = (index: number) => onChange(rows.filter((_, i) => i !== index));
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-xs text-[var(--muted)]">{helpText}</span>
+      {rows.map((row, index) => (
+        <div key={index} className="flex items-center gap-1.5">
+          <Input
+            className="flex-1"
+            value={row.find}
+            placeholder="find"
+            onChange={(e) => updateRow(index, { find: e.target.value })}
+          />
+          <Input
+            className="flex-1"
+            value={row.replacement}
+            placeholder="replacement"
+            onChange={(e) => updateRow(index, { replacement: e.target.value })}
+          />
+          <label
+            className="flex shrink-0 items-center gap-1 text-xs text-[var(--muted)]"
+            title="Treat “find” as a regular expression instead of literal text"
+          >
+            <input
+              type="checkbox"
+              checked={row.regex ?? false}
+              onChange={(e) => updateRow(index, { regex: e.target.checked || undefined })}
+            />
+            regex
+          </label>
+          <button
+            type="button"
+            onClick={() => removeRow(index)}
+            className="shrink-0 rounded p-1 text-[var(--muted)] hover:bg-[var(--row-hover)] hover:text-[var(--status-5xx)]"
+            title="Remove this find/replace"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      ))}
+      <Button variant="ghost" size="sm" onClick={addRow} className="w-fit gap-1">
+        <Plus className="h-3.5 w-3.5" /> Add find/replace
+      </Button>
+    </div>
+  );
+}
+
 function BodyRewriteFields({
   value,
   onChange,
@@ -463,24 +533,6 @@ function BodyRewriteFields({
     if (nextMode === 'none') return onChange(undefined);
     if (nextMode === 'set') return onChange({ set: parseBodyValue(overrides.setText ?? setText) });
     return emitTransform();
-  };
-
-  const updateRow = (index: number, patch: Partial<BodyReplace>) => {
-    const rows = replaceRows.map((row, i) => (i === index ? { ...row, ...patch } : row));
-    setReplaceRows(rows);
-    emitTransform({ rows });
-  };
-
-  const addRow = () => {
-    const rows = [...replaceRows, blankBodyReplace()];
-    setReplaceRows(rows);
-    emitTransform({ rows });
-  };
-
-  const removeRow = (index: number) => {
-    const rows = replaceRows.filter((_, i) => i !== index);
-    setReplaceRows(rows);
-    emitTransform({ rows });
   };
 
   return (
@@ -513,47 +565,14 @@ function BodyRewriteFields({
 
       {mode === 'transform' && (
         <div className="flex flex-col gap-3">
-          <div className="flex flex-col gap-1.5">
-            <span className="text-xs text-[var(--muted)]">Find &amp; replace text (runs first, in order)</span>
-            {replaceRows.map((row, index) => (
-              <div key={index} className="flex items-center gap-1.5">
-                <Input
-                  className="flex-1"
-                  value={row.find}
-                  placeholder="find"
-                  onChange={(e) => updateRow(index, { find: e.target.value })}
-                />
-                <Input
-                  className="flex-1"
-                  value={row.replacement}
-                  placeholder="replacement"
-                  onChange={(e) => updateRow(index, { replacement: e.target.value })}
-                />
-                <label
-                  className="flex shrink-0 items-center gap-1 text-xs text-[var(--muted)]"
-                  title="Treat “find” as a regular expression instead of literal text"
-                >
-                  <input
-                    type="checkbox"
-                    checked={row.regex ?? false}
-                    onChange={(e) => updateRow(index, { regex: e.target.checked || undefined })}
-                  />
-                  regex
-                </label>
-                <button
-                  type="button"
-                  onClick={() => removeRow(index)}
-                  className="shrink-0 rounded p-1 text-[var(--muted)] hover:bg-[var(--row-hover)] hover:text-[var(--status-5xx)]"
-                  title="Remove this find/replace"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            ))}
-            <Button variant="ghost" size="sm" onClick={addRow} className="w-fit gap-1">
-              <Plus className="h-3.5 w-3.5" /> Add find/replace
-            </Button>
-          </div>
+          <ReplaceRowsEditor
+            rows={replaceRows}
+            helpText="Find & replace text (runs first, in order)"
+            onChange={(rows) => {
+              setReplaceRows(rows);
+              emitTransform({ rows });
+            }}
+          />
 
           <Field label="Then merge into the JSON body (optional)">
             <JsonBodyField
@@ -572,6 +591,83 @@ function BodyRewriteFields({
   );
 }
 
+/**
+ * A structured form for a rule's `request.path` rewrite (issue: the Rules
+ * editor GUI had no way to touch this at all — only "Edit as JSON" could,
+ * despite `path` being how a path *parameter* like the `1` in `/users/1`
+ * gets rewritten, per `PathRewrite`'s own doc comment). No `merge` mode
+ * (unlike `BodyRewriteFields`) — a URL path has no such concept.
+ */
+function PathRewriteFields({
+  value,
+  onChange,
+}: {
+  value: PathRewrite | undefined;
+  onChange: (value: PathRewrite | undefined) => void;
+}) {
+  const [mode, setMode] = useState<PathRewriteMode>(() => pathRewriteMode(value));
+  const [setText, setSetText] = useState(() => value?.set ?? '');
+  const [replaceRows, setReplaceRows] = useState<BodyReplace[]>(() => value?.replace ?? []);
+
+  const emit = (nextMode: PathRewriteMode, overrides: { setText?: string; rows?: BodyReplace[] } = {}) => {
+    if (nextMode === 'none') return onChange(undefined);
+    if (nextMode === 'set') {
+      const text = overrides.setText ?? setText;
+      return onChange(text.trim() === '' ? undefined : { set: text });
+    }
+    const rows = overrides.rows ?? replaceRows;
+    return onChange(rows.length > 0 ? { replace: rows } : undefined);
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Field label="Path">
+        <Select
+          value={mode}
+          onChange={(e) => {
+            const nextMode = e.target.value as PathRewriteMode;
+            setMode(nextMode);
+            emit(nextMode);
+          }}
+        >
+          <option value="none">Don't touch it</option>
+          <option value="set">Replace it entirely</option>
+          <option value="replace">Find &amp; replace text</option>
+        </Select>
+      </Field>
+
+      {mode === 'set' && (
+        <Field label="New path — must start with / and not contain ?/# (the request's query string is kept as-is)">
+          <Input
+            value={setText}
+            placeholder="/people/1"
+            onChange={(e) => {
+              setSetText(e.target.value);
+              emit('set', { setText: e.target.value });
+            }}
+          />
+        </Field>
+      )}
+
+      {mode === 'replace' && (
+        <ReplaceRowsEditor
+          rows={replaceRows}
+          helpText={
+            <>
+              Find &amp; replace text — regex capture groups like <code>$1</code> work in "replacement" when "regex" is
+              checked (e.g. find <code>/users/(\d+)</code>, replacement <code>/people/$1</code>)
+            </>
+          }
+          onChange={(rows) => {
+            setReplaceRows(rows);
+            emit('replace', { rows });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 function RewriteActionFields({
   action,
   onChange,
@@ -581,7 +677,11 @@ function RewriteActionFields({
 }) {
   const patchRequest = (p: Partial<NonNullable<RewriteAction['request']>>) => {
     const next = { ...action.request, ...p };
-    const empty = isEmptySetRemove(next.headers) && isEmptySetRemove(next.query) && next.body === undefined;
+    const empty =
+      next.path === undefined &&
+      isEmptySetRemove(next.headers) &&
+      isEmptySetRemove(next.query) &&
+      next.body === undefined;
     onChange({ ...action, request: empty ? undefined : next });
   };
   const patchResponse = (p: Partial<NonNullable<RewriteAction['response']>>) => {
@@ -596,6 +696,7 @@ function RewriteActionFields({
         <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
           Request — before it's sent
         </h4>
+        <PathRewriteFields value={action.request?.path} onChange={(v) => patchRequest({ path: v })} />
         <SetRemoveFields
           label="Query params"
           value={action.request?.query}

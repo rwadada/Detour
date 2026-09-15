@@ -8,6 +8,7 @@ import {
   isEmptySetRemove,
   parseBodyValue,
   parseOptionalInt,
+  pathRewriteMode,
   removeListToText,
   setMapToText,
   textToRemoveList,
@@ -202,6 +203,28 @@ describe('bodyRewriteMode', () => {
 
   it('prefers set over replace/merge when multiple are (unusually) present', () => {
     expect(bodyRewriteMode({ set: 'x', merge: { a: 1 } })).toBe('set');
+  });
+});
+
+describe('pathRewriteMode', () => {
+  it('is "none" for undefined', () => {
+    expect(pathRewriteMode(undefined)).toBe('none');
+  });
+
+  it('is "set" when set is present', () => {
+    expect(pathRewriteMode({ set: '/people/1' })).toBe('set');
+  });
+
+  it('is "replace" when replace has entries', () => {
+    expect(pathRewriteMode({ replace: [{ find: 'a', replacement: 'b' }] })).toBe('replace');
+  });
+
+  it('is "none" for an empty replace array', () => {
+    expect(pathRewriteMode({ replace: [] })).toBe('none');
+  });
+
+  it('prefers set over replace when both are (unusually) present', () => {
+    expect(pathRewriteMode({ set: '/x', replace: [{ find: 'a', replacement: 'b' }] })).toBe('set');
   });
 });
 
