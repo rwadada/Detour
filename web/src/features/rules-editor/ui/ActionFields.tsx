@@ -469,12 +469,14 @@ function ReplaceRowsEditor({
             className="flex-1"
             value={row.find}
             placeholder="find"
+            aria-label={`Find text for find/replace row ${index + 1}`}
             onChange={(e) => updateRow(index, { find: e.target.value })}
           />
           <Input
             className="flex-1"
             value={row.replacement}
             placeholder="replacement"
+            aria-label={`Replacement text for find/replace row ${index + 1}`}
             onChange={(e) => updateRow(index, { replacement: e.target.value })}
           />
           <label
@@ -493,6 +495,7 @@ function ReplaceRowsEditor({
             onClick={() => removeRow(index)}
             className="shrink-0 rounded p-1 text-[var(--muted)] hover:bg-[var(--row-hover)] hover:text-[var(--status-5xx)]"
             title="Remove this find/replace"
+            aria-label={`Remove find/replace row ${index + 1}`}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
@@ -612,8 +615,14 @@ function PathRewriteFields({
   const emit = (nextMode: PathRewriteMode, overrides: { setText?: string; rows?: BodyReplace[] } = {}) => {
     if (nextMode === 'none') return onChange(undefined);
     if (nextMode === 'set') {
-      const text = overrides.setText ?? setText;
-      return onChange(text.trim() === '' ? undefined : { set: text });
+      // Trim before persisting (not just to decide whether the field is
+      // "empty") — `path.set` must start with "/" and is sent verbatim as
+      // the request-target, so stray leading/trailing whitespace would
+      // either fail that validation or reach the wire malformed. The input
+      // itself stays untrimmed as the user types it; only the saved value
+      // is normalized.
+      const text = (overrides.setText ?? setText).trim();
+      return onChange(text === '' ? undefined : { set: text });
     }
     const rows = overrides.rows ?? replaceRows;
     return onChange(rows.length > 0 ? { replace: rows } : undefined);
