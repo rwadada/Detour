@@ -173,6 +173,12 @@ export interface BodyRewrite {
   merge?: unknown;
 }
 
+/** Rewrites a request URL's path — e.g. a path parameter like the `1` in `/users/1`. `query` only ever touches what comes after `?`. */
+export interface PathRewrite {
+  set?: string;
+  replace?: BodyReplace[];
+}
+
 export interface MockAction {
   type: 'mock';
   status?: number;
@@ -193,7 +199,7 @@ export interface RouteAction {
 
 export interface RewriteAction {
   type: 'rewrite';
-  request?: { query?: QueryRewrite; headers?: HeaderRewrite; body?: BodyRewrite };
+  request?: { path?: PathRewrite; query?: QueryRewrite; headers?: HeaderRewrite; body?: BodyRewrite };
   response?: { status?: number; headers?: HeaderRewrite; body?: BodyRewrite };
 }
 
