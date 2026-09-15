@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0](https://github.com/rwadada/Detour/compare/v1.0.1...v1.1.0) (2026-09-15)
+
+
+### Features
+
+* **rewrite:** allow rewrite rules to rewrite the request path ([05e0c6d](https://github.com/rwadada/Detour/commit/05e0c6d21d41e056b12bcc7a041f7a227e19cfc6))
+* **rewrite:** allow rewrite rules to rewrite the request path ([0dc6513](https://github.com/rwadada/Detour/commit/0dc6513d602f8a2137b1086c548dc1594861a51f))
+
+
+### Bug Fixes
+
+* **rules:** require path.set to be a bare pathname, and cover path rewrite wiring ([0b7a48a](https://github.com/rwadada/Detour/commit/0b7a48a20a9745069a106b23d5729f3cce954d8d))
+* **rules:** validate rewrite regex flags and reject a query string in path.set ([b81b471](https://github.com/rwadada/Detour/commit/b81b47105908423359d219c6d1905e436a774975))
+
 ## [1.0.1](https://github.com/rwadada/Detour/compare/v1.0.0...v1.0.1) (2026-09-13)
 
 
