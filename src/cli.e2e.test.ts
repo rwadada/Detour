@@ -1405,7 +1405,13 @@ describe('detour start (CLI, end-to-end)', () => {
     const exchange = await requestExchange;
     expect(exchange.url).toBe(rewrittenUrl);
     expect(exchange.requestHeaders?.['X-Added']).toBe('yes');
-    expect(exchange.requestHeaders?.['X-Should-Be-Removed']).toBeUndefined();
+    // Case-insensitive: `exchange.requestHeaders` is a spread of Node's own
+    // `IncomingMessage.headers`, which always lowercases keys — a stale
+    // "X-Should-Be-Removed" (exact case) lookup would pass even if removal
+    // silently failed and it survived as "x-should-be-removed" instead.
+    const hasHeader = (headers: Record<string, string | string[]> | undefined, name: string) =>
+      Object.keys(headers ?? {}).some((k) => k.toLowerCase() === name.toLowerCase());
+    expect(hasHeader(exchange.requestHeaders, 'X-Should-Be-Removed')).toBe(false);
     socket.close();
   });
 
