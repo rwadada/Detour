@@ -1,3 +1,4 @@
+import { Tag } from 'lucide-react';
 import { Badge } from '@/shared/ui';
 import { cn } from '@/shared/lib/utils';
 
@@ -85,6 +86,36 @@ export function ProtocolBadge({ protocol }: { protocol: 'HTTP/1.1' | 'HTTP/2' })
     >
       h2
     </Badge>
+  );
+}
+
+/**
+ * Which rule (if any) matched this exchange — previously only visible in
+ * `InspectorPanel`'s detail view, one exchange at a time, which made it
+ * impossible to tell at a glance which of several rules applied across a
+ * whole session's traffic without clicking into every row (a bug report:
+ * "with 2+ rules I can't see [which one applied]"). A fixed-size icon
+ * rather than the rule's own (arbitrary-length) name as a text badge —
+ * `LogRow`'s URL cell is already tight on width, and a review of the first
+ * version of this (a truncated text badge) found it could still crowd out
+ * the URL text almost entirely. The full name is still always available,
+ * both here (as the accessible name/tooltip — `role="img"` plus
+ * `aria-label` so assistive tech announces it instead of silently skipping
+ * an icon-only `<span>` with only a `title`) and in `InspectorPanel`'s own
+ * "rule:" line once a row is selected.
+ */
+export function RuleBadge({ ruleName }: { ruleName: string }) {
+  const label = `Rule: ${ruleName}`;
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      className="inline-flex shrink-0 items-center"
+      style={{ color: 'var(--accent)' }}
+      title={label}
+    >
+      <Tag className="h-3 w-3" aria-hidden="true" />
+    </span>
   );
 }
 

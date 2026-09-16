@@ -7,6 +7,7 @@ import {
   matchesFilters,
   MethodBadge,
   ProtocolBadge,
+  RuleBadge,
   StatusBadge,
   useExchangeStore,
 } from '@/entities/exchange';
@@ -356,6 +357,11 @@ function LogRow({
         {exchange.protocol === 'HTTP/2' && (
           <>
             <ProtocolBadge protocol={exchange.protocol} />{' '}
+          </>
+        )}
+        {exchange.ruleName && (
+          <>
+            <RuleBadge ruleName={exchange.ruleName} />{' '}
           </>
         )}
         {exchange.url}
