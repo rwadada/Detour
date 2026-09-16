@@ -44,6 +44,16 @@ describe('createRuleStore', () => {
     expect(store.getState().unreachableWarnings).toEqual([warning]);
   });
 
+  it("defaults `unreachableWarnings` to an empty array when a `rules` message omits it (Copilot review, PR #150: an older server or a malformed frame could leave it undefined, crashing RulesEditorPanel's `.some(...)` call)", () => {
+    const { connection, emit } = fakeDashboardConnection();
+    const store = createRuleStore(connection);
+    // `message.unreachableWarnings` being present is a compile-time
+    // assumption, not a runtime one — deliberately bypassing the type here
+    // to exercise the case the field is actually missing off the wire.
+    emit({ type: 'rules', data: rulesFile } as unknown as Parameters<typeof emit>[0]);
+    expect(store.getState().unreachableWarnings).toEqual([]);
+  });
+
   it('applies a `ruleProfiles` message, bumping profilesAt', () => {
     const { connection, emit } = fakeDashboardConnection();
     const store = createRuleStore(connection);

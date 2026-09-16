@@ -100,7 +100,16 @@ export function createRuleStore(connection: DashboardConnection) {
     connection.onMessage((message) => {
       switch (message.type) {
         case 'rules':
-          set({ rulesFile: message.data, unreachableWarnings: message.unreachableWarnings, rulesFileAt: Date.now() });
+          // `message.unreachableWarnings` is a type assertion over parsed
+          // JSON, not a runtime guarantee — an older server (before this
+          // field existed) or a malformed frame could omit it, and
+          // `RulesEditorPanel`'s `unreachableWarnings.some(...)` would throw
+          // on `undefined` rather than just showing no warnings.
+          set({
+            rulesFile: message.data,
+            unreachableWarnings: message.unreachableWarnings ?? [],
+            rulesFileAt: Date.now(),
+          });
           return;
         case 'ruleProfiles':
           set({ profiles: message.profiles, profilesAt: Date.now() });
