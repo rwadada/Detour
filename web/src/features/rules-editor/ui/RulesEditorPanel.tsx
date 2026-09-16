@@ -1,6 +1,6 @@
 import { json } from '@codemirror/lang-json';
 import CodeMirror from '@uiw/react-codemirror';
-import { Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useRuleStore } from '@/entities/rule';
 import { useTheme } from '@/shared/lib/theme';
@@ -32,6 +32,7 @@ const SAVE_TIMEOUT_MS = 5000;
 export function RulesEditorPanel() {
   const rulesFile = useRuleStore((s) => s.rulesFile);
   const rulesFileAt = useRuleStore((s) => s.rulesFileAt);
+  const unreachableWarnings = useRuleStore((s) => s.unreachableWarnings);
   const setRules = useRuleStore((s) => s.setRules);
   const dirty = useRuleStore((s) => s.dirtyDraft);
   const setDirty = useRuleStore((s) => s.setDirtyDraft);
@@ -281,6 +282,21 @@ export function RulesEditorPanel() {
                   <span className="text-[var(--muted)]">— {describeMatch(rule)}</span>{' '}
                   <span className="text-[10px] uppercase text-[var(--accent)]">{rule.action.type}</span>
                 </button>
+                {/* Only while the draft exactly mirrors the last-saved file
+                    (`!dirty`) — `unreachableWarnings` is computed server-side
+                    against that saved content, keyed by index, so it'd point
+                    at the wrong row (or a rule that no longer exists) once
+                    local edits move things around. */}
+                {!dirty && unreachableWarnings.some((w) => w.ruleIndex === index) && (
+                  <span
+                    role="img"
+                    aria-label={unreachableWarnings.find((w) => w.ruleIndex === index)?.message}
+                    title={unreachableWarnings.find((w) => w.ruleIndex === index)?.message}
+                    className="shrink-0 text-[var(--status-4xx)]"
+                  >
+                    <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                  </span>
+                )}
                 <button
                   type="button"
                   onClick={() => removeRule(index)}

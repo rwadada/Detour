@@ -105,6 +105,19 @@ describe('RuleEngine', () => {
     expect(engine.match({ method: 'GET', url: 'https://unrelated.example.com/x' })).toBeUndefined();
   });
 
+  it('getUnreachableWarnings() flags a rule provably shadowed by an earlier catch-all, and stays in sync across a reload', () => {
+    const catchAll: Rule = { name: 'catch-all', match: { url: '*' }, action: { type: 'mock' } };
+    const dead: Rule = { name: 'dead', match: { url: 'https://api.example.com/x' }, action: { type: 'mock' } };
+    writeRules(filePath, [catchAll, dead]);
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });
+    expect(engine.getUnreachableWarnings().map((w) => w.ruleName)).toEqual(['dead']);
+
+    // Reloading with the shadowing rule removed clears the warning.
+    writeRules(filePath, [dead]);
+    triggerReload(engine);
+    expect(engine.getUnreachableWarnings()).toEqual([]);
+  });
+
   it('matchAll() collects every matching rewrite rule ahead of the first terminal one', () => {
     const rewriteA: Rule = {
       name: 'rewrite-a',

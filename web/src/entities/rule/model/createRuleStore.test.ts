@@ -19,14 +19,29 @@ describe('createRuleStore', () => {
     const store = createRuleStore(connection);
     expect(store.getState().rulesFileAt).toBeNull();
 
-    emit({ type: 'rules', data: rulesFile });
+    emit({ type: 'rules', data: rulesFile, unreachableWarnings: [] });
     expect(store.getState().rulesFile).toEqual(rulesFile);
     const first = store.getState().rulesFileAt;
     expect(first).toEqual(expect.any(Number));
 
-    emit({ type: 'rules', data: null });
+    emit({ type: 'rules', data: null, unreachableWarnings: [] });
     expect(store.getState().rulesFile).toBeNull();
     expect(store.getState().rulesFileAt).not.toBeNull();
+  });
+
+  it("applies a `rules` message's `unreachableWarnings`", () => {
+    const { connection, emit } = fakeDashboardConnection();
+    const store = createRuleStore(connection);
+    const warning = {
+      ruleName: 'dead',
+      ruleIndex: 1,
+      blockedByName: 'catch-all',
+      blockedByIndex: 0,
+      message:
+        'rule "dead" (index 1) can never match: rule "catch-all" (index 0) already matches every request "dead" would, and — being a mock/route/breakpoint/script rule — stops evaluation there.',
+    };
+    emit({ type: 'rules', data: rulesFile, unreachableWarnings: [warning] });
+    expect(store.getState().unreachableWarnings).toEqual([warning]);
   });
 
   it('applies a `ruleProfiles` message, bumping profilesAt', () => {

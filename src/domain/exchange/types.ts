@@ -1,4 +1,5 @@
 import type { IncomingHttpHeaders } from 'node:http';
+import type { UnreachableRuleWarning } from '../rules/unreachableRules';
 
 /**
  * A single HTTP(S) request/response pair captured by the proxy.
@@ -133,6 +134,7 @@ export interface ProxyErrorEvent {
 export interface RulesReloadEvent {
   filePath: string;
   ruleCount: number;
+  unreachableWarnings: UnreachableRuleWarning[];
 }
 
 /** A paused request, awaiting the dashboard's edit/resume. Headers/body reflect what the client actually sent. */

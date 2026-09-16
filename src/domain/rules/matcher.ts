@@ -40,7 +40,8 @@ function compileUrlTest(match: RuleMatch): (url: string) => boolean {
   return (url) => re.test(url);
 }
 
-function normalizeMethods(method: RuleMatch['method']): string[] | undefined {
+/** Exported for `unreachableRules.ts`'s shadowing check, which needs the exact same "falsy scalar (`undefined`/`''`) means any method" collapse this uses — a hand-rolled copy would drift and risk a false positive (see that module's doc comment). */
+export function normalizeMethods(method: RuleMatch['method']): string[] | undefined {
   if (!method) return undefined;
   const list = Array.isArray(method) ? method : [method];
   return list.map((m) => m.toUpperCase());

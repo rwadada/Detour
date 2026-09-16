@@ -8,6 +8,7 @@ import {
   type MatchedRules,
 } from '../domain/rules/matcher';
 import type { Rule, RulesFile } from '../domain/rules/types';
+import { findUnreachableRules, type UnreachableRuleWarning } from '../domain/rules/unreachableRules';
 import type { FileWatcher } from './ports/fileWatcher';
 import type { RulesFileReader } from './ports/rulesFileReader';
 import type { RulesFileWriter } from './ports/rulesFileWriter';
@@ -42,7 +43,7 @@ export interface RuleEngineOptions {
   watch?: boolean;
   /** Debounce window for coalescing the several fs events one save can produce, in ms. */
   debounceMs?: number;
-  onReload?: (info: { ruleCount: number }) => void;
+  onReload?: (info: { ruleCount: number; unreachableWarnings: UnreachableRuleWarning[] }) => void;
   onReloadError?: (message: string) => void;
   /** Reads/validates rules.json — injected so this UseCase never touches the filesystem directly (see infra/fs/rulesFileSource.ts). */
   reader: RulesFileReader;
@@ -74,6 +75,8 @@ export class RuleEngine {
   /** See `RuleEngineOptions.allowExternalScriptPaths`'s doc comment. */
   readonly allowExternalScriptPaths: boolean;
   private compiledRules: CompiledRule[];
+  /** See `findUnreachableRules`'s doc comment — recomputed alongside `compiledRules` in the constructor and `reload()`, so it's always in sync with whatever rules are actually loaded. */
+  private unreachableWarnings: UnreachableRuleWarning[];
   /** See `RulesFile.$activeProfile`'s doc comment — mirrors whatever the on-disk file's own field currently says, kept in sync by `reload()` the same way `compiledRules` is. */
   private activeProfile: string | undefined;
   private stopWatching?: () => void;
@@ -85,6 +88,7 @@ export class RuleEngine {
     this.basePath = path.dirname(filePath);
     this.allowExternalScriptPaths = options.allowExternalScriptPaths ?? false;
     this.compiledRules = compileRules(data.rules, filePath);
+    this.unreachableWarnings = findUnreachableRules(data.rules);
     this.activeProfile = data.$activeProfile;
     this.options = options;
   }
@@ -109,6 +113,11 @@ export class RuleEngine {
 
   getRules(): readonly Rule[] {
     return this.compiledRules.map((c) => c.rule);
+  }
+
+  /** See `findUnreachableRules`'s doc comment. */
+  getUnreachableWarnings(): readonly UnreachableRuleWarning[] {
+    return this.unreachableWarnings;
   }
 
   /** See `RulesFile.$activeProfile`'s doc comment. `undefined` when the current content isn't (or isn't known to still be) any saved profile's. */
@@ -154,8 +163,9 @@ export class RuleEngine {
     try {
       const data = this.options.reader.read(this.filePath);
       this.compiledRules = compileRules(data.rules, this.filePath);
+      this.unreachableWarnings = findUnreachableRules(data.rules);
       this.activeProfile = data.$activeProfile;
-      this.options.onReload?.({ ruleCount: data.rules.length });
+      this.options.onReload?.({ ruleCount: data.rules.length, unreachableWarnings: this.unreachableWarnings });
     } catch (err) {
       // Keep serving the last known-good rules rather than crash the proxy.
       this.options.onReloadError?.(err instanceof Error ? err.message : String(err));
