@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.3.0](https://github.com/rwadada/Detour/compare/v1.2.0...v1.3.0) (2026-09-16)
+
+
+### Features
+
+* **dashboard:** show which rule matched directly in the request list ([e103701](https://github.com/rwadada/Detour/commit/e1037015fa0b0b37e5c7a7b9df5a7b3d823e742c))
+
+
+### Bug Fixes
+
+* **proxy:** dashboard never reflected a rewrite rule's own changes ([c4151b8](https://github.com/rwadada/Detour/commit/c4151b8552484d30e7b68efbe96dddf4b469a88e))
+* **proxy:** dashboard never reflected a rewrite rule's own changes; show which rule matched in the request list ([46ceb75](https://github.com/rwadada/Detour/commit/46ceb751fa546aa6fb54d29133930a77e2ecc214))
+* **review:** address Copilot findings on PR [#138](https://github.com/rwadada/Detour/issues/138) ([e554166](https://github.com/rwadada/Detour/commit/e554166bf79e39dce364433b53ecf391ac2010a2))
+
 ## [1.2.0](https://github.com/rwadada/Detour/compare/v1.1.0...v1.2.0) (2026-09-15)
 
 
