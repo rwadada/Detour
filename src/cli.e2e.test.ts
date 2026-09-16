@@ -1516,6 +1516,59 @@ describe('detour start (CLI, end-to-end)', () => {
     expect(JSON.parse(other.body).path).toBe('/other-endpoint');
   });
 
+  it("applies a matching `rewrite` rule's request-side changes even when a later `mock` rule terminates the request (Copilot review, PR #150: `ruleName` joined both rules' names, implying the rewrite took effect, but the mock's early return skipped the rewrite loop entirely)", async () => {
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    const url = `http://127.0.0.1:${echo.port}/mocked-with-rewrite`;
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-rewrite-before-mock',
+            match: { url },
+            action: { type: 'rewrite', request: { headers: { set: { 'X-Added': 'yes' } } } },
+          },
+          {
+            name: 'e2e-mock-terminal',
+            match: { url },
+            action: { type: 'mock', status: 200, body: 'mocked' },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const socket = new WebSocket(`ws://localhost:${cli.dashboardPort}/ws`);
+    const requestExchange = new Promise<DashboardExchange>((resolve) => {
+      socket.on('message', (raw) => {
+        const message = JSON.parse(raw.toString()) as { type: string; exchange?: DashboardExchange };
+        if (message.type === 'request' && message.exchange?.ruleName?.includes('e2e-mock-terminal')) {
+          resolve(message.exchange);
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.on('open', () => resolve());
+      socket.on('error', reject);
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request({ host: 'localhost', port: cli!.port, path: url, method: 'GET' }, (res) => {
+        res.resume();
+        res.on('end', resolve);
+      });
+      req.on('error', reject);
+      req.end();
+    });
+
+    const exchange = await requestExchange;
+    expect(exchange.ruleName).toBe('e2e-rewrite-before-mock, e2e-mock-terminal');
+    expect(exchange.requestHeaders?.['X-Added']).toBe('yes');
+    socket.close();
+  });
+
   describe('intercept on/off (issue #11)', () => {
     it('skips a mock rule while intercept is off, reaching the real upstream instead', async () => {
       echo = await startEchoServer();
