@@ -1457,6 +1457,65 @@ describe('detour start (CLI, end-to-end)', () => {
     socket.close();
   });
 
+  it('applies every matching `rewrite` rule to the same request, not just the first (bug report: a broad "add this header to everything" rule silently blocked a narrower rewrite rule below it from ever running)', async () => {
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          // Broad, listed first — matches every request to this host, same
+          // as a user adding one header everywhere.
+          {
+            name: 'e2e-cumulative-common-header',
+            match: { url: `http://127.0.0.1:${echo.port}/*` },
+            action: { type: 'rewrite', request: { headers: { set: { 'X-Common': 'always' } } } },
+          },
+          // Narrower, listed second — under the old "first match wins"
+          // engine this rule would never even be reached for a request the
+          // rule above also matched.
+          {
+            name: 'e2e-cumulative-narrow-query',
+            match: { url: `http://127.0.0.1:${echo.port}/narrow*` },
+            action: { type: 'rewrite', request: { query: { set: { special: 'yes' } } } },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const socket = new WebSocket(`ws://localhost:${cli.dashboardPort}/ws`);
+    const narrowRequestExchange = new Promise<DashboardExchange>((resolve) => {
+      socket.on('message', (raw) => {
+        const message = JSON.parse(raw.toString()) as { type: string; exchange?: DashboardExchange };
+        if (message.type === 'request' && message.exchange?.url?.includes('/narrow-endpoint')) {
+          resolve(message.exchange);
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.on('open', () => resolve());
+      socket.on('error', reject);
+    });
+
+    const result = await requestThroughProxy(cli.port, echo.port, '/narrow-endpoint');
+    // Both rules' request-side changes reached the real upstream — the echo
+    // server's response reflects the query-string rewrite in `path`.
+    expect(JSON.parse(result.body).path).toBe('/narrow-endpoint?special=yes');
+
+    const exchange = await narrowRequestExchange;
+    expect(exchange.ruleName).toBe('e2e-cumulative-common-header, e2e-cumulative-narrow-query');
+    expect(exchange.requestHeaders?.['X-Common']).toBe('always');
+    expect(exchange.url).toBe(`http://127.0.0.1:${echo.port}/narrow-endpoint?special=yes`);
+    socket.close();
+
+    // A request that only the broad rule matches still gets its header, but
+    // isn't also subject to the narrow rule's query rewrite.
+    const other = await requestThroughProxy(cli.port, echo.port, '/other-endpoint');
+    expect(JSON.parse(other.body).path).toBe('/other-endpoint');
+  });
+
   describe('intercept on/off (issue #11)', () => {
     it('skips a mock rule while intercept is off, reaching the real upstream instead', async () => {
       echo = await startEchoServer();

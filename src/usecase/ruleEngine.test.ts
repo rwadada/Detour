@@ -105,6 +105,19 @@ describe('RuleEngine', () => {
     expect(engine.match({ method: 'GET', url: 'https://unrelated.example.com/x' })).toBeUndefined();
   });
 
+  it('matchAll() collects every matching rewrite rule ahead of the first terminal one', () => {
+    const rewriteA: Rule = {
+      name: 'rewrite-a',
+      match: { url: 'https://api.example.com/*' },
+      action: { type: 'rewrite', request: { headers: { set: { a: '1' } } } },
+    };
+    writeRules(filePath, [rewriteA, routeRule('terminal')]);
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });
+    const matched = engine.matchAll({ method: 'GET', url: 'https://api.example.com/x' });
+    expect(matched.rewrites.map((r) => r.name)).toEqual(['rewrite-a']);
+    expect(matched.terminal?.name).toBe('terminal');
+  });
+
   it('reloads (re-validates and re-compiles) when the file changes', () => {
     writeRules(filePath, [routeRule('a')]);
     let reloaded: { ruleCount: number } | undefined;

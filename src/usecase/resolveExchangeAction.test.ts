@@ -1,68 +1,87 @@
 import { describe, expect, it } from 'vitest';
 import type { Rule } from '../domain/rules/types';
 import { resolveExchangeAction } from './resolveExchangeAction';
+import type { MatchedRules } from '../domain/rules/matcher';
 import type { RuleEngine } from './ruleEngine';
 
 const mockRule: Rule = { name: 'm', match: { url: '*' }, action: { type: 'mock' } };
 const routeRule: Rule = { name: 'r', match: { url: '*' }, action: { type: 'route', host: 'x' } };
+const rewriteRule: Rule = {
+  name: 'rw',
+  match: { url: '*' },
+  action: { type: 'rewrite', request: { headers: { set: { a: '1' } } } },
+};
 
-function fakeEngine(rule: Rule | undefined): RuleEngine {
-  return { match: () => rule } as unknown as RuleEngine;
+function fakeEngine(matched: MatchedRules): RuleEngine {
+  return { matchAll: () => matched } as unknown as RuleEngine;
 }
 
 describe('resolveExchangeAction', () => {
-  it('returns the matched rule when intercept is on and the host is focused', () => {
-    const rule = resolveExchangeAction(fakeEngine(mockRule), {
+  it('returns the matched terminal rule when intercept is on and the host is focused', () => {
+    const result = resolveExchangeAction(fakeEngine({ rewrites: [], terminal: mockRule }), {
       method: 'GET',
       url: 'https://x/',
       host: 'x',
       interceptEnabled: true,
       focusHosts: [],
     });
-    expect(rule).toBe(mockRule);
+    expect(result.terminal).toBe(mockRule);
   });
 
-  it('drops a non-route rule while intercept is off', () => {
-    const rule = resolveExchangeAction(fakeEngine(mockRule), {
+  it('returns every matching rewrite rule when intercept is on', () => {
+    const result = resolveExchangeAction(fakeEngine({ rewrites: [rewriteRule], terminal: undefined }), {
+      method: 'GET',
+      url: 'https://x/',
+      host: 'x',
+      interceptEnabled: true,
+      focusHosts: [],
+    });
+    expect(result.rewrites).toEqual([rewriteRule]);
+  });
+
+  it('drops a non-route terminal rule and all rewrites while intercept is off', () => {
+    const result = resolveExchangeAction(fakeEngine({ rewrites: [rewriteRule], terminal: mockRule }), {
       method: 'GET',
       url: 'https://x/',
       host: 'x',
       interceptEnabled: false,
       focusHosts: [],
     });
-    expect(rule).toBeUndefined();
+    expect(result.terminal).toBeUndefined();
+    expect(result.rewrites).toEqual([]);
   });
 
-  it('keeps applying a route rule even while intercept is off', () => {
-    const rule = resolveExchangeAction(fakeEngine(routeRule), {
+  it('keeps applying a route terminal rule even while intercept is off', () => {
+    const result = resolveExchangeAction(fakeEngine({ rewrites: [], terminal: routeRule }), {
       method: 'GET',
       url: 'https://x/',
       host: 'x',
       interceptEnabled: false,
       focusHosts: [],
     });
-    expect(rule).toBe(routeRule);
+    expect(result.terminal).toBe(routeRule);
   });
 
-  it('drops a non-route rule when the host is outside the Focus allowlist', () => {
-    const rule = resolveExchangeAction(fakeEngine(mockRule), {
+  it('drops a non-route terminal rule when the host is outside the Focus allowlist', () => {
+    const result = resolveExchangeAction(fakeEngine({ rewrites: [], terminal: mockRule }), {
       method: 'GET',
       url: 'https://x/',
       host: 'unfocused.example.com',
       interceptEnabled: true,
       focusHosts: ['x'],
     });
-    expect(rule).toBeUndefined();
+    expect(result.terminal).toBeUndefined();
   });
 
-  it('returns undefined when no rule engine is given', () => {
-    const rule = resolveExchangeAction(undefined, {
+  it('returns no rewrites/terminal when no rule engine is given', () => {
+    const result = resolveExchangeAction(undefined, {
       method: 'GET',
       url: 'https://x/',
       host: 'x',
       interceptEnabled: true,
       focusHosts: [],
     });
-    expect(rule).toBeUndefined();
+    expect(result.terminal).toBeUndefined();
+    expect(result.rewrites).toEqual([]);
   });
 });

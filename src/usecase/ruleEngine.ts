@@ -1,5 +1,12 @@
 import path from 'node:path';
-import { compileRule, findMatchingRule, type CompiledRule, type MatchableRequest } from '../domain/rules/matcher';
+import {
+  compileRule,
+  findMatchingRule,
+  findMatchingRules,
+  type CompiledRule,
+  type MatchableRequest,
+  type MatchedRules,
+} from '../domain/rules/matcher';
 import type { Rule, RulesFile } from '../domain/rules/types';
 import type { FileWatcher } from './ports/fileWatcher';
 import type { RulesFileReader } from './ports/rulesFileReader';
@@ -93,6 +100,11 @@ export class RuleEngine {
 
   match(req: MatchableRequest): Rule | undefined {
     return findMatchingRule(this.compiledRules, req);
+  }
+
+  /** See `findMatchingRules`'s doc comment — used for the main HTTP(S) request/response path, where `rewrite` rules stack instead of shadowing one another. */
+  matchAll(req: MatchableRequest): MatchedRules {
+    return findMatchingRules(this.compiledRules, req);
   }
 
   getRules(): readonly Rule[] {

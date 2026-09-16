@@ -12,19 +12,31 @@ export interface ResolveExchangeActionInput {
   focusHosts: readonly string[];
 }
 
+export interface ResolvedExchangeAction {
+  /** Every matching `rewrite` rule to apply, in file order — see `MatchedRules`'s doc comment. Empty while intercept is off (a `rewrite` rule is treated the same as any other non-`route` rule then — see this module's own doc comment). */
+  rewrites: Rule[];
+  /** The matching `mock`/`route`/`breakpoint`/`script` rule (if any) that decides this exchange's fate. */
+  terminal: Rule | undefined;
+}
+
 /**
- * Decides which rule (if any) applies to a proxied HTTP(S) exchange, given
- * the current Intercept/Focus state. While intercept is off (globally, or
- * for this host via Focus), only a `route` rule keeps applying — mock/
- * rewrite/breakpoint rules are treated as if nothing matched, so the request
+ * Decides which rule(s) apply to a proxied HTTP(S) exchange, given the
+ * current Intercept/Focus state. While intercept is off (globally, or for
+ * this host via Focus), only a `route` rule keeps applying — mock/rewrite/
+ * breakpoint/script rules are treated as if nothing matched, so the request
  * flows through untouched (see `InterceptState`/`FocusState`'s doc comments
  * in domain/exchange/types.ts).
  */
 export function resolveExchangeAction(
   ruleEngine: RuleEngine | undefined,
   input: ResolveExchangeActionInput,
-): Rule | undefined {
-  const matched = ruleEngine?.match({ method: input.method, url: input.url });
+): ResolvedExchangeAction {
+  const matched = ruleEngine?.matchAll({ method: input.method, url: input.url });
   const focused = isHostFocused(input.focusHosts, input.host);
-  return (input.interceptEnabled && focused) || matched?.action.type === 'route' ? matched : undefined;
+  const interceptActive = input.interceptEnabled && focused;
+  const terminal = matched?.terminal;
+  return {
+    rewrites: interceptActive ? (matched?.rewrites ?? []) : [],
+    terminal: interceptActive || terminal?.action.type === 'route' ? terminal : undefined,
+  };
 }
