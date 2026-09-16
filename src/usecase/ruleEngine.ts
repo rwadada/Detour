@@ -115,9 +115,9 @@ export class RuleEngine {
     return this.compiledRules.map((c) => c.rule);
   }
 
-  /** See `findUnreachableRules`'s doc comment. */
+  /** See `findUnreachableRules`'s doc comment. A defensive copy, like `getRules()` — a caller mutating the returned array must not corrupt this engine's own internal state. */
   getUnreachableWarnings(): readonly UnreachableRuleWarning[] {
-    return this.unreachableWarnings;
+    return [...this.unreachableWarnings];
   }
 
   /** See `RulesFile.$activeProfile`'s doc comment. `undefined` when the current content isn't (or isn't known to still be) any saved profile's. */
@@ -165,7 +165,10 @@ export class RuleEngine {
       this.compiledRules = compileRules(data.rules, this.filePath);
       this.unreachableWarnings = findUnreachableRules(data.rules);
       this.activeProfile = data.$activeProfile;
-      this.options.onReload?.({ ruleCount: data.rules.length, unreachableWarnings: this.unreachableWarnings });
+      // Defensive copy — same reasoning as `getUnreachableWarnings()`, so a
+      // listener mutating what it's handed can't corrupt this engine's own
+      // internal state.
+      this.options.onReload?.({ ruleCount: data.rules.length, unreachableWarnings: [...this.unreachableWarnings] });
     } catch (err) {
       // Keep serving the last known-good rules rather than crash the proxy.
       this.options.onReloadError?.(err instanceof Error ? err.message : String(err));

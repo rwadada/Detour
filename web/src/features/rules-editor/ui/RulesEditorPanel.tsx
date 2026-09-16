@@ -269,7 +269,7 @@ export function RulesEditorPanel() {
               // against that saved content, keyed by index, so it'd point at
               // the wrong row (or a rule that no longer exists) once local
               // edits move things around. Looked up once per row (rather
-              // than once for the `some`/condition and again for the
+              // than once for the render condition and again for the
               // message) so the icon's `title`/`aria-label` can't end up
               // reading a different match than the one that made it render.
               const warning = dirty ? undefined : unreachableWarnings.find((w) => w.ruleIndex === index);

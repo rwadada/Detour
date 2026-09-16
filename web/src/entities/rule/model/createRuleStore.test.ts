@@ -44,7 +44,7 @@ describe('createRuleStore', () => {
     expect(store.getState().unreachableWarnings).toEqual([warning]);
   });
 
-  it("defaults `unreachableWarnings` to an empty array when a `rules` message omits it (Copilot review, PR #150: an older server or a malformed frame could leave it undefined, crashing RulesEditorPanel's `.some(...)` call)", () => {
+  it("defaults `unreachableWarnings` to an empty array when a `rules` message omits it (Copilot review, PR #150: an older server or a malformed frame could leave it undefined, crashing RulesEditorPanel's `.find(...)` call)", () => {
     const { connection, emit } = fakeDashboardConnection();
     const store = createRuleStore(connection);
     // `message.unreachableWarnings` being present is a compile-time

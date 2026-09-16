@@ -118,6 +118,17 @@ describe('RuleEngine', () => {
     expect(engine.getUnreachableWarnings()).toEqual([]);
   });
 
+  it("getUnreachableWarnings() returns a defensive copy — mutating it must not corrupt the engine's own state (Copilot review, PR #150)", () => {
+    const catchAll: Rule = { name: 'catch-all', match: { url: '*' }, action: { type: 'mock' } };
+    const dead: Rule = { name: 'dead', match: { url: 'https://api.example.com/x' }, action: { type: 'mock' } };
+    writeRules(filePath, [catchAll, dead]);
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });
+
+    const warnings = engine.getUnreachableWarnings() as unknown[];
+    warnings.push({ bogus: true });
+    expect(engine.getUnreachableWarnings()).toHaveLength(1);
+  });
+
   it('matchAll() collects every matching rewrite rule ahead of the first terminal one', () => {
     const rewriteA: Rule = {
       name: 'rewrite-a',
