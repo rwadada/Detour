@@ -1569,6 +1569,58 @@ describe('detour start (CLI, end-to-end)', () => {
     socket.close();
   });
 
+  it("applies a matching `rewrite` rule's response-side changes to a `mock` rule's own response (Copilot review, PR #150: a mock's response never passes through onResponseHeaders/onResponse, so a response rewrite silently never reached it even though `ruleName` implied it had)", async () => {
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    const url = `http://127.0.0.1:${echo.port}/mocked-with-response-rewrite`;
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-response-rewrite-before-mock',
+            match: { url },
+            action: {
+              type: 'rewrite',
+              response: { status: 201, headers: { set: { 'X-Added': 'yes' } }, body: { set: 'rewritten' } },
+            },
+          },
+          {
+            name: 'e2e-mock-terminal-2',
+            match: { url },
+            action: { type: 'mock', status: 200, body: 'mocked' },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const result = await new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>(
+      (resolve, reject) => {
+        const req = http.request({ host: 'localhost', port: cli!.port, path: url, method: 'GET' }, (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () =>
+            resolve({
+              status: res.statusCode ?? 0,
+              headers: res.headers,
+              body: Buffer.concat(chunks).toString('utf8'),
+            }),
+          );
+        });
+        req.on('error', reject);
+        req.end();
+      },
+    );
+
+    // The rewrite rule's response changes reached the actual client, not
+    // just the mock rule's own status:200/body:"mocked".
+    expect(result.status).toBe(201);
+    expect(result.headers['x-added']).toBe('yes');
+    expect(result.body).toBe('rewritten');
+  });
+
   describe('intercept on/off (issue #11)', () => {
     it('skips a mock rule while intercept is off, reaching the real upstream instead', async () => {
       echo = await startEchoServer();

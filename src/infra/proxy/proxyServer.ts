@@ -5,6 +5,8 @@ import type { Duplex } from 'node:stream';
 import { isHostBlocked, normalizeBlockHosts } from '../../domain/blockHosts/blockHostsPolicy';
 import { BodyCapture } from '../../domain/exchange/bodyCapture';
 import { compactHeaders, deleteHeader, flattenHeaders } from '../../domain/exchange/headers';
+import { applyBodyRewrite } from '../../domain/rules/bodyRewrite';
+import { applyHeaderRewrite } from '../../domain/rules/headerRewrite';
 import type {
   BlockHostsState,
   BreakpointRequestPayload,
@@ -1259,6 +1261,36 @@ export async function startProxyServer(
               mockError = message;
             });
 
+        // A mock's response never passes through onResponseHeaders/onResponse
+        // (it's synthesized here, not streamed from upstream), so a matching
+        // rewrite rule's `response` changes need applying directly to it —
+        // otherwise `ruleName`'s joined badge would imply they took effect
+        // when they silently hadn't (Copilot review, PR #150). Unlike
+        // threading a body rewrite into breakpoint/script (deliberately not
+        // done — see onResponse's own doc comment), there's no double-
+        // consumption risk here: `mock` is a plain, already-fully-resolved
+        // buffer, not a live stream, so rewriting it is just as safe as the
+        // header/status changes right next to it.
+        if (mock) {
+          for (const r of rewrites) {
+            if (r.action.type !== 'rewrite' || !r.action.response) continue;
+            if (r.action.response.status !== undefined) mock.status = r.action.response.status;
+            applyHeaderRewrite(mock.headers, r.action.response.headers);
+          }
+          const responseBodyRewriteRule = [...rewrites]
+            .reverse()
+            .find((r) => r.action.type === 'rewrite' && r.action.response?.body);
+          if (responseBodyRewriteRule && responseBodyRewriteRule.action.type === 'rewrite') {
+            mock.body = applyBodyRewrite(mock.body, responseBodyRewriteRule.action.response!.body!);
+            // `buildMockResponse` already set Content-Length from the
+            // *original* body — stale now, and left in place would frame the
+            // response wrong (the client parses exactly that many bytes as
+            // this response, corrupting whatever follows on a kept-alive
+            // connection). `writeHead`/`end` recompute it (or go chunked).
+            deleteHeader(mock.headers, 'content-length');
+          }
+        }
+
         // A mock never forwards to upstream (callback() is never called
         // below), so the usual onRequestData/onRequestEnd hooks — which only
         // fire as part of that forwarding pipeline — never run for it. Capture
@@ -1287,6 +1319,7 @@ export async function startProxyServer(
             // stays "pending" in the dashboard for as long as the connection
             // stays open, same as a real server that stopped responding.
             inFlight.delete(ctx.uuid);
+            rewriteContexts.delete(ctx.uuid);
             return;
           }
 
@@ -1302,6 +1335,7 @@ export async function startProxyServer(
           eventBus.emit('request', exchange);
           eventBus.emit('response', exchange);
           inFlight.delete(ctx.uuid);
+          rewriteContexts.delete(ctx.uuid);
         };
         if (mockError) {
           eventBus.emit('error', {

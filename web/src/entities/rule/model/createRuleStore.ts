@@ -103,7 +103,7 @@ export function createRuleStore(connection: DashboardConnection) {
           // `message.unreachableWarnings` is a type assertion over parsed
           // JSON, not a runtime guarantee — an older server (before this
           // field existed) or a malformed frame could omit it, and
-          // `RulesEditorPanel`'s `unreachableWarnings.some(...)` would throw
+          // `RulesEditorPanel`'s `unreachableWarnings.find(...)` would throw
           // on `undefined` rather than just showing no warnings.
           set({
             rulesFile: message.data,
