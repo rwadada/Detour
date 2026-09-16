@@ -510,6 +510,8 @@ interface DashboardExchange {
   host?: string;
   requestHeaders?: Record<string, string | string[]>;
   responseHeaders?: Record<string, string | string[]>;
+  statusCode?: number;
+  ruleName?: string;
   passthrough?: boolean;
   error?: string;
 }
@@ -1328,6 +1330,124 @@ describe('detour start (CLI, end-to-end)', () => {
 
     expect(hasContentLength((await requestExchange).requestHeaders)).toBe(false);
     expect(hasContentLength((await responseExchange).responseHeaders)).toBe(false);
+    socket.close();
+  });
+
+  it("reflects a `rewrite` rule's request path/header changes in the dashboard's exchange — not the client's original request (bug report: a user asked whether a header Rewrite shows up updated on the dashboard; it didn't)", async () => {
+    // `applyRequestRewrite` mutates `ctx.proxyToServerRequestOptions` (the
+    // actual outgoing request) — a separate object from the one
+    // `buildBaseExchange` already copied `exchange.url`/`requestHeaders`
+    // from, captured before this rewrite even runs. Without re-syncing
+    // them from what was actually mutated, the dashboard would show the
+    // client's original request forever, no matter what the rule rewrote.
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    const originalUrl = `http://127.0.0.1:${echo.port}/original-path`;
+    const rewrittenUrl = `http://127.0.0.1:${echo.port}/rewritten-path`;
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-rewrite-request-dashboard-sync',
+            match: { url: originalUrl },
+            action: {
+              type: 'rewrite',
+              request: {
+                path: { set: '/rewritten-path' },
+                headers: { set: { 'X-Added': 'yes' }, remove: ['x-should-be-removed'] },
+              },
+            },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    // Not `waitForExchange` (which matches by `exchange.url`): that's
+    // exactly the field under test, so on a regression it'd never match
+    // the rewritten URL and this test would time out instead of failing
+    // cleanly. Matching by rule name instead — stable either way — makes a
+    // regression here a fast, direct assertion failure.
+    const socket = new WebSocket(`ws://localhost:${cli.dashboardPort}/ws`);
+    const requestExchange = new Promise<DashboardExchange>((resolve) => {
+      socket.on('message', (raw) => {
+        const message = JSON.parse(raw.toString()) as { type: string; exchange?: DashboardExchange };
+        if (message.type === 'request' && message.exchange?.ruleName === 'e2e-rewrite-request-dashboard-sync') {
+          resolve(message.exchange);
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.on('open', () => resolve());
+      socket.on('error', reject);
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request(
+        {
+          host: 'localhost',
+          port: cli!.port,
+          path: originalUrl,
+          method: 'GET',
+          headers: { 'X-Should-Be-Removed': 'x' },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', resolve);
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+
+    const exchange = await requestExchange;
+    expect(exchange.url).toBe(rewrittenUrl);
+    expect(exchange.requestHeaders?.['X-Added']).toBe('yes');
+    expect(exchange.requestHeaders?.['X-Should-Be-Removed']).toBeUndefined();
+    socket.close();
+  });
+
+  it("reflects a `rewrite` rule's response status/header changes in the dashboard's exchange — not upstream's original response", async () => {
+    // `applyResponseHeaderRewrite` runs from `onResponseHeaders`, which
+    // (per ProxyEngine.onUpstreamResponse) fires *after* the plain
+    // `onResponse` handler that captures `exchange.statusCode`/
+    // `responseHeaders` — so without re-syncing them from what was
+    // actually just mutated, the dashboard would show upstream's original
+    // response forever, same class of bug as the request side above.
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    const url = `http://127.0.0.1:${echo.port}/rewritten-response`;
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-rewrite-response-dashboard-sync',
+            match: { url },
+            action: { type: 'rewrite', response: { status: 201, headers: { set: { 'X-Added': 'yes' } } } },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const { socket, exchange: responseExchange } = await waitForExchange(cli.dashboardPort, 'response', url);
+
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request({ host: 'localhost', port: cli!.port, path: url, method: 'GET' }, (res) => {
+        res.resume();
+        res.on('end', resolve);
+      });
+      req.on('error', reject);
+      req.end();
+    });
+
+    const exchange = await responseExchange;
+    expect(exchange.statusCode).toBe(201);
+    expect(exchange.responseHeaders?.['X-Added']).toBe('yes');
     socket.close();
   });
 

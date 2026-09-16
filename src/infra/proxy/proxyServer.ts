@@ -1072,6 +1072,20 @@ export async function startProxyServer(
     }
     if (rule?.action.type === 'rewrite' && rule.action.response) {
       applyResponseHeaderRewrite(ctx, rule.action.response);
+      // Re-sync the dashboard-visible snapshot from what was actually just
+      // mutated — same pattern `handleResponseBreakpoint`/
+      // `handleScriptResponseHook` already follow for their own edits.
+      // Without this, `exchange.statusCode`/`responseHeaders` were captured
+      // by the plain `onResponse` handler *before* this hook even runs (see
+      // `ProxyEngine.onUpstreamResponse`: `onResponseHandlers` fires, then
+      // `onResponseHeadersHandlers`), so a rewrite here was applied to the
+      // real response the client received but silently never shown here.
+      const exchange = inFlight.get(ctx.uuid);
+      if (exchange && ctx.serverToProxyResponse) {
+        exchange.statusCode = ctx.serverToProxyResponse.statusCode;
+        exchange.statusMessage = ctx.serverToProxyResponse.statusMessage;
+        exchange.responseHeaders = { ...ctx.serverToProxyResponse.headers };
+      }
     }
     return callback();
   });
@@ -1263,6 +1277,19 @@ export async function startProxyServer(
         applyRouteAction(ctx, rule.action);
       } else if (rule?.action.type === 'rewrite' && rule.action.request) {
         applyRequestRewrite(ctx, rule.action.request);
+        // Re-sync the dashboard-visible snapshot from what was actually
+        // just mutated — same pattern `handleBreakpointResume`'s own
+        // path/header edits already follow. Without this, `exchange.url`/
+        // `requestHeaders` stayed the client's original request forever:
+        // `buildBaseExchange` captures them once, before this rewrite runs,
+        // from `ctx.clientToProxyRequest` — a separate object from
+        // `ctx.proxyToServerRequestOptions`, which is what the rewrite (and
+        // this line) actually mutates.
+        const opts = ctx.proxyToServerRequestOptions;
+        if (opts) {
+          exchange.url = `${ctx.isSSL ? 'https' : 'http'}://${exchange.host}${opts.path}`;
+          exchange.requestHeaders = { ...opts.headers };
+        }
       }
 
       const requestCapture = new BodyCapture();
