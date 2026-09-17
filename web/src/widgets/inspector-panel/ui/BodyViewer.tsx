@@ -98,13 +98,21 @@ function useDecodedBody(body: string | undefined, contentEncoding: string | unde
  */
 function useLatin1Body(body: string | undefined, contentEncoding: string | undefined): DecodeResult {
   const decompressing = !!body && needsDecompression(contentEncoding);
-  const [result, setResult] = useState<{ body: string; contentEncoding: string | undefined; decoded: string }>();
+  const [result, setResult] = useState<{
+    body: string;
+    contentEncoding: string | undefined;
+    decoded: string | undefined;
+  }>();
 
   useEffect(() => {
     if (!decompressing || !body) return;
     let cancelled = false;
     decodeCapturedBytesAsync(body, contentEncoding).then((bytes) => {
-      if (!cancelled) setResult({ body, contentEncoding, decoded: bytes ? latin1Decode(bytes) : '' });
+      // A malformed capture (bad base64, or a `Content-Encoding` that fails
+      // to decompress) reports `undefined` here, same as the sync branch's
+      // own `catch` below — coercing it to `''` instead would make a
+      // genuinely undecodable body indistinguishable from a real empty one.
+      if (!cancelled) setResult({ body, contentEncoding, decoded: bytes ? latin1Decode(bytes) : undefined });
     });
     return () => {
       cancelled = true;
@@ -152,14 +160,22 @@ function useImageObjectUrl(
   contentEncoding: string | undefined,
   enabled: boolean,
 ): DecodeResult {
-  const [result, setResult] = useState<{ body: string; url: string }>();
+  const [result, setResult] = useState<{ body: string; url: string | undefined }>();
 
   useEffect(() => {
     if (!enabled || !body || !contentType) return;
     let cancelled = false;
     let createdUrl: string | undefined;
     decodeCapturedBytesAsync(body, contentEncoding).then((bytes) => {
-      if (cancelled || !bytes) return;
+      if (cancelled) return;
+      // A malformed capture (bad base64, or a `Content-Encoding` that fails
+      // to decompress) must still resolve `result` — leaving it unset here
+      // would leave this hook returning `'pending'` forever below, showing
+      // "Decoding…" for a body that in fact failed to decode.
+      if (!bytes) {
+        setResult({ body, url: undefined });
+        return;
+      }
       createdUrl = URL.createObjectURL(new Blob([bytes as BufferSource], { type: contentType }));
       setResult({ body, url: createdUrl });
     });
@@ -340,8 +356,14 @@ export function BodyViewer({
   // branches before either of `decoded`'s own pending/undefined checks
   // below, which don't apply to it.
   if (format === 'image') {
-    if (imageUrl === 'pending' || imageUrl === undefined) {
+    if (imageUrl === 'pending') {
       return <EmptyState message="Decoding…" />;
+    }
+    // Reached only once the decode attempt has actually finished (the hook
+    // returns `'pending'`, not `undefined`, for every render before that) —
+    // so this is a genuine decode failure, not still-in-progress.
+    if (imageUrl === undefined) {
+      return <EmptyState message={`Unreadable image (${formatBytes(bodySize)} captured).`} />;
     }
     return <ImageBodyView src={imageUrl} truncated={truncated} bodySize={bodySize} />;
   }
@@ -466,7 +488,7 @@ function ImageBodyView({
   );
 }
 
-/** Key/value table for a `form-urlencoded`/`multipart` body (issue #142) — a file field (`filename` set) shows its filename/content-type/size instead of a `value`, which is always empty for those (see `MultipartField.value`'s doc comment). */
+/** Key/value table for a `form-urlencoded`/`multipart` body (issue #142) — a file field (`filename` set) shows its filename/content-type instead of a `value`, which is always empty for those (see `MultipartField.value`'s doc comment). */
 function FieldsTable({ fields }: { fields: Array<{ name: string; value: string } | MultipartField> }) {
   if (fields.length === 0) {
     return <EmptyState message="No form fields." />;
