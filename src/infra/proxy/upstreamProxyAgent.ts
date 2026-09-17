@@ -18,14 +18,24 @@ export function validateUpstreamProxyUrl(url: string): URL {
   try {
     parsed = new URL(url);
   } catch {
-    throw new Error(`--upstream-proxy: "${url}" is not a valid URL.`);
+    // `redactProxyUrlCredentials` needs a URL that actually parses to find
+    // the credentials to strip — this one, by definition, doesn't — so this
+    // falls back to a plain regex over the raw string instead of leaving
+    // embedded credentials (`user:pass@`) to reach stdout/stderr verbatim
+    // through this error message.
+    throw new Error(`--upstream-proxy: "${redactUnparsedUrlCredentials(url)}" is not a valid URL.`);
   }
   if (!SUPPORTED_SCHEMES.has(parsed.protocol)) {
     throw new Error(
-      `--upstream-proxy: unsupported scheme "${parsed.protocol}" in "${url}" — expected http:, https:, socks:, socks4:, socks4a:, socks5:, or socks5h:.`,
+      `--upstream-proxy: unsupported scheme "${parsed.protocol}" in "${redactProxyUrlCredentials(url)}" — expected http:, https:, socks:, socks4:, socks4a:, socks5:, or socks5h:.`,
     );
   }
   return parsed;
+}
+
+/** Best-effort credential redaction for a URL that failed to parse at all — `redactProxyUrlCredentials`'s `new URL(...)`-based approach can't run against it, so this instead strips anything shaped like `scheme://user:pass@` directly out of the raw string. */
+function redactUnparsedUrlCredentials(url: string): string {
+  return url.replace(/^([a-zA-Z][a-zA-Z\d+\-.]*:\/\/)[^/?#]*@/, '$1***@');
 }
 
 /**

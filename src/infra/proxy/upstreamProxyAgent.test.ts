@@ -30,6 +30,25 @@ describe('validateUpstreamProxyUrl', () => {
   it('rejects an unsupported scheme with a clear message', () => {
     expect(() => validateUpstreamProxyUrl('ftp://proxy.example.com')).toThrowError(/unsupported scheme "ftp:"/);
   });
+
+  it('redacts embedded credentials from an unsupported-scheme error message', () => {
+    expect(() => validateUpstreamProxyUrl('ftp://user:hunter2@proxy.example.com')).toThrowError(
+      /ftp:\/\/\*\*\*@proxy\.example\.com/,
+    );
+    expect(() => validateUpstreamProxyUrl('ftp://user:hunter2@proxy.example.com')).not.toThrowError(/hunter2/);
+  });
+
+  it('redacts embedded credentials from a malformed-URL error message', () => {
+    // An invalid port fails `new URL(...)` entirely (unlike the
+    // unsupported-scheme case above, which still parses successfully) while
+    // still carrying the same `scheme://user:pass@` shape.
+    expect(() => validateUpstreamProxyUrl('http://user:hunter2@proxy.example.com:notaport')).toThrowError(
+      /not a valid URL/,
+    );
+    expect(() => validateUpstreamProxyUrl('http://user:hunter2@proxy.example.com:notaport')).not.toThrowError(
+      /hunter2/,
+    );
+  });
 });
 
 describe('createUpstreamProxyAgents', () => {

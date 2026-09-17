@@ -606,10 +606,21 @@ async function runStartBody({
   }
 
   const dashboardHost = resolveDashboardHost(options);
-  const handle = await startProxyServer(
-    { port, host: PROXY_HOST, ruleEngine, http2Enabled: options.http2, upstreamProxyUrl: options.upstreamProxy },
-    eventBus,
-  );
+  let handle: Awaited<ReturnType<typeof startProxyServer>>;
+  try {
+    handle = await startProxyServer(
+      { port, host: PROXY_HOST, ruleEngine, http2Enabled: options.http2, upstreamProxyUrl: options.upstreamProxy },
+      eventBus,
+    );
+  } catch (err) {
+    // `historyStore` was opened above, before the proxy itself — a bind
+    // failure here (e.g. the port's already in use) shouldn't leave its
+    // SQLite file handle open (and, on some platforms, locked) for a
+    // startup that's about to fail outright. Same shutdown-before-rethrow
+    // shape as the dashboard bind/run-state-write failures below.
+    historyStore?.close();
+    throw err;
+  }
 
   /**
    * Provisions a `RuleEngine` for a session that started with none — see
