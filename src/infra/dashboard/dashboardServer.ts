@@ -658,8 +658,17 @@ export async function startDashboardServer(
           // answers one tab's own query, not a shared-state change every
           // connected tab needs to hear about. Answered even with no
           // `historyStore` (empty/`hasMore: false`) rather than dropped —
-          // see the wire type's own doc comment for why.
-          const result = options.historyStore?.query(message.query) ?? { items: [], hasMore: false };
+          // see the wire type's own doc comment for why. A query failure
+          // (e.g. a corrupt DB file) must still answer with something,
+          // same reasoning — otherwise the requester's History UI is stuck
+          // showing `loading: true` forever with no way to know why.
+          let result: { items: CapturedExchange[]; hasMore: boolean };
+          try {
+            result = options.historyStore?.query(message.query) ?? { items: [], hasMore: false };
+          } catch (err) {
+            eventBus.emit('error', { errorKind: 'HISTORY_QUERY_ERROR', message: describeError(err) });
+            result = { items: [], hasMore: false };
+          }
           const reply: DashboardServerMessage = {
             type: 'historyResult',
             requestId: message.requestId,

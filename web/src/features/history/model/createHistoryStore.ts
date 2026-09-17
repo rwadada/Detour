@@ -66,7 +66,11 @@ export function createHistoryStore(connection: DashboardConnection) {
       pendingKind = kind;
       const before =
         kind === 'loadMore' && state.items.length > 0 ? state.items[state.items.length - 1]!.startedAt : undefined;
-      set({ loading: true });
+      // A fresh search starts from a blank slate — leaving the previous
+      // query's `items`/`hasMore` in place until the reply arrives would let
+      // a consumer that syncs off this store (e.g. `HistoryControl`'s own
+      // effect) show stale results for however long the round trip takes.
+      set(kind === 'search' ? { loading: true, items: [], hasMore: false } : { loading: true });
       connection.send({ type: 'queryHistory', requestId, query: { ...state.filters, before, limit: PAGE_SIZE } });
     };
 

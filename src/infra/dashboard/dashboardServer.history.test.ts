@@ -160,4 +160,27 @@ describe.skipIf(!isHistoryPersistenceSupported())('startDashboardServer — hist
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(bystanderSawResult).toBe(false);
   });
+
+  it('still answers queryHistory (rather than hanging the requester forever) when the store throws', async () => {
+    const throwingStore: HistoryStore = {
+      record: () => undefined,
+      query: () => {
+        throw new Error('database disk image is malformed');
+      },
+      close: () => undefined,
+    };
+    const eventBus = new DetourEventBus();
+    const errors: unknown[] = [];
+    eventBus.on('error', (event) => errors.push(event));
+    handle = await startDashboardServer({ port: 0, historyStore: throwingStore }, eventBus);
+    sockets = [];
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'historyStatus');
+
+    socket.send(JSON.stringify({ type: 'queryHistory', requestId: 'req-1', query: { limit: 10 } }));
+    const message = await waitForMessage(socket, (m) => m.type === 'historyResult');
+
+    expect(message).toEqual({ type: 'historyResult', requestId: 'req-1', items: [], hasMore: false });
+    expect(errors).toEqual([{ errorKind: 'HISTORY_QUERY_ERROR', message: 'database disk image is malformed' }]);
+  });
 });

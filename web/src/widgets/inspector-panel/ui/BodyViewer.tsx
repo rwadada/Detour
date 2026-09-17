@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react';
 import { decodeGrpcBody, useGrpcSchemaStore, type GrpcBodyDecodeResult, type GrpcDecodedFrame } from '@/entities/grpc';
 import { useTheme } from '@/shared/lib/theme';
 import {
+  base64ToBytes,
   capturedByteLength,
   decodeCapturedBody,
   decodeCapturedBodyAsync,
@@ -29,6 +30,9 @@ import {
 
 const readOnlyView = EditorView.editable.of(false);
 
+/** A decoded value not yet available (still awaiting an async decompress/decode), the decoded text/URL itself, or `undefined` for a body that can't be decoded this way at all. Shared by every one of this file's decode hooks (`useDecodedBody`/`useLatin1Body`/`useImageObjectUrl`). */
+type DecodeResult = string | undefined | 'pending';
+
 /**
  * Decodes a captured body, reversing `contentEncoding` (gzip/br) when
  * present, so a compressed JSON response isn't mistaken for binary (issue
@@ -44,7 +48,7 @@ const readOnlyView = EditorView.editable.of(false);
  * a regression a review on this PR caught for the (far more common)
  * uncompressed case.
  */
-function useDecodedBody(body: string | undefined, contentEncoding: string | undefined): string | undefined | 'pending' {
+function useDecodedBody(body: string | undefined, contentEncoding: string | undefined): DecodeResult {
   const decompressing = !!body && needsDecompression(contentEncoding);
   const [result, setResult] = useState<{
     body: string;
@@ -80,49 +84,90 @@ function useDecodedBody(body: string | undefined, contentEncoding: string | unde
 }
 
 /**
+ * Decodes a captured body via ISO-8859-1 (never fails — one byte maps to
+ * one code point, always) after reversing any `Content-Encoding` — for
+ * `multipart/form-data` (issue #142), whose ASCII boundary/header structure
+ * `parseMultipartFormData` needs to parse even though a real-world
+ * multipart body routinely embeds a file part's raw (non-UTF-8) binary
+ * bytes. `useDecodedBody`'s fatal UTF-8 decode would reject exactly that
+ * common case outright — the file part's bytes aren't discarded here
+ * either way (a file field's `value` is never rendered — see
+ * `MultipartField.value`'s doc comment — only its structure needs to
+ * survive the round trip intact), but this decode itself must not fail
+ * just because they're present.
+ */
+function useLatin1Body(body: string | undefined, contentEncoding: string | undefined): DecodeResult {
+  const decompressing = !!body && needsDecompression(contentEncoding);
+  const [result, setResult] = useState<{ body: string; contentEncoding: string | undefined; decoded: string }>();
+
+  useEffect(() => {
+    if (!decompressing || !body) return;
+    let cancelled = false;
+    decodeCapturedBytesAsync(body, contentEncoding).then((bytes) => {
+      if (!cancelled) setResult({ body, contentEncoding, decoded: bytes ? latin1Decode(bytes) : '' });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [decompressing, body, contentEncoding]);
+
+  if (!body) return undefined;
+  if (!decompressing) {
+    try {
+      return latin1Decode(base64ToBytes(body));
+    } catch {
+      return undefined;
+    }
+  }
+  if (!result || result.body !== body || result.contentEncoding !== contentEncoding) return 'pending';
+  return result.decoded;
+}
+
+function latin1Decode(bytes: Uint8Array): string {
+  return new TextDecoder('iso-8859-1').decode(bytes);
+}
+
+/**
  * Decodes a captured `image/*` body (issue #142) into a `Blob` object URL
  * `<img>` can load directly, reversing `contentEncoding` first via
  * `decodeCapturedBytesAsync` — never through `useDecodedBody`'s UTF-8 text
  * pipeline, which would corrupt (or reject as "binary") the raw bytes.
  * `enabled` gates this on `BodyViewer` having already classified the body
  * as an image, so a non-image body never pays for a pointless decode.
- * Revokes the previous object URL whenever a new one replaces it (or this
- * unmounts) — otherwise every exchange inspected this way leaks a Blob for
- * the life of the tab.
+ *
+ * Each effect run tracks the object URL *it* created in a variable scoped
+ * to that one run, and revokes exactly that URL in its own cleanup — never
+ * a second, deps-`[]` "unmount-only" effect reading the `result` state from
+ * outside, which only ever sees the value `result` held at that *later*
+ * effect's own creation (mount) and so can never see a subsequent update,
+ * definitionally never revoking anything. Since React always runs a
+ * `useEffect`'s cleanup before its next run and once more on unmount, this
+ * one effect alone already covers every case that matters: a new body/
+ * content-type/encoding replacing the current one, `enabled` flipping back
+ * off, and the component unmounting outright.
  */
 function useImageObjectUrl(
   body: string | undefined,
   contentType: string | undefined,
   contentEncoding: string | undefined,
   enabled: boolean,
-): string | undefined | 'pending' {
+): DecodeResult {
   const [result, setResult] = useState<{ body: string; url: string }>();
 
   useEffect(() => {
     if (!enabled || !body || !contentType) return;
     let cancelled = false;
+    let createdUrl: string | undefined;
     decodeCapturedBytesAsync(body, contentEncoding).then((bytes) => {
       if (cancelled || !bytes) return;
-      const url = URL.createObjectURL(new Blob([bytes as BufferSource], { type: contentType }));
-      setResult((prev) => {
-        if (prev) URL.revokeObjectURL(prev.url);
-        return { body, url };
-      });
+      createdUrl = URL.createObjectURL(new Blob([bytes as BufferSource], { type: contentType }));
+      setResult({ body, url: createdUrl });
     });
     return () => {
       cancelled = true;
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
   }, [enabled, body, contentType, contentEncoding]);
-
-  // Revokes the very last object URL created once this instance unmounts —
-  // the effect above already revokes every *earlier* one as it's replaced,
-  // but nothing else ever runs to catch the final one.
-  useEffect(() => {
-    return () => {
-      if (result) URL.revokeObjectURL(result.url);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- unmount-only cleanup, intentionally not re-running per `result` change (that's the effect above's job).
-  }, []);
 
   if (!enabled) return undefined;
   if (!result || result.body !== body) return 'pending';
@@ -237,7 +282,13 @@ export function BodyViewer({
 }) {
   const dark = useTheme() === 'dark';
   const format = detectBodyFormat(contentType);
-  const decoded = useDecodedBody(format === 'image' ? undefined : body, contentEncoding);
+  // `multipart/form-data` goes through `useLatin1Body` instead — see its
+  // own doc comment for why `useDecodedBody`'s fatal UTF-8 decode can't be
+  // used for it. Both hooks still run unconditionally regardless of
+  // `format` (Rules of Hooks); each is simply handed `undefined` when it
+  // isn't the one this exchange needs.
+  const decoded = useDecodedBody(format === 'image' || format === 'multipart' ? undefined : body, contentEncoding);
+  const multipartText = useLatin1Body(format === 'multipart' ? body : undefined, contentEncoding);
   const imageUrl = useImageObjectUrl(body, contentType, contentEncoding, format === 'image');
   const grpcResult = useGrpcDecode({
     body,
@@ -295,16 +346,19 @@ export function BodyViewer({
     return <ImageBodyView src={imageUrl} truncated={truncated} bodySize={bodySize} />;
   }
 
-  if (decoded === 'pending') {
+  // `multipart` reads from `multipartText` (never-fails ISO-8859-1) instead
+  // of `decoded` (fatal UTF-8) — see `useLatin1Body`'s doc comment.
+  const textSource = format === 'multipart' ? multipartText : decoded;
+  if (textSource === 'pending') {
     return <EmptyState message="Decoding…" />;
   }
-  if (decoded === undefined) {
+  if (textSource === undefined) {
     return <EmptyState message={`Binary or non-UTF-8 body (${formatBytes(bodySize)} captured).`} />;
   }
 
   return (
     <TextBodyView
-      decoded={decoded}
+      decoded={textSource}
       format={format}
       contentType={contentType}
       body={body}

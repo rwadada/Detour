@@ -73,6 +73,20 @@ describe('createHistoryStore', () => {
     expect(store.getState().items).toEqual([]);
   });
 
+  it("clears items/hasMore immediately on a new search(), rather than leaving the previous query's stale results in place until the reply arrives", () => {
+    const fake = fakeDashboardConnection();
+    const store = createHistoryStore(fake.connection);
+    store.getState().search();
+    const firstRequestId = (fake.sent[0] as { requestId: string }).requestId;
+    fake.emit({ type: 'historyResult', requestId: firstRequestId, items: [exchange()], hasMore: true });
+    expect(store.getState().items).toHaveLength(1);
+
+    store.getState().search();
+
+    expect(store.getState().items).toEqual([]);
+    expect(store.getState().hasMore).toBe(false);
+  });
+
   it("loadMore() sends `before` set to the current items' oldest startedAt, and appends its result", () => {
     const fake = fakeDashboardConnection();
     const store = createHistoryStore(fake.connection);

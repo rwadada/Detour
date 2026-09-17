@@ -211,6 +211,15 @@ function attachTiming(exchange: CapturedExchange, ctx: IContext): void {
   if (ctx.responseHeadersAt !== undefined && exchange.finishedAt !== undefined) {
     ctx.timing.transferMs = exchange.finishedAt - ctx.responseHeadersAt;
   }
+  // `ctx.timing` is set (to `{}`) the moment `makeProxyToServerRequest`
+  // dispatches, before any phase actually completes — a request that
+  // errors synchronously right after that (before even a 'socket' event)
+  // would otherwise attach a timing object with every field `undefined`,
+  // contradicting `CapturedExchange.timing`'s own doc comment ("absent
+  // for an exchange that never reached upstream" — in every way that
+  // actually matters here, one whose upstream connection never got far
+  // enough to measure anything is the same case).
+  if (Object.values(ctx.timing).every((value) => value === undefined)) return;
   exchange.timing = ctx.timing;
 }
 
