@@ -196,7 +196,12 @@ function useImageObjectUrl(
   // happening to share byte-identical captured bodies), the stored `url`
   // was built from the *previous* pair and would otherwise be returned as
   // though it matched the current one.
-  if (!result || result.body !== body || result.contentType !== contentType || result.contentEncoding !== contentEncoding) {
+  if (
+    !result ||
+    result.body !== body ||
+    result.contentType !== contentType ||
+    result.contentEncoding !== contentEncoding
+  ) {
     return 'pending';
   }
   return result.url;
