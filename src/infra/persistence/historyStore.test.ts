@@ -87,6 +87,27 @@ describe.skipIf(!isHistoryPersistenceSupported())('openHistoryStore', () => {
     store.close();
   });
 
+  it('breaks ties between same-millisecond rows using beforeId, rather than skipping them', () => {
+    const store = openHistoryStore(tmpDbPath());
+    store.record(exchange({ id: 'a', startedAt: 5000 }));
+    store.record(exchange({ id: 'b', startedAt: 5000 }));
+    store.record(exchange({ id: 'c', startedAt: 5000 }));
+
+    const firstPage = store.query({ limit: 2 });
+    expect(firstPage.items.map((e) => e.id)).toEqual(['c', 'b']);
+    expect(firstPage.hasMore).toBe(true);
+
+    // A `before`-only cursor (no tie-breaker) excludes every row sharing the
+    // boundary timestamp — permanently losing 'a' below, since it never
+    // satisfies a plain `started_at < 5000`.
+    expect(store.query({ limit: 2, before: 5000 }).items).toEqual([]);
+
+    const secondPage = store.query({ limit: 2, before: 5000, beforeId: 'b' });
+    expect(secondPage.items.map((e) => e.id)).toEqual(['a']);
+    expect(secondPage.hasMore).toBe(false);
+    store.close();
+  });
+
   it('filters by exact method and host', () => {
     const store = openHistoryStore(tmpDbPath());
     store.record(exchange({ id: 'a', method: 'GET', host: 'api.example.com' }));

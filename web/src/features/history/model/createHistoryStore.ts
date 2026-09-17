@@ -64,14 +64,22 @@ export function createHistoryStore(connection: DashboardConnection) {
       const requestId = `history-${requestCounter}`;
       latestRequestId = requestId;
       pendingKind = kind;
-      const before =
-        kind === 'loadMore' && state.items.length > 0 ? state.items[state.items.length - 1]!.startedAt : undefined;
+      const lastItem = kind === 'loadMore' && state.items.length > 0 ? state.items[state.items.length - 1] : undefined;
+      // `beforeId` breaks a same-`startedAt` tie server-side — see
+      // `HistoryQuery`'s own doc comment for why `startedAt` (ms resolution)
+      // alone isn't always a unique/stable cursor.
+      const before = lastItem?.startedAt;
+      const beforeId = lastItem?.id;
       // A fresh search starts from a blank slate — leaving the previous
       // query's `items`/`hasMore` in place until the reply arrives would let
       // a consumer that syncs off this store (e.g. `HistoryControl`'s own
       // effect) show stale results for however long the round trip takes.
       set(kind === 'search' ? { loading: true, items: [], hasMore: false } : { loading: true });
-      connection.send({ type: 'queryHistory', requestId, query: { ...state.filters, before, limit: PAGE_SIZE } });
+      connection.send({
+        type: 'queryHistory',
+        requestId,
+        query: { ...state.filters, before, beforeId, limit: PAGE_SIZE },
+      });
     };
 
     return {

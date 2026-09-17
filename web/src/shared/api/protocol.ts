@@ -268,6 +268,8 @@ export interface HistoryFilters {
 /** Mirrors `src/domain/dashboard/protocol.ts`'s `HistoryQuery`. */
 export interface HistoryQuery extends HistoryFilters {
   before?: number;
+  /** Paired with `before` (a same-millisecond tie-breaker) — see the server-side `HistoryQuery`'s own doc comment. */
+  beforeId?: string;
   limit: number;
 }
 

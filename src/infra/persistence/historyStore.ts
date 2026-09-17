@@ -71,8 +71,20 @@ function buildWhereClause(query: HistoryQuery): { sql: string; params: (string |
   const params: (string | number)[] = [];
 
   if (query.before !== undefined) {
-    clauses.push('started_at < ?');
-    params.push(query.before);
+    // `started_at < ?` alone would silently drop rows: `started_at` is
+    // ms-resolution `Date.now()`, so two exchanges captured in the same
+    // millisecond (routine under load) are common, and if only some of a
+    // tied group fit in the previous page, a plain `<` cursor would skip
+    // the rest of that group forever rather than surfacing them on this
+    // page. `id` (the table's own primary key, unique per exchange) breaks
+    // the tie the same way `ORDER BY started_at DESC, id DESC` below does.
+    if (query.beforeId !== undefined) {
+      clauses.push('(started_at < ? OR (started_at = ? AND id < ?))');
+      params.push(query.before, query.before, query.beforeId);
+    } else {
+      clauses.push('started_at < ?');
+      params.push(query.before);
+    }
   }
   if (query.method !== undefined) {
     clauses.push('method = ?');
@@ -155,7 +167,7 @@ export function openHistoryStore(dbPath: string): HistoryStore {
       // Fetches one extra row purely to answer `hasMore` without a second
       // COUNT(*) query — sliced back off below before returning.
       const rows = db
-        .prepare(`SELECT data FROM exchanges ${where} ORDER BY started_at DESC LIMIT ?`)
+        .prepare(`SELECT data FROM exchanges ${where} ORDER BY started_at DESC, id DESC LIMIT ?`)
         .all(...params, limit + 1) as Array<{ data: string }>;
       const hasMore = rows.length > limit;
       const items = rows.slice(0, limit).map((row) => JSON.parse(row.data) as CapturedExchange);

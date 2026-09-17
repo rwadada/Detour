@@ -34,14 +34,22 @@ export interface HistoryFilters {
 }
 
 /**
- * One page of a `queryHistory` request. `before` is the oldest item's
- * `startedAt` from the previous page — omit it for the first (most recent)
- * page, pass it to page further back in time. `limit` bounds how many rows
- * come back; `HistoryQueryResult.hasMore` says whether an older page than
- * this one still exists.
+ * One page of a `queryHistory` request. `before`/`beforeId` together are the
+ * oldest item's `startedAt`/`id` from the previous page — omit both for the
+ * first (most recent) page, pass both to page further back in time.
+ * `startedAt` alone (ms resolution) isn't a stable cursor on its own: two
+ * exchanges captured in the same millisecond are common under load, and
+ * paging on `started_at < before` alone can permanently skip whichever of
+ * them didn't make it into the previous page. `id` (unique per exchange)
+ * breaks the tie deterministically — see `historyStore.ts`'s
+ * `buildWhereClause`. `limit` bounds how many rows come back;
+ * `HistoryQueryResult.hasMore` says whether an older page than this one
+ * still exists.
  */
 export interface HistoryQuery extends HistoryFilters {
   before?: number;
+  /** Paired with `before` — see this interface's own doc comment. Only meaningful when `before` is also set. */
+  beforeId?: string;
   limit: number;
 }
 

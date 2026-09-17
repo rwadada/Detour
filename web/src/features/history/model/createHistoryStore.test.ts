@@ -87,7 +87,7 @@ describe('createHistoryStore', () => {
     expect(store.getState().hasMore).toBe(false);
   });
 
-  it("loadMore() sends `before` set to the current items' oldest startedAt, and appends its result", () => {
+  it("loadMore() sends `before`/`beforeId` set to the current items' oldest entry, and appends its result", () => {
     const fake = fakeDashboardConnection();
     const store = createHistoryStore(fake.connection);
     store.getState().search();
@@ -100,8 +100,9 @@ describe('createHistoryStore', () => {
     });
 
     store.getState().loadMore();
-    const secondSent = fake.sent[1] as { requestId: string; query: { before?: number } };
+    const secondSent = fake.sent[1] as { requestId: string; query: { before?: number; beforeId?: string } };
     expect(secondSent.query.before).toBe(2000);
+    expect(secondSent.query.beforeId).toBe('a');
 
     fake.emit({
       type: 'historyResult',
