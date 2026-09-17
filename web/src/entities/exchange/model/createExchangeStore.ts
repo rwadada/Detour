@@ -94,7 +94,7 @@ export function createExchangeStore(connection: DashboardConnection) {
   // two flags are orthogonal rather than one implying the other).
   let paused = false;
 
-  return create<ExchangeState>((set) => {
+  return create<ExchangeState>((set, get) => {
     // Incoming WS messages can arrive far faster than React should re-render
     // (a busy proxy can easily push hundreds of exchanges/sec). Rather than
     // calling `set()` per message, updates are queued here and flushed at
@@ -163,7 +163,22 @@ export function createExchangeStore(connection: DashboardConnection) {
       },
       importHistory: (exchanges) => {
         importedExchanges = exchanges;
-        set({ exchanges, selectedId: null, source: 'history', importedFileName: null });
+        // Unlike `importExchanges` (one static HAR file, never re-imported
+        // while its viewer stays open), `HistoryControl` re-calls this on
+        // every incoming page — including `HistoryBanner`'s "Load more",
+        // which only appends to what's already showing. Unconditionally
+        // resetting `selectedId` here would clear the user's selection on
+        // every such append even though the selected exchange is still
+        // right there in the (now longer) list; only actually clear it when
+        // it isn't (e.g. a fresh search replacing the results outright).
+        const currentSelectedId = get().selectedId;
+        const stillSelected = currentSelectedId !== null && exchanges.some((e) => e.id === currentSelectedId);
+        set({
+          exchanges,
+          selectedId: stillSelected ? currentSelectedId : null,
+          source: 'history',
+          importedFileName: null,
+        });
       },
       exitImport: () => {
         importedExchanges = null;

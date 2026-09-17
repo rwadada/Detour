@@ -160,7 +160,12 @@ function useImageObjectUrl(
   contentEncoding: string | undefined,
   enabled: boolean,
 ): DecodeResult {
-  const [result, setResult] = useState<{ body: string; url: string | undefined }>();
+  const [result, setResult] = useState<{
+    body: string;
+    contentType: string;
+    contentEncoding: string | undefined;
+    url: string | undefined;
+  }>();
 
   useEffect(() => {
     if (!enabled || !body || !contentType) return;
@@ -173,11 +178,11 @@ function useImageObjectUrl(
       // would leave this hook returning `'pending'` forever below, showing
       // "Decoding…" for a body that in fact failed to decode.
       if (!bytes) {
-        setResult({ body, url: undefined });
+        setResult({ body, contentType, contentEncoding, url: undefined });
         return;
       }
       createdUrl = URL.createObjectURL(new Blob([bytes as BufferSource], { type: contentType }));
-      setResult({ body, url: createdUrl });
+      setResult({ body, contentType, contentEncoding, url: createdUrl });
     });
     return () => {
       cancelled = true;
@@ -186,7 +191,14 @@ function useImageObjectUrl(
   }, [enabled, body, contentType, contentEncoding]);
 
   if (!enabled) return undefined;
-  if (!result || result.body !== body) return 'pending';
+  // Same `body` alone isn't enough to trust a cached `result` — if only
+  // `contentType`/`contentEncoding` changed (e.g. two different exchanges
+  // happening to share byte-identical captured bodies), the stored `url`
+  // was built from the *previous* pair and would otherwise be returned as
+  // though it matched the current one.
+  if (!result || result.body !== body || result.contentType !== contentType || result.contentEncoding !== contentEncoding) {
+    return 'pending';
+  }
   return result.url;
 }
 

@@ -83,7 +83,13 @@ function buildWhereClause(query: HistoryQuery): { sql: string; params: (string |
     params.push(query.host);
   }
   if (query.urlContains !== undefined) {
-    clauses.push("url LIKE ? ESCAPE '\\'");
+    // `HistoryQuery.urlContains` is documented as case-insensitive. Plain
+    // `LIKE` happens to already default to ASCII case-insensitive in
+    // SQLite, but only as long as nothing has ever toggled the
+    // `case_sensitive_like` pragma on this connection — wrapping both sides
+    // in `LOWER(...)` makes the match correct on its own terms rather than
+    // relying on that default staying in effect.
+    clauses.push("LOWER(url) LIKE LOWER(?) ESCAPE '\\'");
     // Escapes SQL LIKE's own wildcards (`%`/`_`) in the *user's* substring so
     // e.g. searching for a literal "50%" doesn't act as a wildcard match.
     const escaped = query.urlContains.replace(/[\\%_]/g, (m) => `\\${m}`);

@@ -106,6 +106,10 @@ describe.skipIf(!isHistoryPersistenceSupported())('openHistoryStore', () => {
     expect(store.query({ limit: 10, urlContains: 'users' }).items.map((e) => e.id)).toEqual(['a']);
     // A literal "%" in the query must not act as a SQL LIKE wildcard.
     expect(store.query({ limit: 10, urlContains: '50%off' }).items.map((e) => e.id)).toEqual(['b']);
+    // Case-insensitivity itself — not just wildcard-escaping — has to hold
+    // regardless of this connection's `case_sensitive_like` pragma, not by
+    // relying on plain `LIKE`'s own (togglable) default.
+    expect(store.query({ limit: 10, urlContains: 'USERS' }).items.map((e) => e.id)).toEqual(['a']);
     store.close();
   });
 

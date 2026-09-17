@@ -185,6 +185,41 @@ describe('createExchangeStore', () => {
     expect(store.getState().importedFileName).toBeNull();
   });
 
+  it('importHistory() switches to history mode, showing the given exchanges', () => {
+    const fake = fakeConnection();
+    const store = createExchangeStore(fake.connection);
+    fake.emit({ type: 'backlog', items: [exchange({ id: 'live-1' })] });
+    store.getState().select('live-1');
+
+    store.getState().importHistory([exchange({ id: 'history-1' })]);
+
+    expect(store.getState().exchanges.map((e) => e.id)).toEqual(['history-1']);
+    expect(store.getState().source).toBe('history');
+    expect(store.getState().selectedId).toBeNull();
+  });
+
+  it("importHistory() keeps the current selection when it's still present in the new page (e.g. 'Load more')", () => {
+    const fake = fakeConnection();
+    const store = createExchangeStore(fake.connection);
+    store.getState().importHistory([exchange({ id: 'a' }), exchange({ id: 'b' })]);
+    store.getState().select('a');
+
+    store.getState().importHistory([exchange({ id: 'a' }), exchange({ id: 'b' }), exchange({ id: 'c' })]);
+
+    expect(store.getState().selectedId).toBe('a');
+  });
+
+  it("importHistory() clears the selection when it's no longer present (e.g. a fresh search)", () => {
+    const fake = fakeConnection();
+    const store = createExchangeStore(fake.connection);
+    store.getState().importHistory([exchange({ id: 'a' })]);
+    store.getState().select('a');
+
+    store.getState().importHistory([exchange({ id: 'b' })]);
+
+    expect(store.getState().selectedId).toBeNull();
+  });
+
   it('two store instances never share buffered state', () => {
     const fakeA = fakeConnection();
     const fakeB = fakeConnection();
