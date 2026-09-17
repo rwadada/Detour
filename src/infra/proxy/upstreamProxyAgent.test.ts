@@ -1,3 +1,4 @@
+import type http from 'node:http';
 import { HttpProxyAgent } from 'http-proxy-agent';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
@@ -72,6 +73,20 @@ describe('createUpstreamProxyAgents', () => {
 
   it("propagates validateUpstreamProxyUrl's error for an unsupported scheme", () => {
     expect(() => createUpstreamProxyAgents('ftp://proxy.example.com')).toThrowError(/unsupported scheme/);
+  });
+
+  it("builds every agent kind with keepAlive: false, matching ProxyEngine's own default agents", () => {
+    // `keepAlive` is a real runtime property on every `http.Agent` instance
+    // (set from the constructor's `AgentOptions`), just not one `@types/node`
+    // exposes on the class's public type.
+    const keepAliveOf = (agent: http.Agent) => (agent as unknown as { keepAlive: boolean }).keepAlive;
+
+    const httpUpstream = createUpstreamProxyAgents('http://proxy.example.com:8080');
+    expect(keepAliveOf(httpUpstream.httpAgent)).toBe(false);
+    expect(keepAliveOf(httpUpstream.httpsAgent)).toBe(false);
+
+    const socksUpstream = createUpstreamProxyAgents('socks5://127.0.0.1:1080');
+    expect(keepAliveOf(socksUpstream.httpAgent)).toBe(false);
   });
 });
 

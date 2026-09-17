@@ -88,9 +88,20 @@ export function redactProxyUrlCredentials(url: string): string {
  */
 export function createUpstreamProxyAgents(upstreamProxyUrl: string): { httpAgent: http.Agent; httpsAgent: http.Agent } {
   const parsed = validateUpstreamProxyUrl(upstreamProxyUrl);
+  // `ProxyEngine`'s own default agents are `keepAlive: false` (see
+  // `proxyEngine.ts`) and every proxy→upstream response is sent with
+  // `Connection: close` on the strength of that — a socket can then only
+  // ever be in a fresh "connecting" state, which `trackSocketTiming` relies
+  // on to measure every timing phase on every request. These three
+  // constructors already default to `keepAlive: false` themselves (Node's
+  // own `http.Agent` default, which `agent-base` doesn't override), so this
+  // doesn't change current behavior — it's here so that invariant doesn't
+  // silently start depending on an undocumented default if one of these
+  // packages ever changes it.
+  const keepAlive = { keepAlive: false };
   if (SOCKS_SCHEMES.has(parsed.protocol)) {
-    const agent = new SocksProxyAgent(parsed);
+    const agent = new SocksProxyAgent(parsed, keepAlive);
     return { httpAgent: agent, httpsAgent: agent };
   }
-  return { httpAgent: new HttpProxyAgent(parsed), httpsAgent: new HttpsProxyAgent(parsed) };
+  return { httpAgent: new HttpProxyAgent(parsed, keepAlive), httpsAgent: new HttpsProxyAgent(parsed, keepAlive) };
 }
