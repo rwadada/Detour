@@ -6,6 +6,7 @@ import net from 'node:net';
 import type { Duplex } from 'node:stream';
 import WebSocket, { WebSocketServer } from 'ws';
 import type { ExchangeTiming } from '../../../domain/exchange/types';
+import { createUpstreamProxyAgents } from '../upstreamProxyAgent';
 import { CertAuthority } from './certAuthority';
 import type {
   ErrorCallback,
@@ -28,6 +29,15 @@ export interface ProxyEngineOptions {
   sslCaDir: string;
   /** @default true */
   http2?: boolean;
+  /**
+   * Routes every proxy→upstream connection through this HTTP(S)/SOCKS proxy
+   * instead of connecting to the real destination directly (issue #145) —
+   * e.g. `http://user:pass@proxy.corp.example.com:8080` or
+   * `socks5://127.0.0.1:1080`. Already validated by the caller (`cli.ts`'s
+   * eager `validateUpstreamProxyUrl` — see its own doc comment for why).
+   * Omit for direct connections (the default).
+   */
+  upstreamProxyUrl?: string;
 }
 
 /** A request/response pair's actual mutable hook lists — `IContext`'s public surface plus the bookkeeping `ProxyEngine` needs internally, never exposed to consumers. */
@@ -139,8 +149,13 @@ export class ProxyEngine {
   private readonly onWebSocketErrorHandlers: OnWebSocketErrorParams[] = [];
   private readonly onErrorHandlers: OnErrorParams[] = [];
 
-  private readonly httpAgent = new http.Agent({ keepAlive: false });
-  private readonly httpsAgent = new https.Agent({ keepAlive: false });
+  // Typed as plain `http.Agent` (not `https.Agent` for the second one) since
+  // that's all `IContext.proxyToServerRequestOptions.agent` ever needs — see
+  // `createUpstreamProxyAgents`'s doc comment for why that matters once
+  // `--upstream-proxy` (issue #145) replaces these with a proxy-routing
+  // agent that isn't literally an `https.Agent` instance.
+  private httpAgent: http.Agent = new http.Agent({ keepAlive: false });
+  private httpsAgent: http.Agent = new https.Agent({ keepAlive: false });
 
   private httpServer: http.Server | undefined;
   private tlsServer: https.Server | http2.Http2SecureServer | undefined;
@@ -229,6 +244,12 @@ export class ProxyEngine {
   async listen(options: ProxyEngineOptions, callback: ErrorCallback = () => undefined): Promise<void> {
     try {
       this.ca = CertAuthority.load(options.sslCaDir);
+
+      if (options.upstreamProxyUrl) {
+        const agents = createUpstreamProxyAgents(options.upstreamProxyUrl);
+        this.httpAgent = agents.httpAgent;
+        this.httpsAgent = agents.httpsAgent;
+      }
 
       this.tlsServer = this.createInternalTlsServer(options.http2 ?? true);
       await listenAsync(this.tlsServer, 0, '127.0.0.1');

@@ -84,6 +84,13 @@ export interface ProxyServerOptions {
    * @default true
    */
   http2Enabled?: boolean;
+  /**
+   * Routes every proxy→upstream connection through this HTTP(S)/SOCKS proxy
+   * instead of connecting to the real destination directly (issue #145) —
+   * see `ProxyEngineOptions.upstreamProxyUrl`'s doc comment. Already
+   * validated by the caller (`cli.ts`). Omit for direct connections.
+   */
+  upstreamProxyUrl?: string;
 }
 
 export interface ProxyServerHandle {
@@ -1582,26 +1589,35 @@ export async function startProxyServer(
 
   return new Promise((resolve, reject) => {
     try {
-      proxy.listen({ port: options.port, host, sslCaDir, http2: options.http2Enabled ?? true }, () => {
-        resolve({
-          port: proxy.httpPort,
-          caCertPath: proxy.ca.getCACertPath(),
-          setRuleEngine: (engine) => {
-            ruleEngine = engine;
-          },
-          stop: () =>
-            new Promise<void>((res) => {
-              eventBus.off('breakpointResume', handleBreakpointResume);
-              eventBus.off('setIntercept', handleSetIntercept);
-              eventBus.off('setFocus', handleSetFocus);
-              eventBus.off('setThrottle', handleSetThrottle);
-              eventBus.off('setBlockHosts', handleSetBlockHosts);
-              ruleEngine?.close();
-              proxy.close();
-              res();
-            }),
-        });
-      });
+      proxy.listen(
+        {
+          port: options.port,
+          host,
+          sslCaDir,
+          http2: options.http2Enabled ?? true,
+          upstreamProxyUrl: options.upstreamProxyUrl,
+        },
+        () => {
+          resolve({
+            port: proxy.httpPort,
+            caCertPath: proxy.ca.getCACertPath(),
+            setRuleEngine: (engine) => {
+              ruleEngine = engine;
+            },
+            stop: () =>
+              new Promise<void>((res) => {
+                eventBus.off('breakpointResume', handleBreakpointResume);
+                eventBus.off('setIntercept', handleSetIntercept);
+                eventBus.off('setFocus', handleSetFocus);
+                eventBus.off('setThrottle', handleSetThrottle);
+                eventBus.off('setBlockHosts', handleSetBlockHosts);
+                ruleEngine?.close();
+                proxy.close();
+                res();
+              }),
+          });
+        },
+      );
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)));
     }

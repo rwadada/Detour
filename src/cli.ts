@@ -36,6 +36,7 @@ import { startIdleWatcher } from './infra/proxy/idleWatcher';
 import { nodeCertPairingServer } from './infra/proxy/nodeCertPairingServer';
 import { readlineDevicePicker } from './infra/process/readlineDevicePicker';
 import { startProxyServer } from './infra/proxy/proxyServer';
+import { redactProxyUrlCredentials, validateUpstreamProxyUrl } from './infra/proxy/upstreamProxyAgent';
 import {
   logExchange,
   logExchangeFull,
@@ -331,6 +332,14 @@ interface StartOptions {
    * that case; `undefined` when the flag isn't passed at all.
    */
   persist?: string | true;
+  /**
+   * `--upstream-proxy <url>` (issue #145): routes every proxy→upstream
+   * connection through this HTTP(S)/SOCKS proxy instead of connecting to
+   * the real destination directly — e.g. a corporate network reachable
+   * only via an existing egress proxy. See `upstreamProxyAgent.ts`'s own
+   * doc comment for the supported URL schemes.
+   */
+  upstreamProxy?: string;
 }
 
 /**
@@ -512,6 +521,11 @@ async function runStartBody({
   // silently falling back to "no --proto configured" for the whole session.
   const protoRegistry = options.proto.length > 0 ? await ProtoRegistry.load(options.proto) : undefined;
 
+  // Validated eagerly (same reasoning) so a malformed/unsupported
+  // `--upstream-proxy` URL fails CLI startup with a clear error rather than
+  // every proxied request thereafter silently failing to connect.
+  if (options.upstreamProxy) validateUpstreamProxyUrl(options.upstreamProxy);
+
   // Opened eagerly (same reasoning as rules.json/`.proto` above) so a bad
   // `--persist` path (unwritable directory, an unsupported Node runtime)
   // fails CLI startup with a clear error rather than every exchange
@@ -579,7 +593,10 @@ async function runStartBody({
   }
 
   const dashboardHost = resolveDashboardHost(options);
-  const handle = await startProxyServer({ port, host: PROXY_HOST, ruleEngine, http2Enabled: options.http2 }, eventBus);
+  const handle = await startProxyServer(
+    { port, host: PROXY_HOST, ruleEngine, http2Enabled: options.http2, upstreamProxyUrl: options.upstreamProxy },
+    eventBus,
+  );
 
   /**
    * Provisions a `RuleEngine` for a session that started with none — see
@@ -733,6 +750,7 @@ async function runStartBody({
     protoPaths: options.proto,
     dashboardPasswordSet: readDashboardPasswordSet(),
     historyDbPath,
+    upstreamProxyUrl: options.upstreamProxy,
   });
 
   // DETOUR_READY (issue #20): a stable, greppable line a CI script can wait
@@ -818,6 +836,8 @@ function printStartupBanner(info: {
   dashboardPasswordSet: boolean;
   /** `--persist`'s resolved SQLite path (issue #144), undefined when not given. */
   historyDbPath: string | undefined;
+  /** `--upstream-proxy`'s URL (issue #145), undefined when not given. */
+  upstreamProxyUrl: string | undefined;
 }): void {
   console.log(
     `Detour proxy started → http://localhost:${info.proxyPort} (HTTP/2: ${info.http2Enabled ? 'on' : 'off'})`,
@@ -881,6 +901,9 @@ function printStartupBanner(info: {
   }
   if (info.historyDbPath) {
     console.log(`History persistence → ${info.historyDbPath}`);
+  }
+  if (info.upstreamProxyUrl) {
+    console.log(`Upstream proxy → ${redactProxyUrlCredentials(info.upstreamProxyUrl)}`);
   }
   console.log('Press Ctrl+C to stop.');
 }
@@ -1052,6 +1075,10 @@ export function createCli(): Command {
     .option(
       '--persist [path]',
       "Persist every finished exchange to a SQLite database (opt-in; default off), queryable from the dashboard's History feature once it falls out of the live 500-item backlog — the backlog itself, and the 256KB per-body capture cap, are unchanged. Defaults to ~/.detour/history.db when passed with no path. Requires Node 22.5+ (node:sqlite).",
+    )
+    .option(
+      '--upstream-proxy <url>',
+      'Route every proxy→upstream connection through this HTTP(S)/SOCKS proxy instead of connecting to the real destination directly — for a network (e.g. a corporate egress) only reachable that way. Supports http://, https://, socks://, socks4://, socks4a://, socks5://, and socks5h:// (with optional user:pass@ auth embedded in the URL).',
     )
     .action(async (options: StartOptions) => {
       try {
