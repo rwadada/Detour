@@ -27,6 +27,7 @@ import { loadUserConfig, resolveUserConfigPath, writeUserConfig } from './infra/
 import { buildGrpcExchangeInfo } from './infra/grpc/grpcExchangeInfo';
 import { ProtoRegistry } from './infra/grpc/protoRegistry';
 import { lanAddresses } from './infra/network/lanAddresses';
+import { isHistoryPersistenceSupported, openHistoryStore, type HistoryStore } from './infra/persistence/historyStore';
 import { isDaemonChild, signalDaemonError, signalDaemonReady, spawnDaemonChild } from './infra/process/daemonize';
 import { nodeCommandRunner } from './infra/process/nodeCommandRunner';
 import { openBrowser } from './infra/process/openBrowser';
@@ -320,6 +321,16 @@ interface StartOptions {
   open: boolean;
   /** `--lan`/`--no-lan`: bind the *dashboard* to every network interface (`0.0.0.0`) instead of just `localhost`, for this invocation — the proxy always binds to every interface regardless (see `PROXY_HOST`'s doc comment). Undefined when neither flag is passed — `resolveDashboardHost` then falls back to `~/.detour/config.json`'s `lanAccess`. Security-sensitive: see `UserConfigState.lanAccess`'s doc comment. */
   lan?: boolean;
+  /**
+   * `--persist [path]` (issue #144): opt-in SQLite persistence of every
+   * finished exchange, queryable from the dashboard's History feature
+   * beyond the live in-memory backlog's item-count/body-size caps (neither
+   * of which this changes — see `HistoryStore`'s own doc comment).
+   * `true` when the flag is passed with no path (commander's optional-
+   * option-argument convention) — defaults to `~/.detour/history.db` in
+   * that case; `undefined` when the flag isn't passed at all.
+   */
+  persist?: string | true;
 }
 
 /**
@@ -501,6 +512,20 @@ async function runStartBody({
   // silently falling back to "no --proto configured" for the whole session.
   const protoRegistry = options.proto.length > 0 ? await ProtoRegistry.load(options.proto) : undefined;
 
+  // Opened eagerly (same reasoning as rules.json/`.proto` above) so a bad
+  // `--persist` path (unwritable directory, an unsupported Node runtime)
+  // fails CLI startup with a clear error rather than every exchange
+  // thereafter silently going unpersisted.
+  let historyStore: HistoryStore | undefined;
+  let historyDbPath: string | undefined;
+  if (options.persist) {
+    if (!isHistoryPersistenceSupported()) {
+      throw new Error('--persist requires Node 22.5+ (node:sqlite) — this runtime does not have it.');
+    }
+    historyDbPath = options.persist === true ? path.join(os.homedir(), '.detour', 'history.db') : options.persist;
+    historyStore = openHistoryStore(historyDbPath);
+  }
+
   const eventBus = new DetourEventBus();
   eventBus.on('response', (exchange) => {
     logExchange(exchange);
@@ -513,6 +538,7 @@ async function runStartBody({
       if (grpcInfo) logGrpcSection(grpcInfo);
     }
     if (dumpDir) writeExchangeDumpFile(exchange, dumpDir, grpcInfo);
+    historyStore?.record(exchange);
   });
   // Logged once the WebSocket connection closes (its one clear "done"
   // point), mirroring 'response' above — not on every frame, which would
@@ -640,6 +666,7 @@ async function runStartBody({
           // own doc comment for why only that one case needs this.
           createRuleEngine: ruleEngine ? undefined : () => createDefaultRuleEngine(),
           protoRegistry,
+          historyStore,
           // Passed regardless of `dashboardHost` — the proxy this dashboard
           // fronts always binds to every interface, so its LAN address(es)
           // are always worth knowing. See `DashboardServerOptions.lanAddresses`'s
@@ -652,6 +679,7 @@ async function runStartBody({
       // The proxy is already up and intercepting traffic at this point — don't
       // leave it running (and the process alive) just because the dashboard
       // failed to bind its port.
+      historyStore?.close();
       await handle.stop();
       throw err;
     }
@@ -676,6 +704,7 @@ async function runStartBody({
       // status`/`stop`/`--fail-on-running` would then have no way to find
       // this process at all. Same shutdown-before-rethrow shape as the
       // dashboard bind failure above.
+      historyStore?.close();
       await Promise.all([handle.stop(), dashboardHandle?.stop()]);
       throw err;
     }
@@ -703,6 +732,7 @@ async function runStartBody({
     http2Enabled: options.http2,
     protoPaths: options.proto,
     dashboardPasswordSet: readDashboardPasswordSet(),
+    historyDbPath,
   });
 
   // DETOUR_READY (issue #20): a stable, greppable line a CI script can wait
@@ -729,6 +759,8 @@ async function runStartBody({
       await Promise.all([handle.stop(), dashboardHandle?.stop()]);
     } catch (err) {
       stopError = err;
+    } finally {
+      historyStore?.close();
     }
     // Removed only once the stop attempt has actually settled (success or
     // failure), not before — removing it first would let a concurrent
@@ -784,6 +816,8 @@ function printStartupBanner(info: {
   protoPaths: string[];
   /** Whether `detour config --dashboard-password`/the Settings panel currently requires one (issue #66) — only relevant when `dashboardPort` isn't undefined. */
   dashboardPasswordSet: boolean;
+  /** `--persist`'s resolved SQLite path (issue #144), undefined when not given. */
+  historyDbPath: string | undefined;
 }): void {
   console.log(
     `Detour proxy started → http://localhost:${info.proxyPort} (HTTP/2: ${info.http2Enabled ? 'on' : 'off'})`,
@@ -844,6 +878,9 @@ function printStartupBanner(info: {
   }
   if (info.protoPaths.length > 0) {
     console.log(`gRPC message decoding: ${info.protoPaths.length} .proto file(s) loaded`);
+  }
+  if (info.historyDbPath) {
+    console.log(`History persistence → ${info.historyDbPath}`);
   }
   console.log('Press Ctrl+C to stop.');
 }
@@ -1011,6 +1048,10 @@ export function createCli(): Command {
     .option(
       '--no-lan',
       'Force the dashboard to localhost-only for this invocation even if `lanAccess` is enabled via `detour config` — the opposite of --lan. Never affects the proxy, which always binds to every interface regardless.',
+    )
+    .option(
+      '--persist [path]',
+      "Persist every finished exchange to a SQLite database (opt-in; default off), queryable from the dashboard's History feature once it falls out of the live 500-item backlog — the backlog itself, and the 256KB per-body capture cap, are unchanged. Defaults to ~/.detour/history.db when passed with no path. Requires Node 22.5+ (node:sqlite).",
     )
     .action(async (options: StartOptions) => {
       try {

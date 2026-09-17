@@ -4,24 +4,27 @@ import { PausedBreakpointsIndicator } from '@/features/breakpoint-resume';
 import { CompareBar } from '@/features/compare';
 import { cn } from '@/shared/lib/utils';
 
-type Mode = 'live' | 'paused' | 'viewer';
+type Mode = 'live' | 'paused' | 'viewer' | 'history';
 
-/** `source === 'imported'` (viewing a saved log) takes priority over pause — the two are independent flags, but a paused live view and a viewed file both freeze the table, and "Viewer" is the more specific/useful label of the two. */
-function deriveMode(source: 'live' | 'imported', paused: boolean): Mode {
+/** `source === 'imported'`/`'history'` (viewing a saved log or a `--persist` query — issue #144) takes priority over pause — the two are independent flags, but a paused live view and either non-live source all freeze the table, and the more specific label wins. */
+function deriveMode(source: 'live' | 'imported' | 'history', paused: boolean): Mode {
   if (source === 'imported') return 'viewer';
+  if (source === 'history') return 'history';
   return paused ? 'paused' : 'live';
 }
 
-const MODE_LABEL: Record<Mode, string> = { live: 'Live', paused: 'Paused', viewer: 'Viewer' };
+const MODE_LABEL: Record<Mode, string> = { live: 'Live', paused: 'Paused', viewer: 'Viewer', history: 'History' };
 const MODE_TEXT_CLASS: Record<Mode, string> = {
   live: 'text-[var(--status-2xx)]',
   paused: 'text-[var(--status-4xx)]',
   viewer: 'text-[var(--accent)]',
+  history: 'text-[var(--accent)]',
 };
 const MODE_DOT_CLASS: Record<Mode, string> = {
   live: 'animate-pulse bg-[var(--status-2xx)]',
   paused: 'bg-[var(--status-4xx)]',
   viewer: 'bg-[var(--accent)]',
+  history: 'bg-[var(--accent)]',
 };
 
 /**

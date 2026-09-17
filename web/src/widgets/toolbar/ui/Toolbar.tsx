@@ -3,6 +3,7 @@ import { useExchangeStore } from '@/entities/exchange';
 import { BlockHostsControl } from '@/features/block-hosts';
 import { FocusControl } from '@/features/focus';
 import { GroupByHostToggle } from '@/features/group-by-host';
+import { HistoryControl } from '@/features/history';
 import { InterceptToggle } from '@/features/intercept-toggle';
 import { ExportMenu } from '@/features/log-export';
 import { ImportButton } from '@/features/log-viewer';
@@ -63,6 +64,7 @@ export function Toolbar() {
       <FocusControl />
       <ThrottleControl />
       <BlockHostsControl />
+      <HistoryControl />
 
       <div className="mx-1 h-4 w-px bg-[var(--border)]" />
 
