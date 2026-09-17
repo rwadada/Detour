@@ -40,7 +40,8 @@ function compileUrlTest(match: RuleMatch): (url: string) => boolean {
   return (url) => re.test(url);
 }
 
-function normalizeMethods(method: RuleMatch['method']): string[] | undefined {
+/** Exported for `unreachableRules.ts`'s shadowing check, which needs the exact same "falsy scalar (`undefined`/`''`) means any method" collapse this uses — a hand-rolled copy would drift and risk a false positive (see that module's doc comment). */
+export function normalizeMethods(method: RuleMatch['method']): string[] | undefined {
   if (!method) return undefined;
   const list = Array.isArray(method) ? method : [method];
   return list.map((m) => m.toUpperCase());
@@ -65,4 +66,45 @@ export function findMatchingRule(compiledRules: readonly CompiledRule[], req: Ma
     if (compiled.rule.enabled !== false && compiled.test(req)) return compiled.rule;
   }
   return undefined;
+}
+
+export interface MatchedRules {
+  /**
+   * Every enabled, matching `rewrite` rule up to (not including) `terminal`,
+   * in file order — a `rewrite` rule never stops evaluation, so a broad rule
+   * (e.g. "add this header to every request") and a narrower one further
+   * down (e.g. "also rewrite this one endpoint's query param") both apply
+   * to the same request, rather than the narrower one being silently
+   * shadowed. A user hit exactly this: a header rewrite matched, its badge
+   * showed on the dashboard, but the actual header value never changed —
+   * because a second, unrelated `rewrite` rule above it in the file had
+   * already "won" under the old single-match rule and stopped evaluation.
+   */
+  rewrites: Rule[];
+  /**
+   * The first enabled, matching non-`rewrite` rule (`mock`/`route`/
+   * `breakpoint`/`script`), if any — still genuinely "first match wins":
+   * finding one stops evaluation, so any rule after it (rewrite or not)
+   * is never checked.
+   */
+  terminal: Rule | undefined;
+}
+
+/**
+ * Like `findMatchingRule`, but collects every matching `rewrite` rule
+ * instead of stopping at the first one, since a `rewrite` action only ever
+ * adds to a request/response rather than deciding its fate the way `mock`/
+ * `route`/`breakpoint`/`script` do — see `MatchedRules`'s doc comment.
+ */
+export function findMatchingRules(compiledRules: readonly CompiledRule[], req: MatchableRequest): MatchedRules {
+  const rewrites: Rule[] = [];
+  for (const compiled of compiledRules) {
+    if (compiled.rule.enabled === false || !compiled.test(req)) continue;
+    if (compiled.rule.action.type === 'rewrite') {
+      rewrites.push(compiled.rule);
+      continue;
+    }
+    return { rewrites, terminal: compiled.rule };
+  }
+  return { rewrites, terminal: undefined };
 }

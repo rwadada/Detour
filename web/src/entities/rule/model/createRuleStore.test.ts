@@ -19,14 +19,39 @@ describe('createRuleStore', () => {
     const store = createRuleStore(connection);
     expect(store.getState().rulesFileAt).toBeNull();
 
-    emit({ type: 'rules', data: rulesFile });
+    emit({ type: 'rules', data: rulesFile, unreachableWarnings: [] });
     expect(store.getState().rulesFile).toEqual(rulesFile);
     const first = store.getState().rulesFileAt;
     expect(first).toEqual(expect.any(Number));
 
-    emit({ type: 'rules', data: null });
+    emit({ type: 'rules', data: null, unreachableWarnings: [] });
     expect(store.getState().rulesFile).toBeNull();
     expect(store.getState().rulesFileAt).not.toBeNull();
+  });
+
+  it("applies a `rules` message's `unreachableWarnings`", () => {
+    const { connection, emit } = fakeDashboardConnection();
+    const store = createRuleStore(connection);
+    const warning = {
+      ruleName: 'dead',
+      ruleIndex: 1,
+      blockedByName: 'catch-all',
+      blockedByIndex: 0,
+      message:
+        'rule "dead" (index 1) can never match: rule "catch-all" (index 0) already matches every request "dead" would, and — being a mock/route/breakpoint/script rule — stops evaluation there.',
+    };
+    emit({ type: 'rules', data: rulesFile, unreachableWarnings: [warning] });
+    expect(store.getState().unreachableWarnings).toEqual([warning]);
+  });
+
+  it("defaults `unreachableWarnings` to an empty array when a `rules` message omits it (Copilot review, PR #150: an older server or a malformed frame could leave it undefined, crashing RulesEditorPanel's `.find(...)` call)", () => {
+    const { connection, emit } = fakeDashboardConnection();
+    const store = createRuleStore(connection);
+    // `message.unreachableWarnings` being present is a compile-time
+    // assumption, not a runtime one — deliberately bypassing the type here
+    // to exercise the case the field is actually missing off the wire.
+    emit({ type: 'rules', data: rulesFile } as unknown as Parameters<typeof emit>[0]);
+    expect(store.getState().unreachableWarnings).toEqual([]);
   });
 
   it('applies a `ruleProfiles` message, bumping profilesAt', () => {

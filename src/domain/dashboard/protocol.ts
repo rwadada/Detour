@@ -11,6 +11,7 @@ import type {
 } from '../exchange/types';
 import type { RuleProfileSummary } from '../rules/profile';
 import type { RulesFile } from '../rules/types';
+import type { UnreachableRuleWarning } from '../rules/unreachableRules';
 
 /**
  * The persistent `detour start` defaults a dashboard client can view/edit —
@@ -152,8 +153,13 @@ export type DashboardServerMessage =
    * an external hand-edit of the file. `null` when this session has no
    * rules file configured (`detour start` without `--rules`, and no
    * `rules.json` auto-detected in the working directory).
+   *
+   * `unreachableWarnings` reflects this same `data` (empty when `data` is
+   * `null`) — see `findUnreachableRules`'s doc comment for what's actually
+   * detected. It's computed against the last-*saved* file, not whatever
+   * unsaved edits the Rules editor's own draft state might currently hold.
    */
-  | { type: 'rules'; data: RulesFile | null }
+  | { type: 'rules'; data: RulesFile | null; unreachableWarnings: UnreachableRuleWarning[] }
   /**
    * The saved rule profiles available to switch to or apply (issue #19's
    * Rules Profiles) — sent once right after connecting and again after any

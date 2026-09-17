@@ -1457,6 +1457,170 @@ describe('detour start (CLI, end-to-end)', () => {
     socket.close();
   });
 
+  it('applies every matching `rewrite` rule to the same request, not just the first (bug report: a broad "add this header to everything" rule silently blocked a narrower rewrite rule below it from ever running)', async () => {
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          // Broad, listed first — matches every request to this host, same
+          // as a user adding one header everywhere.
+          {
+            name: 'e2e-cumulative-common-header',
+            match: { url: `http://127.0.0.1:${echo.port}/*` },
+            action: { type: 'rewrite', request: { headers: { set: { 'X-Common': 'always' } } } },
+          },
+          // Narrower, listed second — under the old "first match wins"
+          // engine this rule would never even be reached for a request the
+          // rule above also matched.
+          {
+            name: 'e2e-cumulative-narrow-query',
+            match: { url: `http://127.0.0.1:${echo.port}/narrow*` },
+            action: { type: 'rewrite', request: { query: { set: { special: 'yes' } } } },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const socket = new WebSocket(`ws://localhost:${cli.dashboardPort}/ws`);
+    const narrowRequestExchange = new Promise<DashboardExchange>((resolve) => {
+      socket.on('message', (raw) => {
+        const message = JSON.parse(raw.toString()) as { type: string; exchange?: DashboardExchange };
+        if (message.type === 'request' && message.exchange?.url?.includes('/narrow-endpoint')) {
+          resolve(message.exchange);
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.on('open', () => resolve());
+      socket.on('error', reject);
+    });
+
+    const result = await requestThroughProxy(cli.port, echo.port, '/narrow-endpoint');
+    // Both rules' request-side changes reached the real upstream — the echo
+    // server's response reflects the query-string rewrite in `path`.
+    expect(JSON.parse(result.body).path).toBe('/narrow-endpoint?special=yes');
+
+    const exchange = await narrowRequestExchange;
+    expect(exchange.ruleName).toBe('e2e-cumulative-common-header, e2e-cumulative-narrow-query');
+    expect(exchange.requestHeaders?.['X-Common']).toBe('always');
+    expect(exchange.url).toBe(`http://127.0.0.1:${echo.port}/narrow-endpoint?special=yes`);
+    socket.close();
+
+    // A request that only the broad rule matches still gets its header, but
+    // isn't also subject to the narrow rule's query rewrite.
+    const other = await requestThroughProxy(cli.port, echo.port, '/other-endpoint');
+    expect(JSON.parse(other.body).path).toBe('/other-endpoint');
+  });
+
+  it("applies a matching `rewrite` rule's request-side changes even when a later `mock` rule terminates the request (Copilot review, PR #150: `ruleName` joined both rules' names, implying the rewrite took effect, but the mock's early return skipped the rewrite loop entirely)", async () => {
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    const url = `http://127.0.0.1:${echo.port}/mocked-with-rewrite`;
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-rewrite-before-mock',
+            match: { url },
+            action: { type: 'rewrite', request: { headers: { set: { 'X-Added': 'yes' } } } },
+          },
+          {
+            name: 'e2e-mock-terminal',
+            match: { url },
+            action: { type: 'mock', status: 200, body: 'mocked' },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const socket = new WebSocket(`ws://localhost:${cli.dashboardPort}/ws`);
+    const requestExchange = new Promise<DashboardExchange>((resolve) => {
+      socket.on('message', (raw) => {
+        const message = JSON.parse(raw.toString()) as { type: string; exchange?: DashboardExchange };
+        if (message.type === 'request' && message.exchange?.ruleName?.includes('e2e-mock-terminal')) {
+          resolve(message.exchange);
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.on('open', () => resolve());
+      socket.on('error', reject);
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request({ host: 'localhost', port: cli!.port, path: url, method: 'GET' }, (res) => {
+        res.resume();
+        res.on('end', resolve);
+      });
+      req.on('error', reject);
+      req.end();
+    });
+
+    const exchange = await requestExchange;
+    expect(exchange.ruleName).toBe('e2e-rewrite-before-mock, e2e-mock-terminal');
+    expect(exchange.requestHeaders?.['X-Added']).toBe('yes');
+    socket.close();
+  });
+
+  it("applies a matching `rewrite` rule's response-side changes to a `mock` rule's own response (Copilot review, PR #150: a mock's response never passes through onResponseHeaders/onResponse, so a response rewrite silently never reached it even though `ruleName` implied it had)", async () => {
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    const url = `http://127.0.0.1:${echo.port}/mocked-with-response-rewrite`;
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-response-rewrite-before-mock',
+            match: { url },
+            action: {
+              type: 'rewrite',
+              response: { status: 201, headers: { set: { 'X-Added': 'yes' } }, body: { set: 'rewritten' } },
+            },
+          },
+          {
+            name: 'e2e-mock-terminal-2',
+            match: { url },
+            action: { type: 'mock', status: 200, body: 'mocked' },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const result = await new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>(
+      (resolve, reject) => {
+        const req = http.request({ host: 'localhost', port: cli!.port, path: url, method: 'GET' }, (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () =>
+            resolve({
+              status: res.statusCode ?? 0,
+              headers: res.headers,
+              body: Buffer.concat(chunks).toString('utf8'),
+            }),
+          );
+        });
+        req.on('error', reject);
+        req.end();
+      },
+    );
+
+    // The rewrite rule's response changes reached the actual client, not
+    // just the mock rule's own status:200/body:"mocked".
+    expect(result.status).toBe(201);
+    expect(result.headers['x-added']).toBe('yes');
+    expect(result.body).toBe('rewritten');
+  });
+
   describe('intercept on/off (issue #11)', () => {
     it('skips a mock rule while intercept is off, reaching the real upstream instead', async () => {
       echo = await startEchoServer();

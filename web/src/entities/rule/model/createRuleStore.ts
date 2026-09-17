@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { DashboardConnection, Rule, RuleProfileSummary, RulesFile } from '@/shared/api';
+import type { DashboardConnection, Rule, RuleProfileSummary, RulesFile, UnreachableRuleWarning } from '@/shared/api';
 
 export interface RuleState {
   /** The currently active rules.json contents, or `null` if this session has no rules file configured, or the initial `rules` message hasn't arrived yet. */
@@ -15,6 +15,8 @@ export interface RuleState {
    * coincidence that was already true before it was ever sent.
    */
   rulesFileAt: number | null;
+  /** A rule that can never run because an earlier `mock`/`route`/`breakpoint`/`script` rule already matches every request it would — see `UnreachableRuleWarning`'s doc comment. Mirrors `rulesFile`: reflects the last-saved file, not any unsaved Rules editor draft. */
+  unreachableWarnings: UnreachableRuleWarning[];
   /** Saved rule profiles (issue #19's Rules Profiles), available to apply or overwrite. */
   profiles: RuleProfileSummary[];
   /** `Date.now()` when `profiles` was last (re)set — mirrors `rulesFileAt`, for the same reason, against `ruleProfiles` messages instead. */
@@ -98,7 +100,16 @@ export function createRuleStore(connection: DashboardConnection) {
     connection.onMessage((message) => {
       switch (message.type) {
         case 'rules':
-          set({ rulesFile: message.data, rulesFileAt: Date.now() });
+          // `message.unreachableWarnings` is a type assertion over parsed
+          // JSON, not a runtime guarantee — an older server (before this
+          // field existed) or a malformed frame could omit it, and
+          // `RulesEditorPanel`'s `unreachableWarnings.find(...)` would throw
+          // on `undefined` rather than just showing no warnings.
+          set({
+            rulesFile: message.data,
+            unreachableWarnings: message.unreachableWarnings ?? [],
+            rulesFileAt: Date.now(),
+          });
           return;
         case 'ruleProfiles':
           set({ profiles: message.profiles, profilesAt: Date.now() });
@@ -116,6 +127,7 @@ export function createRuleStore(connection: DashboardConnection) {
     return {
       rulesFile: null,
       rulesFileAt: null,
+      unreachableWarnings: [],
       profiles: [],
       profilesAt: null,
       lastError: null,

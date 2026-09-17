@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DashboardServerMessage } from '../../domain/dashboard/protocol';
 import type { RuleProfileSummary } from '../../domain/rules/profile';
 import type { RulesFile } from '../../domain/rules/types';
+import { findUnreachableRules } from '../../domain/rules/unreachableRules';
 import { fsFileWatcher, fsRulesFileReader, fsRulesFileWriter } from '../fs/rulesFileSource';
 import { listRuleProfiles, readRuleProfile, writeRuleProfile } from '../fs/ruleProfileStore';
 import type { RuleProfileStore } from '../../usecase/ports/ruleProfileStore';
@@ -96,7 +97,12 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
       writer: fsRulesFileWriter,
       watcher: fsFileWatcher,
       debounceMs: 10,
-      onReload: (info) => eventBus.emit('rulesReloaded', { filePath: rulesPath, ruleCount: info.ruleCount }),
+      onReload: (info) =>
+        eventBus.emit('rulesReloaded', {
+          filePath: rulesPath,
+          ruleCount: info.ruleCount,
+          unreachableWarnings: info.unreachableWarnings,
+        }),
       onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
     });
     handle = await startDashboardServer({ port: 0, ruleEngine, ruleProfileStore }, eventBus);
@@ -106,14 +112,18 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
     await startWithRuleEngine();
     const socket = connect();
     const message = await waitForMessage(socket, (m) => m.type === 'rules');
-    expect(message).toEqual({ type: 'rules', data: { rules: [routeRule('a')] } });
+    expect(message).toEqual({
+      type: 'rules',
+      data: { rules: [routeRule('a')] },
+      unreachableWarnings: findUnreachableRules([routeRule('a')]),
+    });
   });
 
   it('sends `rules: null` when no rules file is configured for this session', async () => {
     handle = await startDashboardServer({ port: 0, ruleProfileStore }, eventBus);
     const socket = connect();
     const message = await waitForMessage(socket, (m) => m.type === 'rules');
-    expect(message).toEqual({ type: 'rules', data: null });
+    expect(message).toEqual({ type: 'rules', data: null, unreachableWarnings: [] });
   });
 
   it('setRules saves valid edits, which land back as a `rules` broadcast once reloaded', async () => {
@@ -124,7 +134,11 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
     socket.send(JSON.stringify({ type: 'setRules', data: { rules: [routeRule('a'), routeRule('b')] } }));
     const updated = await waitForMessage(socket, (m) => m.type === 'rules' && m.data?.rules.length === 2);
 
-    expect(updated).toEqual({ type: 'rules', data: { rules: [routeRule('a'), routeRule('b')] } });
+    expect(updated).toEqual({
+      type: 'rules',
+      data: { rules: [routeRule('a'), routeRule('b')] },
+      unreachableWarnings: findUnreachableRules([routeRule('a'), routeRule('b')]),
+    });
     expect(JSON.parse(fs.readFileSync(rulesPath, 'utf8')).rules).toHaveLength(2);
   });
 
@@ -208,6 +222,7 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
     expect(updated).toEqual({
       type: 'rules',
       data: { rules: [routeRule('a')], $activeProfile: 'snapshot' },
+      unreachableWarnings: findUnreachableRules([routeRule('a')]),
     });
   });
 
@@ -223,6 +238,7 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
     expect(updated).toEqual({
       type: 'rules',
       data: { rules: [routeRule('a'), routeRule('b')], $activeProfile: 'two-rules' },
+      unreachableWarnings: findUnreachableRules([routeRule('a'), routeRule('b')]),
     });
   });
 
@@ -245,7 +261,11 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
       (m) => m.type === 'rules' && m.data?.rules.length === 2 && m.data.$activeProfile === undefined,
     );
 
-    expect(updated).toEqual({ type: 'rules', data: { rules: [routeRule('a'), routeRule('b')] } });
+    expect(updated).toEqual({
+      type: 'rules',
+      data: { rules: [routeRule('a'), routeRule('b')] },
+      unreachableWarnings: findUnreachableRules([routeRule('a'), routeRule('b')]),
+    });
   });
 
   it('applyRuleProfile on a nonexistent profile broadcasts a RULE_PROFILE_ERROR', async () => {
@@ -296,7 +316,12 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
         writer: fsRulesFileWriter,
         watcher: fsFileWatcher,
         debounceMs: 10,
-        onReload: (info) => eventBus.emit('rulesReloaded', { filePath: lazyPath, ruleCount: info.ruleCount }),
+        onReload: (info) =>
+          eventBus.emit('rulesReloaded', {
+            filePath: lazyPath,
+            ruleCount: info.ruleCount,
+            unreachableWarnings: info.unreachableWarnings,
+          }),
         onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
       });
       return ruleEngine;
@@ -310,6 +335,7 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
     expect(first).toEqual({
       type: 'rules',
       data: { rules: [routeRule('a'), routeRule('b')], $activeProfile: 'two-rules' },
+      unreachableWarnings: findUnreachableRules([routeRule('a'), routeRule('b')]),
     });
     expect(created).toBe(1);
     expect(fs.existsSync(lazyPath)).toBe(true);
@@ -320,6 +346,7 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
     expect(second).toEqual({
       type: 'rules',
       data: { rules: [routeRule('a'), routeRule('b'), routeRule('c')], $activeProfile: 'three-rules' },
+      unreachableWarnings: findUnreachableRules([routeRule('a'), routeRule('b'), routeRule('c')]),
     });
     expect(created).toBe(1);
   });

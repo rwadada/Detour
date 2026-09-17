@@ -5,6 +5,8 @@ import type { Duplex } from 'node:stream';
 import { isHostBlocked, normalizeBlockHosts } from '../../domain/blockHosts/blockHostsPolicy';
 import { BodyCapture } from '../../domain/exchange/bodyCapture';
 import { compactHeaders, deleteHeader, flattenHeaders } from '../../domain/exchange/headers';
+import { applyBodyRewrite } from '../../domain/rules/bodyRewrite';
+import { applyHeaderRewrite } from '../../domain/rules/headerRewrite';
 import type {
   BlockHostsState,
   BreakpointRequestPayload,
@@ -257,8 +259,14 @@ export async function startProxyServer(
   const inFlight = new Map<string, CapturedExchange>();
   // Keyed by ctx.uuid so the response-phase handlers know which rule (if
   // any) matched this request — matching itself only happens once, in
-  // onRequest, since it's the same for both.
+  // onRequest, since it's the same for both. Only ever holds the *terminal*
+  // rule (mock/route/breakpoint/script) — a matching `rewrite` rule never
+  // becomes terminal, so it lives in `rewriteContexts` below instead.
   const ruleContexts = new Map<string, Rule>();
+  // Keyed by ctx.uuid: every matching `rewrite` rule for this request (see
+  // `MatchedRules`'s doc comment), applied cumulatively at both the request
+  // and response phase — unlike `ruleContexts`, there can be more than one.
+  const rewriteContexts = new Map<string, Rule[]>();
   // Keyed by ctx.uuid: a `script` rule's module, loaded once from `onResponse`
   // (issue #9) so `onResponseHeaders`'s `handleScriptResponseHook` reuses the
   // exact instance that decided whether `beforeResponse` even exists, rather
@@ -596,6 +604,7 @@ export async function startProxyServer(
       }
       inFlight.delete(ctx.uuid);
       ruleContexts.delete(ctx.uuid);
+      rewriteContexts.delete(ctx.uuid);
       scriptModules.delete(ctx.uuid);
       scriptRequestBodies.delete(ctx.uuid);
       breakpoints.resolve({ id: ctx.uuid, phase: 'request', action: 'abort' });
@@ -675,6 +684,7 @@ export async function startProxyServer(
         if (command.action === 'abort') {
           inFlight.delete(ctx.uuid);
           ruleContexts.delete(ctx.uuid);
+          rewriteContexts.delete(ctx.uuid);
           exchange.error = `rule "${rule.name}": request aborted via breakpoint`;
           exchange.finishedAt = Date.now();
           exchange.durationMs = exchange.finishedAt - exchange.startedAt;
@@ -901,6 +911,7 @@ export async function startProxyServer(
         if (command.action === 'abort') {
           inFlight.delete(ctx.uuid);
           ruleContexts.delete(ctx.uuid);
+          rewriteContexts.delete(ctx.uuid);
           exchange.error = `rule "${rule.name}": response aborted via breakpoint (connection closed)`;
           exchange.finishedAt = Date.now();
           exchange.durationMs = exchange.finishedAt - exchange.startedAt;
@@ -935,6 +946,7 @@ export async function startProxyServer(
           eventBus.emit('response', exchange);
           inFlight.delete(ctx.uuid);
           ruleContexts.delete(ctx.uuid);
+          rewriteContexts.delete(ctx.uuid);
           return cb();
         });
 
@@ -1006,6 +1018,7 @@ export async function startProxyServer(
         eventBus.emit('response', exchange);
         inFlight.delete(ctx.uuid);
         ruleContexts.delete(ctx.uuid);
+        rewriteContexts.delete(ctx.uuid);
         return cb();
       });
       callback();
@@ -1058,20 +1071,23 @@ export async function startProxyServer(
   // them to the client — see applyResponseHeaderRewrite's doc comment.
   proxy.onResponseHeaders((ctx, callback) => {
     const rule = ruleContexts.get(ctx.uuid);
-    if (rule?.action.type === 'breakpoint' && rule.action.response !== false) {
-      handleResponseBreakpoint(ctx, rule, callback);
-      return;
+
+    // Apply every matching `rewrite` rule's response status/header changes
+    // first, before any terminal breakpoint/script handling below (Copilot
+    // review, PR #150) — so a paused breakpoint's live-edit payload and a
+    // `beforeResponse` hook's `res` argument both see the already-rewritten
+    // status/headers too, consistent with "every matching rewrite rule
+    // applies up to the first terminal rule." Safe to reorder: both
+    // `handleResponseBreakpoint` and `handleScriptResponseHook` read
+    // `ctx.serverToProxyResponse` by reference, the same object this
+    // mutates directly, rather than a separately-captured snapshot.
+    let appliedResponseHeaderRewrite = false;
+    for (const r of rewriteContexts.get(ctx.uuid) ?? []) {
+      if (r.action.type !== 'rewrite' || !r.action.response) continue;
+      applyResponseHeaderRewrite(ctx, r.action.response);
+      appliedResponseHeaderRewrite = true;
     }
-    if (rule?.action.type === 'script') {
-      const module = scriptModules.get(ctx.uuid);
-      scriptModules.delete(ctx.uuid);
-      if (module) {
-        handleScriptResponseHook(ctx, rule, module, callback);
-        return;
-      }
-    }
-    if (rule?.action.type === 'rewrite' && rule.action.response) {
-      applyResponseHeaderRewrite(ctx, rule.action.response);
+    if (appliedResponseHeaderRewrite) {
       // Re-sync the dashboard-visible snapshot from what was actually just
       // mutated — same pattern `handleResponseBreakpoint`/
       // `handleScriptResponseHook` already follow for their own edits.
@@ -1085,6 +1101,19 @@ export async function startProxyServer(
         exchange.statusCode = ctx.serverToProxyResponse.statusCode;
         exchange.statusMessage = ctx.serverToProxyResponse.statusMessage;
         exchange.responseHeaders = { ...ctx.serverToProxyResponse.headers };
+      }
+    }
+
+    if (rule?.action.type === 'breakpoint' && rule.action.response !== false) {
+      handleResponseBreakpoint(ctx, rule, callback);
+      return;
+    }
+    if (rule?.action.type === 'script') {
+      const module = scriptModules.get(ctx.uuid);
+      scriptModules.delete(ctx.uuid);
+      if (module) {
+        handleScriptResponseHook(ctx, rule, module, callback);
+        return;
       }
     }
     return callback();
@@ -1157,20 +1186,110 @@ export async function startProxyServer(
       // `route` rule keeps applying (see `interceptEnabled`'s doc comment
       // above) — mock/rewrite/breakpoint rules are treated as if nothing
       // matched, so the request flows through untouched.
-      const rule = resolveExchangeAction(ruleEngine, { method, url, host: reqHost, interceptEnabled, focusHosts });
+      const { rewrites, terminal } = resolveExchangeAction(ruleEngine, {
+        method,
+        url,
+        host: reqHost,
+        interceptEnabled,
+        focusHosts,
+      });
 
-      const exchange = buildBaseExchange(ctx, { url, method, host: reqHost, ruleName: rule?.name });
+      // Every matching `rewrite` rule applies (see `MatchedRules`'s doc
+      // comment), so more than one can show up here — joined, rather than
+      // just the last one, so the dashboard's badge/tooltip (`RuleBadge`)
+      // doesn't silently hide that a second rule also matched.
+      const ruleName = [...rewrites, ...(terminal ? [terminal] : [])].map((r) => r.name).join(', ') || undefined;
+      const exchange = buildBaseExchange(ctx, { url, method, host: reqHost, ruleName });
       inFlight.set(ctx.uuid, exchange);
 
-      if (rule?.action.type === 'mock') {
-        const mockAction = rule.action;
+      // Apply every matching `rewrite` rule's request path/query/header
+      // changes now, before dispatching to any terminal rule below — so a
+      // `mock`'s dashboard snapshot, a `breakpoint`'s live-edit payload, and
+      // a `script` rule's `beforeRequest` all see the already-rewritten
+      // request too (Copilot review, PR #150), consistent with "every
+      // matching rewrite rule applies up to the first terminal rule" — the
+      // `ruleName` badge above already joins every one of their names
+      // together regardless of what `terminal` turns out to be, so their
+      // effects need to actually be visible everywhere that badge shows up.
+      // Body rewriting is the one exception: buffering and rewriting the
+      // whole body twice would double-write it to the socket (see
+      // `applyRequestRewrite`'s `installRequestBodyRewrite`, which writes
+      // directly to the upstream request once the client's body ends rather
+      // than through the onRequestData chain a second rewrite could
+      // observe) — so only the *last* matching rule with a `request.body`
+      // actually replaces it, while path/query/headers fully stack. (For a
+      // `mock` specifically, none of this ever reaches the wire either way —
+      // it never forwards upstream — but the dashboard should still show
+      // what the request would have looked like if it had.)
+      let requestBodyRewriteRule: Rule | undefined;
+      for (const r of rewrites) {
+        if (r.action.type !== 'rewrite' || !r.action.request) continue;
+        applyRequestRewrite(ctx, { ...r.action.request, body: undefined });
+        if (r.action.request.body) requestBodyRewriteRule = r;
+      }
+      if (requestBodyRewriteRule && requestBodyRewriteRule.action.type === 'rewrite') {
+        applyRequestRewrite(ctx, { body: requestBodyRewriteRule.action.request!.body });
+      }
+      if (rewrites.some((r) => r.action.type === 'rewrite' && r.action.request)) {
+        rewriteContexts.set(ctx.uuid, rewrites);
+        // Re-sync the dashboard-visible snapshot from what was actually
+        // just mutated — same pattern `handleBreakpointResume`'s own
+        // path/header edits already follow. Without this, `exchange.url`/
+        // `requestHeaders` stayed the client's original request forever:
+        // `buildBaseExchange` captures them once, before this rewrite runs,
+        // from `ctx.clientToProxyRequest` — a separate object from
+        // `ctx.proxyToServerRequestOptions`, which is what the rewrite (and
+        // this line) actually mutates.
+        const opts = ctx.proxyToServerRequestOptions;
+        if (opts) {
+          exchange.url = `${ctx.isSSL ? 'https' : 'http'}://${exchange.host}${opts.path}`;
+          exchange.requestHeaders = { ...opts.headers };
+        }
+      } else if (rewrites.some((r) => r.action.type === 'rewrite' && r.action.response)) {
+        // No request-side changes, but a matching rule still has a
+        // response-side rewrite to apply once the response arrives.
+        rewriteContexts.set(ctx.uuid, rewrites);
+      }
+
+      if (terminal?.action.type === 'mock') {
+        const mockAction = terminal.action;
         const simulate = mockAction.simulate;
         let mockError: string | undefined;
         const mock = simulate
           ? undefined
-          : tryResolveMock(rule, ruleEngine!.basePath, ruleEngine!.allowExternalScriptPaths, (message) => {
+          : tryResolveMock(terminal, ruleEngine!.basePath, ruleEngine!.allowExternalScriptPaths, (message) => {
               mockError = message;
             });
+
+        // A mock's response never passes through onResponseHeaders/onResponse
+        // (it's synthesized here, not streamed from upstream), so a matching
+        // rewrite rule's `response` changes need applying directly to it —
+        // otherwise `ruleName`'s joined badge would imply they took effect
+        // when they silently hadn't (Copilot review, PR #150). Unlike
+        // threading a body rewrite into breakpoint/script (deliberately not
+        // done — see onResponse's own doc comment), there's no double-
+        // consumption risk here: `mock` is a plain, already-fully-resolved
+        // buffer, not a live stream, so rewriting it is just as safe as the
+        // header/status changes right next to it.
+        if (mock) {
+          for (const r of rewrites) {
+            if (r.action.type !== 'rewrite' || !r.action.response) continue;
+            if (r.action.response.status !== undefined) mock.status = r.action.response.status;
+            applyHeaderRewrite(mock.headers, r.action.response.headers);
+          }
+          const responseBodyRewriteRule = [...rewrites]
+            .reverse()
+            .find((r) => r.action.type === 'rewrite' && r.action.response?.body);
+          if (responseBodyRewriteRule && responseBodyRewriteRule.action.type === 'rewrite') {
+            mock.body = applyBodyRewrite(mock.body, responseBodyRewriteRule.action.response!.body!);
+            // `buildMockResponse` already set Content-Length from the
+            // *original* body — stale now, and left in place would frame the
+            // response wrong (the client parses exactly that many bytes as
+            // this response, corrupting whatever follows on a kept-alive
+            // connection). `writeHead`/`end` recompute it (or go chunked).
+            deleteHeader(mock.headers, 'content-length');
+          }
+        }
 
         // A mock never forwards to upstream (callback() is never called
         // below), so the usual onRequestData/onRequestEnd hooks — which only
@@ -1191,7 +1310,7 @@ export async function startProxyServer(
               // definite, reportable outcome — flag it on the exchange the
               // same way a real connection reset would show up, rather than
               // only as a separate proxy-level 'error' event.
-              exchange.error = `rule "${rule.name}": simulated connection close (no response sent)`;
+              exchange.error = `rule "${terminal.name}": simulated connection close (no response sent)`;
               exchange.finishedAt = Date.now();
               exchange.durationMs = exchange.finishedAt - exchange.startedAt;
               eventBus.emit('response', exchange);
@@ -1200,6 +1319,7 @@ export async function startProxyServer(
             // stays "pending" in the dashboard for as long as the connection
             // stays open, same as a real server that stopped responding.
             inFlight.delete(ctx.uuid);
+            rewriteContexts.delete(ctx.uuid);
             return;
           }
 
@@ -1215,12 +1335,13 @@ export async function startProxyServer(
           eventBus.emit('request', exchange);
           eventBus.emit('response', exchange);
           inFlight.delete(ctx.uuid);
+          rewriteContexts.delete(ctx.uuid);
         };
         if (mockError) {
           eventBus.emit('error', {
             id: ctx.uuid,
             errorKind: 'RULE_MOCK_ERROR',
-            message: `rule "${rule.name}": ${mockError}`,
+            message: `rule "${terminal.name}": ${mockError}`,
           });
         }
         const sendMockAfterDelay = () => {
@@ -1244,16 +1365,16 @@ export async function startProxyServer(
         return;
       }
 
-      if (rule?.action.type === 'breakpoint' && rule.action.request !== false) {
-        ruleContexts.set(ctx.uuid, rule);
-        handleRequestBreakpoint(ctx, rule, exchange, callback);
+      if (terminal?.action.type === 'breakpoint' && terminal.action.request !== false) {
+        ruleContexts.set(ctx.uuid, terminal);
+        handleRequestBreakpoint(ctx, terminal, exchange, callback);
         return;
       }
 
-      if (rule?.action.type === 'script') {
-        ruleContexts.set(ctx.uuid, rule);
+      if (terminal?.action.type === 'script') {
+        ruleContexts.set(ctx.uuid, terminal);
         const module = tryLoadScriptModule(
-          rule,
+          terminal,
           ruleEngine!.basePath,
           ruleEngine!.allowExternalScriptPaths,
           (message) => eventBus.emit('error', { id: ctx.uuid, errorKind: 'RULE_SCRIPT_ERROR', message }),
@@ -1263,7 +1384,7 @@ export async function startProxyServer(
         // needs the real, full request body as its `req` argument, which
         // only this path captures; see `scriptRequestBodies`' doc comment.
         if (module) {
-          handleScriptRequestHook(ctx, { rule, module }, exchange, callback);
+          handleScriptRequestHook(ctx, { rule: terminal, module }, exchange, callback);
           return;
         }
         // The module failed to load — forward unchanged; `onResponse`/
@@ -1272,24 +1393,9 @@ export async function startProxyServer(
         // this is cheap, and lets a fixed script recover without a restart).
       }
 
-      if (rule) ruleContexts.set(ctx.uuid, rule);
-      if (rule?.action.type === 'route') {
-        applyRouteAction(ctx, rule.action);
-      } else if (rule?.action.type === 'rewrite' && rule.action.request) {
-        applyRequestRewrite(ctx, rule.action.request);
-        // Re-sync the dashboard-visible snapshot from what was actually
-        // just mutated — same pattern `handleBreakpointResume`'s own
-        // path/header edits already follow. Without this, `exchange.url`/
-        // `requestHeaders` stayed the client's original request forever:
-        // `buildBaseExchange` captures them once, before this rewrite runs,
-        // from `ctx.clientToProxyRequest` — a separate object from
-        // `ctx.proxyToServerRequestOptions`, which is what the rewrite (and
-        // this line) actually mutates.
-        const opts = ctx.proxyToServerRequestOptions;
-        if (opts) {
-          exchange.url = `${ctx.isSSL ? 'https' : 'http'}://${exchange.host}${opts.path}`;
-          exchange.requestHeaders = { ...opts.headers };
-        }
+      if (terminal) ruleContexts.set(ctx.uuid, terminal);
+      if (terminal?.action.type === 'route') {
+        applyRouteAction(ctx, terminal.action);
       }
 
       const requestCapture = new BodyCapture();
@@ -1306,7 +1412,7 @@ export async function startProxyServer(
       const throttleUpload =
         throttleState.enabled &&
         (throttleState.upKbps > 0 || throttleState.packetLossPct > 0) &&
-        !(rule?.action.type === 'rewrite' && rule.action.request?.body);
+        !requestBodyRewriteRule;
       const upBandwidth = new BandwidthState();
       ctx.onRequestData((_dataCtx, chunk, cb) => {
         exchange.requestBodySize += chunk.length;
@@ -1336,9 +1442,21 @@ export async function startProxyServer(
 
   proxy.onResponse((ctx, callback) => {
     const exchange = inFlight.get(ctx.uuid);
-    const rule = ruleContexts.get(ctx.uuid);
+    const terminal = ruleContexts.get(ctx.uuid);
 
-    if (rule?.action.type === 'breakpoint' && rule.action.response !== false) {
+    // Unlike the header/status rewrites above (moved ahead of these two
+    // branches in `onResponseHeaders`), a matching rule's `response.body`
+    // rewrite deliberately does NOT thread into a breakpoint/script
+    // response here (Copilot review, PR #150): both already consume the
+    // raw upstream body themselves, via their own `res.on('data', ...)`
+    // listener rather than the `onResponseData`/`onResponseEnd` hook chain
+    // `installResponseBodyRewrite` (below) uses — installing that hook
+    // chain *as well* would mean two independent consumers of the same
+    // response stream, each capable of writing to the client, risking a
+    // corrupted double-written response. A breakpoint's live-edit payload
+    // and a `beforeResponse` hook's `res.body` argument both still see
+    // upstream's real, unrewritten body.
+    if (terminal?.action.type === 'breakpoint' && terminal.action.response !== false) {
       // Fully handled by handleResponseBreakpoint from the onResponseHeaders
       // hook instead, which needs to pause *before* headers are flushed —
       // skip the normal capture/bookkeeping below entirely so it isn't done
@@ -1346,13 +1464,16 @@ export async function startProxyServer(
       return callback();
     }
 
-    if (rule?.action.type === 'script') {
+    if (terminal?.action.type === 'script') {
       // Load (or reuse the cached) module now to decide whether this rule
       // even has a `beforeResponse` hook — a rule with only `beforeRequest`
       // has nothing left to do at the response phase and falls through to
       // the normal capture/forwarding below, same as a `route`/no-op rule.
-      const module = tryLoadScriptModule(rule, ruleEngine!.basePath, ruleEngine!.allowExternalScriptPaths, (message) =>
-        eventBus.emit('error', { id: ctx.uuid, errorKind: 'RULE_SCRIPT_ERROR', message }),
+      const module = tryLoadScriptModule(
+        terminal,
+        ruleEngine!.basePath,
+        ruleEngine!.allowExternalScriptPaths,
+        (message) => eventBus.emit('error', { id: ctx.uuid, errorKind: 'RULE_SCRIPT_ERROR', message }),
       );
       if (module?.beforeResponse) {
         scriptModules.set(ctx.uuid, module);
@@ -1374,6 +1495,15 @@ export async function startProxyServer(
       exchange.responseHeaders = { ...ctx.serverToProxyResponse.headers };
     }
 
+    // Every matching `rewrite` rule's `response.body` would each want to
+    // buffer and replace the whole body — like the request side, only the
+    // *last* one actually does (see `requestBodyRewriteRule`'s doc comment
+    // above for why chaining more than one isn't safe).
+    let responseBodyRewriteRule: Rule | undefined;
+    for (const r of rewriteContexts.get(ctx.uuid) ?? []) {
+      if (r.action.type === 'rewrite' && r.action.response?.body) responseBodyRewriteRule = r;
+    }
+
     const responseCapture = new BodyCapture();
     // Throttle's download bandwidth cap/packet-loss simulation, applied
     // per-chunk as it streams to the client — see the upload side's
@@ -1385,7 +1515,7 @@ export async function startProxyServer(
     const throttleDownload =
       throttleState.enabled &&
       (throttleState.downKbps > 0 || throttleState.packetLossPct > 0) &&
-      !(rule?.action.type === 'rewrite' && rule.action.response?.body);
+      !responseBodyRewriteRule;
     const downBandwidth = new BandwidthState();
     ctx.onResponseData((_dataCtx, chunk, cb) => {
       if (exchange) {
@@ -1398,8 +1528,8 @@ export async function startProxyServer(
       else cb(undefined, chunk);
     });
 
-    if (rule?.action.type === 'rewrite' && rule.action.response?.body) {
-      installResponseBodyRewrite(ctx, rule.action.response.body, (finalSize) => {
+    if (responseBodyRewriteRule && responseBodyRewriteRule.action.type === 'rewrite') {
+      installResponseBodyRewrite(ctx, responseBodyRewriteRule.action.response!.body!, (finalSize) => {
         if (exchange) exchange.responseBodySize = finalSize;
       });
     }
@@ -1418,6 +1548,7 @@ export async function startProxyServer(
         inFlight.delete(ctx.uuid);
       }
       ruleContexts.delete(ctx.uuid);
+      rewriteContexts.delete(ctx.uuid);
       cb();
     });
 

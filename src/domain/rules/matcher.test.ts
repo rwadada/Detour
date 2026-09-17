@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileGlob, compileRule, findMatchingRule } from './matcher';
+import { compileGlob, compileRule, findMatchingRule, findMatchingRules } from './matcher';
 import type { Rule } from './types';
 
 describe('compileGlob', () => {
@@ -80,5 +80,62 @@ describe('findMatchingRule', () => {
   it('returns undefined when nothing matches', () => {
     const rules = [compileRule(rule())];
     expect(findMatchingRule(rules, { method: 'GET', url: 'https://unrelated.example.com/x' })).toBeUndefined();
+  });
+});
+
+describe('findMatchingRules', () => {
+  it('collects every matching rewrite rule instead of stopping at the first (bug report: a broad header rewrite silently shadowed a narrower one below it)', () => {
+    const rules = [
+      compileRule(
+        rule({ name: 'add-common-header', action: { type: 'rewrite', request: { headers: { set: { a: '1' } } } } }),
+      ),
+      compileRule(
+        rule({ name: 'rewrite-param', action: { type: 'rewrite', request: { query: { set: { b: '2' } } } } }),
+      ),
+    ];
+    const matched = findMatchingRules(rules, { method: 'GET', url: 'https://api.example.com/users/1' });
+    expect(matched.rewrites.map((r) => r.name)).toEqual(['add-common-header', 'rewrite-param']);
+    expect(matched.terminal).toBeUndefined();
+  });
+
+  it('stops at the first non-rewrite rule, excluding it and anything after from `rewrites`', () => {
+    const rules = [
+      compileRule(
+        rule({ name: 'add-common-header', action: { type: 'rewrite', request: { headers: { set: { a: '1' } } } } }),
+      ),
+      compileRule(rule({ name: 'mock-it', action: { type: 'mock' } })),
+      compileRule(
+        rule({ name: 'never-reached', action: { type: 'rewrite', request: { headers: { set: { c: '3' } } } } }),
+      ),
+    ];
+    const matched = findMatchingRules(rules, { method: 'GET', url: 'https://api.example.com/users/1' });
+    expect(matched.rewrites.map((r) => r.name)).toEqual(['add-common-header']);
+    expect(matched.terminal?.name).toBe('mock-it');
+  });
+
+  it('skips disabled rules the same as findMatchingRule', () => {
+    const rules = [
+      compileRule(
+        rule({
+          name: 'disabled',
+          enabled: false,
+          action: { type: 'rewrite', request: { headers: { set: { a: '1' } } } },
+        }),
+      ),
+      compileRule(rule({ name: 'mock-it', action: { type: 'mock' } })),
+    ];
+    const matched = findMatchingRules(rules, { method: 'GET', url: 'https://api.example.com/users/1' });
+    expect(matched.rewrites).toEqual([]);
+    expect(matched.terminal?.name).toBe('mock-it');
+  });
+
+  it('returns no terminal when only rewrite rules match', () => {
+    const rules = [
+      compileRule(
+        rule({ name: 'only-rewrite', action: { type: 'rewrite', request: { headers: { set: { a: '1' } } } } }),
+      ),
+    ];
+    const matched = findMatchingRules(rules, { method: 'GET', url: 'https://api.example.com/users/1' });
+    expect(matched.terminal).toBeUndefined();
   });
 });

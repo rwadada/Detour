@@ -1,6 +1,6 @@
 import { json } from '@codemirror/lang-json';
 import CodeMirror from '@uiw/react-codemirror';
-import { Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useRuleStore } from '@/entities/rule';
 import { useTheme } from '@/shared/lib/theme';
@@ -32,6 +32,7 @@ const SAVE_TIMEOUT_MS = 5000;
 export function RulesEditorPanel() {
   const rulesFile = useRuleStore((s) => s.rulesFile);
   const rulesFileAt = useRuleStore((s) => s.rulesFileAt);
+  const unreachableWarnings = useRuleStore((s) => s.unreachableWarnings);
   const setRules = useRuleStore((s) => s.setRules);
   const dirty = useRuleStore((s) => s.dirtyDraft);
   const setDirty = useRuleStore((s) => s.setDirtyDraft);
@@ -262,35 +263,56 @@ export function RulesEditorPanel() {
           <p className="p-3 text-sm text-[var(--muted)]">No rules yet.</p>
         ) : (
           <ul>
-            {draft.rules.map((rule, index) => (
-              <li
-                key={`${rule.name}-${index}`}
-                className={cn(
-                  'flex items-center gap-2 border-b border-[var(--border)] px-3 py-2 text-sm last:border-b-0',
-                  selected === index && 'bg-[var(--row-selected)]',
-                )}
-              >
-                <input
-                  type="checkbox"
-                  checked={rule.enabled ?? true}
-                  onChange={(e) => updateRule(index, { enabled: e.target.checked })}
-                  title={rule.enabled === false ? 'Disabled' : 'Enabled'}
-                />
-                <button type="button" className="flex-1 truncate text-left" onClick={() => setSelected(index)}>
-                  <span className="font-medium">{rule.name}</span>{' '}
-                  <span className="text-[var(--muted)]">— {describeMatch(rule)}</span>{' '}
-                  <span className="text-[10px] uppercase text-[var(--accent)]">{rule.action.type}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => removeRule(index)}
-                  className="rounded p-1 text-[var(--muted)] hover:bg-[var(--row-hover)] hover:text-[var(--status-5xx)]"
-                  title="Delete rule"
+            {draft.rules.map((rule, index) => {
+              // Only while the draft exactly mirrors the last-saved file
+              // (`!dirty`) — `unreachableWarnings` is computed server-side
+              // against that saved content, keyed by index, so it'd point at
+              // the wrong row (or a rule that no longer exists) once local
+              // edits move things around. Looked up once per row (rather
+              // than once for the render condition and again for the
+              // message) so the icon's `title`/`aria-label` can't end up
+              // reading a different match than the one that made it render.
+              const warning = dirty ? undefined : unreachableWarnings.find((w) => w.ruleIndex === index);
+              return (
+                <li
+                  key={`${rule.name}-${index}`}
+                  className={cn(
+                    'flex items-center gap-2 border-b border-[var(--border)] px-3 py-2 text-sm last:border-b-0',
+                    selected === index && 'bg-[var(--row-selected)]',
+                  )}
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </li>
-            ))}
+                  <input
+                    type="checkbox"
+                    checked={rule.enabled ?? true}
+                    onChange={(e) => updateRule(index, { enabled: e.target.checked })}
+                    title={rule.enabled === false ? 'Disabled' : 'Enabled'}
+                  />
+                  <button type="button" className="flex-1 truncate text-left" onClick={() => setSelected(index)}>
+                    <span className="font-medium">{rule.name}</span>{' '}
+                    <span className="text-[var(--muted)]">— {describeMatch(rule)}</span>{' '}
+                    <span className="text-[10px] uppercase text-[var(--accent)]">{rule.action.type}</span>
+                  </button>
+                  {warning && (
+                    <span
+                      role="img"
+                      aria-label={warning.message}
+                      title={warning.message}
+                      className="shrink-0 text-[var(--status-4xx)]"
+                    >
+                      <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeRule(index)}
+                    className="rounded p-1 text-[var(--muted)] hover:bg-[var(--row-hover)] hover:text-[var(--status-5xx)]"
+                    title="Delete rule"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>

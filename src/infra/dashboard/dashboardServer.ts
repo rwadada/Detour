@@ -424,6 +424,7 @@ export async function startDashboardServer(
   const rulesMessage = (): DashboardServerMessage => ({
     type: 'rules',
     data: ruleEngine ? { rules: [...ruleEngine.getRules()], $activeProfile: ruleEngine.getActiveProfile() } : null,
+    unreachableWarnings: ruleEngine ? [...ruleEngine.getUnreachableWarnings()] : [],
   });
   const ruleProfilesMessage = (): DashboardServerMessage => ({
     type: 'ruleProfiles',

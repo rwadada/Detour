@@ -131,7 +131,9 @@ detour rules validate rules.json  # check its schema/consistency
 detour start --rules rules.json   # start the proxy with rules applied
 ```
 
-A rules file is an array of rules, evaluated in order for each request. The first enabled rule that matches wins and its action is applied (later rules are not evaluated).
+A rules file is an array of rules, evaluated in order for each request. Every matching, enabled `rewrite` rule applies — a broad rule (e.g. "add this header to every request") and a narrower one further down (e.g. "also rewrite this one endpoint's query param") both take effect, rather than the first one shadowing the rest. The first matching `mock`/`route`/`breakpoint`/`script` rule, if any, still wins and stops evaluation there (later rules, `rewrite` included, are not evaluated). When two matching `rewrite` rules set the same header/query key or replace the same body, the one later in the file wins.
+
+Since a `mock`/`route`/`breakpoint`/`script` rule can shadow another rule positioned after it this way, `detour rules validate` (and `detour start`/a reload) warns — without failing validation or blocking the reload — about a rule it can *prove* will never run: an earlier rule with byte-identical `match` criteria, or an earlier catch-all (`url: "*"`, no method restriction) rule of one of those four types. It deliberately doesn't try to catch every possible case (e.g. a narrower glob fully covered by a broader one further up) — a missed warning is preferable to a false one about a rule that actually works. The dashboard's Rules editor shows the same warning as a ⚠ next to the affected rule.
 
 ```json
 {

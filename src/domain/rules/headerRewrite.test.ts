@@ -16,6 +16,12 @@ describe('applyHeaderRewrite', () => {
     expect(headers['Content-Type']).toBeUndefined();
   });
 
+  it('sets a header case-insensitively, replacing an existing differently-cased key rather than adding a duplicate', () => {
+    const headers: Record<string, string> = { 'User-Agent': 'orig-ua' };
+    applyHeaderRewrite(headers, { set: { 'user-agent': 'MyCustomUA' } });
+    expect(headers).toEqual({ 'user-agent': 'MyCustomUA' });
+  });
+
   it('is a no-op when no rewrite is given', () => {
     const headers: Record<string, string> = { a: '1' };
     applyHeaderRewrite(headers, undefined);

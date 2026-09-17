@@ -6,6 +6,7 @@ import { CliExitError } from './domain/daemon/errors';
 import { isDumpLevel } from './domain/dump/dumpPolicy';
 import type { DumpLevel } from './domain/dump/dumpPolicy';
 import { SAMPLE_RULES_FILE } from './domain/rules/sample';
+import { findUnreachableRules } from './domain/rules/unreachableRules';
 import { isSetupTarget, SETUP_TARGETS } from './domain/setup/targets';
 import type { SetupTarget } from './domain/setup/targets';
 import { hashDashboardPassword } from './infra/dashboard/dashboardPasswordHash';
@@ -39,6 +40,7 @@ import {
   logExchangeFull,
   logGrpcSection,
   logProxyError,
+  logUnreachableRuleWarnings,
   logWebSocketConnection,
   logWebSocketFull,
 } from './presentation/logger';
@@ -521,8 +523,9 @@ async function runStartBody({
     if (dumpDir) writeWebSocketDumpFile(connection, dumpDir);
   });
   eventBus.on('error', logProxyError);
-  eventBus.on('rulesReloaded', ({ filePath, ruleCount }) => {
+  eventBus.on('rulesReloaded', ({ filePath, ruleCount, unreachableWarnings }) => {
     console.log(`↻ Reloaded rules (${ruleCount}): ${filePath}`);
+    logUnreachableRuleWarnings(unreachableWarnings);
   });
 
   let ruleEngine: RuleEngine | undefined;
@@ -539,7 +542,12 @@ async function runStartBody({
       writer: fsRulesFileWriter,
       watcher: fsFileWatcher,
       allowExternalScriptPaths: options.allowExternalScriptPaths ?? false,
-      onReload: (info) => eventBus.emit('rulesReloaded', { filePath: ruleEngine!.filePath, ruleCount: info.ruleCount }),
+      onReload: (info) =>
+        eventBus.emit('rulesReloaded', {
+          filePath: ruleEngine!.filePath,
+          ruleCount: info.ruleCount,
+          unreachableWarnings: info.unreachableWarnings,
+        }),
       onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
     });
   }
@@ -582,7 +590,12 @@ async function runStartBody({
       writer: fsRulesFileWriter,
       watcher: fsFileWatcher,
       allowExternalScriptPaths: options.allowExternalScriptPaths ?? false,
-      onReload: (info) => eventBus.emit('rulesReloaded', { filePath, ruleCount: info.ruleCount }),
+      onReload: (info) =>
+        eventBus.emit('rulesReloaded', {
+          filePath,
+          ruleCount: info.ruleCount,
+          unreachableWarnings: info.unreachableWarnings,
+        }),
       onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
     });
     console.log(
@@ -590,6 +603,7 @@ async function runStartBody({
         ? `ℹ Created ${DEFAULT_RULES_FILENAME} to apply this rule profile (auto-loaded from now on; pass --rules to use a different file)`
         : `ℹ Loaded existing ${DEFAULT_RULES_FILENAME} to apply this rule profile (auto-loaded from now on; pass --rules to use a different file)`,
     );
+    logUnreachableRuleWarnings(engine.getUnreachableWarnings());
     handle.setRuleEngine(engine);
     return engine;
   }
@@ -823,6 +837,7 @@ function printStartupBanner(info: {
     console.log(
       `Rules file: ${info.ruleEngine.filePath} (loaded ${info.ruleEngine.getRules().length} rule(s), watching for changes)`,
     );
+    logUnreachableRuleWarnings(info.ruleEngine.getUnreachableWarnings());
   }
   if (info.dumpDir) {
     console.log(`Full request/response dumps → ${info.dumpDir}`);
@@ -1242,6 +1257,9 @@ export function createCli(): Command {
       try {
         const { rules: loaded } = loadRulesFile(path.resolve(rulesPath));
         console.log(`✔ ${rulesPath} is valid (${loaded.length} rule(s))`);
+        // Non-fatal: an unreachable rule is a real bug in the file, but not
+        // a schema violation — doesn't affect this command's exit code.
+        logUnreachableRuleWarnings(findUnreachableRules(loaded));
       } catch (err) {
         console.error(err instanceof Error ? err.message : String(err));
         process.exitCode = 1;

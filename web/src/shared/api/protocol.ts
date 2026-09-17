@@ -237,6 +237,15 @@ export interface RuleProfileSummary {
   updatedAt: number;
 }
 
+/** Mirrors `src/domain/rules/unreachableRules.ts`'s `UnreachableRuleWarning` — a rule that can never run because an earlier `mock`/`route`/`breakpoint`/`script` rule already matches every request it would, and stops evaluation there first. */
+export interface UnreachableRuleWarning {
+  ruleName: string;
+  ruleIndex: number;
+  blockedByName: string;
+  blockedByIndex: number;
+  message: string;
+}
+
 /**
  * The persistent `detour start` defaults — see `src/domain/dashboard/protocol.ts`'s `UserConfigState`.
  * Both fields take effect on the *next* `detour start`, never this running instance.
@@ -270,8 +279,8 @@ export type DashboardServerMessage =
   | { type: 'wsOpen'; connection: CapturedWebSocketConnection }
   | { type: 'wsFrame'; connection: CapturedWebSocketConnection }
   | { type: 'wsClose'; connection: CapturedWebSocketConnection }
-  /** The currently active rules.json contents — `null` when no rules file is configured for this session. */
-  | { type: 'rules'; data: RulesFile | null }
+  /** The currently active rules.json contents — `null` when no rules file is configured for this session. `unreachableWarnings` is computed against this same `data` (empty when it's `null`), not any unsaved Rules editor draft. */
+  | { type: 'rules'; data: RulesFile | null; unreachableWarnings: UnreachableRuleWarning[] }
   /** The saved rule profiles available to switch to or apply. */
   | { type: 'ruleProfiles'; profiles: RuleProfileSummary[] }
   /** The current persistent `detour start` defaults — sent once on connect and again after every `setUserConfig`. */
