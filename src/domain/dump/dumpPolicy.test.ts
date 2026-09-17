@@ -117,6 +117,22 @@ describe('formatExchangeDump', () => {
     expect(dump).not.toContain('undefined');
     expect(dump).toContain('Response headers:\n  (none)');
   });
+
+  it('renders the timing breakdown, omitting phases that were never measured', () => {
+    const dump = formatExchangeDump(
+      baseExchange({
+        statusCode: 200,
+        timing: { dnsMs: 5, tcpMs: 10, ttfbMs: 40, transferMs: 3 },
+      }),
+    );
+    expect(dump).toContain('Timing:\n  DNS: 5ms\n  TCP: 10ms\n  TTFB: 40ms\n  Transfer: 3ms');
+    expect(dump).not.toContain('TLS');
+  });
+
+  it('omits the Timing section entirely when the exchange never reached upstream', () => {
+    const dump = formatExchangeDump(baseExchange({ statusCode: 403 }));
+    expect(dump).not.toContain('Timing:');
+  });
 });
 
 function baseWsConnection(overrides: Partial<CapturedWebSocketConnection> = {}): CapturedWebSocketConnection {

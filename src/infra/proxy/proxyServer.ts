@@ -188,6 +188,26 @@ function buildBaseExchange(
 }
 
 /**
+ * Copies the proxy→upstream DNS/TCP/TLS/TTFB timing ProxyEngine measured
+ * (issue #140, `ctx.timing`) onto `exchange`, filling in the one phase only
+ * knowable once the exchange is finishing — `transferMs`, the response
+ * headers arriving (`ctx.responseHeadersAt`) to `exchange.finishedAt`,
+ * which already reflects any Throttle delay/body rewrite applied to it. A
+ * no-op for an exchange that never actually reached upstream, since
+ * `ctx.timing` is only ever set once `ProxyEngine.makeProxyToServerRequest`
+ * runs. Called at every place `exchange.finishedAt` is set for an exchange
+ * that *did* reach upstream (a `mock`/blocked/request-phase-aborted
+ * response never does, so never calls this).
+ */
+function attachTiming(exchange: CapturedExchange, ctx: IContext): void {
+  if (!ctx.timing) return;
+  if (ctx.responseHeadersAt !== undefined && exchange.finishedAt !== undefined) {
+    ctx.timing.transferMs = exchange.finishedAt - ctx.responseHeadersAt;
+  }
+  exchange.timing = ctx.timing;
+}
+
+/**
  * Resolves a `mock` rule's response, falling back to a 500 describing the
  * failure (e.g. an unreadable `bodyFile`) rather than crashing the proxy
  * or silently passing the request through.
@@ -600,6 +620,7 @@ export async function startProxyServer(
         exchange.error = `${errorKind ?? 'UNKNOWN'}: ${err?.message ?? 'unknown proxy error'}`;
         exchange.finishedAt = Date.now();
         exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+        attachTiming(exchange, ctx);
         eventBus.emit('response', exchange);
       }
       inFlight.delete(ctx.uuid);
@@ -915,6 +936,7 @@ export async function startProxyServer(
           exchange.error = `rule "${rule.name}": response aborted via breakpoint (connection closed)`;
           exchange.finishedAt = Date.now();
           exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+          attachTiming(exchange, ctx);
           eventBus.emit('response', exchange);
           ctx.proxyToClientResponse.destroy();
           // Deliberately never calls `callback`: leaving it uncalled stops
@@ -939,6 +961,7 @@ export async function startProxyServer(
         BodyCapture.of(finalBody).applyTo(exchange, 'response');
         exchange.finishedAt = Date.now();
         exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+        attachTiming(exchange, ctx);
 
         ctx.onResponseData((_dataCtx, _chunk, cb) => cb(undefined, Buffer.alloc(0)));
         ctx.onResponseEnd((_endCtx, cb) => {
@@ -1011,6 +1034,7 @@ export async function startProxyServer(
       BodyCapture.of(result.body).applyTo(exchange, 'response');
       exchange.finishedAt = Date.now();
       exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+      attachTiming(exchange, ctx);
 
       ctx.onResponseData((_dataCtx, _chunk, cb) => cb(undefined, Buffer.alloc(0)));
       ctx.onResponseEnd((_endCtx, cb) => {
@@ -1540,6 +1564,7 @@ export async function startProxyServer(
         if (ctx.serverToProxyResponse) exchange.statusCode = ctx.serverToProxyResponse.statusCode;
         exchange.finishedAt = Date.now();
         exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+        attachTiming(exchange, ctx);
         // Captures the pre-rewrite body (mirroring responseBodySize's
         // accounting above) — the dashboard shows what actually came from
         // upstream, not what a rewrite rule replaced it with.

@@ -8,6 +8,15 @@
 /** A Node-style headers object (values may be a string or multi-value string array, e.g. `set-cookie`). */
 export type HeaderMap = Record<string, string | string[] | undefined>;
 
+/** Mirrors `src/domain/exchange/types.ts`'s `ExchangeTiming` (issue #140). */
+export interface ExchangeTiming {
+  dnsMs?: number;
+  tcpMs?: number;
+  tlsMs?: number;
+  ttfbMs?: number;
+  transferMs?: number;
+}
+
 export interface CapturedExchange {
   id: string;
   method: string;
@@ -30,6 +39,7 @@ export interface CapturedExchange {
   responseBodyTruncated?: boolean;
   finishedAt?: number;
   durationMs?: number;
+  timing?: ExchangeTiming;
 
   error?: string;
   ruleName?: string;

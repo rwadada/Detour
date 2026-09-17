@@ -5,6 +5,7 @@ import https from 'node:https';
 import net from 'node:net';
 import type { Duplex } from 'node:stream';
 import WebSocket, { WebSocketServer } from 'ws';
+import type { ExchangeTiming } from '../../../domain/exchange/types';
 import { CertAuthority } from './certAuthority';
 import type {
   ErrorCallback,
@@ -399,10 +400,65 @@ export class ProxyEngine {
   private makeProxyToServerRequest(ctx: Context): void {
     const opts = ctx.proxyToServerRequestOptions!;
     const transport = ctx.isSSL ? https : http;
-    const upstreamReq = transport.request(opts, (upstreamRes) => this.onUpstreamResponse(ctx, upstreamRes));
+    const timing: ExchangeTiming = {};
+    ctx.timing = timing;
+    const dispatchedAt = Date.now();
+    let connectionReadyAt = dispatchedAt;
+    const upstreamReq = transport.request(opts, (upstreamRes) => {
+      const headersAt = Date.now();
+      timing.ttfbMs = headersAt - connectionReadyAt;
+      ctx.responseHeadersAt = headersAt;
+      this.onUpstreamResponse(ctx, upstreamRes);
+    });
     ctx.proxyToServerRequest = upstreamReq;
+    upstreamReq.on('socket', (socket) =>
+      this.trackSocketTiming(socket, ctx.isSSL, timing, dispatchedAt, (readyAt) => {
+        connectionReadyAt = readyAt;
+      }),
+    );
     upstreamReq.on('error', (err) => this.emitError('PROXY_TO_SERVER_REQUEST_ERROR', ctx, err));
     this.pumpRequestBody(ctx);
+  }
+
+  /**
+   * Measures the DNS/TCP/TLS phases of the upstream socket
+   * `makeProxyToServerRequest` just opened (issue #140), filling them into
+   * `timing` as each stage completes and reporting via `onReady` once the
+   * connection is actually usable — the point `ttfbMs` is measured from. A
+   * reused keep-alive socket (`!socket.connecting`) skips straight to
+   * `onReady` with no phases measured; `httpAgent`/`httpsAgent` are both
+   * `keepAlive: false` so this never happens today, but a socket can only
+   * be trusted to still be connecting via this flag, not assumed.
+   */
+  private trackSocketTiming(
+    socket: net.Socket,
+    isSSL: boolean,
+    timing: ExchangeTiming,
+    dispatchedAt: number,
+    onReady: (readyAt: number) => void,
+  ): void {
+    if (!socket.connecting) {
+      onReady(Date.now());
+      return;
+    }
+    let lookupDoneAt: number | undefined;
+    let connectedAt: number | undefined;
+    socket.once('lookup', () => {
+      lookupDoneAt = Date.now();
+      timing.dnsMs = lookupDoneAt - dispatchedAt;
+    });
+    socket.once('connect', () => {
+      connectedAt = Date.now();
+      timing.tcpMs = connectedAt - (lookupDoneAt ?? dispatchedAt);
+      if (!isSSL) onReady(connectedAt);
+    });
+    if (isSSL) {
+      socket.once('secureConnect', () => {
+        const securedAt = Date.now();
+        timing.tlsMs = securedAt - (connectedAt ?? dispatchedAt);
+        onReady(securedAt);
+      });
+    }
   }
 
   /**

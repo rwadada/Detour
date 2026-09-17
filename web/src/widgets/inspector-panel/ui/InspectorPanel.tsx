@@ -16,6 +16,7 @@ import {
 } from '@/shared/lib/utils';
 import { Button, CopyIconButton, Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui';
 import { CreateRuleButton } from './CreateRuleButton';
+import { TimingWaterfall } from './TimingWaterfall';
 
 // CodeMirror (~500KB) is only needed once a user actually opens the Body
 // tab — code-splitting it keeps the initial bundle (and first paint) small,
@@ -141,6 +142,7 @@ export function InspectorPanel() {
             Query Params{queryParams.length > 0 ? ` (${queryParams.length})` : ''}
           </TabsTrigger>
           <TabsTrigger value="body">Body</TabsTrigger>
+          <TabsTrigger value="timing">Timing</TabsTrigger>
         </TabsList>
 
         <TabsContent value="headers" className="p-3">
@@ -170,6 +172,10 @@ export function InspectorPanel() {
             requestGrpcEncoding={findHeaderValue(exchange.requestHeaders, 'grpc-encoding')}
             responseGrpcEncoding={findHeaderValue(exchange.responseHeaders, 'grpc-encoding')}
           />
+        </TabsContent>
+
+        <TabsContent value="timing" className="overflow-auto">
+          <TimingWaterfall timing={exchange.timing} />
         </TabsContent>
       </Tabs>
     </div>
