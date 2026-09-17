@@ -172,6 +172,34 @@ export async function decodeCapturedBodyAsync(base64: string, contentEncoding?: 
   }
 }
 
+/**
+ * Decodes a base64-captured body to raw bytes, first reversing a
+ * `Content-Encoding` the server applied — the byte-level counterpart of
+ * `decodeCapturedBodyAsync`, for a binary body (e.g. an `image/*` preview,
+ * issue #142) that must never go through a UTF-8 text decode. Returns
+ * undefined only when the base64 itself is malformed; a decompression
+ * failure falls back to the raw (still-compressed) bytes rather than giving
+ * up, matching `decodeCapturedBodyAsync`'s own fallback.
+ */
+export async function decodeCapturedBytesAsync(
+  base64: string,
+  contentEncoding?: string,
+): Promise<Uint8Array | undefined> {
+  let bytes: Uint8Array;
+  try {
+    bytes = base64ToBytes(base64);
+  } catch {
+    return undefined;
+  }
+  const format = decompressibleFormat(contentEncoding);
+  if (!format) return bytes;
+  try {
+    return await decompress(bytes, format);
+  } catch {
+    return bytes;
+  }
+}
+
 /** The inverse of `decodeCapturedBody`: UTF-8-encodes `text` and base64-encodes the result, for sending a breakpoint's edited body back to the server. */
 export function encodeBodyToBase64(text: string): string {
   const bytes = new TextEncoder().encode(text);
