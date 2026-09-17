@@ -104,6 +104,10 @@ function resolveLogFilePath(port: number): string {
   return path.join(dir, `${port}.log`);
 }
 
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** Accumulates repeated `--proto <path>` flags into an array (commander's convention for a repeatable option). */
 function collectProtoPath(value: string, previous: string[]): string[] {
   return [...previous, value];
@@ -552,7 +556,16 @@ async function runStartBody({
       if (grpcInfo) logGrpcSection(grpcInfo);
     }
     if (dumpDir) writeExchangeDumpFile(exchange, dumpDir, grpcInfo);
-    historyStore?.record(exchange);
+    // A write failure here (disk full, corrupt/locked DB) must not throw
+    // out of this listener — it runs synchronously inside the proxy's own
+    // 'response' emit, so an uncaught exception would crash the whole
+    // running proxy and drop the live session over a feature that is only
+    // supposed to be a side effect of it.
+    try {
+      historyStore?.record(exchange);
+    } catch (err) {
+      eventBus.emit('error', { errorKind: 'HISTORY_RECORD_ERROR', message: describeError(err) });
+    }
   });
   // Logged once the WebSocket connection closes (its one clear "done"
   // point), mirroring 'response' above — not on every frame, which would
