@@ -48,6 +48,9 @@ export function isHistoryPersistenceSupported(): boolean {
   }
 }
 
+/** Hard ceiling on `HistoryQuery.limit`, independent of whatever the client asks for — the dashboard's own UI only ever requests `PAGE_SIZE` (100) at a time. */
+const MAX_QUERY_LIMIT = 1000;
+
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS exchanges (
     id TEXT PRIMARY KEY,
@@ -137,13 +140,19 @@ export function openHistoryStore(dbPath: string): HistoryStore {
 
     query(query) {
       const { sql: where, params } = buildWhereClause(query);
+      // Clamped server-side rather than trusting the client's `limit`
+      // verbatim — the dashboard's own UI only ever asks for `PAGE_SIZE`,
+      // but a misbehaving or malicious client could request an
+      // unreasonably large page and force this query (and the resulting
+      // JSON payload) to scale with it.
+      const limit = Math.min(Math.max(1, Math.trunc(query.limit) || 1), MAX_QUERY_LIMIT);
       // Fetches one extra row purely to answer `hasMore` without a second
       // COUNT(*) query — sliced back off below before returning.
       const rows = db
         .prepare(`SELECT data FROM exchanges ${where} ORDER BY started_at DESC LIMIT ?`)
-        .all(...params, query.limit + 1) as Array<{ data: string }>;
-      const hasMore = rows.length > query.limit;
-      const items = rows.slice(0, query.limit).map((row) => JSON.parse(row.data) as CapturedExchange);
+        .all(...params, limit + 1) as Array<{ data: string }>;
+      const hasMore = rows.length > limit;
+      const items = rows.slice(0, limit).map((row) => JSON.parse(row.data) as CapturedExchange);
       return { items, hasMore };
     },
 

@@ -125,6 +125,28 @@ describe.skipIf(!isHistoryPersistenceSupported())('openHistoryStore', () => {
     store.close();
   });
 
+  it('clamps an unreasonably large client-supplied limit rather than trusting it verbatim', () => {
+    const store = openHistoryStore(tmpDbPath());
+    for (let i = 0; i < 5; i++) store.record(exchange({ id: `ex-${i}`, startedAt: i * 1000 }));
+
+    const result = store.query({ limit: Number.MAX_SAFE_INTEGER });
+
+    expect(result.items).toHaveLength(5);
+    expect(result.hasMore).toBe(false);
+    store.close();
+  });
+
+  it('treats a non-positive or non-integer limit as 1 rather than erroring or returning everything', () => {
+    const store = openHistoryStore(tmpDbPath());
+    store.record(exchange({ id: 'a', startedAt: 2000 }));
+    store.record(exchange({ id: 'b', startedAt: 1000 }));
+
+    expect(store.query({ limit: 0 }).items.map((e) => e.id)).toEqual(['a']);
+    expect(store.query({ limit: -5 }).items.map((e) => e.id)).toEqual(['a']);
+    expect(store.query({ limit: Number.NaN }).items.map((e) => e.id)).toEqual(['a']);
+    store.close();
+  });
+
   it('persists across separate store instances against the same file', () => {
     const dbPath = tmpDbPath();
     const first = openHistoryStore(dbPath);
