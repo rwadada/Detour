@@ -1,5 +1,50 @@
 # Changelog
 
+## [1.4.0](https://github.com/rwadada/Detour/compare/v1.3.0...v1.4.0) (2026-09-18)
+
+
+### Features
+
+* `detour test` — rules.json-based communication contract tests ([77a0103](https://github.com/rwadada/Detour/commit/77a0103e74cced20e40485ee9be06e6b6ed24da2))
+* **cli:** add `detour test` — rules.json-based communication contract tests ([722f24e](https://github.com/rwadada/Detour/commit/722f24e46fa47c05e8ade7f59169265f4ef23058))
+* **dashboard:** extend body viewer with image/HTML/CSS/JS/XML/form/multipart rendering ([#142](https://github.com/rwadada/Detour/issues/142)) ([1cef3bd](https://github.com/rwadada/Detour/commit/1cef3bd822c3a41a49b66a62f607d8edeefdbb99))
+* **history:** add opt-in SQLite persistence and a dashboard History feature ([#144](https://github.com/rwadada/Detour/issues/144)) ([77faa3d](https://github.com/rwadada/Detour/commit/77faa3d99fa74bfb44565962a7178d15d42d98b6))
+* identify the local client process behind a request (macOS, issue [#147](https://github.com/rwadada/Detour/issues/147)) ([2292b37](https://github.com/rwadada/Detour/commit/2292b379931e2de91596997fe1a5611330ebaaf4))
+* **proxy:** support routing through an upstream HTTP(S)/SOCKS proxy ([#145](https://github.com/rwadada/Detour/issues/145)) ([f2277e5](https://github.com/rwadada/Detour/commit/f2277e54655fc5bd9cda3f0056f114a0447eeb06))
+* **rules:** apply every matching rewrite rule instead of only the first ([e7a41e3](https://github.com/rwadada/Detour/commit/e7a41e37d16d3ebd1da20ba9c833ad086daa9405))
+* **rules:** warn about a rule that can never run ([b2c8523](https://github.com/rwadada/Detour/commit/b2c852391211690441c430906fc8e20023cf8976))
+* timing waterfall, body viewer formats, history persistence, upstream proxy ([#140](https://github.com/rwadada/Detour/issues/140)-[#142](https://github.com/rwadada/Detour/issues/142), [#144](https://github.com/rwadada/Detour/issues/144)-[#145](https://github.com/rwadada/Detour/issues/145)) ([dff9acc](https://github.com/rwadada/Detour/commit/dff9acc9b4f59f25c80e22b762f606ed20a39f45))
+* **timing:** add DNS/TCP/TLS/TTFB/transfer timing breakdown and dashboard waterfall ([#140](https://github.com/rwadada/Detour/issues/140), [#141](https://github.com/rwadada/Detour/issues/141)) ([ef4a55d](https://github.com/rwadada/Detour/commit/ef4a55d5b07835fd07e5bdcb11ffe447d6fd118c))
+
+
+### Bug Fixes
+
+* address Copilot review findings on PR [#152](https://github.com/rwadada/Detour/issues/152) ([e4ebe59](https://github.com/rwadada/Detour/commit/e4ebe59bbbb9dea4b67cb3cc02e51f8550a323b8))
+* address Copilot review findings on PR [#153](https://github.com/rwadada/Detour/issues/153) ([08bb45a](https://github.com/rwadada/Detour/commit/08bb45a2c2b8b936cd5d9561cadaffd6ff8c9bfc))
+* break same-millisecond ties in history pagination ([4be5649](https://github.com/rwadada/Detour/commit/4be5649c4573ca910ef1eee8d8aa89b0ff2c5e8c))
+* clamp queryHistory's limit server-side ([9ab09db](https://github.com/rwadada/Detour/commit/9ab09dbe3e0fc6ca2741d135ca8e49f947b500d0))
+* **clientProcessLookup:** normalize IPv4-mapped IPv6 addresses before matching ([5c065cb](https://github.com/rwadada/Detour/commit/5c065cb2f81a66b81c2d2accd3ecc0c9c08c8299))
+* close historyStore on proxy bind failure, stop leaking creds in errors ([13fc0e1](https://github.com/rwadada/Detour/commit/13fc0e168b9f411bcf2787d6ffc46992c74de877))
+* **detour test:** address Copilot review findings on PR [#154](https://github.com/rwadada/Detour/issues/154) ([2a32b66](https://github.com/rwadada/Detour/commit/2a32b6620dbda0cc48a7ef78ded4d4b1b42072c4))
+* **detour test:** clean up temp CA dir on synchronous spawn() throw, drop leading blank line ([68c64d2](https://github.com/rwadada/Detour/commit/68c64d29e27c78c36479570316c9421b02daa565))
+* **detour test:** grammatically correct PII message, clearer CA-merge error ([c5a7e8d](https://github.com/rwadada/Detour/commit/c5a7e8dd85679219f5b363496546e7dfb17ef24c))
+* **detour test:** reset RegExp.lastIndex before each match, correct stale comment ([59726e3](https://github.com/rwadada/Detour/commit/59726e32b79ba975add123341001b308f3fe56a6))
+* **detour test:** strip inherited NO_PROXY, wire proxy errors, cap memory use ([2448cf9](https://github.com/rwadada/Detour/commit/2448cf9ef0a20cebc4650c2087856694cea2584a))
+* fail soft when history persistence write fails ([b9fcbb2](https://github.com/rwadada/Detour/commit/b9fcbb255d55779139b8e6b5676d257d87b10789))
+* harden CA-merge temp file, reset lastIndex in rules matcher too ([4b67ad5](https://github.com/rwadada/Detour/commit/4b67ad58720b00b631b3b386bc04f36efc4b95ce))
+* history URL search case-folding, stale image decode, lost selection ([0552a06](https://github.com/rwadada/Detour/commit/0552a06a9b49f93b57cf3cd7062946b5f15f812d))
+* **matchSchema:** reject an empty string in match.method ([1c43d78](https://github.com/rwadada/Detour/commit/1c43d780960a2342eecebcf7c207c7ca44dd3b8a))
+* more Copilot findings — refresh overlap, early poll start, test leak ([d01b0e6](https://github.com/rwadada/Detour/commit/d01b0e6b7c99b53f3d36fe26b7dd8974ca10a94d))
+* pin upstream-proxy agents to keepAlive: false explicitly ([25ae878](https://github.com/rwadada/Detour/commit/25ae8780ca5fff820e03c6376ddc0a769f36125f))
+* **proxy:** apply response rewrites to mock responses; fix rewriteContexts leak ([d4d9568](https://github.com/rwadada/Detour/commit/d4d956814b9b7804abf895a1ab937bd163405ed4))
+* **proxy:** apply stacked rewrites before dispatching to a terminal rule ([2eb7298](https://github.com/rwadada/Detour/commit/2eb7298cf07069ce0ccee5c1b3abf7a70a01250a))
+* **rules:** header rewrite set is case-insensitive; rewrite rules stack; warn on unreachable rules ([33ed262](https://github.com/rwadada/Detour/commit/33ed262f5d07cc968bd463177b60aeaf958732fb))
+* **rules:** header rewrite's `set` now replaces an existing header case-insensitively ([6bd933f](https://github.com/rwadada/Detour/commit/6bd933fa598e977311eb9a4adb53a69edd26e749))
+* **rules:** return a defensive copy from getUnreachableWarnings() ([df7a805](https://github.com/rwadada/Detour/commit/df7a805ba1df9fa0fa6fe9469e040347cc9a9be2))
+* **schema:** reject urlRegexFlags without urlRegex, noPiiLeak with no patterns ([b936eb8](https://github.com/rwadada/Detour/commit/b936eb8a67338083887051fb87fe19d11ac82942))
+* surface decode failures instead of hanging BodyViewer forever ([d9e9019](https://github.com/rwadada/Detour/commit/d9e90197ccc3077637b8b2a864ee1cd1c6602f17))
+* **web:** default unreachableWarnings to [] and dedupe its per-row lookup ([64f7439](https://github.com/rwadada/Detour/commit/64f743964b19f84faae14f6b7360b9c669fa8c2a))
+
 ## [1.3.0](https://github.com/rwadada/Detour/compare/v1.2.0...v1.3.0) (2026-09-16)
 
 
