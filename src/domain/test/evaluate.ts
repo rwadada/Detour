@@ -15,6 +15,15 @@ function compileMatch(match: TestMatch): (exchange: MatchableExchange) => boolea
     match.urlRegex !== undefined ? new RegExp(match.urlRegex, match.urlRegexFlags) : compileGlob(match.url ?? '*');
   return (exchange) => {
     if (methods && !methods.includes(exchange.method.toUpperCase())) return false;
+    // `urlTest` is one RegExp instance reused across every candidate
+    // exchange below. A `g`/`y` `urlRegexFlags` makes `.test()` stateful via
+    // `lastIndex` — without resetting it first, a match here could silently
+    // start searching (or, for `y`, anchor) from wherever the *previous*
+    // exchange's call left off, alternating false negatives across an
+    // otherwise-identical run. Resetting to 0 before every call keeps each
+    // exchange's result independent of call order, without changing what a
+    // non-`g`/`y` regex (the overwhelming common case) matches at all.
+    urlTest.lastIndex = 0;
     return urlTest.test(exchange.url);
   };
 }

@@ -82,6 +82,20 @@ describe('evaluateAssertions — headerPresent', () => {
     const [result] = evaluateAssertions([postOnly], [exchange({ method: 'GET' })]);
     expect(result).toMatchObject({ matchedCount: 0 });
   });
+
+  it('matches every exchange consistently with a stateful `g` urlRegexFlags, not just every other one (regression: RegExp.lastIndex must reset between exchanges)', () => {
+    const globalFlag: HeaderPresentAssertion = {
+      ...assertion,
+      match: { urlRegex: 'https://api\\.example\\.com/orders', urlRegexFlags: 'g' },
+    };
+    const exchanges = [exchange({ id: 'a' }), exchange({ id: 'b' }), exchange({ id: 'c' })];
+    const [result] = evaluateAssertions([globalFlag], exchanges);
+    // All 3 exchanges share the exact same URL, so a matcher that's
+    // consistent across calls must match all 3 or none — a shared RegExp's
+    // advancing `lastIndex` (unreset between exchanges) would instead
+    // alternate matched/unmatched, landing on some count other than 3.
+    expect(result!.matchedCount).toBe(3);
+  });
 });
 
 describe('evaluateAssertions — latencyP95', () => {

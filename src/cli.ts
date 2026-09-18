@@ -1036,7 +1036,7 @@ function crashGuardUnhandledRejectionListener(reason: unknown): void {
   process.exitCode = 1;
 }
 
-/** Auto-loaded when `--assertions` isn't given and this file exists in the current directory (issue #148). */
+/** Default value of `--assertions` (issue #148) — unlike `--rules`'s auto-detection (which silently no-ops if `DEFAULT_RULES_FILENAME` isn't present), this filename is always the effective default, and `runTestCommand` fails fast if it doesn't exist. */
 const DEFAULT_TEST_ASSERTIONS_FILENAME = 'detour.test.json';
 
 interface TestOptions {
