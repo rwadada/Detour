@@ -3530,4 +3530,28 @@ describe('detour test (issue #148, CLI end-to-end)', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('fails with a clear error (not a raw fs stack trace) when an inherited NODE_EXTRA_CA_CERTS points to an unreadable file', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-test-e2e-'));
+    try {
+      const assertionsPath = writeAssertionsFile(tmpDir, { assertions: [] });
+      const missingBundlePath = path.join(tmpDir, 'does-not-exist.pem');
+
+      const result = await runTsx(
+        ['src/cli.ts', 'test', '--assertions', assertionsPath, '--', process.execPath, '-e', '1'],
+        {
+          cwd: REPO_ROOT,
+          reject: false,
+          timeout: 15_000,
+          env: { ...process.env, NODE_EXTRA_CA_CERTS: missingBundlePath },
+        },
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain('Could not read the existing NODE_EXTRA_CA_CERTS bundle');
+      expect(result.stderr).toContain(missingBundlePath);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

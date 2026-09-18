@@ -159,7 +159,7 @@ describe('evaluateAssertions — noPiiLeak', () => {
       [exchange({ url: 'https://ads.example.net/track', requestHeaders: { 'x-user': 'person@example.com' } })],
     );
     expect(result!.passed).toBe(false);
-    expect(result!.failures[0]!.reason).toBe('request header "x-user" looks like it contains a email');
+    expect(result!.failures[0]!.reason).toBe('request header "x-user" looks like it contains PII (email)');
     expect(result!.failures[0]!.reason).not.toContain('person@example.com');
   });
 
@@ -170,7 +170,7 @@ describe('evaluateAssertions — noPiiLeak', () => {
       [exchange({ url: 'https://ads.example.net/track', requestBody: body })],
     );
     expect(result!.passed).toBe(false);
-    expect(result!.failures[0]!.reason).toBe('request body looks like it contains a email');
+    expect(result!.failures[0]!.reason).toBe('request body looks like it contains PII (email)');
   });
 
   it('detects a custom regex pattern', () => {

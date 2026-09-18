@@ -188,7 +188,11 @@ function evaluateNoPiiLeak(
       // The matched value itself is never included in the failure reason —
       // it's exactly the sensitive data this assertion exists to catch, and
       // printing it would leak it into CI logs instead of just flagging it.
-      if (label) failures.push(toFailureDetail(exchange, `${field} looks like it contains a ${label}`));
+      // Phrased without an indefinite article (not "...contains a
+      // ${label}") since `label` is a mix of pattern names ("email", "ssn")
+      // and a "custom pattern /.../" phrase, and there's no single
+      // a/an choice that reads correctly for all of them.
+      if (label) failures.push(toFailureDetail(exchange, `${field} looks like it contains PII (${label})`));
     }
   }
   return {

@@ -1059,7 +1059,16 @@ function resolveCaCertsForCommand(caCertPath: string): { path: string; cleanup: 
   const existing = process.env.NODE_EXTRA_CA_CERTS;
   if (!existing) return { path: caCertPath, cleanup: () => {} };
   const combinedPath = path.join(os.tmpdir(), `detour-test-ca-${process.pid}-${Date.now()}.pem`);
-  fs.writeFileSync(combinedPath, `${fs.readFileSync(existing, 'utf8')}\n${fs.readFileSync(caCertPath, 'utf8')}`);
+  let existingContents: string;
+  try {
+    existingContents = fs.readFileSync(existing, 'utf8');
+  } catch (err) {
+    throw new Error(
+      `Could not read the existing NODE_EXTRA_CA_CERTS bundle to merge it with detour's own CA: ${existing}\n  ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+  fs.writeFileSync(combinedPath, `${existingContents}\n${fs.readFileSync(caCertPath, 'utf8')}`);
   return {
     path: combinedPath,
     cleanup: () => {
