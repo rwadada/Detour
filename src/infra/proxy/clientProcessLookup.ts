@@ -87,6 +87,13 @@ const REFRESH_INTERVAL_MS = 2000;
 export class ClientProcessDirectory {
   private connections: LsofConnection[] = [];
   private timer: ReturnType<typeof setInterval> | undefined;
+  // Guards against a slow `lsof` (the 15s exec timeout in
+  // `nodeCommandRunner` is the extreme case, but any run past
+  // `REFRESH_INTERVAL_MS` qualifies) overlapping with the next interval
+  // tick and spawning a second `lsof` process concurrently — a skipped
+  // tick here just means the snapshot goes a bit more stale, which
+  // `lookup()`'s own contract already tolerates.
+  private refreshing = false;
 
   constructor(private readonly runner: CommandRunner) {}
 
@@ -107,6 +114,8 @@ export class ClientProcessDirectory {
   }
 
   private async refresh(): Promise<void> {
+    if (this.refreshing) return;
+    this.refreshing = true;
     try {
       const { stdout } = await this.runner.run('lsof', ['-n', '-P', '-iTCP', '-sTCP:ESTABLISHED', '-F', 'pcn']);
       this.connections = parseLsofFieldOutput(stdout);
@@ -116,6 +125,8 @@ export class ClientProcessDirectory {
       // an otherwise-still-useful cache over one transient failure. Every
       // failure mode here is a nice-to-have annotation quietly going stale,
       // never something that should affect capturing exchanges themselves.
+    } finally {
+      this.refreshing = false;
     }
   }
 

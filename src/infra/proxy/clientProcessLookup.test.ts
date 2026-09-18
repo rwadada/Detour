@@ -127,6 +127,43 @@ describe('ClientProcessDirectory', () => {
     expect(calls).toBe(1);
   });
 
+  it('never overlaps refreshes: a slow lsof spanning past the next interval tick is not run concurrently', async () => {
+    let calls = 0;
+    let resolveFirstRun: ((result: CommandResult) => void) | undefined;
+    const runner: CommandRunner = {
+      run: () => {
+        calls++;
+        if (calls === 1) {
+          // The first call hangs until the test explicitly resolves it,
+          // simulating an `lsof` slower than `REFRESH_INTERVAL_MS`.
+          return new Promise((resolve) => {
+            resolveFirstRun = resolve;
+          });
+        }
+        return Promise.resolve({ stdout: '', stderr: '' });
+      },
+    };
+    const directory = new ClientProcessDirectory(runner);
+
+    directory.start();
+    await flushMicrotasks();
+    expect(calls).toBe(1); // the first refresh is still in flight
+
+    // An interval tick fires while that first `lsof` hasn't resolved yet —
+    // it must be skipped, not spawn a second `lsof` concurrently.
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(calls).toBe(1);
+
+    resolveFirstRun?.({ stdout: '', stderr: '' });
+    await flushMicrotasks();
+
+    // Now that the first refresh has finished, the *next* tick is free to run.
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(calls).toBe(2);
+
+    directory.stop();
+  });
+
   it('keeps the previous snapshot (rather than clearing it) when a refresh throws', async () => {
     let shouldFail = false;
     const directory = new ClientProcessDirectory(

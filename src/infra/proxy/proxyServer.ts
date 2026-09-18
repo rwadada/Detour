@@ -312,10 +312,12 @@ export async function startProxyServer(
   // request) — `undefined` everywhere else, so `buildBaseExchange`'s lookup
   // is skipped entirely rather than starting a directory that could never
   // find anything.
+  // Not `.start()`ed yet — only once `proxy.listen` below actually succeeds,
+  // so a startup that aborts (port in use, `proxy.listen` throwing) never
+  // leaves its background polling running with no proxy for it to serve.
   const clientProcessDirectory = isClientProcessLookupSupported()
     ? new ClientProcessDirectory(nodeCommandRunner)
     : undefined;
-  clientProcessDirectory?.start();
   // Keyed by ctx.uuid so the request-phase and response-phase handlers
   // (which fire as separate callbacks) can agree on the same exchange.
   const inFlight = new Map<string, CapturedExchange>();
@@ -1632,6 +1634,7 @@ export async function startProxyServer(
           upstreamProxyUrl: options.upstreamProxyUrl,
         },
         () => {
+          clientProcessDirectory?.start();
           resolve({
             port: proxy.httpPort,
             caCertPath: proxy.ca.getCACertPath(),

@@ -2008,13 +2008,13 @@ describe('detour start (CLI, end-to-end)', () => {
       const chunkBytes = 8000;
       const chunkCount = 4;
       const chunked = await startChunkedBodyServer(chunkBytes, chunkCount);
-      cli = await startDetourCli();
-      // 64 Kbps = 8 bytes/ms, so each 8000-byte chunk should individually
-      // take ~1000ms to "transmit" (BandwidthState paces per chunk, not
-      // just the whole body) — ~4000ms end-to-end for all four.
-      await setThrottle(cli.dashboardPort, { ...DISABLED, enabled: true, downKbps: 64 });
-
       try {
+        cli = await startDetourCli();
+        // 64 Kbps = 8 bytes/ms, so each 8000-byte chunk should individually
+        // take ~1000ms to "transmit" (BandwidthState paces per chunk, not
+        // just the whole body) — ~4000ms end-to-end for all four.
+        await setThrottle(cli.dashboardPort, { ...DISABLED, enabled: true, downKbps: 64 });
+
         const result = await new Promise<{
           status: number;
           bodyLength: number;
