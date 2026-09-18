@@ -1058,7 +1058,6 @@ interface TestOptions {
 function resolveCaCertsForCommand(caCertPath: string): { path: string; cleanup: () => void } {
   const existing = process.env.NODE_EXTRA_CA_CERTS;
   if (!existing) return { path: caCertPath, cleanup: () => {} };
-  const combinedPath = path.join(os.tmpdir(), `detour-test-ca-${process.pid}-${Date.now()}.pem`);
   let existingContents: string;
   try {
     existingContents = fs.readFileSync(existing, 'utf8');
@@ -1068,14 +1067,24 @@ function resolveCaCertsForCommand(caCertPath: string): { path: string; cleanup: 
       { cause: err },
     );
   }
-  fs.writeFileSync(combinedPath, `${existingContents}\n${fs.readFileSync(caCertPath, 'utf8')}`);
+  // `mkdtempSync` (not a predictable `<tmpdir>/detour-test-ca-<pid>-<ts>.pem`
+  // path built by hand) gets a securely, atomically created, uniquely-named
+  // directory from the OS — on a shared multi-user machine, a hand-built
+  // path is guessable ahead of time, letting another user pre-create a
+  // symlink there that a plain `writeFileSync` would happily follow.
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-test-ca-'));
+  const combinedPath = path.join(tmpDir, 'combined-ca.pem');
+  // `wx`: fails instead of following a pre-existing path (symlink or
+  // otherwise) at `combinedPath` — belt-and-suspenders alongside `mkdtemp`
+  // already giving this directory a name nothing else could have guessed.
+  fs.writeFileSync(combinedPath, `${existingContents}\n${fs.readFileSync(caCertPath, 'utf8')}`, { flag: 'wx' });
   return {
     path: combinedPath,
     cleanup: () => {
       try {
-        fs.unlinkSync(combinedPath);
+        fs.rmSync(tmpDir, { recursive: true, force: true });
       } catch {
-        // Best-effort — a leftover temp file in the OS tmp dir is harmless.
+        // Best-effort — a leftover temp dir in the OS tmp dir is harmless.
       }
     },
   };

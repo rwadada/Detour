@@ -34,7 +34,19 @@ export function compileGlob(pattern: string): RegExp {
 function compileUrlTest(match: RuleMatch): (url: string) => boolean {
   if (match.urlRegex !== undefined) {
     const re = new RegExp(match.urlRegex, match.urlRegexFlags);
-    return (url) => re.test(url);
+    // `re` is one instance reused across every request this rule is tested
+    // against. A `g`/`y` `urlRegexFlags` makes `.test()` stateful via
+    // `lastIndex` — without resetting it first, matching one request could
+    // leave `lastIndex` somewhere that makes the *next* request's test
+    // start (or, for `y`, anchor) from the wrong position, alternating
+    // false negatives across otherwise-identical requests. Resetting to 0
+    // before every call keeps each request's result independent of
+    // evaluation order, without changing what a non-`g`/`y` regex (the
+    // overwhelming common case) matches at all.
+    return (url) => {
+      re.lastIndex = 0;
+      return re.test(url);
+    };
   }
   const re = compileGlob(match.url ?? '*');
   return (url) => re.test(url);
