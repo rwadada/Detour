@@ -8,6 +8,15 @@
 /** A Node-style headers object (values may be a string or multi-value string array, e.g. `set-cookie`). */
 export type HeaderMap = Record<string, string | string[] | undefined>;
 
+/** Mirrors `src/domain/exchange/types.ts`'s `ExchangeTiming` (issue #140). */
+export interface ExchangeTiming {
+  dnsMs?: number;
+  tcpMs?: number;
+  tlsMs?: number;
+  ttfbMs?: number;
+  transferMs?: number;
+}
+
 export interface CapturedExchange {
   id: string;
   method: string;
@@ -30,6 +39,7 @@ export interface CapturedExchange {
   responseBodyTruncated?: boolean;
   finishedAt?: number;
   durationMs?: number;
+  timing?: ExchangeTiming;
 
   error?: string;
   ruleName?: string;
@@ -246,6 +256,23 @@ export interface UnreachableRuleWarning {
   message: string;
 }
 
+/** Mirrors `src/domain/dashboard/protocol.ts`'s `HistoryFilters` (issue #144). Every field optional — omitted means "no restriction". */
+export interface HistoryFilters {
+  method?: string;
+  host?: string;
+  urlContains?: string;
+  statusMin?: number;
+  statusMax?: number;
+}
+
+/** Mirrors `src/domain/dashboard/protocol.ts`'s `HistoryQuery`. */
+export interface HistoryQuery extends HistoryFilters {
+  before?: number;
+  /** Paired with `before` (a same-millisecond tie-breaker) — see the server-side `HistoryQuery`'s own doc comment. */
+  beforeId?: string;
+  limit: number;
+}
+
 /**
  * The persistent `detour start` defaults — see `src/domain/dashboard/protocol.ts`'s `UserConfigState`.
  * Both fields take effect on the *next* `detour start`, never this running instance.
@@ -292,7 +319,11 @@ export type DashboardServerMessage =
    * message frames. `null` when no `--proto` was given. Sent once, right
    * after connecting — a `.proto` schema doesn't live-reload.
    */
-  | { type: 'protoSchema'; schema: Record<string, unknown> | null };
+  | { type: 'protoSchema'; schema: Record<string, unknown> | null }
+  /** Sent once, right after connecting (issue #144): whether this session was started with `--persist` — lets the dashboard hide the History feature when it would always come back empty. */
+  | { type: 'historyStatus'; enabled: boolean }
+  /** Answers a `queryHistory` request (issue #144) with one page of persisted exchanges, newest-first. `requestId` echoes the request. Sent to the requesting socket only, never broadcast. */
+  | { type: 'historyResult'; requestId: string; items: CapturedExchange[]; hasMore: boolean };
 
 export type DashboardClientMessage =
   /** Answers an `authRequired` message with the password the user typed (issue #66). The server replies with either the normal just-connected snapshot (success) or `authFailed`. Ignored — like every other message type — before the socket has authenticated. */
@@ -315,4 +346,6 @@ export type DashboardClientMessage =
   /** Persists a change to `~/.detour/config.json`, merged into the existing file (setting one field never clobbers the other). */
   | { type: 'setUserConfig'; state: Partial<UserConfigState> }
   /** Sets (or, with `null`, clears) the dashboard password (issue #66). Only meaningful from an already-authenticated socket. */
-  | { type: 'setDashboardPassword'; password: string | null };
+  | { type: 'setDashboardPassword'; password: string | null }
+  /** Requests one page of persisted exchange history (issue #144), answered by a `historyResult` carrying the same `requestId`. */
+  | { type: 'queryHistory'; requestId: string; query: HistoryQuery };

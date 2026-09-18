@@ -5,6 +5,8 @@ import https from 'node:https';
 import net from 'node:net';
 import type { Duplex } from 'node:stream';
 import WebSocket, { WebSocketServer } from 'ws';
+import type { ExchangeTiming } from '../../../domain/exchange/types';
+import { createUpstreamProxyAgents } from '../upstreamProxyAgent';
 import { CertAuthority } from './certAuthority';
 import type {
   ErrorCallback,
@@ -27,6 +29,15 @@ export interface ProxyEngineOptions {
   sslCaDir: string;
   /** @default true */
   http2?: boolean;
+  /**
+   * Routes every proxy→upstream connection through this HTTP(S)/SOCKS proxy
+   * instead of connecting to the real destination directly (issue #145) —
+   * e.g. `http://user:pass@proxy.corp.example.com:8080` or
+   * `socks5://127.0.0.1:1080`. Already validated by the caller (`cli.ts`'s
+   * eager `validateUpstreamProxyUrl` — see its own doc comment for why).
+   * Omit for direct connections (the default).
+   */
+  upstreamProxyUrl?: string;
 }
 
 /** A request/response pair's actual mutable hook lists — `IContext`'s public surface plus the bookkeeping `ProxyEngine` needs internally, never exposed to consumers. */
@@ -138,8 +149,13 @@ export class ProxyEngine {
   private readonly onWebSocketErrorHandlers: OnWebSocketErrorParams[] = [];
   private readonly onErrorHandlers: OnErrorParams[] = [];
 
-  private readonly httpAgent = new http.Agent({ keepAlive: false });
-  private readonly httpsAgent = new https.Agent({ keepAlive: false });
+  // Typed as plain `http.Agent` (not `https.Agent` for the second one) since
+  // that's all `IContext.proxyToServerRequestOptions.agent` ever needs — see
+  // `createUpstreamProxyAgents`'s doc comment for why that matters once
+  // `--upstream-proxy` (issue #145) replaces these with a proxy-routing
+  // agent that isn't literally an `https.Agent` instance.
+  private httpAgent: http.Agent = new http.Agent({ keepAlive: false });
+  private httpsAgent: http.Agent = new https.Agent({ keepAlive: false });
 
   private httpServer: http.Server | undefined;
   private tlsServer: https.Server | http2.Http2SecureServer | undefined;
@@ -228,6 +244,12 @@ export class ProxyEngine {
   async listen(options: ProxyEngineOptions, callback: ErrorCallback = () => undefined): Promise<void> {
     try {
       this.ca = CertAuthority.load(options.sslCaDir);
+
+      if (options.upstreamProxyUrl) {
+        const agents = createUpstreamProxyAgents(options.upstreamProxyUrl);
+        this.httpAgent = agents.httpAgent;
+        this.httpsAgent = agents.httpsAgent;
+      }
 
       this.tlsServer = this.createInternalTlsServer(options.http2 ?? true);
       await listenAsync(this.tlsServer, 0, '127.0.0.1');
@@ -399,10 +421,65 @@ export class ProxyEngine {
   private makeProxyToServerRequest(ctx: Context): void {
     const opts = ctx.proxyToServerRequestOptions!;
     const transport = ctx.isSSL ? https : http;
-    const upstreamReq = transport.request(opts, (upstreamRes) => this.onUpstreamResponse(ctx, upstreamRes));
+    const timing: ExchangeTiming = {};
+    ctx.timing = timing;
+    const dispatchedAt = Date.now();
+    let connectionReadyAt = dispatchedAt;
+    const upstreamReq = transport.request(opts, (upstreamRes) => {
+      const headersAt = Date.now();
+      timing.ttfbMs = headersAt - connectionReadyAt;
+      ctx.responseHeadersAt = headersAt;
+      this.onUpstreamResponse(ctx, upstreamRes);
+    });
     ctx.proxyToServerRequest = upstreamReq;
+    upstreamReq.on('socket', (socket) =>
+      this.trackSocketTiming(socket, ctx.isSSL, timing, dispatchedAt, (readyAt) => {
+        connectionReadyAt = readyAt;
+      }),
+    );
     upstreamReq.on('error', (err) => this.emitError('PROXY_TO_SERVER_REQUEST_ERROR', ctx, err));
     this.pumpRequestBody(ctx);
+  }
+
+  /**
+   * Measures the DNS/TCP/TLS phases of the upstream socket
+   * `makeProxyToServerRequest` just opened (issue #140), filling them into
+   * `timing` as each stage completes and reporting via `onReady` once the
+   * connection is actually usable — the point `ttfbMs` is measured from. A
+   * reused keep-alive socket (`!socket.connecting`) skips straight to
+   * `onReady` with no phases measured; `httpAgent`/`httpsAgent` are both
+   * `keepAlive: false` so this never happens today, but a socket can only
+   * be trusted to still be connecting via this flag, not assumed.
+   */
+  private trackSocketTiming(
+    socket: net.Socket,
+    isSSL: boolean,
+    timing: ExchangeTiming,
+    dispatchedAt: number,
+    onReady: (readyAt: number) => void,
+  ): void {
+    if (!socket.connecting) {
+      onReady(Date.now());
+      return;
+    }
+    let lookupDoneAt: number | undefined;
+    let connectedAt: number | undefined;
+    socket.once('lookup', () => {
+      lookupDoneAt = Date.now();
+      timing.dnsMs = lookupDoneAt - dispatchedAt;
+    });
+    socket.once('connect', () => {
+      connectedAt = Date.now();
+      timing.tcpMs = connectedAt - (lookupDoneAt ?? dispatchedAt);
+      if (!isSSL) onReady(connectedAt);
+    });
+    if (isSSL) {
+      socket.once('secureConnect', () => {
+        const securedAt = Date.now();
+        timing.tlsMs = securedAt - (connectedAt ?? dispatchedAt);
+        onReady(securedAt);
+      });
+    }
   }
 
   /**

@@ -33,6 +33,13 @@
   --status-4xx: #e6c04a;
   --status-5xx: #ff7b72;
   --status-pending: #9aa3b2;
+
+  /* Waterfall phase colors (issue #141) — one per `ExchangeTiming` field. */
+  --timing-dns: #4dd0c4;
+  --timing-tcp: #f0883e;
+  --timing-tls: #b392f0;
+  --timing-ttfb: #ff9bce;
+  --timing-transfer: #6cb6ff;
 }
 
 :root.light {
@@ -53,6 +60,12 @@
   --status-4xx: oklch(0.65 0.18 70);
   --status-5xx: oklch(0.58 0.22 25);
   --status-pending: oklch(0.6 0 0);
+
+  --timing-dns: oklch(0.68 0.12 175);
+  --timing-tcp: oklch(0.68 0.17 50);
+  --timing-tls: oklch(0.62 0.18 285);
+  --timing-ttfb: oklch(0.68 0.15 340);
+  --timing-transfer: oklch(0.62 0.15 240);
 }
 
 * {

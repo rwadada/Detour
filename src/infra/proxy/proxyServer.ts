@@ -84,6 +84,13 @@ export interface ProxyServerOptions {
    * @default true
    */
   http2Enabled?: boolean;
+  /**
+   * Routes every proxy→upstream connection through this HTTP(S)/SOCKS proxy
+   * instead of connecting to the real destination directly (issue #145) —
+   * see `ProxyEngineOptions.upstreamProxyUrl`'s doc comment. Already
+   * validated by the caller (`cli.ts`). Omit for direct connections.
+   */
+  upstreamProxyUrl?: string;
 }
 
 export interface ProxyServerHandle {
@@ -185,6 +192,35 @@ function buildBaseExchange(
     startedAt: Date.now(),
     ruleName: info.ruleName,
   };
+}
+
+/**
+ * Copies the proxy→upstream DNS/TCP/TLS/TTFB timing ProxyEngine measured
+ * (issue #140, `ctx.timing`) onto `exchange`, filling in the one phase only
+ * knowable once the exchange is finishing — `transferMs`, the response
+ * headers arriving (`ctx.responseHeadersAt`) to `exchange.finishedAt`,
+ * which already reflects any Throttle delay/body rewrite applied to it. A
+ * no-op for an exchange that never actually reached upstream, since
+ * `ctx.timing` is only ever set once `ProxyEngine.makeProxyToServerRequest`
+ * runs. Called at every place `exchange.finishedAt` is set for an exchange
+ * that *did* reach upstream (a `mock`/blocked/request-phase-aborted
+ * response never does, so never calls this).
+ */
+function attachTiming(exchange: CapturedExchange, ctx: IContext): void {
+  if (!ctx.timing) return;
+  if (ctx.responseHeadersAt !== undefined && exchange.finishedAt !== undefined) {
+    ctx.timing.transferMs = exchange.finishedAt - ctx.responseHeadersAt;
+  }
+  // `ctx.timing` is set (to `{}`) the moment `makeProxyToServerRequest`
+  // dispatches, before any phase actually completes — a request that
+  // errors synchronously right after that (before even a 'socket' event)
+  // would otherwise attach a timing object with every field `undefined`,
+  // contradicting `CapturedExchange.timing`'s own doc comment ("absent
+  // for an exchange that never reached upstream" — in every way that
+  // actually matters here, one whose upstream connection never got far
+  // enough to measure anything is the same case).
+  if (Object.values(ctx.timing).every((value) => value === undefined)) return;
+  exchange.timing = ctx.timing;
 }
 
 /**
@@ -600,6 +636,7 @@ export async function startProxyServer(
         exchange.error = `${errorKind ?? 'UNKNOWN'}: ${err?.message ?? 'unknown proxy error'}`;
         exchange.finishedAt = Date.now();
         exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+        attachTiming(exchange, ctx);
         eventBus.emit('response', exchange);
       }
       inFlight.delete(ctx.uuid);
@@ -915,6 +952,7 @@ export async function startProxyServer(
           exchange.error = `rule "${rule.name}": response aborted via breakpoint (connection closed)`;
           exchange.finishedAt = Date.now();
           exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+          attachTiming(exchange, ctx);
           eventBus.emit('response', exchange);
           ctx.proxyToClientResponse.destroy();
           // Deliberately never calls `callback`: leaving it uncalled stops
@@ -939,6 +977,7 @@ export async function startProxyServer(
         BodyCapture.of(finalBody).applyTo(exchange, 'response');
         exchange.finishedAt = Date.now();
         exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+        attachTiming(exchange, ctx);
 
         ctx.onResponseData((_dataCtx, _chunk, cb) => cb(undefined, Buffer.alloc(0)));
         ctx.onResponseEnd((_endCtx, cb) => {
@@ -1011,6 +1050,7 @@ export async function startProxyServer(
       BodyCapture.of(result.body).applyTo(exchange, 'response');
       exchange.finishedAt = Date.now();
       exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+      attachTiming(exchange, ctx);
 
       ctx.onResponseData((_dataCtx, _chunk, cb) => cb(undefined, Buffer.alloc(0)));
       ctx.onResponseEnd((_endCtx, cb) => {
@@ -1540,6 +1580,7 @@ export async function startProxyServer(
         if (ctx.serverToProxyResponse) exchange.statusCode = ctx.serverToProxyResponse.statusCode;
         exchange.finishedAt = Date.now();
         exchange.durationMs = exchange.finishedAt - exchange.startedAt;
+        attachTiming(exchange, ctx);
         // Captures the pre-rewrite body (mirroring responseBodySize's
         // accounting above) — the dashboard shows what actually came from
         // upstream, not what a rewrite rule replaced it with.
@@ -1557,26 +1598,35 @@ export async function startProxyServer(
 
   return new Promise((resolve, reject) => {
     try {
-      proxy.listen({ port: options.port, host, sslCaDir, http2: options.http2Enabled ?? true }, () => {
-        resolve({
-          port: proxy.httpPort,
-          caCertPath: proxy.ca.getCACertPath(),
-          setRuleEngine: (engine) => {
-            ruleEngine = engine;
-          },
-          stop: () =>
-            new Promise<void>((res) => {
-              eventBus.off('breakpointResume', handleBreakpointResume);
-              eventBus.off('setIntercept', handleSetIntercept);
-              eventBus.off('setFocus', handleSetFocus);
-              eventBus.off('setThrottle', handleSetThrottle);
-              eventBus.off('setBlockHosts', handleSetBlockHosts);
-              ruleEngine?.close();
-              proxy.close();
-              res();
-            }),
-        });
-      });
+      proxy.listen(
+        {
+          port: options.port,
+          host,
+          sslCaDir,
+          http2: options.http2Enabled ?? true,
+          upstreamProxyUrl: options.upstreamProxyUrl,
+        },
+        () => {
+          resolve({
+            port: proxy.httpPort,
+            caCertPath: proxy.ca.getCACertPath(),
+            setRuleEngine: (engine) => {
+              ruleEngine = engine;
+            },
+            stop: () =>
+              new Promise<void>((res) => {
+                eventBus.off('breakpointResume', handleBreakpointResume);
+                eventBus.off('setIntercept', handleSetIntercept);
+                eventBus.off('setFocus', handleSetFocus);
+                eventBus.off('setThrottle', handleSetThrottle);
+                eventBus.off('setBlockHosts', handleSetBlockHosts);
+                ruleEngine?.close();
+                proxy.close();
+                res();
+              }),
+          });
+        },
+      );
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)));
     }

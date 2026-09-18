@@ -20,8 +20,8 @@ export interface ExchangeState {
   exchanges: CapturedExchange[];
   selectedId: string | null;
   filters: Filters;
-  /** 'imported' while the LogViewer (issue #19) is showing a loaded HAR/JSON file instead of live traffic. */
-  source: 'live' | 'imported';
+  /** 'imported' while the LogViewer (issue #19) is showing a loaded HAR/JSON file instead of live traffic; 'history' while the History feature (issue #144) is showing a `--persist` query's results. */
+  source: 'live' | 'imported' | 'history';
   /** The imported file's name, for display in the "viewing a saved log" banner. Null outside imported mode. */
   importedFileName: string | null;
   /** Ids marked for Compare (issue #19), oldest first, capped at 2 — toggling a 3rd id drops the oldest. */
@@ -51,7 +51,18 @@ export interface ExchangeState {
    * captured in the background so `exitImport` can return to it unchanged.
    */
   importExchanges: (exchanges: CapturedExchange[], fileName: string) => void;
-  /** Leaves imported mode, restoring whatever live traffic accumulated in the background while a file was being viewed. */
+  /**
+   * Switches the log table into "history" mode (issue #144), showing
+   * `exchanges` from a `--persist` history query instead of live traffic —
+   * otherwise identical to `importExchanges`, sharing the same "live
+   * traffic keeps being captured underneath" and `exitImport` return path.
+   * A separate method (rather than a `source` parameter on `importExchanges`
+   * itself) since the two need different companion state (`importedFileName`
+   * vs. the History feature's own filters/pagination, owned entirely by its
+   * own store).
+   */
+  importHistory: (exchanges: CapturedExchange[]) => void;
+  /** Leaves imported/history mode, restoring whatever live traffic accumulated in the background while it was active. */
   exitImport: () => void;
 }
 
@@ -83,7 +94,7 @@ export function createExchangeStore(connection: DashboardConnection) {
   // two flags are orthogonal rather than one implying the other).
   let paused = false;
 
-  return create<ExchangeState>((set) => {
+  return create<ExchangeState>((set, get) => {
     // Incoming WS messages can arrive far faster than React should re-render
     // (a busy proxy can easily push hundreds of exchanges/sec). Rather than
     // calling `set()` per message, updates are queued here and flushed at
@@ -149,6 +160,25 @@ export function createExchangeStore(connection: DashboardConnection) {
       importExchanges: (exchanges, fileName) => {
         importedExchanges = exchanges;
         set({ exchanges, selectedId: null, source: 'imported', importedFileName: fileName });
+      },
+      importHistory: (exchanges) => {
+        importedExchanges = exchanges;
+        // Unlike `importExchanges` (one static HAR file, never re-imported
+        // while its viewer stays open), `HistoryControl` re-calls this on
+        // every incoming page — including `HistoryBanner`'s "Load more",
+        // which only appends to what's already showing. Unconditionally
+        // resetting `selectedId` here would clear the user's selection on
+        // every such append even though the selected exchange is still
+        // right there in the (now longer) list; only actually clear it when
+        // it isn't (e.g. a fresh search replacing the results outright).
+        const currentSelectedId = get().selectedId;
+        const stillSelected = currentSelectedId !== null && exchanges.some((e) => e.id === currentSelectedId);
+        set({
+          exchanges,
+          selectedId: stillSelected ? currentSelectedId : null,
+          source: 'history',
+          importedFileName: null,
+        });
       },
       exitImport: () => {
         importedExchanges = null;

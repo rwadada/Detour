@@ -16,6 +16,7 @@ import {
 } from '@/shared/lib/utils';
 import { Button, CopyIconButton, Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui';
 import { CreateRuleButton } from './CreateRuleButton';
+import { TimingWaterfall } from './TimingWaterfall';
 
 // CodeMirror (~500KB) is only needed once a user actually opens the Body
 // tab — code-splitting it keeps the initial bundle (and first paint) small,
@@ -141,6 +142,7 @@ export function InspectorPanel() {
             Query Params{queryParams.length > 0 ? ` (${queryParams.length})` : ''}
           </TabsTrigger>
           <TabsTrigger value="body">Body</TabsTrigger>
+          <TabsTrigger value="timing">Timing</TabsTrigger>
         </TabsList>
 
         <TabsContent value="headers" className="p-3">
@@ -161,15 +163,21 @@ export function InspectorPanel() {
             requestBody={exchange.requestBody}
             requestBodySize={exchange.requestBodySize}
             requestBodyTruncated={exchange.requestBodyTruncated}
+            requestContentType={findHeaderValue(exchange.requestHeaders, 'content-type')}
             requestContentEncoding={findHeaderValue(exchange.requestHeaders, 'content-encoding')}
             responseBody={exchange.responseBody}
             responseBodySize={exchange.responseBodySize}
             responseBodyTruncated={exchange.responseBodyTruncated}
+            responseContentType={findHeaderValue(exchange.responseHeaders, 'content-type')}
             responseContentEncoding={findHeaderValue(exchange.responseHeaders, 'content-encoding')}
             grpcCall={grpcCall}
             requestGrpcEncoding={findHeaderValue(exchange.requestHeaders, 'grpc-encoding')}
             responseGrpcEncoding={findHeaderValue(exchange.responseHeaders, 'grpc-encoding')}
           />
+        </TabsContent>
+
+        <TabsContent value="timing" className="overflow-auto">
+          <TimingWaterfall timing={exchange.timing} />
         </TabsContent>
       </Tabs>
     </div>
@@ -180,10 +188,12 @@ function BodyTab(props: {
   requestBody?: string;
   requestBodySize: number;
   requestBodyTruncated?: boolean;
+  requestContentType?: string;
   requestContentEncoding?: string;
   responseBody?: string;
   responseBodySize: number;
   responseBodyTruncated?: boolean;
+  responseContentType?: string;
   responseContentEncoding?: string;
   /** Set when the request's `content-type` and URL identify this exchange as a gRPC call (issue #18's dashboard follow-up) — see `InspectorPanel`'s own `grpcCall` doc comment. Passed through to both `BodyViewer`s below; which of `requestType`/`responseType` it resolves to differs, but the RPC it names doesn't. */
   grpcCall?: { service: string; method: string };
@@ -217,6 +227,7 @@ function BodyTab(props: {
               body={props.requestBody}
               bodySize={props.requestBodySize}
               truncated={props.requestBodyTruncated}
+              contentType={props.requestContentType}
               contentEncoding={props.requestContentEncoding}
               grpcCall={props.grpcCall}
               // Only set alongside `grpcCall` (never on its own) — `BodyViewer`/
@@ -231,6 +242,7 @@ function BodyTab(props: {
               body={props.responseBody}
               bodySize={props.responseBodySize}
               truncated={props.responseBodyTruncated}
+              contentType={props.responseContentType}
               contentEncoding={props.responseContentEncoding}
               grpcCall={props.grpcCall}
               grpcDirection={props.grpcCall ? 'response' : undefined}

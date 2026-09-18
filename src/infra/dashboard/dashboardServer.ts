@@ -22,6 +22,7 @@ import type { DetourEventBus } from '../eventBus';
 import { loadUserConfig, writeUserConfig } from '../fs/userConfigStore';
 import type { ProtoRegistry } from '../grpc/protoRegistry';
 import { assertPortAvailable } from '../portCheck';
+import type { HistoryStore } from '../persistence/historyStore';
 import { nodeHttpRequester } from '../proxy/nodeHttpRequester';
 import { hashDashboardPassword, verifyDashboardPassword } from './dashboardPasswordHash';
 import { serveStatic } from './staticServer';
@@ -127,6 +128,14 @@ export interface DashboardServerOptions {
    * know.
    */
   lanAddresses?: string[];
+  /**
+   * The session's `--persist` SQLite store, if any (issue #144's optional
+   * persistence beyond the live in-memory backlog) — powers `queryHistory`/
+   * `historyResult` and the `historyStatus` sent to every connecting client.
+   * Omitted (History feature reports itself disabled) when this session
+   * wasn't started with `--persist`.
+   */
+  historyStore?: HistoryStore;
 }
 
 export interface DashboardServerHandle {
@@ -553,6 +562,8 @@ export async function startDashboardServer(
     socket.send(JSON.stringify(userConfigMessage()));
     const protoSchemaMessage: DashboardServerMessage = { type: 'protoSchema', schema: protoSchema };
     socket.send(JSON.stringify(protoSchemaMessage));
+    const historyStatusMessage: DashboardServerMessage = { type: 'historyStatus', enabled: !!options.historyStore };
+    socket.send(JSON.stringify(historyStatusMessage));
   };
 
   wss.on('connection', (socket: WebSocket) => {
@@ -642,6 +653,29 @@ export async function startDashboardServer(
           } catch (err) {
             broadcastError('USER_CONFIG_WRITE_ERROR', describeError(err));
           }
+        } else if (message.type === 'queryHistory') {
+          // Sent to the requesting socket only (never `broadcast`) — this
+          // answers one tab's own query, not a shared-state change every
+          // connected tab needs to hear about. Answered even with no
+          // `historyStore` (empty/`hasMore: false`) rather than dropped —
+          // see the wire type's own doc comment for why. A query failure
+          // (e.g. a corrupt DB file) must still answer with something,
+          // same reasoning — otherwise the requester's History UI is stuck
+          // showing `loading: true` forever with no way to know why.
+          let result: { items: CapturedExchange[]; hasMore: boolean };
+          try {
+            result = options.historyStore?.query(message.query) ?? { items: [], hasMore: false };
+          } catch (err) {
+            eventBus.emit('error', { errorKind: 'HISTORY_QUERY_ERROR', message: describeError(err) });
+            result = { items: [], hasMore: false };
+          }
+          const reply: DashboardServerMessage = {
+            type: 'historyResult',
+            requestId: message.requestId,
+            items: result.items,
+            hasMore: result.hasMore,
+          };
+          socket.send(JSON.stringify(reply));
         } else handleRulesMessage(message);
       } catch {
         // Ignore malformed frames rather than crashing the dashboard.

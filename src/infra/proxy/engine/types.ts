@@ -1,4 +1,5 @@
 import type http from 'node:http';
+import type { ExchangeTiming } from '../../../domain/exchange/types';
 
 /**
  * Type surface for `ProxyEngine` (issue #42's replacement for
@@ -61,6 +62,24 @@ export interface IContext {
         agent: http.Agent;
       };
   responseContentPotentiallyModified: boolean;
+  /**
+   * DNS/TCP/TLS/TTFB timing for this exchange's proxy→upstream connection
+   * (issue #140), filled in by `ProxyEngine.makeProxyToServerRequest` as
+   * each phase completes. Undefined until (and unless) an upstream request
+   * is actually dispatched — never set for a `mock`/blocked/request-phase-
+   * aborted exchange. `transferMs` is left for the consumer to fill in
+   * (see `responseHeadersAt`) once the body — possibly Throttled/rewritten
+   * — actually finishes.
+   */
+  timing?: ExchangeTiming;
+  /**
+   * Absolute timestamp (ms since epoch) the response headers arrived, i.e.
+   * right after `timing.ttfbMs` elapsed. Kept separate from `timing` (whose
+   * fields are all durations, matching `CapturedExchange.timing`) so a
+   * consumer can derive `timing.transferMs` as `finishedAt - responseHeadersAt`
+   * once the response body finishes.
+   */
+  responseHeadersAt?: number;
 
   onRequestData(fn: OnRequestDataParams): IContext;
   onRequestEnd(fn: OnRequestParams): IContext;

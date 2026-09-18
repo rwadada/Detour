@@ -2,6 +2,29 @@ import type { IncomingHttpHeaders } from 'node:http';
 import type { UnreachableRuleWarning } from '../rules/unreachableRules';
 
 /**
+ * Per-phase timing breakdown for the proxy→upstream leg of a
+ * `CapturedExchange` (issue #140) — how long DNS resolution, the TCP
+ * handshake, the TLS handshake, waiting for the first response byte, and
+ * downloading the response body each took. Every field is independently
+ * optional: an exchange that never reached upstream (a `mock`/`breakpoint`-
+ * aborted/`block-hosts` response) has no `timing` at all, an HTTP (not
+ * HTTPS) request has no `tlsMs`, and a host given as a bare IP literal has
+ * no `dnsMs` (no lookup was performed).
+ */
+export interface ExchangeTiming {
+  /** DNS lookup resolving the upstream host to an IP. */
+  dnsMs?: number;
+  /** TCP handshake connecting to the upstream host, from the end of DNS lookup (or request dispatch, if no lookup was needed). */
+  tcpMs?: number;
+  /** TLS handshake, from the TCP connection to the secure session being established. Only set for an HTTPS upstream request. */
+  tlsMs?: number;
+  /** Time to first byte: from the connection being ready to the response headers arriving — covers request upload, upstream processing, and the first response byte. */
+  ttfbMs?: number;
+  /** Response body transfer: from the response headers arriving to the body finishing (including any Throttle delay applied to it). */
+  transferMs?: number;
+}
+
+/**
  * A single HTTP(S) request/response pair captured by the proxy.
  * This is the shape shared over the in-memory event bus, and later
  * (via the web dashboard) over the wire to consumers.
@@ -45,6 +68,8 @@ export interface CapturedExchange {
   responseBodyTruncated?: boolean;
   finishedAt?: number;
   durationMs?: number;
+  /** DNS/TCP/TLS/TTFB/transfer breakdown of `durationMs` (issue #140) — see `ExchangeTiming`. Undefined for an exchange that never reached upstream. */
+  timing?: ExchangeTiming;
 
   error?: string;
   /** Name of the rules.json rule that handled this exchange, if any. */

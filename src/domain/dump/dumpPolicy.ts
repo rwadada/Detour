@@ -1,5 +1,10 @@
 import type { IncomingHttpHeaders } from 'node:http';
-import type { CapturedExchange, CapturedWebSocketConnection, WebSocketFrameRecord } from '../exchange/types';
+import type {
+  CapturedExchange,
+  CapturedWebSocketConnection,
+  ExchangeTiming,
+  WebSocketFrameRecord,
+} from '../exchange/types';
 
 /**
  * How much detail `--dump` prints for each exchange (issue #15): `summary`
@@ -90,6 +95,21 @@ function formatStatusLine(status: number, statusMessage: string | undefined, dur
   return `${status}${message}${duration}`;
 }
 
+/** Renders the DNS/TCP/TLS/TTFB/transfer breakdown (issue #140), one phase per line, omitting any phase `timing` didn't measure (e.g. `tlsMs` for a plain HTTP request). `undefined` (an exchange that never reached upstream) renders nothing at all. */
+function formatTiming(timing: ExchangeTiming | undefined): string | undefined {
+  if (!timing) return undefined;
+  const phases: Array<[string, number | undefined]> = [
+    ['DNS', timing.dnsMs],
+    ['TCP', timing.tcpMs],
+    ['TLS', timing.tlsMs],
+    ['TTFB', timing.ttfbMs],
+    ['Transfer', timing.transferMs],
+  ];
+  const lines = phases.filter(([, ms]) => ms !== undefined).map(([label, ms]) => `  ${label}: ${ms}ms`);
+  if (lines.length === 0) return undefined;
+  return `Timing:\n${lines.join('\n')}`;
+}
+
 const SEPARATOR = '='.repeat(60);
 
 /**
@@ -117,6 +137,8 @@ export function formatExchangeDump(exchange: Readonly<CapturedExchange>): string
       'Response body:',
       formatBody(exchange.responseBody, exchange.responseBodyTruncated),
     );
+    const timing = formatTiming(exchange.timing);
+    if (timing) lines.push(timing);
   }
 
   if (exchange.error) {

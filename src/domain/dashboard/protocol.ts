@@ -14,6 +14,46 @@ import type { RulesFile } from '../rules/types';
 import type { UnreachableRuleWarning } from '../rules/unreachableRules';
 
 /**
+ * Filters for a `queryHistory` request (issue #144's optional SQLite
+ * persistence, beyond the live in-memory backlog's item-count/body-size
+ * caps) — every field is optional; omitted means "no restriction" on that
+ * field. Shared as-is between the wire message and `HistoryStore.query`'s
+ * own parameter (see `infra/persistence/historyStore.ts`), so there's one
+ * definition of what a history query can filter on rather than two that
+ * could drift apart.
+ */
+export interface HistoryFilters {
+  /** Exact (case-sensitive) HTTP method match, e.g. `'GET'`. */
+  method?: string;
+  /** Exact (case-sensitive) host match, e.g. `'api.example.com'`. */
+  host?: string;
+  /** Case-insensitive substring match against the exchange's full URL. */
+  urlContains?: string;
+  statusMin?: number;
+  statusMax?: number;
+}
+
+/**
+ * One page of a `queryHistory` request. `before`/`beforeId` together are the
+ * oldest item's `startedAt`/`id` from the previous page — omit both for the
+ * first (most recent) page, pass both to page further back in time.
+ * `startedAt` alone (ms resolution) isn't a stable cursor on its own: two
+ * exchanges captured in the same millisecond are common under load, and
+ * paging on `started_at < before` alone can permanently skip whichever of
+ * them didn't make it into the previous page. `id` (unique per exchange)
+ * breaks the tie deterministically — see `historyStore.ts`'s
+ * `buildWhereClause`. `limit` bounds how many rows come back;
+ * `HistoryQueryResult.hasMore` says whether an older page than this one
+ * still exists.
+ */
+export interface HistoryQuery extends HistoryFilters {
+  before?: number;
+  /** Paired with `before` — see this interface's own doc comment. Only meaningful when `before` is also set. */
+  beforeId?: string;
+  limit: number;
+}
+
+/**
  * The persistent `detour start` defaults a dashboard client can view/edit —
  * mirrors `~/.detour/config.json` (see `src/infra/fs/userConfigStore.ts` and
  * `detour config`). Unlike `InterceptState`/`FocusState`/etc. below, this
@@ -183,7 +223,24 @@ export type DashboardServerMessage =
    * connecting — unlike `rules`, there's no live-reload: a `.proto` schema
    * is fixed for the process's whole lifetime.
    */
-  | { type: 'protoSchema'; schema: Record<string, unknown> | null };
+  | { type: 'protoSchema'; schema: Record<string, unknown> | null }
+  /**
+   * Sent once, right after connecting (issue #144): whether this session
+   * was started with `--persist`, i.e. whether `queryHistory` will ever
+   * return anything. Lets the dashboard hide the History feature entirely
+   * rather than offering a control that always comes back empty.
+   */
+  | { type: 'historyStatus'; enabled: boolean }
+  /**
+   * Answers a `queryHistory` request (issue #144) with one page of
+   * persisted exchanges, newest-first. `requestId` echoes the request so a
+   * client that fired a new query before an earlier one's answer arrived
+   * can tell which is which and discard the stale one. Sent directly to
+   * the requesting socket only — unlike every other message here, this
+   * isn't broadcast to every connected tab, since it answers one tab's own
+   * query rather than reflecting shared server state.
+   */
+  | { type: 'historyResult'; requestId: string; items: CapturedExchange[]; hasMore: boolean };
 
 /**
  * Messages sent from a connected browser client to the dashboard server over
@@ -251,4 +308,13 @@ export type DashboardClientMessage =
    * persisting it (never stored or logged in plaintext) and broadcasts the
    * updated `userConfig` (`dashboardPasswordSet`) to every connected tab.
    */
-  | { type: 'setDashboardPassword'; password: string | null };
+  | { type: 'setDashboardPassword'; password: string | null }
+  /**
+   * Requests one page of persisted exchange history (issue #144), answered
+   * by a `historyResult` carrying the same `requestId`. Answered with an
+   * empty, `hasMore: false` result (never dropped) when this session
+   * wasn't started with `--persist` — a client is expected to check
+   * `historyStatus` before ever sending this, but this keeps a stray query
+   * from hanging forever waiting on a reply that would otherwise never come.
+   */
+  | { type: 'queryHistory'; requestId: string; query: HistoryQuery };

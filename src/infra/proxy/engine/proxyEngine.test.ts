@@ -1,6 +1,9 @@
+import { EventEmitter } from 'node:events';
 import type { IncomingMessage } from 'node:http';
+import type { Socket } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
+import type { ExchangeTiming } from '../../../domain/exchange/types';
 import { ProxyEngine } from './proxyEngine';
 
 /** Builds just enough of an `IncomingMessage` for `parseHostAndPort` — it only ever reads `.url`/`.headers`. */
@@ -123,5 +126,84 @@ describe('ProxyEngine WebSocket close/error cross-signaling', () => {
     const server = fakeSocket(WebSocket.CLOSED);
     engineInternals().wsError({ clientWs: client, serverWs: server }, new Error('boom'));
     expect(client.closeCalls).toHaveLength(1);
+  });
+});
+
+/** Minimal `net.Socket`-shaped double: an `EventEmitter` with a `connecting` flag — exactly what `trackSocketTiming` reads. */
+function fakeConnectingSocket(connecting: boolean): Socket {
+  return Object.assign(new EventEmitter(), { connecting }) as unknown as Socket;
+}
+
+/** Exposes `ProxyEngine`'s private DNS/TCP/TLS timing tracker (issue #140) for direct testing, without needing a real socket connection. */
+function timingInternals() {
+  return new ProxyEngine() as unknown as {
+    trackSocketTiming(
+      socket: Socket,
+      isSSL: boolean,
+      timing: ExchangeTiming,
+      dispatchedAt: number,
+      onReady: (readyAt: number) => void,
+    ): void;
+  };
+}
+
+describe('ProxyEngine.trackSocketTiming', () => {
+  it('measures dns/tcp for a plain HTTP socket and reports ready on connect (no TLS phase)', () => {
+    const socket = fakeConnectingSocket(true);
+    const timing: ExchangeTiming = {};
+    let readyAt: number | undefined;
+    timingInternals().trackSocketTiming(socket, false, timing, Date.now(), (at) => {
+      readyAt = at;
+    });
+
+    socket.emit('lookup');
+    socket.emit('connect');
+
+    expect(timing.dnsMs).toBeDefined();
+    expect(timing.tcpMs).toBeDefined();
+    expect(timing.tlsMs).toBeUndefined();
+    expect(readyAt).toBeDefined();
+  });
+
+  it('waits for secureConnect (not connect) before reporting ready on an HTTPS socket, and measures the TLS phase', () => {
+    const socket = fakeConnectingSocket(true);
+    const timing: ExchangeTiming = {};
+    let readyAt: number | undefined;
+    timingInternals().trackSocketTiming(socket, true, timing, Date.now(), (at) => {
+      readyAt = at;
+    });
+
+    socket.emit('lookup');
+    socket.emit('connect');
+    expect(readyAt).toBeUndefined();
+
+    socket.emit('secureConnect');
+    expect(timing.tlsMs).toBeDefined();
+    expect(readyAt).toBeDefined();
+  });
+
+  it('omits dnsMs when no lookup event fires (an IP-literal host)', () => {
+    const socket = fakeConnectingSocket(true);
+    const timing: ExchangeTiming = {};
+    timingInternals().trackSocketTiming(socket, false, timing, Date.now(), () => undefined);
+
+    socket.emit('connect');
+
+    expect(timing.dnsMs).toBeUndefined();
+    expect(timing.tcpMs).toBeDefined();
+  });
+
+  it('skips straight to ready with no phases measured for a socket that is not connecting (a reused keep-alive socket)', () => {
+    const socket = fakeConnectingSocket(false);
+    const timing: ExchangeTiming = {};
+    let readyAt: number | undefined;
+    timingInternals().trackSocketTiming(socket, true, timing, Date.now(), (at) => {
+      readyAt = at;
+    });
+
+    expect(readyAt).toBeDefined();
+    expect(timing.dnsMs).toBeUndefined();
+    expect(timing.tcpMs).toBeUndefined();
+    expect(timing.tlsMs).toBeUndefined();
   });
 });
