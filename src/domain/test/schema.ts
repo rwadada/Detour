@@ -2,7 +2,7 @@ import Ajv, { type ErrorObject } from 'ajv';
 import { MATCH_JSON_SCHEMA } from '../rules/matchSchema';
 import type { TestAssertion, TestFile } from './types';
 
-/** JSON Schema for a `detour test` assertions file. Exported mainly for `detour test validate`. */
+/** JSON Schema for a `detour test` assertions file. Exported for `validateTestData`/`loadTestFile` below, and for any future editor/tooling support (there's no `detour test validate` subcommand — `detour test` itself validates the assertions file eagerly before running). */
 export const TEST_JSON_SCHEMA = {
   title: 'Detour test assertions',
   type: 'object',
