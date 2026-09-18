@@ -3792,6 +3792,30 @@ describe('detour record / detour serve (issue #149, CLI end-to-end)', () => {
     }
   });
 
+  it('detour serve handles a "__proto__" fixture header key as an ordinary header name instead of a prototype write (issue #149 review)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-serve-e2e-'));
+    let serve: { port: number; kill: () => Promise<void> } | undefined;
+    try {
+      // Written as raw JSON text, not built from a JS object literal — a
+      // `{ __proto__: ... }` literal (or `obj['__proto__'] = ...` on a
+      // normal object) sets the *actual* prototype instead of creating an
+      // own property, so it wouldn't reproduce what `JSON.parse` produces
+      // when loading this fixture back (a genuine own "__proto__" key).
+      const fixtureJson =
+        '{"method":"GET","path":"/x","status":200,"responseHeaders":{"content-type":"application/json","__proto__":["polluted"]},"responseBody":"{\\"ok\\":true}"}';
+      fs.writeFileSync(path.join(tmpDir, '00001-get-x.json'), fixtureJson);
+
+      serve = await startDetourServe(tmpDir);
+      const result = await directGet(serve.port, '/x');
+
+      expect(result.status).toBe(200);
+      expect(result.body).toBe('{"ok":true}');
+    } finally {
+      await serve?.kill();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('round-trips: records real traffic with `detour record`, then replays it with `detour serve` — no proxy on the replay side', async () => {
     const upstream = await startEchoServer();
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-record-serve-e2e-'));

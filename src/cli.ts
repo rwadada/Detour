@@ -1358,7 +1358,11 @@ async function runServeCommand(dir: string, options: ServeOptions): Promise<void
     // record`) could reintroduce a hop-by-hop header or a stale
     // content-length that would otherwise break the client or produce an
     // invalid response.
-    const responseHeaders: Record<string, string | string[]> = {};
+    // A null-prototype object, not `{}` — `fixture.responseHeaders` keys
+    // come straight from a JSON file that could be hand-edited (or crafted),
+    // and a `{}`'s inherited prototype means a key like `__proto__` would
+    // pollute it instead of just being an inert, ordinary header name.
+    const responseHeaders: Record<string, string | string[]> = Object.create(null) as Record<string, string | string[]>;
     for (const [key, value] of Object.entries(fixture.responseHeaders)) {
       if (!DROPPED_RESPONSE_HEADERS.has(key.toLowerCase())) responseHeaders[key] = value;
     }
@@ -1376,7 +1380,8 @@ async function runServeCommand(dir: string, options: ServeOptions): Promise<void
   });
 
   await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
+    const onStartupError = (err: Error): void => reject(err);
+    server.once('error', onStartupError);
     // The literal `'127.0.0.1'`, not the all-interfaces default a bare
     // `listen(port)` binds to (matching the rest of this codebase's
     // secure-by-default posture — the proxy/dashboard only bind everywhere
@@ -1386,7 +1391,18 @@ async function runServeCommand(dir: string, options: ServeOptions): Promise<void
     // file's own e2e tests included) — the numeric address sidesteps that
     // resolution entirely, and a test's own HTTP client base URL commonly
     // hardcodes `127.0.0.1` for exactly this kind of ambiguity.
-    server.listen(port, '127.0.0.1', () => resolve());
+    server.listen(port, '127.0.0.1', () => {
+      // Otherwise this startup-only listener stays attached forever and a
+      // later runtime error (e.g. an unexpected socket failure) would call
+      // `reject` on an already-settled promise — a silent no-op — instead
+      // of being visible anywhere.
+      server.removeListener('error', onStartupError);
+      resolve();
+    });
+  });
+
+  server.on('error', (err) => {
+    console.error(`✖ detour serve error: ${describeError(err)}`);
   });
 
   const address = server.address();
