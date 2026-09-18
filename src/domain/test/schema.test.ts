@@ -70,4 +70,20 @@ describe('validateTestData', () => {
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.includes('customPatterns'))).toBe(true);
   });
+
+  it('rejects noPiiLeak with neither patterns nor customPatterns (can never detect anything)', () => {
+    const result = validateTestData({
+      assertions: [{ type: 'noPiiLeak', name: 'a', match: { url: 'https://x/*' } }],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('must set at least one of patterns/customPatterns'))).toBe(true);
+  });
+
+  it('rejects urlRegexFlags set alongside url instead of urlRegex (flags would be silently ignored)', () => {
+    const result = validateTestData({
+      assertions: [{ type: 'latencyP95', name: 'a', match: { url: 'https://x/*', urlRegexFlags: 'i' }, maxMs: 100 }],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('urlRegexFlags is set without match.urlRegex'))).toBe(true);
+  });
 });

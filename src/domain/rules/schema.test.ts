@@ -296,6 +296,14 @@ describe('validateRulesData', () => {
     expect(result.valid).toBe(true);
   });
 
+  it('rejects urlRegexFlags set alongside url instead of urlRegex (flags would be silently ignored)', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ match: { url: 'https://api.example.com/*', urlRegexFlags: 'i' } })],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('urlRegexFlags is set without match.urlRegex'))).toBe(true);
+  });
+
   it('collects every validation error rather than stopping at the first', () => {
     const result = validateRulesData({
       rules: [baseRule({ name: 'dup' }), baseRule({ name: 'dup', action: { type: 'bogus' } })],

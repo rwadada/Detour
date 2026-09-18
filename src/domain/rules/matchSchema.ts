@@ -26,3 +26,21 @@ export const MATCH_JSON_SCHEMA = {
     urlRegexFlags: { type: 'string', pattern: '^[dgimsuvy]*$' },
   },
 } as const;
+
+/**
+ * Semantic check a schema alone can't express: both the rule matcher
+ * (domain/rules/matcher.ts) and the `detour test` matcher
+ * (domain/test/evaluate.ts) only ever pass `urlRegexFlags` to `new RegExp()`
+ * alongside `urlRegex` — so `{ url: "...", urlRegexFlags: "i" }` schema-
+ * validates fine but silently ignores the flags instead of failing, which
+ * reads as a typo (meant to write `urlRegex`) rather than intentional.
+ * Shared by both `domain/rules/schema.ts` and `domain/test/schema.ts`'s own
+ * `validateSemantics`, which each prefix the returned message with their
+ * own `rules[n] (label)`/`assertions[n] (label)` location.
+ */
+export function validateMatchSemantics(match: { urlRegex?: string; urlRegexFlags?: string } | undefined): string[] {
+  if (match?.urlRegexFlags !== undefined && match.urlRegex === undefined) {
+    return ['match.urlRegexFlags is set without match.urlRegex — flags only apply to a regex match'];
+  }
+  return [];
+}

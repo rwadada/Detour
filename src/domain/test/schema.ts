@@ -1,5 +1,5 @@
 import Ajv, { type ErrorObject } from 'ajv';
-import { MATCH_JSON_SCHEMA } from '../rules/matchSchema';
+import { MATCH_JSON_SCHEMA, validateMatchSemantics } from '../rules/matchSchema';
 import type { TestAssertion, TestFile } from './types';
 
 /** JSON Schema for a `detour test` assertions file. Exported for `validateTestData`/`loadTestFile` below, and for any future editor/tooling support (there's no `detour test validate` subcommand — `detour test` itself validates the assertions file eagerly before running). */
@@ -86,6 +86,9 @@ function validateSemantics(data: TestFile): string[] {
         errors.push(`assertions[${index}] (${label}): invalid match.urlRegex/urlRegexFlags: ${reason}`);
       }
     }
+    for (const message of validateMatchSemantics(assertion.match)) {
+      errors.push(`assertions[${index}] (${label}): ${message}`);
+    }
     if (assertion.type === 'noPiiLeak') {
       for (const [patternIndex, source] of (assertion.customPatterns ?? []).entries()) {
         try {
@@ -94,6 +97,15 @@ function validateSemantics(data: TestFile): string[] {
           const reason = err instanceof Error ? err.message : String(err);
           errors.push(`assertions[${index}] (${label}): invalid customPatterns[${patternIndex}]: ${reason}`);
         }
+      }
+      // Neither field set means this assertion can never actually detect
+      // anything (see evaluateNoPiiLeak's own truncated-body check for the
+      // one thing it would still catch) — almost certainly a
+      // misconfiguration rather than an intentional "always pass".
+      if (assertion.patterns === undefined && assertion.customPatterns === undefined) {
+        errors.push(
+          `assertions[${index}] (${label}): noPiiLeak must set at least one of patterns/customPatterns — with neither, it can never detect anything`,
+        );
       }
     }
   }

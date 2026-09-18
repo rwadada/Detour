@@ -1,5 +1,5 @@
 import Ajv, { type ErrorObject } from 'ajv';
-import { MATCH_JSON_SCHEMA } from './matchSchema';
+import { MATCH_JSON_SCHEMA, validateMatchSemantics } from './matchSchema';
 import type { BodyReplace, Rule, RulesFile } from './types';
 
 const headerRewriteSchema = {
@@ -286,6 +286,9 @@ function validateSemantics(data: RulesFile): string[] {
         const reason = err instanceof Error ? err.message : String(err);
         errors.push(`rules[${index}] (${label}): invalid urlRegex/urlRegexFlags: ${reason}`);
       }
+    }
+    for (const message of validateMatchSemantics(rule.match)) {
+      errors.push(`rules[${index}] (${label}): ${message}`);
     }
     if (rule.action?.type === 'rewrite') {
       const pathSet = rule.action.request?.path?.set;
