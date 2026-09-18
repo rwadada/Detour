@@ -100,4 +100,14 @@ describe('buildFixtureFromExchange', () => {
     const { fixture } = buildFixtureFromExchange(exchange({ statusCode: undefined }), 1);
     expect(fixture.status).toBe(200);
   });
+
+  it('still produces a "/"-prefixed path for a relative exchange URL that new URL() alone would reject', () => {
+    const { fixture } = buildFixtureFromExchange(exchange({ url: 'orders/1?expand=items' }), 1);
+    expect(fixture.path).toBe('/orders/1?expand=items');
+  });
+
+  it('falls back to a "/"-prefixed raw path for a URL unparseable even against a throwaway base', () => {
+    const { fixture } = buildFixtureFromExchange(exchange({ url: 'https://[::1' }), 1);
+    expect(fixture.path.startsWith('/')).toBe(true);
+  });
 });

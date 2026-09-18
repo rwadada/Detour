@@ -35,10 +35,23 @@ function splitUrl(url: string): { pathname: string; path: string } {
     return { pathname: parsed.pathname, path: `${parsed.pathname}${parsed.search}` };
   } catch {
     // A malformed/relative `exchange.url` shouldn't normally happen (see
-    // its own doc comment: "Fully-qualified URL") — falling back to the
-    // raw string keeps this a total function instead of throwing over a
-    // single odd exchange in the middle of a recording run.
-    return { pathname: url, path: url };
+    // its own doc comment: "Fully-qualified URL") — but if it does, a bare
+    // `new URL()` fails on a relative string like "orders/1" too. Retrying
+    // against a throwaway base still recovers the pathname/query in that
+    // case; only a truly unparseable string falls through to the raw-string
+    // fallback below.
+    try {
+      const parsed = new URL(url, 'https://(unparseable-exchange-url)');
+      return { pathname: parsed.pathname, path: `${parsed.pathname}${parsed.search}` };
+    } catch {
+      // Keeps this a total function instead of throwing over a single odd
+      // exchange in the middle of a recording run — and still satisfies
+      // `loadFixtureFiles`'s "path must start with /" invariant, so this
+      // fixture can at least be loaded and (fail to) match later instead of
+      // being permanently unloadable.
+      const path = url.startsWith('/') ? url : `/${url}`;
+      return { pathname: path, path };
+    }
   }
 }
 

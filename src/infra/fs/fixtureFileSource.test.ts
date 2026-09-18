@@ -137,6 +137,31 @@ describe('writeFixtureFile / loadFixtureFiles', () => {
     expect(() => loadFixtureFiles(dir)).toThrow(/"status" must be an integer HTTP status code \(100-599\)/);
   });
 
+  it('accepts a valid base64 responseBody when responseBodyEncoding is base64', () => {
+    const dir = freshDir();
+    const valid: Fixture = {
+      ...sample,
+      responseBody: Buffer.from([0xff, 0x00]).toString('base64'),
+      responseBodyEncoding: 'base64',
+    };
+    writeFixtureFile(dir, '00001-get-x.json', valid);
+    expect(loadFixtureFiles(dir)).toEqual([valid]);
+  });
+
+  it.each(['not-base64!!', 'abc', 'ab=c'])(
+    'throws a clear error for a responseBody that is not valid base64 despite responseBodyEncoding (%s)',
+    (responseBody) => {
+      const dir = freshDir();
+      fs.writeFileSync(
+        path.join(dir, '00001-bad.json'),
+        JSON.stringify({ ...sample, responseBody, responseBodyEncoding: 'base64' }),
+      );
+      expect(() => loadFixtureFiles(dir)).toThrow(
+        /"responseBody" is not valid base64 despite "responseBodyEncoding" being "base64"/,
+      );
+    },
+  );
+
   it('collects every validation error rather than stopping at the first', () => {
     const dir = freshDir();
     fs.writeFileSync(path.join(dir, '00001-bad.json'), JSON.stringify({ method: 'GET' }));

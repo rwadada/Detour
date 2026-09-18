@@ -44,6 +44,15 @@ function isHeaderValue(value: unknown): value is string | string[] {
   return typeof value === 'string' || (Array.isArray(value) && value.every((item) => typeof item === 'string'));
 }
 
+// `Buffer.from(str, 'base64')` is permissive — it silently ignores invalid
+// characters and padding instead of throwing — so a hand-edited or garbled
+// `responseBody` would otherwise decode to the wrong bytes instead of
+// failing fast here as this loader's whole point is to do.
+const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
+function isValidBase64(value: string): boolean {
+  return value.length % 4 === 0 && BASE64_PATTERN.test(value);
+}
+
 /**
  * Checked thoroughly enough that a corrupted or hand-edited fixture fails
  * here, naming exactly what's wrong, rather than surfacing later as e.g.
@@ -99,6 +108,13 @@ function assertFixtureShape(data: unknown, filePath: string): Fixture {
   }
   if (candidate.responseBodyEncoding !== undefined && candidate.responseBody === undefined) {
     errors.push('"responseBodyEncoding" must not be set without a "responseBody"');
+  }
+  if (
+    candidate.responseBodyEncoding === 'base64' &&
+    typeof candidate.responseBody === 'string' &&
+    !isValidBase64(candidate.responseBody)
+  ) {
+    errors.push('"responseBody" is not valid base64 despite "responseBodyEncoding" being "base64"');
   }
 
   if (errors.length > 0) {
