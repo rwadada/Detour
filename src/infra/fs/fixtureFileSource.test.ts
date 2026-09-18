@@ -38,6 +38,15 @@ describe('writeFixtureFile / loadFixtureFiles', () => {
     expect(fs.existsSync(dir)).toBe(true);
   });
 
+  it('recreates the directory if it was removed after an earlier write already memoized it as ensured', () => {
+    const dir = path.join(freshDir(), 'fixtures');
+    writeFixtureFile(dir, '00001-get-x.json', sample);
+    fs.rmSync(dir, { recursive: true, force: true });
+    writeFixtureFile(dir, '00002-get-y.json', sample);
+    expect(fs.existsSync(dir)).toBe(true);
+    expect(loadFixtureFiles(dir)).toEqual([sample]);
+  });
+
   it('loads fixtures sorted by filename (recording order via the zero-padded sequence prefix)', () => {
     const dir = freshDir();
     writeFixtureFile(dir, '00002-get-poll.json', { ...sample, responseBody: '"second"' });

@@ -48,6 +48,24 @@ describe('buildFixtureFromExchange', () => {
     expect(fixture.responseHeaders).toEqual({ 'content-type': 'application/json' });
   });
 
+  it('drops proxy- and connection-specific headers the proxy engine itself already treats as unsafe to forward', () => {
+    const { fixture } = buildFixtureFromExchange(
+      exchange({
+        responseHeaders: {
+          'content-type': 'application/json',
+          'proxy-connection': 'keep-alive',
+          upgrade: 'websocket',
+          'proxy-authenticate': 'Basic',
+          'proxy-authorization': 'Basic abc',
+          te: 'trailers',
+          trailer: 'X-Checksum',
+        },
+      }),
+      1,
+    );
+    expect(fixture.responseHeaders).toEqual({ 'content-type': 'application/json' });
+  });
+
   it('preserves a multi-value header (e.g. more than one Set-Cookie) as an array instead of comma-joining it', () => {
     const { fixture } = buildFixtureFromExchange(exchange({ responseHeaders: { 'set-cookie': ['a=1', 'b=2'] } }), 1);
     expect(fixture.responseHeaders).toEqual({ 'set-cookie': ['a=1', 'b=2'] });

@@ -10,7 +10,24 @@ import type { Fixture } from './types';
  * fixture (or one written by something other than `detour record`) could
  * reintroduce one even though recording already drops it here.
  */
-export const DROPPED_RESPONSE_HEADERS = new Set(['connection', 'transfer-encoding', 'content-length', 'keep-alive']);
+export const DROPPED_RESPONSE_HEADERS = new Set([
+  'connection',
+  'transfer-encoding',
+  'content-length',
+  'keep-alive',
+  // The rest of RFC 7230's hop-by-hop set, plus `proxy-connection` — a
+  // non-standard but common header some servers/proxies still send. The
+  // proxy engine itself already strips `proxy-connection`/`upgrade` from a
+  // captured response for the same reason (see `proxyEngine.ts`): none of
+  // these describe the connection `detour serve` itself makes to a client,
+  // so re-emitting a recorded value here would be meaningless at best.
+  'proxy-connection',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'upgrade',
+]);
 
 function splitUrl(url: string): { pathname: string; path: string } {
   try {

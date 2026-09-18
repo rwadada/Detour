@@ -4,13 +4,36 @@ import type { Fixture } from '../../domain/record/types';
 
 const ensuredDirs = new Set<string>();
 
-/** Writes one fixture (see `buildFixtureFromExchange`) as a JSON file under `dir`, creating the directory if it doesn't exist yet (only once per directory per process — `detour record` calls this once per captured exchange, and `mkdirSync` on every one of those would be a needless syscall on the hot path once the directory is already there). */
+function isEnoent(err: unknown): boolean {
+  return err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+/**
+ * Writes one fixture (see `buildFixtureFromExchange`) as a JSON file under
+ * `dir`, creating the directory if it doesn't exist yet. Memoizes which
+ * directories it has already created — `detour record` calls this once per
+ * captured exchange, and `mkdirSync` on every one of those would be a
+ * needless syscall on the hot path once the directory is already there —
+ * but if the write still fails with `ENOENT` (the directory was removed
+ * after being memoized, e.g. deleted mid-run by something else), forgets
+ * that memo and retries once, actually recreating the directory, so the
+ * function still keeps its contract of creating `dir` when it's missing.
+ */
 export function writeFixtureFile(dir: string, filename: string, fixture: Fixture): void {
+  const filePath = path.join(dir, filename);
+  const content = `${JSON.stringify(fixture, null, 2)}\n`;
   if (!ensuredDirs.has(dir)) {
     fs.mkdirSync(dir, { recursive: true });
     ensuredDirs.add(dir);
   }
-  fs.writeFileSync(path.join(dir, filename), `${JSON.stringify(fixture, null, 2)}\n`, 'utf8');
+  try {
+    fs.writeFileSync(filePath, content, 'utf8');
+  } catch (err) {
+    if (!isEnoent(err)) throw err;
+    ensuredDirs.delete(dir);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(filePath, content, 'utf8');
+  }
 }
 
 function describeError(err: unknown): string {
