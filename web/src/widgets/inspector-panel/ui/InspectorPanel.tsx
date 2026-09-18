@@ -117,6 +117,14 @@ export function InspectorPanel() {
                 rule: {exchange.ruleName}
               </span>
             )}
+            {exchange.clientProcess && (
+              <span
+                className="rounded bg-[var(--row-hover)] px-1.5 py-0.5 text-xs text-[var(--muted)]"
+                title={`Sent by the local process ${exchange.clientProcess.name} (pid ${exchange.clientProcess.pid}) — issue #147, macOS-only`}
+              >
+                client: {exchange.clientProcess.name}
+              </span>
+            )}
           </div>
           <p className="mt-1 break-all font-mono-ui text-xs text-[var(--muted)]">{exchange.url}</p>
           <p className="mt-1 text-xs text-[var(--muted)]">

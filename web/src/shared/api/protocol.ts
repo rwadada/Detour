@@ -17,6 +17,12 @@ export interface ExchangeTiming {
   transferMs?: number;
 }
 
+/** Mirrors `src/domain/exchange/types.ts`'s `ClientProcessInfo` (issue #147). */
+export interface ClientProcessInfo {
+  pid: number;
+  name: string;
+}
+
 export interface CapturedExchange {
   id: string;
   method: string;
@@ -40,6 +46,8 @@ export interface CapturedExchange {
   finishedAt?: number;
   durationMs?: number;
   timing?: ExchangeTiming;
+  /** The local process that sent this request, when known (issue #147, macOS-only) — see `src/domain/exchange/types.ts`'s `CapturedExchange.clientProcess`. */
+  clientProcess?: ClientProcessInfo;
 
   error?: string;
   ruleName?: string;

@@ -133,6 +133,16 @@ describe('formatExchangeDump', () => {
     const dump = formatExchangeDump(baseExchange({ statusCode: 403 }));
     expect(dump).not.toContain('Timing:');
   });
+
+  it('renders the local client process (issue #147) right after the request line, when known', () => {
+    const dump = formatExchangeDump(baseExchange({ clientProcess: { pid: 4321, name: 'Safari' } }));
+    expect(dump).toContain('Client: Safari (pid 4321)');
+  });
+
+  it('omits the Client line entirely when the local client process is unknown', () => {
+    const dump = formatExchangeDump(baseExchange());
+    expect(dump).not.toContain('Client:');
+  });
 });
 
 function baseWsConnection(overrides: Partial<CapturedWebSocketConnection> = {}): CapturedWebSocketConnection {

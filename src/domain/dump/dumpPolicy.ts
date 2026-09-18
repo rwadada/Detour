@@ -119,14 +119,16 @@ const SEPARATOR = '='.repeat(60);
  * levels, so the two stay identical apart from where the text ends up.
  */
 export function formatExchangeDump(exchange: Readonly<CapturedExchange>): string {
-  const lines: string[] = [
-    SEPARATOR,
-    `${exchange.method} ${exchange.url}`,
+  const lines: string[] = [SEPARATOR, `${exchange.method} ${exchange.url}`];
+  if (exchange.clientProcess) {
+    lines.push(`Client: ${exchange.clientProcess.name} (pid ${exchange.clientProcess.pid})`);
+  }
+  lines.push(
     'Request headers:',
     formatHeaders(exchange.requestHeaders),
     'Request body:',
     formatBody(exchange.requestBody, exchange.requestBodyTruncated),
-  ];
+  );
 
   if (exchange.statusCode !== undefined) {
     lines.push(

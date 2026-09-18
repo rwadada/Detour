@@ -31,6 +31,7 @@ import { runBeforeRequest, runBeforeResponse } from '../../usecase/runScriptHook
 import { resolveCertDir } from '../certStore';
 import type { DetourEventBus } from '../eventBus';
 import { assertPortAvailable } from '../portCheck';
+import { nodeCommandRunner } from '../process/nodeCommandRunner';
 import {
   applyRequestRewrite,
   applyResponseHeaderRewrite,
@@ -42,6 +43,7 @@ import {
   sendMockSimulate,
   type MockResponse,
 } from './actionsRuntime';
+import { isClientProcessLookupSupported, lookupClientProcess } from './clientProcessLookup';
 import { ProxyEngine } from './engine/proxyEngine';
 import type { ErrorCallback, IContext, IWebSocketContext } from './engine/types';
 import { createThrottleTransform } from './throttleTransform';
@@ -175,7 +177,7 @@ function buildBaseExchange(
   ctx: IContext,
   info: { url: string; method: string; host: string; ruleName: string | undefined },
 ): CapturedExchange {
-  return {
+  const exchange: CapturedExchange = {
     id: ctx.uuid,
     method: info.method,
     url: info.url,
@@ -192,6 +194,35 @@ function buildBaseExchange(
     startedAt: Date.now(),
     ruleName: info.ruleName,
   };
+  attachClientProcess(exchange, ctx);
+  return exchange;
+}
+
+/**
+ * Kicks off issue #147's best-effort local-client-process lookup and
+ * patches `exchange.clientProcess` once (if) it resolves — fire-and-forget,
+ * never delaying or failing the request itself. Mutates `exchange` in place
+ * rather than returning a value, since by the time this settles the
+ * `request`/`response` events built from the very same object may already
+ * be queued or sent; a later `eventBus.emit` picks up the mutation as long
+ * as it hasn't fired yet, and even a `response` that already went out
+ * without it is a client identified late, not one identified wrong.
+ */
+function attachClientProcess(exchange: CapturedExchange, ctx: IContext): void {
+  if (!isClientProcessLookupSupported()) return;
+  const { remoteAddress, remotePort } = ctx.clientToProxyRequest.socket;
+  if (remoteAddress === undefined || remotePort === undefined) return;
+  lookupClientProcess(nodeCommandRunner, remoteAddress, remotePort)
+    .then((clientProcess) => {
+      if (clientProcess) exchange.clientProcess = clientProcess;
+    })
+    .catch(() => {
+      // `lookupClientProcess` itself already reduces every failure to a
+      // resolved `undefined` — this is pure defense-in-depth against a
+      // future change there reintroducing an unhandled rejection, which
+      // would otherwise surface as an UNHANDLED_REJECTION for something
+      // that was only ever supposed to be a best-effort annotation.
+    });
 }
 
 /**
