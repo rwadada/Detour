@@ -109,6 +109,7 @@ describe('ClientProcessDirectory', () => {
 
     stdout = ['p2', 'cSecond', 'f1', 'n127.0.0.1:2->127.0.0.1:8080'].join('\n');
     await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
 
     expect(directory.lookup('127.0.0.1', 1)).toBeUndefined();
     expect(directory.lookup('127.0.0.1', 2)).toEqual({ pid: 2, name: 'Second' });
