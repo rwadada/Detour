@@ -71,6 +71,12 @@ describe('writeFixtureFile / loadFixtureFiles', () => {
     expect(() => loadFixtureFiles(dir)).toThrow(/"path" must be a string/);
   });
 
+  it('rejects responseHeaders being an array itself, not just individual header values', () => {
+    const dir = freshDir();
+    fs.writeFileSync(path.join(dir, '00001-bad.json'), JSON.stringify({ ...sample, responseHeaders: [] }));
+    expect(() => loadFixtureFiles(dir)).toThrow(/"responseHeaders" must be an object \(not an array\)/);
+  });
+
   it('accepts a multi-value (array) response header, e.g. multiple Set-Cookie', () => {
     const dir = freshDir();
     const withMultiValue: Fixture = { ...sample, responseHeaders: { 'set-cookie': ['a=1', 'b=2'] } };

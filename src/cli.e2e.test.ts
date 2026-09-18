@@ -3616,15 +3616,12 @@ describe('detour record / detour serve (issue #149, CLI end-to-end)', () => {
   /** Issues one plain (non-proxied) GET directly against `detour serve`'s own port, resolving with status/headers/body. */
   function directGet(port: number, requestPath: string): Promise<{ status: number; body: string }> {
     return new Promise((resolve, reject) => {
-      // 'localhost', not '127.0.0.1': `detour serve` itself binds to the
-      // hostname 'localhost' (matching this codebase's convention
-      // elsewhere — see PROXY_HOST/resolveDashboardHost's doc comments),
-      // which some environments resolve to the IPv6 loopback (::1) instead
-      // of 127.0.0.1. Connecting with the same hostname the server bound
-      // to is what every other e2e test in this file does for exactly this
-      // reason — hardcoding the numeric IPv4 address here caused
-      // ECONNREFUSED in CI, where 'localhost' resolved to ::1.
-      const req = http.request({ host: 'localhost', port, path: requestPath, method: 'GET' }, (res) => {
+      // '127.0.0.1', matching `detour serve`'s own explicit bind address —
+      // see its `server.listen(...)` call's doc comment for why that's the
+      // literal IP rather than the hostname 'localhost' (which some
+      // environments, including this repo's own CI runner, resolve to the
+      // IPv6 loopback instead).
+      const req = http.request({ host: '127.0.0.1', port, path: requestPath, method: 'GET' }, (res) => {
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
         res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
@@ -3684,6 +3681,38 @@ describe('detour record / detour serve (issue #149, CLI end-to-end)', () => {
       expect(fixture.path).toBe('/orders/1');
       expect(fixture.status).toBe(200);
       expect(JSON.parse(fixture.responseBody)).toMatchObject({ method: 'GET', path: '/orders/1' });
+    } finally {
+      await upstream.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('survives a fixture write failure instead of crashing the recording run (issue #149 review)', async () => {
+    const upstream = await startEchoServer();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-record-e2e-'));
+    try {
+      // A plain file where --out needs a directory: writeFixtureFile's
+      // mkdirSync(..., { recursive: true }) fails (ENOTDIR) trying to
+      // create a subdirectory under a path component that's actually a
+      // file, exercising the write-failure path without needing to
+      // actually fill the disk.
+      const blockerPath = path.join(tmpDir, 'blocker');
+      fs.writeFileSync(blockerPath, 'not a directory');
+      const outDir = path.join(blockerPath, 'fixtures');
+
+      const scriptPath = writeProxiedGetScript(tmpDir, upstream.port, '/orders/1');
+      const result = await runTsx(['src/cli.ts', 'record', '--out', outDir, '--', process.execPath, scriptPath], {
+        cwd: REPO_ROOT,
+        reject: false,
+        timeout: 15_000,
+      });
+
+      // The command under test still ran and exited cleanly — only
+      // persisting the fixture failed, which is reported (via the same
+      // proxy-error logging `detour test` uses) rather than crashing the
+      // whole run.
+      expect(result.exitCode).toBe(0);
+      expect(String(result.stdout) + String(result.stderr)).toContain('proxy error');
     } finally {
       await upstream.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });

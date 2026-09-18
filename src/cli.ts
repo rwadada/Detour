@@ -1283,8 +1283,17 @@ async function runRecordCommand(command: string[], options: RecordOptions): Prom
     if (exchange.passthrough || exchange.statusCode === undefined) return;
     sequence += 1;
     const { fixture, filename } = buildFixtureFromExchange(exchange, sequence);
-    writeFixtureFile(outDir, filename, fixture);
-    recordedCount += 1;
+    // A write failure here (disk full, permission denied, an invalid
+    // --out path) must not throw out of this listener — it runs
+    // synchronously inside the proxy's own 'response' emit, so an uncaught
+    // exception would crash the whole recording run instead of just
+    // failing to persist this one exchange.
+    try {
+      writeFixtureFile(outDir, filename, fixture);
+      recordedCount += 1;
+    } catch (err) {
+      eventBus.emit('error', { errorKind: 'FIXTURE_WRITE_ERROR', message: describeError(err) });
+    }
   });
 
   const handle = await startProxyServer({ port, ruleEngine }, eventBus);
@@ -1368,12 +1377,16 @@ async function runServeCommand(dir: string, options: ServeOptions): Promise<void
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    // Explicit `'localhost'`, not the all-interfaces default a bare
-    // `listen(port)` binds to — matches the rest of this codebase's
-    // secure-by-default posture (the proxy/dashboard only bind to every
-    // interface under an explicit `--lan`), and replayed fixtures are not
-    // something `detour serve` should expose to the LAN by default.
-    server.listen(port, 'localhost', () => resolve());
+    // The literal `'127.0.0.1'`, not the all-interfaces default a bare
+    // `listen(port)` binds to (matching the rest of this codebase's
+    // secure-by-default posture — the proxy/dashboard only bind everywhere
+    // under an explicit `--lan`), and not the hostname `'localhost'`
+    // either: this repo's own CI runner resolves `'localhost'` to the IPv6
+    // loopback (`::1`), which broke a `127.0.0.1`-based client (this same
+    // file's own e2e tests included) — the numeric address sidesteps that
+    // resolution entirely, and a test's own HTTP client base URL commonly
+    // hardcodes `127.0.0.1` for exactly this kind of ambiguity.
+    server.listen(port, '127.0.0.1', () => resolve());
   });
 
   const address = server.address();

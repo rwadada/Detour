@@ -32,8 +32,15 @@ function assertFixtureShape(data: unknown, filePath: string): Fixture {
   if (typeof candidate.method !== 'string') errors.push('"method" must be a string');
   if (typeof candidate.path !== 'string') errors.push('"path" must be a string');
   if (typeof candidate.status !== 'number') errors.push('"status" must be a number');
-  if (typeof candidate.responseHeaders !== 'object' || candidate.responseHeaders === null) {
-    errors.push('"responseHeaders" must be an object');
+  if (
+    typeof candidate.responseHeaders !== 'object' ||
+    candidate.responseHeaders === null ||
+    // `typeof [] === 'object'` — without this, `responseHeaders: []` would
+    // pass the check above and only fail later, confusingly, when
+    // `detour serve` iterates it expecting string-keyed header entries.
+    Array.isArray(candidate.responseHeaders)
+  ) {
+    errors.push('"responseHeaders" must be an object (not an array)');
   } else {
     for (const [key, value] of Object.entries(candidate.responseHeaders)) {
       if (!isHeaderValue(value)) errors.push(`"responseHeaders.${key}" must be a string or an array of strings`);
