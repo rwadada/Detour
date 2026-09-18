@@ -3348,3 +3348,146 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
     });
   });
 });
+
+describe('detour test (issue #148, CLI end-to-end)', () => {
+  /** Writes a `detour.test.json`-shaped assertions file to a scratch directory, returning its path. */
+  function writeAssertionsFile(tmpDir: string, testFile: unknown): string {
+    const assertionsPath = path.join(tmpDir, 'detour.test.json');
+    fs.writeFileSync(assertionsPath, JSON.stringify(testFile));
+    return assertionsPath;
+  }
+
+  /**
+   * Writes a small standalone Node script that reads `HTTP_PROXY` (set by
+   * `detour test` on the child it spawns) and issues one proxied GET for
+   * `upstreamPath` against the given upstream port, in the classic explicit
+   * forward-proxy shape (an absolute-URL request line) — the same style
+   * `requestThroughProxy` above uses from inside this test process, just
+   * reproduced here as source text since this script runs in its own child
+   * process instead.
+   */
+  function writeProxiedGetScript(
+    tmpDir: string,
+    upstreamPort: number,
+    upstreamPath: string,
+    headers: Record<string, string>,
+  ): string {
+    const scriptPath = path.join(tmpDir, 'client.js');
+    fs.writeFileSync(
+      scriptPath,
+      `
+      const http = require('http');
+      const proxyUrl = new URL(process.env.HTTP_PROXY);
+      const req = http.request(
+        {
+          host: proxyUrl.hostname,
+          port: proxyUrl.port,
+          path: 'http://127.0.0.1:${upstreamPort}${upstreamPath}',
+          method: 'GET',
+          headers: ${JSON.stringify(headers)},
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => process.exit(0));
+        },
+      );
+      req.on('error', (err) => { console.error(err); process.exit(1); });
+      req.end();
+      `,
+    );
+    return scriptPath;
+  }
+
+  it('passes a `headerPresent` assertion when the proxied request under test actually carried the header', async () => {
+    const upstream = await startEchoServer();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-test-e2e-'));
+    try {
+      const assertionsPath = writeAssertionsFile(tmpDir, {
+        assertions: [
+          {
+            type: 'headerPresent',
+            name: 'orders API requires auth',
+            match: { url: `http://127.0.0.1:${upstream.port}/*` },
+            header: 'Authorization',
+          },
+        ],
+      });
+      const scriptPath = writeProxiedGetScript(tmpDir, upstream.port, '/orders', { Authorization: 'Bearer token' });
+
+      const result = await runTsx(
+        ['src/cli.ts', 'test', '--assertions', assertionsPath, '--', process.execPath, scriptPath],
+        { cwd: REPO_ROOT, reject: false, timeout: 15_000 },
+      );
+
+      expect(result.stdout).toContain('✔ orders API requires auth');
+      expect(result.stdout).toContain('1/1 assertion(s) passed');
+      expect(result.exitCode).toBe(0);
+    } finally {
+      await upstream.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails a `headerPresent` assertion (nonzero exit) when the proxied request under test was missing the header', async () => {
+    const upstream = await startEchoServer();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-test-e2e-'));
+    try {
+      const assertionsPath = writeAssertionsFile(tmpDir, {
+        assertions: [
+          {
+            type: 'headerPresent',
+            name: 'orders API requires auth',
+            match: { url: `http://127.0.0.1:${upstream.port}/*` },
+            header: 'Authorization',
+          },
+        ],
+      });
+      const scriptPath = writeProxiedGetScript(tmpDir, upstream.port, '/orders', {});
+
+      const result = await runTsx(
+        ['src/cli.ts', 'test', '--assertions', assertionsPath, '--', process.execPath, scriptPath],
+        { cwd: REPO_ROOT, reject: false, timeout: 15_000 },
+      );
+
+      expect(result.stdout).toContain('✖ orders API requires auth');
+      expect(result.stdout).toContain('missing "Authorization" request header');
+      expect(result.exitCode).toBe(1);
+    } finally {
+      await upstream.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("exits with the command-under-test's own exit code when it fails, even if every assertion passed", async () => {
+    const upstream = await startEchoServer();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-test-e2e-'));
+    try {
+      const assertionsPath = writeAssertionsFile(tmpDir, { assertions: [] });
+
+      const result = await runTsx(
+        ['src/cli.ts', 'test', '--assertions', assertionsPath, '--', process.execPath, '-e', 'process.exit(7)'],
+        { cwd: REPO_ROOT, reject: false, timeout: 15_000 },
+      );
+
+      expect(result.exitCode).toBe(7);
+    } finally {
+      await upstream.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails fast on a missing assertions file, without running the command under test', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-test-e2e-'));
+    try {
+      const result = await runTsx(
+        ['src/cli.ts', 'test', '--assertions', path.join(tmpDir, 'nope.json'), '--', process.execPath, '-e', '1'],
+        { cwd: REPO_ROOT, reject: false, timeout: 15_000 },
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain('Test assertions file not found');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});

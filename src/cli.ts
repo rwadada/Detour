@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -5,10 +6,13 @@ import { Command } from 'commander';
 import { CliExitError } from './domain/daemon/errors';
 import { isDumpLevel } from './domain/dump/dumpPolicy';
 import type { DumpLevel } from './domain/dump/dumpPolicy';
+import type { CapturedExchange } from './domain/exchange/types';
 import { SAMPLE_RULES_FILE } from './domain/rules/sample';
 import { findUnreachableRules } from './domain/rules/unreachableRules';
 import { isSetupTarget, SETUP_TARGETS } from './domain/setup/targets';
 import type { SetupTarget } from './domain/setup/targets';
+import { evaluateAssertions } from './domain/test/evaluate';
+import { formatTestReport } from './domain/test/report';
 import { hashDashboardPassword } from './infra/dashboard/dashboardPasswordHash';
 import { startDashboardServer, WEB_DIST_DIR } from './infra/dashboard/dashboardServer';
 import { DetourEventBus } from './infra/eventBus';
@@ -22,6 +26,7 @@ import {
 } from './infra/fs/runStateStore';
 import { fsRuleProfileStore } from './infra/fs/ruleProfileStore';
 import { fsFileWatcher, fsRulesFileReader, fsRulesFileWriter, loadRulesFile } from './infra/fs/rulesFileSource';
+import { loadTestFile } from './infra/fs/testFileSource';
 import type { UserConfig } from './infra/fs/userConfigStore';
 import { loadUserConfig, resolveUserConfigPath, writeUserConfig } from './infra/fs/userConfigStore';
 import { buildGrpcExchangeInfo } from './infra/grpc/grpcExchangeInfo';
@@ -1031,6 +1036,112 @@ function crashGuardUnhandledRejectionListener(reason: unknown): void {
   process.exitCode = 1;
 }
 
+/** Auto-loaded when `--assertions` isn't given and this file exists in the current directory (issue #148). */
+const DEFAULT_TEST_ASSERTIONS_FILENAME = 'detour.test.json';
+
+interface TestOptions {
+  assertions: string;
+  rules?: string;
+  allowExternalScriptPaths?: boolean;
+  port: string;
+}
+
+/** Runs `command` with the proxy env vars set, resolving with its exit code (or 1, if it was killed by a signal instead of exiting normally). */
+function runCommandUnderProxy(command: string[], proxyUrl: string, caCertPath: string): Promise<number> {
+  const [cmd, ...args] = command;
+  return new Promise<number>((resolve, reject) => {
+    const child = spawn(cmd!, args, {
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        HTTP_PROXY: proxyUrl,
+        HTTPS_PROXY: proxyUrl,
+        http_proxy: proxyUrl,
+        https_proxy: proxyUrl,
+        // Lets a Node-based command under test (npm test, playwright, …)
+        // trust the MITM'd HTTPS connections without a manual `detour cert
+        // export`/trust step of its own.
+        NODE_EXTRA_CA_CERTS: caCertPath,
+      },
+    });
+    child.on('error', reject);
+    child.on('exit', (code, signal) => resolve(code ?? (signal ? 1 : 0)));
+  });
+}
+
+/**
+ * `detour test` (issue #148): runs `command` with `HTTP_PROXY`/`HTTPS_PROXY`
+ * pointed at a fresh, single-run proxy instance, then evaluates every
+ * exchange captured during that run against a `detour test` assertions
+ * file (header presence, PII leaks, p95 latency — see domain/test/types.ts)
+ * — a communication contract test suitable for CI, built on the same
+ * proxy core as `detour start` rather than a separate implementation.
+ * Deliberately no `--headless`/`--exit-on-idle`/dashboard/run-state
+ * tracking here: `command`'s own exit is what ends the run, and this is a
+ * one-shot CI step rather than a long-lived instance meant to be managed
+ * with `detour status`/`stop`.
+ */
+async function runTestCommand(command: string[], options: TestOptions): Promise<void> {
+  if (command.length === 0) {
+    throw new Error(
+      'detour test requires a command to run traffic through the proxy, e.g. `detour test -- npm run e2e`',
+    );
+  }
+
+  const assertionsPath = path.resolve(options.assertions);
+  if (!fs.existsSync(assertionsPath)) {
+    throw new Error(
+      `Test assertions file not found: ${assertionsPath}\n` +
+        `Pass --assertions <path>, or create ${DEFAULT_TEST_ASSERTIONS_FILENAME} in the current directory. Example:\n` +
+        `{\n  "assertions": [\n    { "type": "headerPresent", "name": "orders API requires auth", "match": { "url": "https://api.example.com/orders*" }, "header": "Authorization" }\n  ]\n}`,
+    );
+  }
+  // Loaded eagerly — same reasoning as `--rules`/`.proto` in runStartBody —
+  // so a broken assertions file fails before the command under test ever
+  // runs, rather than after paying for a full (possibly slow) test run.
+  const testFile = loadTestFile(assertionsPath);
+
+  const port = parsePort(options.port, '--port');
+
+  let ruleEngine: RuleEngine | undefined;
+  if (options.rules) {
+    ruleEngine = RuleEngine.load({
+      filePath: options.rules,
+      reader: fsRulesFileReader,
+      allowExternalScriptPaths: options.allowExternalScriptPaths ?? false,
+      watch: false,
+    });
+  }
+
+  const eventBus = new DetourEventBus();
+  const exchanges: CapturedExchange[] = [];
+  eventBus.on('response', (exchange) => {
+    exchanges.push(exchange);
+  });
+
+  const handle = await startProxyServer({ port, ruleEngine }, eventBus);
+  const proxyUrl = `http://localhost:${handle.port}`;
+  console.log(`ℹ Proxy listening on ${proxyUrl} — running: ${command.join(' ')}`);
+
+  try {
+    const childExitCode = await runCommandUnderProxy(command, proxyUrl, handle.caCertPath);
+
+    const results = evaluateAssertions(testFile.assertions, exchanges);
+    console.log('');
+    console.log(formatTestReport(results));
+
+    const anyAssertionFailed = results.some((r) => !r.passed);
+    if (childExitCode !== 0) {
+      console.error(`✖ Command exited with code ${childExitCode}`);
+      process.exitCode = childExitCode;
+    } else if (anyAssertionFailed) {
+      process.exitCode = 1;
+    }
+  } finally {
+    await handle.stop();
+  }
+}
+
 export function createCli(): Command {
   const program = new Command();
 
@@ -1338,6 +1449,35 @@ export function createCli(): Command {
     .option(...setupHostOption)
     .action(async (options: SetupCommandOptions) => {
       await runSetupCommand('cleanup', options);
+    });
+
+  program
+    .command('test')
+    .description(
+      'Runs a command with HTTP_PROXY/HTTPS_PROXY pointed at a fresh proxy instance, then checks the captured traffic against a communication contract (header presence, PII leaks, p95 latency — issue #148)',
+    )
+    .argument('<command...>', 'Command to run under the proxy, e.g. `detour test -- npm run e2e`')
+    .option(
+      '--assertions <path>',
+      `Path to a test assertions file (default: ${DEFAULT_TEST_ASSERTIONS_FILENAME} in the current directory)`,
+      DEFAULT_TEST_ASSERTIONS_FILENAME,
+    )
+    .option(
+      '--rules <path>',
+      'Path to a rules file to apply while under test (e.g. to mock a flaky third-party dependency) — same format as `detour start --rules`, loaded once and not watched for changes.',
+    )
+    .option(
+      '--allow-external-script-paths',
+      "Allow a rule's `script.path`/`mock.bodyFile` to resolve outside the directory rules.json lives in (including an absolute path) instead of being rejected — see `detour start`'s flag of the same name.",
+    )
+    .option('-p, --port <port>', 'Port the proxy listens on (default: an ephemeral free port)', '0')
+    .action(async (command: string[], options: TestOptions) => {
+      try {
+        await runTestCommand(command, options);
+      } catch (err) {
+        console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
     });
 
   const rules = program.command('rules').description('Manage rules.json (the declarative rule engine config)');
