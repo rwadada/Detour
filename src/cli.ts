@@ -1107,20 +1107,32 @@ function runCommandUnderProxy(command: string[], proxyUrl: string, caCertPath: s
   delete envWithoutNoProxy.NO_PROXY;
   delete envWithoutNoProxy.no_proxy;
   return new Promise<number>((resolve, reject) => {
-    const child = spawn(cmd!, args, {
-      stdio: 'inherit',
-      env: {
-        ...envWithoutNoProxy,
-        HTTP_PROXY: proxyUrl,
-        HTTPS_PROXY: proxyUrl,
-        http_proxy: proxyUrl,
-        https_proxy: proxyUrl,
-        // Lets a Node-based command under test (npm test, playwright, …)
-        // trust the MITM'd HTTPS connections without a manual `detour cert
-        // export`/trust step of its own.
-        NODE_EXTRA_CA_CERTS: nodeExtraCaCerts,
-      },
-    });
+    // `spawn()` reports most failures (bad command, ENOENT) asynchronously
+    // via the 'error' event below, but it can also throw synchronously for
+    // a handful of argument-validation failures — a try/catch here is what
+    // makes `cleanup()` (deleting the temp CA-bundle directory) run on that
+    // path too, instead of only on the two async outcomes.
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(cmd!, args, {
+        stdio: 'inherit',
+        env: {
+          ...envWithoutNoProxy,
+          HTTP_PROXY: proxyUrl,
+          HTTPS_PROXY: proxyUrl,
+          http_proxy: proxyUrl,
+          https_proxy: proxyUrl,
+          // Lets a Node-based command under test (npm test, playwright, …)
+          // trust the MITM'd HTTPS connections without a manual `detour
+          // cert export`/trust step of its own.
+          NODE_EXTRA_CA_CERTS: nodeExtraCaCerts,
+        },
+      });
+    } catch (err) {
+      cleanup();
+      reject(err);
+      return;
+    }
     child.on('error', (err) => {
       cleanup();
       reject(err);

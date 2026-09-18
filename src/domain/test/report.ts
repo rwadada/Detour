@@ -20,7 +20,10 @@ export function formatTestReport(results: AssertionResult[]): string {
     }
   }
   const passedCount = results.filter((r) => r.passed).length;
-  lines.push('');
+  // Only separates the summary from actual per-assertion output above it —
+  // with zero assertions, `lines` is still empty here, and an unconditional
+  // blank line would make the whole report start with one for no reason.
+  if (lines.length > 0) lines.push('');
   lines.push(`${passedCount}/${results.length} assertion(s) passed`);
   return lines.join('\n');
 }

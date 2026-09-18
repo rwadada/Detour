@@ -53,4 +53,9 @@ describe('formatTestReport', () => {
     expect(output).toContain('p95 latency 900ms exceeds 500ms\n');
     expect(output).not.toContain('p95 latency 900ms exceeds 500ms —');
   });
+
+  it('does not start with a blank line when there are no assertions to report', () => {
+    const output = formatTestReport([]);
+    expect(output).toBe('0/0 assertion(s) passed');
+  });
 });
