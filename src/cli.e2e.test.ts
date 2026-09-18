@@ -3490,4 +3490,44 @@ describe('detour test (issue #148, CLI end-to-end)', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("merges an inherited NODE_EXTRA_CA_CERTS with detour's own CA instead of overwriting it (issue #148 review)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-test-e2e-'));
+    try {
+      const assertionsPath = writeAssertionsFile(tmpDir, { assertions: [] });
+
+      const existingBundlePath = path.join(tmpDir, 'existing-ca-bundle.pem');
+      const existingBundleContents = '-----BEGIN CERTIFICATE-----\nMARKER-EXISTING-BUNDLE\n-----END CERTIFICATE-----\n';
+      fs.writeFileSync(existingBundlePath, existingBundleContents);
+
+      const scriptPath = path.join(tmpDir, 'check-ca-bundle.js');
+      fs.writeFileSync(
+        scriptPath,
+        `
+        const fs = require('fs');
+        const content = fs.readFileSync(process.env.NODE_EXTRA_CA_CERTS, 'utf8');
+        if (!content.includes('MARKER-EXISTING-BUNDLE')) process.exit(2);
+        if (!content.includes('BEGIN CERTIFICATE')) process.exit(3);
+        process.exit(0);
+        `,
+      );
+
+      const result = await runTsx(
+        ['src/cli.ts', 'test', '--assertions', assertionsPath, '--', process.execPath, scriptPath],
+        {
+          cwd: REPO_ROOT,
+          reject: false,
+          timeout: 15_000,
+          env: { ...process.env, NODE_EXTRA_CA_CERTS: existingBundlePath },
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      // The pre-existing bundle itself must be untouched — only the child's
+      // own NODE_EXTRA_CA_CERTS points at a separate, merged file.
+      expect(fs.readFileSync(existingBundlePath, 'utf8')).toBe(existingBundleContents);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

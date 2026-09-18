@@ -168,4 +168,67 @@ describe('evaluateAssertions — noPiiLeak', () => {
     expect(result!.passed).toBe(false);
     expect(result!.failures[0]!.reason).toContain('custom pattern');
   });
+
+  it('applies more than one custom pattern (regression: patterns must not be recompiled away between fields)', () => {
+    const withCustom: NoPiiLeakAssertion = {
+      ...assertion,
+      patterns: undefined,
+      customPatterns: ['internal-\\d+', 'external-\\d+'],
+    };
+    const [result] = evaluateAssertions(
+      [withCustom],
+      [
+        exchange({
+          id: 'ex-a',
+          url: 'https://ads.example.net/track',
+          requestHeaders: { 'x-ref': 'internal-1' },
+        }),
+        exchange({
+          id: 'ex-b',
+          url: 'https://ads.example.net/track',
+          requestHeaders: { 'x-ref': 'external-2' },
+        }),
+      ],
+    );
+    expect(result!.failures).toHaveLength(2);
+  });
+
+  it("fails on a truncated request body even when the captured portion has no PII (can't confirm what was cut off)", () => {
+    const [result] = evaluateAssertions(
+      [assertion],
+      [
+        exchange({
+          url: 'https://ads.example.net/track',
+          requestBody: Buffer.from('no pii here').toString('base64'),
+          requestBodyTruncated: true,
+        }),
+      ],
+    );
+    expect(result!.passed).toBe(false);
+    expect(result!.failures).toEqual([
+      {
+        exchangeId: 'ex-1',
+        method: 'GET',
+        url: 'https://ads.example.net/track',
+        reason: 'request body was truncated at the capture cap — cannot confirm it contains no PII beyond that point',
+      },
+    ]);
+  });
+
+  it('fails on a truncated response body the same way', () => {
+    const [result] = evaluateAssertions(
+      [assertion],
+      [exchange({ url: 'https://ads.example.net/track', responseBodyTruncated: true })],
+    );
+    expect(result!.passed).toBe(false);
+    expect(result!.failures[0]!.reason).toContain('response body was truncated');
+  });
+
+  it('does not flag truncation when the body was fully captured', () => {
+    const [result] = evaluateAssertions(
+      [assertion],
+      [exchange({ url: 'https://ads.example.net/track', requestBodyTruncated: false, responseBodyTruncated: false })],
+    );
+    expect(result).toMatchObject({ passed: true });
+  });
 });

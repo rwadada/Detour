@@ -109,12 +109,23 @@ function evaluateLatencyP95(
   };
 }
 
-function findPiiLabel(text: string, assertion: Extract<TestAssertion, { type: 'noPiiLeak' }>): string | undefined {
+/** A `noPiiLeak` assertion's `customPatterns` compiled once per evaluation rather than once per field scanned — `evaluateNoPiiLeak` calls `findPiiLabel` many times per exchange (one per header, plus the body) across every matching exchange. */
+function compileCustomPatterns(
+  assertion: Extract<TestAssertion, { type: 'noPiiLeak' }>,
+): Array<{ source: string; regex: RegExp }> {
+  return (assertion.customPatterns ?? []).map((source) => ({ source, regex: new RegExp(source, 'i') }));
+}
+
+function findPiiLabel(
+  text: string,
+  assertion: Extract<TestAssertion, { type: 'noPiiLeak' }>,
+  customPatterns: Array<{ source: string; regex: RegExp }>,
+): string | undefined {
   for (const name of assertion.patterns ?? []) {
     if (PII_PATTERNS[name].test(text)) return name;
   }
-  for (const source of assertion.customPatterns ?? []) {
-    if (new RegExp(source, 'i').test(text)) return `custom pattern /${source}/`;
+  for (const { source, regex } of customPatterns) {
+    if (regex.test(text)) return `custom pattern /${source}/`;
   }
   return undefined;
 }
@@ -123,8 +134,31 @@ function evaluateNoPiiLeak(
   assertion: Extract<TestAssertion, { type: 'noPiiLeak' }>,
   matched: CapturedExchange[],
 ): AssertionResult {
+  const customPatterns = compileCustomPatterns(assertion);
   const failures: AssertionFailureDetail[] = [];
   for (const exchange of matched) {
+    // A truncated body was only partially captured (the 256KB per-body
+    // cap) — scanning just the captured portion could let an exchange pass
+    // even though its actual body carries PII beyond that point. Flagging
+    // the truncation itself, rather than silently scanning only what's
+    // available, means this assertion never reports a false "no leak" over
+    // data it never actually got to look at.
+    if (exchange.requestBodyTruncated) {
+      failures.push(
+        toFailureDetail(
+          exchange,
+          'request body was truncated at the capture cap — cannot confirm it contains no PII beyond that point',
+        ),
+      );
+    }
+    if (exchange.responseBodyTruncated) {
+      failures.push(
+        toFailureDetail(
+          exchange,
+          'response body was truncated at the capture cap — cannot confirm it contains no PII beyond that point',
+        ),
+      );
+    }
     const fields: Array<{ field: string; text: string }> = [];
     for (const [key, value] of Object.entries(flattenHeaders(exchange.requestHeaders))) {
       fields.push({ field: `request header "${key}"`, text: value });
@@ -141,7 +175,7 @@ function evaluateNoPiiLeak(
       fields.push({ field: 'response body', text: Buffer.from(exchange.responseBody, 'base64').toString('utf8') });
     }
     for (const { field, text } of fields) {
-      const label = findPiiLabel(text, assertion);
+      const label = findPiiLabel(text, assertion, customPatterns);
       // The matched value itself is never included in the failure reason —
       // it's exactly the sensitive data this assertion exists to catch, and
       // printing it would leak it into CI logs instead of just flagging it.

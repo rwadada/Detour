@@ -1046,9 +1046,36 @@ interface TestOptions {
   port: string;
 }
 
+/**
+ * Resolves what `NODE_EXTRA_CA_CERTS` should be for the command under test.
+ * If the parent process (or its own environment) already has one set, that
+ * bundle is trusted for a real reason — overwriting it with just detour's
+ * own CA would silently drop that trust for the command's whole run. Node
+ * only ever reads `NODE_EXTRA_CA_CERTS` as a single file, so the two are
+ * concatenated into a fresh temp file instead of simply picking one; the
+ * caller is responsible for deleting it (`cleanup`) once the command exits.
+ */
+function resolveCaCertsForCommand(caCertPath: string): { path: string; cleanup: () => void } {
+  const existing = process.env.NODE_EXTRA_CA_CERTS;
+  if (!existing) return { path: caCertPath, cleanup: () => {} };
+  const combinedPath = path.join(os.tmpdir(), `detour-test-ca-${process.pid}-${Date.now()}.pem`);
+  fs.writeFileSync(combinedPath, `${fs.readFileSync(existing, 'utf8')}\n${fs.readFileSync(caCertPath, 'utf8')}`);
+  return {
+    path: combinedPath,
+    cleanup: () => {
+      try {
+        fs.unlinkSync(combinedPath);
+      } catch {
+        // Best-effort — a leftover temp file in the OS tmp dir is harmless.
+      }
+    },
+  };
+}
+
 /** Runs `command` with the proxy env vars set, resolving with its exit code (or 1, if it was killed by a signal instead of exiting normally). */
 function runCommandUnderProxy(command: string[], proxyUrl: string, caCertPath: string): Promise<number> {
   const [cmd, ...args] = command;
+  const { path: nodeExtraCaCerts, cleanup } = resolveCaCertsForCommand(caCertPath);
   return new Promise<number>((resolve, reject) => {
     const child = spawn(cmd!, args, {
       stdio: 'inherit',
@@ -1061,11 +1088,17 @@ function runCommandUnderProxy(command: string[], proxyUrl: string, caCertPath: s
         // Lets a Node-based command under test (npm test, playwright, …)
         // trust the MITM'd HTTPS connections without a manual `detour cert
         // export`/trust step of its own.
-        NODE_EXTRA_CA_CERTS: caCertPath,
+        NODE_EXTRA_CA_CERTS: nodeExtraCaCerts,
       },
     });
-    child.on('error', reject);
-    child.on('exit', (code, signal) => resolve(code ?? (signal ? 1 : 0)));
+    child.on('error', (err) => {
+      cleanup();
+      reject(err);
+    });
+    child.on('exit', (code, signal) => {
+      cleanup();
+      resolve(code ?? (signal ? 1 : 0));
+    });
   });
 }
 
