@@ -97,6 +97,48 @@ function startFixedBodyServer(bodyBytes: number): Promise<{ port: number; close:
 }
 
 /**
+ * Starts an HTTP server that writes its body across `chunkCount` separate
+ * `res.write()` calls, each scheduled on its own macrotask (rather than one
+ * `res.end(body)`) — forcing genuinely distinct reads on the receiving end
+ * regardless of body size or OS/loopback buffering, unlike
+ * `startFixedBodyServer`'s single synchronous write. Used to prove Throttle
+ * spreads its bandwidth-cap delay across the whole transfer rather than
+ * computing one total delay and dumping the entire body in a single write
+ * (issue #146).
+ */
+function startChunkedBodyServer(
+  chunkBytes: number,
+  chunkCount: number,
+): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const chunk = Buffer.alloc(chunkBytes, 'a');
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      let written = 0;
+      const writeNext = () => {
+        if (written >= chunkCount) {
+          res.end();
+          return;
+        }
+        written++;
+        res.write(chunk);
+        setTimeout(writeNext, 5);
+      };
+      writeNext();
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('failed to bind chunked-body server'));
+      resolve({
+        port: address.port,
+        close: () => new Promise((res) => server.close(() => res())),
+      });
+    });
+  });
+}
+
+/**
  * Starts a raw TCP server that prefixes whatever it receives with `marker`
  * and echoes it straight back — deliberately not HTTP or TLS. Used to prove
  * a CONNECT tunnel is a genuine byte-level passthrough (a real MITM would
@@ -1954,6 +1996,72 @@ describe('detour start (CLI, end-to-end)', () => {
         expect(elapsed).toBeGreaterThanOrEqual(900);
       } finally {
         await fixed.close();
+      }
+    });
+
+    it("streams a throttled MITM'd body chunk-by-chunk rather than delivering it in one delayed write (issue #146)", async () => {
+      const chunkBytes = 8000;
+      const chunkCount = 4;
+      const chunked = await startChunkedBodyServer(chunkBytes, chunkCount);
+      cli = await startDetourCli();
+      // 64 Kbps = 8 bytes/ms, so each 8000-byte chunk should individually
+      // take ~1000ms to "transmit" (BandwidthState paces per chunk, not
+      // just the whole body) — ~4000ms end-to-end for all four.
+      await setThrottle(cli.dashboardPort, { ...DISABLED, enabled: true, downKbps: 64 });
+
+      try {
+        const result = await new Promise<{
+          status: number;
+          bodyLength: number;
+          firstByteAt: number;
+          lastByteAt: number;
+          dataEvents: number;
+        }>((resolve, reject) => {
+          const start = Date.now();
+          let firstByteAt = -1;
+          let dataEvents = 0;
+          let bodyLength = 0;
+          const req = http.request(
+            {
+              host: 'localhost',
+              port: cli!.port,
+              path: `http://127.0.0.1:${chunked.port}/`,
+              method: 'GET',
+            },
+            (res) => {
+              res.on('data', (chunk: Buffer) => {
+                if (firstByteAt < 0) firstByteAt = Date.now();
+                dataEvents++;
+                bodyLength += chunk.length;
+              });
+              res.on('end', () =>
+                resolve({
+                  status: res.statusCode ?? 0,
+                  bodyLength,
+                  firstByteAt: firstByteAt - start,
+                  lastByteAt: Date.now() - start,
+                  dataEvents,
+                }),
+              );
+            },
+          );
+          req.on('error', reject);
+          req.end();
+        });
+
+        expect(result.status).toBe(200);
+        expect(result.bodyLength).toBe(chunkBytes * chunkCount);
+        // The proxy relayed more than one distinct read from upstream —
+        // never buffered into a single write — and the first byte reached
+        // the client well before the last one: a "compute one total delay,
+        // then dump the whole body" implementation would make these two
+        // timestamps coincide (both ~4000ms) instead of ~1000ms apart from
+        // ~4000ms.
+        expect(result.dataEvents).toBeGreaterThan(1);
+        expect(result.lastByteAt - result.firstByteAt).toBeGreaterThanOrEqual(2000);
+        expect(result.lastByteAt).toBeGreaterThanOrEqual(3000);
+      } finally {
+        await chunked.close();
       }
     });
 
