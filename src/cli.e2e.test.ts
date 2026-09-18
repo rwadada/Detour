@@ -3724,6 +3724,37 @@ describe('detour record / detour serve (issue #149, CLI end-to-end)', () => {
     }
   });
 
+  it('detour serve strips a stale/hop-by-hop header from a hand-edited fixture instead of trusting it verbatim (issue #149 review)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-serve-e2e-'));
+    let serve: { port: number; kill: () => Promise<void> } | undefined;
+    try {
+      const realBody = '{"id":1,"name":"widget"}';
+      fs.writeFileSync(
+        path.join(tmpDir, '00001-get-orders-1.json'),
+        JSON.stringify({
+          method: 'GET',
+          path: '/orders/1',
+          status: 200,
+          // A hand-edited fixture with a deliberately wrong content-length
+          // (and a hop-by-hop connection header) — a naive `writeHead` with
+          // these passed straight through could send a mismatched
+          // Content-Length or otherwise malformed response.
+          responseHeaders: { 'content-type': 'application/json', 'content-length': '999999', connection: 'keep-alive' },
+          responseBody: realBody,
+        }),
+      );
+
+      serve = await startDetourServe(tmpDir);
+      const result = await directGet(serve.port, '/orders/1');
+
+      expect(result.status).toBe(200);
+      expect(result.body).toBe(realBody);
+    } finally {
+      await serve?.kill();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('round-trips: records real traffic with `detour record`, then replays it with `detour serve` — no proxy on the replay side', async () => {
     const upstream = await startEchoServer();
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-record-serve-e2e-'));

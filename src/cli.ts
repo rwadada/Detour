@@ -8,7 +8,7 @@ import { CliExitError } from './domain/daemon/errors';
 import { isDumpLevel } from './domain/dump/dumpPolicy';
 import type { DumpLevel } from './domain/dump/dumpPolicy';
 import type { CapturedExchange } from './domain/exchange/types';
-import { buildFixtureFromExchange } from './domain/record/buildFixture';
+import { buildFixtureFromExchange, DROPPED_RESPONSE_HEADERS } from './domain/record/buildFixture';
 import { FixtureStore } from './domain/record/fixtureStore';
 import { SAMPLE_RULES_FILE } from './domain/rules/sample';
 import { findUnreachableRules } from './domain/rules/unreachableRules';
@@ -1344,22 +1344,36 @@ async function runServeCommand(dir: string, options: ServeOptions): Promise<void
       const encoding = fixture.responseBodyEncoding === 'base64' ? 'base64' : 'utf8';
       body = Buffer.from(fixture.responseBody, encoding);
     }
+    // Stripped again here, not just trusted from recording time: a
+    // hand-edited fixture (or one written by something other than `detour
+    // record`) could reintroduce a hop-by-hop header or a stale
+    // content-length that would otherwise break the client or produce an
+    // invalid response.
+    const responseHeaders: Record<string, string | string[]> = {};
+    for (const [key, value] of Object.entries(fixture.responseHeaders)) {
+      if (!DROPPED_RESPONSE_HEADERS.has(key.toLowerCase())) responseHeaders[key] = value;
+    }
     // Node's `writeHead` overload picks its meaning from the 2nd argument's
     // type — passing `undefined` there for a fixture with no statusMessage
     // would be read as "this is the headers argument", not "message
     // omitted", silently dropping the real headers object in the 3rd
     // position instead of using it.
     if (fixture.statusMessage) {
-      res.writeHead(fixture.status, fixture.statusMessage, fixture.responseHeaders);
+      res.writeHead(fixture.status, fixture.statusMessage, responseHeaders);
     } else {
-      res.writeHead(fixture.status, fixture.responseHeaders);
+      res.writeHead(fixture.status, responseHeaders);
     }
     res.end(body);
   });
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, () => resolve());
+    // Explicit `'localhost'`, not the all-interfaces default a bare
+    // `listen(port)` binds to — matches the rest of this codebase's
+    // secure-by-default posture (the proxy/dashboard only bind to every
+    // interface under an explicit `--lan`), and replayed fixtures are not
+    // something `detour serve` should expose to the LAN by default.
+    server.listen(port, 'localhost', () => resolve());
   });
 
   const address = server.address();

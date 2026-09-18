@@ -68,6 +68,48 @@ describe('writeFixtureFile / loadFixtureFiles', () => {
   it('throws a clear error for a fixture file missing required fields', () => {
     const dir = freshDir();
     fs.writeFileSync(path.join(dir, '00001-bad.json'), JSON.stringify({ method: 'GET' }));
-    expect(() => loadFixtureFiles(dir)).toThrow(/missing one of the required fields/);
+    expect(() => loadFixtureFiles(dir)).toThrow(/"path" must be a string/);
+  });
+
+  it('accepts a multi-value (array) response header, e.g. multiple Set-Cookie', () => {
+    const dir = freshDir();
+    const withMultiValue: Fixture = { ...sample, responseHeaders: { 'set-cookie': ['a=1', 'b=2'] } };
+    writeFixtureFile(dir, '00001-get-x.json', withMultiValue);
+    expect(loadFixtureFiles(dir)).toEqual([withMultiValue]);
+  });
+
+  it('throws a clear error for a response header value that is neither a string nor a string array', () => {
+    const dir = freshDir();
+    fs.writeFileSync(
+      path.join(dir, '00001-bad.json'),
+      JSON.stringify({ ...sample, responseHeaders: { 'x-count': 3 } }),
+    );
+    expect(() => loadFixtureFiles(dir)).toThrow(/"responseHeaders.x-count" must be a string or an array of strings/);
+  });
+
+  it('throws a clear error for a non-string statusMessage', () => {
+    const dir = freshDir();
+    fs.writeFileSync(path.join(dir, '00001-bad.json'), JSON.stringify({ ...sample, statusMessage: 200 }));
+    expect(() => loadFixtureFiles(dir)).toThrow(/"statusMessage" must be a string/);
+  });
+
+  it('throws a clear error for an invalid responseBodyEncoding', () => {
+    const dir = freshDir();
+    fs.writeFileSync(path.join(dir, '00001-bad.json'), JSON.stringify({ ...sample, responseBodyEncoding: 'utf7' }));
+    expect(() => loadFixtureFiles(dir)).toThrow(/"responseBodyEncoding" must be "base64"/);
+  });
+
+  it('collects every validation error rather than stopping at the first', () => {
+    const dir = freshDir();
+    fs.writeFileSync(path.join(dir, '00001-bad.json'), JSON.stringify({ method: 'GET' }));
+    try {
+      loadFixtureFiles(dir);
+      expect.unreachable();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      expect(message).toContain('"path" must be a string');
+      expect(message).toContain('"status" must be a number');
+      expect(message).toContain('"responseHeaders" must be an object');
+    }
   });
 });

@@ -11,7 +11,8 @@ export interface Fixture {
   path: string;
   status: number;
   statusMessage?: string;
-  responseHeaders: Record<string, string>;
+  /** A `string[]` value is a genuine multi-value header (e.g. more than one `Set-Cookie`) — never comma-joined, which would corrupt it once `detour serve` re-emits it onto a real response. */
+  responseHeaders: Record<string, string | string[]>;
   /** Absent when the recorded response had no body. */
   responseBody?: string;
   /**

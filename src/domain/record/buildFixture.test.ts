@@ -48,6 +48,11 @@ describe('buildFixtureFromExchange', () => {
     expect(fixture.responseHeaders).toEqual({ 'content-type': 'application/json' });
   });
 
+  it('preserves a multi-value header (e.g. more than one Set-Cookie) as an array instead of comma-joining it', () => {
+    const { fixture } = buildFixtureFromExchange(exchange({ responseHeaders: { 'set-cookie': ['a=1', 'b=2'] } }), 1);
+    expect(fixture.responseHeaders).toEqual({ 'set-cookie': ['a=1', 'b=2'] });
+  });
+
   it('stores a UTF-8 body as plain text, not base64', () => {
     const body = Buffer.from('{"id":1}').toString('base64');
     const { fixture } = buildFixtureFromExchange(exchange({ responseBody: body }), 1);

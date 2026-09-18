@@ -1,9 +1,16 @@
-import { flattenHeaders } from '../exchange/headers';
+import { compactHeaders } from '../exchange/headers';
 import type { CapturedExchange } from '../exchange/types';
 import type { Fixture } from './types';
 
-/** Headers whose recorded value would be wrong (or actively break replay) once served back by a different server (`detour serve`, not the original one) than the one that sent them. */
-const DROPPED_RESPONSE_HEADERS = new Set(['connection', 'transfer-encoding', 'content-length', 'keep-alive']);
+/**
+ * Headers whose recorded value would be wrong (or actively break replay)
+ * once served back by a different server (`detour serve`, not the original
+ * one) than the one that sent them. Exported so `detour serve` (`cli.ts`)
+ * can strip them again defensively at serve time too — a hand-edited
+ * fixture (or one written by something other than `detour record`) could
+ * reintroduce one even though recording already drops it here.
+ */
+export const DROPPED_RESPONSE_HEADERS = new Set(['connection', 'transfer-encoding', 'content-length', 'keep-alive']);
 
 function splitUrl(url: string): { pathname: string; path: string } {
   try {
@@ -55,7 +62,12 @@ export interface BuiltFixture {
 export function buildFixtureFromExchange(exchange: CapturedExchange, sequence: number): BuiltFixture {
   const { pathname, path } = splitUrl(exchange.url);
 
-  const responseHeaders = flattenHeaders(exchange.responseHeaders ?? {});
+  // `compactHeaders`, not `flattenHeaders` — the latter comma-joins a
+  // multi-value header (e.g. more than one `Set-Cookie`), which is exactly
+  // wrong here: `detour serve` re-emits `responseHeaders` onto a real
+  // response later, and a comma-joined `Set-Cookie` is not a valid way to
+  // send more than one cookie (each must stay on its own header line).
+  const responseHeaders = compactHeaders(exchange.responseHeaders ?? {});
   for (const key of Object.keys(responseHeaders)) {
     if (DROPPED_RESPONSE_HEADERS.has(key.toLowerCase())) delete responseHeaders[key];
   }
