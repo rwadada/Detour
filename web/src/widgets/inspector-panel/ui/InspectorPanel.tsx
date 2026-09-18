@@ -120,7 +120,7 @@ export function InspectorPanel() {
             {exchange.clientProcess && (
               <span
                 className="rounded bg-[var(--row-hover)] px-1.5 py-0.5 text-xs text-[var(--muted)]"
-                title={`Sent by the local process ${exchange.clientProcess.name} (pid ${exchange.clientProcess.pid}) — issue #147, macOS-only`}
+                title={`Sent by the local process ${exchange.clientProcess.name} (pid ${exchange.clientProcess.pid}) — macOS only`}
               >
                 client: {exchange.clientProcess.name}
               </span>

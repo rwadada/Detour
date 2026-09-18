@@ -43,7 +43,7 @@ import {
   sendMockSimulate,
   type MockResponse,
 } from './actionsRuntime';
-import { isClientProcessLookupSupported, lookupClientProcess } from './clientProcessLookup';
+import { ClientProcessDirectory, isClientProcessLookupSupported } from './clientProcessLookup';
 import { ProxyEngine } from './engine/proxyEngine';
 import type { ErrorCallback, IContext, IWebSocketContext } from './engine/types';
 import { createThrottleTransform } from './throttleTransform';
@@ -176,6 +176,7 @@ function toBuffer(data: unknown): Buffer {
 function buildBaseExchange(
   ctx: IContext,
   info: { url: string; method: string; host: string; ruleName: string | undefined },
+  clientProcessDirectory: ClientProcessDirectory | undefined,
 ): CapturedExchange {
   const exchange: CapturedExchange = {
     id: ctx.uuid,
@@ -194,35 +195,20 @@ function buildBaseExchange(
     startedAt: Date.now(),
     ruleName: info.ruleName,
   };
-  attachClientProcess(exchange, ctx);
-  return exchange;
-}
-
-/**
- * Kicks off issue #147's best-effort local-client-process lookup and
- * patches `exchange.clientProcess` once (if) it resolves — fire-and-forget,
- * never delaying or failing the request itself. Mutates `exchange` in place
- * rather than returning a value, since by the time this settles the
- * `request`/`response` events built from the very same object may already
- * be queued or sent; a later `eventBus.emit` picks up the mutation as long
- * as it hasn't fired yet, and even a `response` that already went out
- * without it is a client identified late, not one identified wrong.
- */
-function attachClientProcess(exchange: CapturedExchange, ctx: IContext): void {
-  if (!isClientProcessLookupSupported()) return;
-  const { remoteAddress, remotePort } = ctx.clientToProxyRequest.socket;
-  if (remoteAddress === undefined || remotePort === undefined) return;
-  lookupClientProcess(nodeCommandRunner, remoteAddress, remotePort)
-    .then((clientProcess) => {
+  // Synchronous (issue #147) — reads whatever background-polled snapshot
+  // `clientProcessDirectory` already has in hand (see its own doc comment
+  // for why this can't be an async per-request lookup instead: a Block
+  // Hosts/`mock` response's `request`/`response` events can both fire in
+  // this very same tick, with no later "exchange updated" message this
+  // event bus's protocol has room for). `undefined` on non-macOS hosts.
+  if (clientProcessDirectory) {
+    const { remoteAddress, remotePort } = ctx.clientToProxyRequest.socket;
+    if (remoteAddress !== undefined && remotePort !== undefined) {
+      const clientProcess = clientProcessDirectory.lookup(remoteAddress, remotePort);
       if (clientProcess) exchange.clientProcess = clientProcess;
-    })
-    .catch(() => {
-      // `lookupClientProcess` itself already reduces every failure to a
-      // resolved `undefined` — this is pure defense-in-depth against a
-      // future change there reintroducing an unhandled rejection, which
-      // would otherwise surface as an UNHANDLED_REJECTION for something
-      // that was only ever supposed to be a best-effort annotation.
-    });
+    }
+  }
+  return exchange;
 }
 
 /**
@@ -321,6 +307,15 @@ export async function startProxyServer(
   // at this line) — reassigning it here is enough for a subsequent request
   // to see the new engine, with no further wiring per call site.
   let ruleEngine = options.ruleEngine;
+  // Issue #147, macOS-only (see `ClientProcessDirectory`'s own doc comment
+  // for why this polls in the background rather than looking up per
+  // request) — `undefined` everywhere else, so `buildBaseExchange`'s lookup
+  // is skipped entirely rather than starting a directory that could never
+  // find anything.
+  const clientProcessDirectory = isClientProcessLookupSupported()
+    ? new ClientProcessDirectory(nodeCommandRunner)
+    : undefined;
+  clientProcessDirectory?.start();
   // Keyed by ctx.uuid so the request-phase and response-phase handlers
   // (which fire as separate callbacks) can agree on the same exchange.
   const inFlight = new Map<string, CapturedExchange>();
@@ -1201,12 +1196,11 @@ export async function startProxyServer(
       const method = ctx.clientToProxyRequest.method ?? 'GET';
 
       if (isHostBlocked(blockHostsState.hosts, reqHost)) {
-        const exchange = buildBaseExchange(ctx, {
-          url,
-          method,
-          host: reqHost,
-          ruleName: `block-hosts (${blockHostsState.mode})`,
-        });
+        const exchange = buildBaseExchange(
+          ctx,
+          { url, method, host: reqHost, ruleName: `block-hosts (${blockHostsState.mode})` },
+          clientProcessDirectory,
+        );
         inFlight.set(ctx.uuid, exchange);
         // A blocked request never forwards to upstream (callback() is never
         // called below), so the usual onRequestData/onRequestEnd hooks never
@@ -1270,7 +1264,7 @@ export async function startProxyServer(
       // just the last one, so the dashboard's badge/tooltip (`RuleBadge`)
       // doesn't silently hide that a second rule also matched.
       const ruleName = [...rewrites, ...(terminal ? [terminal] : [])].map((r) => r.name).join(', ') || undefined;
-      const exchange = buildBaseExchange(ctx, { url, method, host: reqHost, ruleName });
+      const exchange = buildBaseExchange(ctx, { url, method, host: reqHost, ruleName }, clientProcessDirectory);
       inFlight.set(ctx.uuid, exchange);
 
       // Apply every matching `rewrite` rule's request path/query/header
@@ -1651,6 +1645,7 @@ export async function startProxyServer(
                 eventBus.off('setFocus', handleSetFocus);
                 eventBus.off('setThrottle', handleSetThrottle);
                 eventBus.off('setBlockHosts', handleSetBlockHosts);
+                clientProcessDirectory?.stop();
                 ruleEngine?.close();
                 proxy.close();
                 res();

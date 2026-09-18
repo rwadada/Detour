@@ -1,17 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommandResult, CommandRunner } from '../../usecase/ports/commandRunner';
-import { lookupClientProcess, parseLsofFieldOutput } from './clientProcessLookup';
+import { ClientProcessDirectory, parseLsofFieldOutput } from './clientProcessLookup';
 
 function fakeRunner(handler: (command: string, args: string[]) => CommandResult): CommandRunner {
   return { run: async (command, args) => handler(command, args) };
 }
 
-function throwingRunner(err: unknown): CommandRunner {
-  return {
-    run: async () => {
-      throw err;
-    },
-  };
+/** Flushes pending microtasks (a `refresh()` call's own `await`s) without depending on fake-timer-controlled macrotasks — `vi.useFakeTimers()` only fakes `setTimeout`/`setInterval`, not native Promise resolution. */
+function flushMicrotasks(): Promise<void> {
+  return Promise.resolve().then(() => Promise.resolve());
 }
 
 describe('parseLsofFieldOutput', () => {
@@ -60,30 +57,103 @@ describe('parseLsofFieldOutput', () => {
   });
 });
 
-describe('lookupClientProcess', () => {
-  it('finds the process whose local address:port matches the given client endpoint', async () => {
-    const runner = fakeRunner((command, args) => {
-      expect(command).toBe('lsof');
-      expect(args).toEqual(['-n', '-P', '-iTCP', '-sTCP:ESTABLISHED', '-F', 'pcn']);
-      return {
+describe('ClientProcessDirectory', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('has nothing to find before the first refresh completes', () => {
+    const directory = new ClientProcessDirectory(
+      fakeRunner(() => ({
         stdout: ['p777', 'cSafari', 'f4', 'n127.0.0.1:54321->127.0.0.1:8080'].join('\n'),
         stderr: '',
-      };
-    });
+      })),
+    );
+    expect(directory.lookup('127.0.0.1', 54321)).toBeUndefined();
+  });
 
-    await expect(lookupClientProcess(runner, '127.0.0.1', 54321)).resolves.toEqual({ pid: 777, name: 'Safari' });
+  it('finds the process whose local address:port matches after start() runs its first refresh', async () => {
+    const directory = new ClientProcessDirectory(
+      fakeRunner((command, args) => {
+        expect(command).toBe('lsof');
+        expect(args).toEqual(['-n', '-P', '-iTCP', '-sTCP:ESTABLISHED', '-F', 'pcn']);
+        return { stdout: ['p777', 'cSafari', 'f4', 'n127.0.0.1:54321->127.0.0.1:8080'].join('\n'), stderr: '' };
+      }),
+    );
+
+    directory.start();
+    await flushMicrotasks();
+
+    expect(directory.lookup('127.0.0.1', 54321)).toEqual({ pid: 777, name: 'Safari' });
+    directory.stop();
+  });
+
+  it('refreshes again on the next interval tick, picking up a since-closed/opened connection', async () => {
+    let stdout = ['p1', 'cFirst', 'f1', 'n127.0.0.1:1->127.0.0.1:8080'].join('\n');
+    const directory = new ClientProcessDirectory(fakeRunner(() => ({ stdout, stderr: '' })));
+
+    directory.start();
+    await flushMicrotasks();
+    expect(directory.lookup('127.0.0.1', 1)).toEqual({ pid: 1, name: 'First' });
+
+    stdout = ['p2', 'cSecond', 'f1', 'n127.0.0.1:2->127.0.0.1:8080'].join('\n');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(directory.lookup('127.0.0.1', 1)).toBeUndefined();
+    expect(directory.lookup('127.0.0.1', 2)).toEqual({ pid: 2, name: 'Second' });
+
+    directory.stop();
+  });
+
+  it('stop() halts further refreshes', async () => {
+    let calls = 0;
+    const directory = new ClientProcessDirectory(
+      fakeRunner(() => {
+        calls++;
+        return { stdout: '', stderr: '' };
+      }),
+    );
+
+    directory.start();
+    await flushMicrotasks();
+    expect(calls).toBe(1);
+
+    directory.stop();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(calls).toBe(1);
+  });
+
+  it('keeps the previous snapshot (rather than clearing it) when a refresh throws', async () => {
+    let shouldFail = false;
+    const directory = new ClientProcessDirectory(
+      fakeRunner(() => {
+        if (shouldFail) throw new Error('ENOENT');
+        return { stdout: ['p1', 'cSafari', 'f1', 'n127.0.0.1:1->127.0.0.1:8080'].join('\n'), stderr: '' };
+      }),
+    );
+    directory.start();
+    await flushMicrotasks();
+    expect(directory.lookup('127.0.0.1', 1)).toEqual({ pid: 1, name: 'Safari' });
+
+    shouldFail = true;
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(directory.lookup('127.0.0.1', 1)).toEqual({ pid: 1, name: 'Safari' });
+    directory.stop();
   });
 
   it('resolves undefined when no connection matches the given endpoint', async () => {
-    const runner = fakeRunner(() => ({
-      stdout: ['p777', 'cSafari', 'f4', 'n127.0.0.1:1->127.0.0.1:8080'].join('\n'),
-      stderr: '',
-    }));
+    const directory = new ClientProcessDirectory(
+      fakeRunner(() => ({ stdout: ['p777', 'cSafari', 'f4', 'n127.0.0.1:1->127.0.0.1:8080'].join('\n'), stderr: '' })),
+    );
+    directory.start();
+    await flushMicrotasks();
 
-    await expect(lookupClientProcess(runner, '127.0.0.1', 54321)).resolves.toBeUndefined();
-  });
-
-  it('resolves undefined (rather than rejecting) when lsof is missing or fails', async () => {
-    await expect(lookupClientProcess(throwingRunner(new Error('ENOENT')), '127.0.0.1', 1)).resolves.toBeUndefined();
+    expect(directory.lookup('127.0.0.1', 54321)).toBeUndefined();
+    directory.stop();
   });
 });

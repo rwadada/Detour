@@ -22,7 +22,7 @@ interface LsofConnection {
 }
 
 /**
- * Parses `lsof -F pcn` field-mode output (see `lookupClientProcess`'s own
+ * Parses `lsof -F pcn` field-mode output (see `ClientProcessDirectory`'s own
  * command line) into one entry per open TCP connection. Field mode is used
  * instead of `lsof`'s default column-aligned text specifically to avoid
  * guessing column widths/positions — a long command name (e.g. "Google
@@ -64,34 +64,72 @@ export function parseLsofFieldOutput(output: string): LsofConnection[] {
   return connections;
 }
 
+/** How often the background snapshot refreshes — bounds both the `lsof` overhead (one spawn per interval, not per request) and how stale a just-opened connection can appear before showing up. */
+const REFRESH_INTERVAL_MS = 2000;
+
 /**
- * Identifies the local process that owns the client→proxy TCP connection at
- * `clientAddress:clientPort` (a captured exchange's
- * `req.socket.remoteAddress`/`remotePort`, as seen by the proxy — i.e. the
- * *client's* end of that socket) — issue #147. Only ever finds a match when
- * the client itself is a process on this same machine (a local
- * simulator/desktop app, not a physical device elsewhere on the LAN),
- * which is exactly the case this issue is about.
- *
- * Best-effort by design: `lsof` missing, denied (e.g. sandboxing), erroring,
- * or simply not finding a match (the connection already closed, a
- * non-local client) all resolve to `undefined` rather than rejecting —
- * this is a nice-to-have annotation on a capture, never something that
- * should affect capturing the exchange itself.
+ * Background-polled snapshot of established TCP connections, keyed for
+ * `lookupClientProcess`'s synchronous lookups (issue #147). Deliberately not
+ * "run `lsof` per request": every captured exchange building its own
+ * `CapturedExchange` needs an answer before that exchange's *first*
+ * `request`/`response` broadcast — which, for a fast path like Block Hosts
+ * or a `mock` rule, can fire in the very same tick with no network
+ * round-trip to "hide" an async subprocess spawn behind. An async
+ * per-request lookup that resolves after that first broadcast would almost
+ * always miss it entirely, since this event bus only ever sends full
+ * snapshots at emit time — there's no separate "exchange updated" message
+ * a late result could ride in on. Polling in the background instead makes
+ * every lookup synchronous (reading whatever snapshot is already in hand)
+ * at the one-time cost of a stale window bounded by `REFRESH_INTERVAL_MS`,
+ * and caps `lsof` overhead to one spawn per interval regardless of traffic
+ * volume rather than one per exchange.
  */
-export async function lookupClientProcess(
-  runner: CommandRunner,
-  clientAddress: string,
-  clientPort: number,
-): Promise<ClientProcessInfo | undefined> {
-  let stdout: string;
-  try {
-    ({ stdout } = await runner.run('lsof', ['-n', '-P', '-iTCP', '-sTCP:ESTABLISHED', '-F', 'pcn']));
-  } catch {
-    return undefined;
+export class ClientProcessDirectory {
+  private connections: LsofConnection[] = [];
+  private timer: ReturnType<typeof setInterval> | undefined;
+
+  constructor(private readonly runner: CommandRunner) {}
+
+  /** Idempotent — a second call while already running is a no-op. Refreshes immediately (not just on the first interval tick) so an exchange captured right after startup still has a reasonable chance of a populated snapshot. */
+  start(): void {
+    if (this.timer) return;
+    void this.refresh();
+    this.timer = setInterval(() => void this.refresh(), REFRESH_INTERVAL_MS);
+    // Never keeps the process alive on its own — this is a background
+    // convenience, not something `detour start`'s own shutdown should have
+    // to wait on if `stop()` is ever missed on some exit path.
+    this.timer.unref?.();
   }
-  const match = parseLsofFieldOutput(stdout).find(
-    (c) => c.localAddress === clientAddress && c.localPort === clientPort,
-  );
-  return match ? { pid: match.pid, name: match.command } : undefined;
+
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+  }
+
+  private async refresh(): Promise<void> {
+    try {
+      const { stdout } = await this.runner.run('lsof', ['-n', '-P', '-iTCP', '-sTCP:ESTABLISHED', '-F', 'pcn']);
+      this.connections = parseLsofFieldOutput(stdout);
+    } catch {
+      // `lsof` missing, denied (e.g. sandboxing), or erroring — leaves the
+      // previous (possibly empty) snapshot in place rather than wiping out
+      // an otherwise-still-useful cache over one transient failure. Every
+      // failure mode here is a nice-to-have annotation quietly going stale,
+      // never something that should affect capturing exchanges themselves.
+    }
+  }
+
+  /**
+   * Finds the process whose local address:port matches the given client
+   * endpoint (a captured exchange's `req.socket.remoteAddress`/
+   * `remotePort`) against the most recent background snapshot — up to
+   * `REFRESH_INTERVAL_MS` stale, never awaiting a fresh `lsof` run. Only
+   * ever finds a match when the client itself is a process on this same
+   * machine (a local simulator/desktop app, not a physical device
+   * elsewhere on the LAN), which is exactly the case issue #147 is about.
+   */
+  lookup(clientAddress: string, clientPort: number): ClientProcessInfo | undefined {
+    const match = this.connections.find((c) => c.localAddress === clientAddress && c.localPort === clientPort);
+    return match ? { pid: match.pid, name: match.command } : undefined;
+  }
 }

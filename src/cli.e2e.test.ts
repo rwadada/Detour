@@ -124,7 +124,12 @@ function startChunkedBodyServer(
         res.write(chunk);
         setTimeout(writeNext, 5);
       };
-      writeNext();
+      // Scheduled too (not called directly) — the doc comment above claims
+      // every write is on its own macrotask, but a synchronous first call
+      // here would let that first chunk get coalesced with the headers
+      // this same tick, weakening the "distinct reads" guarantee the test
+      // relies on (Copilot review, PR #153).
+      setTimeout(writeNext, 5);
     });
     server.on('error', reject);
     server.listen(0, '127.0.0.1', () => {
