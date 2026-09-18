@@ -3616,7 +3616,15 @@ describe('detour record / detour serve (issue #149, CLI end-to-end)', () => {
   /** Issues one plain (non-proxied) GET directly against `detour serve`'s own port, resolving with status/headers/body. */
   function directGet(port: number, requestPath: string): Promise<{ status: number; body: string }> {
     return new Promise((resolve, reject) => {
-      const req = http.request({ host: '127.0.0.1', port, path: requestPath, method: 'GET' }, (res) => {
+      // 'localhost', not '127.0.0.1': `detour serve` itself binds to the
+      // hostname 'localhost' (matching this codebase's convention
+      // elsewhere — see PROXY_HOST/resolveDashboardHost's doc comments),
+      // which some environments resolve to the IPv6 loopback (::1) instead
+      // of 127.0.0.1. Connecting with the same hostname the server bound
+      // to is what every other e2e test in this file does for exactly this
+      // reason — hardcoding the numeric IPv4 address here caused
+      // ECONNREFUSED in CI, where 'localhost' resolved to ::1.
+      const req = http.request({ host: 'localhost', port, path: requestPath, method: 'GET' }, (res) => {
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
         res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
