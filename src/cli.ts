@@ -1039,6 +1039,9 @@ function crashGuardUnhandledRejectionListener(reason: unknown): void {
 /** Default value of `--assertions` (issue #148) — unlike `--rules`'s auto-detection (which silently no-ops if `DEFAULT_RULES_FILENAME` isn't present), this filename is always the effective default, and `runTestCommand` fails fast if it doesn't exist. */
 const DEFAULT_TEST_ASSERTIONS_FILENAME = 'detour.test.json';
 
+/** Caps `runTestCommand`'s in-memory exchange array — see its `eventBus.on('response', ...)` listener's doc comment. */
+const MAX_CAPTURED_TEST_EXCHANGES = 10_000;
+
 interface TestOptions {
   assertions: string;
   rules?: string;
@@ -1094,11 +1097,20 @@ function resolveCaCertsForCommand(caCertPath: string): { path: string; cleanup: 
 function runCommandUnderProxy(command: string[], proxyUrl: string, caCertPath: string): Promise<number> {
   const [cmd, ...args] = command;
   const { path: nodeExtraCaCerts, cleanup } = resolveCaCertsForCommand(caCertPath);
+  // Stripped, not just left alone: many CI/dev environments already set
+  // NO_PROXY/no_proxy to something like "localhost,127.0.0.1" for their own
+  // reasons, which — inherited unchanged here — would make a proxy-aware
+  // HTTP client under test bypass detour entirely for exactly the hosts a
+  // local test run is most likely to hit, silently capturing zero exchanges
+  // rather than failing loudly.
+  const envWithoutNoProxy = { ...process.env };
+  delete envWithoutNoProxy.NO_PROXY;
+  delete envWithoutNoProxy.no_proxy;
   return new Promise<number>((resolve, reject) => {
     const child = spawn(cmd!, args, {
       stdio: 'inherit',
       env: {
-        ...process.env,
+        ...envWithoutNoProxy,
         HTTP_PROXY: proxyUrl,
         HTTPS_PROXY: proxyUrl,
         http_proxy: proxyUrl,
@@ -1165,8 +1177,28 @@ async function runTestCommand(command: string[], options: TestOptions): Promise<
   }
 
   const eventBus = new DetourEventBus();
+  // Mirrors `detour start`'s own wiring — without this, a proxy-level
+  // failure (a connect error, a broken tunnel) during the run would be
+  // silently dropped instead of explaining why a request never showed up
+  // as a captured exchange.
+  eventBus.on('error', logProxyError);
   const exchanges: CapturedExchange[] = [];
+  let exchangeCapWarned = false;
   eventBus.on('response', (exchange) => {
+    // Bounds memory use against a command under test that generates far
+    // more traffic than a contract-test run is expected to: once past the
+    // cap, later exchanges are dropped (evaluation just runs against
+    // whatever was captured) rather than growing this array — and thus
+    // detour test's own memory footprint — without limit toward an OOM.
+    if (exchanges.length >= MAX_CAPTURED_TEST_EXCHANGES) {
+      if (!exchangeCapWarned) {
+        console.error(
+          `⚠ detour test has captured ${MAX_CAPTURED_TEST_EXCHANGES} exchanges and will stop recording more to bound memory use — results below only reflect the first ${MAX_CAPTURED_TEST_EXCHANGES}.`,
+        );
+        exchangeCapWarned = true;
+      }
+      return;
+    }
     exchanges.push(exchange);
   });
 

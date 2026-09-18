@@ -3554,4 +3554,33 @@ describe('detour test (issue #148, CLI end-to-end)', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('strips an inherited NO_PROXY/no_proxy from the command under test (issue #148 review — it could otherwise bypass the proxy entirely for localhost)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-test-e2e-'));
+    try {
+      const assertionsPath = writeAssertionsFile(tmpDir, { assertions: [] });
+      const scriptPath = path.join(tmpDir, 'check-no-proxy.js');
+      fs.writeFileSync(
+        scriptPath,
+        `
+        if (process.env.NO_PROXY !== undefined || process.env.no_proxy !== undefined) process.exit(2);
+        process.exit(0);
+        `,
+      );
+
+      const result = await runTsx(
+        ['src/cli.ts', 'test', '--assertions', assertionsPath, '--', process.execPath, scriptPath],
+        {
+          cwd: REPO_ROOT,
+          reject: false,
+          timeout: 15_000,
+          env: { ...process.env, NO_PROXY: 'localhost,127.0.0.1', no_proxy: 'localhost,127.0.0.1' },
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
