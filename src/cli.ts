@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { Command } from 'commander';
@@ -7,6 +8,8 @@ import { CliExitError } from './domain/daemon/errors';
 import { isDumpLevel } from './domain/dump/dumpPolicy';
 import type { DumpLevel } from './domain/dump/dumpPolicy';
 import type { CapturedExchange } from './domain/exchange/types';
+import { buildFixtureFromExchange } from './domain/record/buildFixture';
+import { FixtureStore } from './domain/record/fixtureStore';
 import { SAMPLE_RULES_FILE } from './domain/rules/sample';
 import { findUnreachableRules } from './domain/rules/unreachableRules';
 import { isSetupTarget, SETUP_TARGETS } from './domain/setup/targets';
@@ -17,6 +20,7 @@ import { hashDashboardPassword } from './infra/dashboard/dashboardPasswordHash';
 import { startDashboardServer, WEB_DIST_DIR } from './infra/dashboard/dashboardServer';
 import { DetourEventBus } from './infra/eventBus';
 import { resolveDumpDir, writeExchangeDumpFile, writeWebSocketDumpFile } from './infra/fs/dumpFileWriter';
+import { loadFixtureFiles, writeFixtureFile } from './infra/fs/fixtureFileSource';
 import {
   findLiveRunState,
   isProcessAlive,
@@ -1042,6 +1046,27 @@ const DEFAULT_TEST_ASSERTIONS_FILENAME = 'detour.test.json';
 /** Caps `runTestCommand`'s in-memory exchange array — see its `eventBus.on('response', ...)` listener's doc comment. */
 const MAX_CAPTURED_TEST_EXCHANGES = 10_000;
 
+/** Loads a `RuleEngine` for `--rules` if given, shared by `runTestCommand` and `runRecordCommand` — neither watches for changes, since both are one-shot runs bounded by the command under test's own exit. */
+function loadOptionalRuleEngine(
+  rulesPath: string | undefined,
+  allowExternalScriptPaths: boolean,
+): RuleEngine | undefined {
+  if (!rulesPath) return undefined;
+  return RuleEngine.load({
+    filePath: rulesPath,
+    reader: fsRulesFileReader,
+    allowExternalScriptPaths,
+    watch: false,
+  });
+}
+
+/** An event bus with `detour start`'s own proxy-error logging already wired in, shared by `runTestCommand` and `runRecordCommand` — without it, a proxy-level failure (a connect error, a broken tunnel) during the run would be silently dropped instead of explaining why a request never showed up as a captured exchange. */
+function createEventBusWithErrorLogging(): DetourEventBus {
+  const eventBus = new DetourEventBus();
+  eventBus.on('error', logProxyError);
+  return eventBus;
+}
+
 interface TestOptions {
   assertions: string;
   rules?: string;
@@ -1177,23 +1202,8 @@ async function runTestCommand(command: string[], options: TestOptions): Promise<
   const testFile = loadTestFile(assertionsPath);
 
   const port = parsePort(options.port, '--port');
-
-  let ruleEngine: RuleEngine | undefined;
-  if (options.rules) {
-    ruleEngine = RuleEngine.load({
-      filePath: options.rules,
-      reader: fsRulesFileReader,
-      allowExternalScriptPaths: options.allowExternalScriptPaths ?? false,
-      watch: false,
-    });
-  }
-
-  const eventBus = new DetourEventBus();
-  // Mirrors `detour start`'s own wiring — without this, a proxy-level
-  // failure (a connect error, a broken tunnel) during the run would be
-  // silently dropped instead of explaining why a request never showed up
-  // as a captured exchange.
-  eventBus.on('error', logProxyError);
+  const ruleEngine = loadOptionalRuleEngine(options.rules, options.allowExternalScriptPaths ?? false);
+  const eventBus = createEventBusWithErrorLogging();
   const exchanges: CapturedExchange[] = [];
   let exchangeCapWarned = false;
   eventBus.on('response', (exchange) => {
@@ -1235,6 +1245,126 @@ async function runTestCommand(command: string[], options: TestOptions): Promise<
   } finally {
     await handle.stop();
   }
+}
+
+/** Default `--out` for `detour record`/positional dir shown in its help (issue #149). */
+const DEFAULT_FIXTURES_DIR = './fixtures';
+
+interface RecordOptions {
+  out: string;
+  rules?: string;
+  allowExternalScriptPaths?: boolean;
+  port: string;
+}
+
+/**
+ * `detour record` (issue #149): runs `command` with `HTTP_PROXY`/
+ * `HTTPS_PROXY` pointed at a fresh, single-run proxy instance — the same
+ * mechanism as `detour test` — and writes one fixture file per captured
+ * exchange to `--out`, for `detour serve` to replay later without a proxy
+ * at all. A passthrough exchange (Intercept off, or a host outside Focus)
+ * has nothing decrypted to replay and is skipped, as is one that never got
+ * a response at all (errored before headers arrived).
+ */
+async function runRecordCommand(command: string[], options: RecordOptions): Promise<void> {
+  if (command.length === 0) {
+    throw new Error(
+      'detour record requires a command to run traffic through the proxy, e.g. `detour record -- npm run e2e`',
+    );
+  }
+
+  const outDir = path.resolve(options.out);
+  const port = parsePort(options.port, '--port');
+  const ruleEngine = loadOptionalRuleEngine(options.rules, options.allowExternalScriptPaths ?? false);
+  const eventBus = createEventBusWithErrorLogging();
+  let sequence = 0;
+  let recordedCount = 0;
+  eventBus.on('response', (exchange) => {
+    if (exchange.passthrough || exchange.statusCode === undefined) return;
+    sequence += 1;
+    const { fixture, filename } = buildFixtureFromExchange(exchange, sequence);
+    writeFixtureFile(outDir, filename, fixture);
+    recordedCount += 1;
+  });
+
+  const handle = await startProxyServer({ port, ruleEngine }, eventBus);
+  const proxyUrl = `http://localhost:${handle.port}`;
+  console.log(`ℹ Proxy listening on ${proxyUrl} — recording to ${outDir} — running: ${command.join(' ')}`);
+
+  try {
+    const childExitCode = await runCommandUnderProxy(command, proxyUrl, handle.caCertPath);
+    console.log(`✔ Recorded ${recordedCount} exchange(s) to ${outDir}`);
+    if (childExitCode !== 0) {
+      console.error(`✖ Command exited with code ${childExitCode}`);
+      process.exitCode = childExitCode;
+    }
+  } finally {
+    await handle.stop();
+  }
+}
+
+interface ServeOptions {
+  port: string;
+}
+
+/**
+ * `detour serve <dir>` (issue #149): replays fixtures recorded by `detour
+ * record` as a plain HTTP mock server — no proxy, no TLS interception, no
+ * `HTTP_PROXY` env var for the client to set. A test's own HTTP client
+ * points its base URL directly at this server instead. Runs in the
+ * foreground until interrupted (`Ctrl+C`/`SIGTERM`) — there's no proxy or
+ * dashboard state here needing the graceful multi-step shutdown `detour
+ * start` has, so Node's own default signal handling is enough.
+ */
+async function runServeCommand(dir: string, options: ServeOptions): Promise<void> {
+  const fixturesDir = path.resolve(dir);
+  const fixtures = loadFixtureFiles(fixturesDir);
+  if (fixtures.length === 0) {
+    console.error(`⚠ No fixtures found in ${fixturesDir} — every request will get a 404.`);
+  }
+  const store = new FixtureStore(fixtures);
+  const port = parsePort(options.port, '--port');
+
+  const server = http.createServer((req, res) => {
+    const method = req.method ?? 'GET';
+    const requestPath = req.url ?? '/';
+    const fixture = store.findFixture(method, requestPath);
+    // Drains and discards any request body regardless of outcome below —
+    // matching is method+path only (see `FixtureStore`'s doc comment), so
+    // the body is never read, but leaving it unconsumed on a POST/PUT can
+    // make the client see a connection reset instead of this response.
+    req.resume();
+    if (!fixture) {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: `No fixture recorded for ${method} ${requestPath}` }));
+      return;
+    }
+    let body: Buffer | undefined;
+    if (fixture.responseBody !== undefined) {
+      const encoding = fixture.responseBodyEncoding === 'base64' ? 'base64' : 'utf8';
+      body = Buffer.from(fixture.responseBody, encoding);
+    }
+    // Node's `writeHead` overload picks its meaning from the 2nd argument's
+    // type — passing `undefined` there for a fixture with no statusMessage
+    // would be read as "this is the headers argument", not "message
+    // omitted", silently dropping the real headers object in the 3rd
+    // position instead of using it.
+    if (fixture.statusMessage) {
+      res.writeHead(fixture.status, fixture.statusMessage, fixture.responseHeaders);
+    } else {
+      res.writeHead(fixture.status, fixture.responseHeaders);
+    }
+    res.end(body);
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, () => resolve());
+  });
+
+  const address = server.address();
+  const actualPort = address && typeof address === 'object' ? address.port : port;
+  console.log(`DETOUR_SERVE_READY port=${actualPort} fixtures=${fixtures.length} dir=${fixturesDir}`);
 }
 
 export function createCli(): Command {
@@ -1569,6 +1699,50 @@ export function createCli(): Command {
     .action(async (command: string[], options: TestOptions) => {
       try {
         await runTestCommand(command, options);
+      } catch (err) {
+        console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('record')
+    .description(
+      `Runs a command with HTTP_PROXY/HTTPS_PROXY pointed at a fresh proxy instance and records every captured exchange as a fixture file, for \`detour serve\` to replay later without a proxy at all (issue #149)`,
+    )
+    .argument('<command...>', 'Command to run under the proxy, e.g. `detour record -- npm run e2e`')
+    .option(
+      '--out <dir>',
+      `Directory to write fixture files to (default: ${DEFAULT_FIXTURES_DIR})`,
+      DEFAULT_FIXTURES_DIR,
+    )
+    .option(
+      '--rules <path>',
+      'Path to a rules file to apply while recording (e.g. to mock a flaky third-party dependency) — same format as `detour start --rules`, loaded once and not watched for changes.',
+    )
+    .option(
+      '--allow-external-script-paths',
+      "Allow a rule's `script.path`/`mock.bodyFile` to resolve outside the directory rules.json lives in (including an absolute path) instead of being rejected — see `detour start`'s flag of the same name.",
+    )
+    .option('-p, --port <port>', 'Port the proxy listens on (default: an ephemeral free port)', '0')
+    .action(async (command: string[], options: RecordOptions) => {
+      try {
+        await runRecordCommand(command, options);
+      } catch (err) {
+        console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('serve <dir>')
+    .description(
+      "Replays fixtures recorded by `detour record` as a plain HTTP mock server — no proxy, no TLS interception; point a test's own HTTP client base URL directly at it instead (issue #149)",
+    )
+    .option('-p, --port <port>', 'Port the mock server listens on', '8081')
+    .action(async (dir: string, options: ServeOptions) => {
+      try {
+        await runServeCommand(dir, options);
       } catch (err) {
         console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;

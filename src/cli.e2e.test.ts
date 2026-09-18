@@ -3584,3 +3584,169 @@ describe('detour test (issue #148, CLI end-to-end)', () => {
     }
   });
 });
+
+describe('detour record / detour serve (issue #149, CLI end-to-end)', () => {
+  /** Writes a small standalone Node script issuing one proxied GET for `upstreamPath` — same shape as `detour test`'s own `writeProxiedGetScript`, reproduced here since these describe blocks don't share helpers. */
+  function writeProxiedGetScript(tmpDir: string, upstreamPort: number, upstreamPath: string): string {
+    const scriptPath = path.join(tmpDir, 'client.js');
+    fs.writeFileSync(
+      scriptPath,
+      `
+      const http = require('http');
+      const proxyUrl = new URL(process.env.HTTP_PROXY);
+      const req = http.request(
+        {
+          host: proxyUrl.hostname,
+          port: proxyUrl.port,
+          path: 'http://127.0.0.1:${upstreamPort}${upstreamPath}',
+          method: 'GET',
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => process.exit(0));
+        },
+      );
+      req.on('error', (err) => { console.error(err); process.exit(1); });
+      req.end();
+      `,
+    );
+    return scriptPath;
+  }
+
+  /** Issues one plain (non-proxied) GET directly against `detour serve`'s own port, resolving with status/headers/body. */
+  function directGet(port: number, requestPath: string): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port, path: requestPath, method: 'GET' }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  /** Starts `detour serve <dir>` and waits for its DETOUR_SERVE_READY line, returning its port and a `kill()` to stop it — mirrors `startDetourCli`'s own ready-banner-polling shape for `detour start`. */
+  async function startDetourServe(dir: string, port = 0): Promise<{ port: number; kill: () => Promise<void> }> {
+    const subprocess = runTsx([path.join(REPO_ROOT, 'src/cli.ts'), 'serve', dir, '--port', String(port)], {
+      cwd: REPO_ROOT,
+      reject: false,
+    });
+    let stdout = '';
+    subprocess.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    const start = Date.now();
+    while (!/DETOUR_SERVE_READY/.test(stdout)) {
+      if (Date.now() - start > 10_000) {
+        subprocess.kill();
+        throw new Error(`detour serve never printed its ready line.\nstdout: ${stdout}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const portMatch = stdout.match(/DETOUR_SERVE_READY port=(\d+)/);
+    if (!portMatch) throw new Error(`could not parse serve port from stdout: ${stdout}`);
+    return {
+      port: Number(portMatch[1]),
+      kill: async () => {
+        subprocess.kill('SIGTERM');
+        await subprocess.catch(() => {});
+      },
+    };
+  }
+
+  it('records a real proxied exchange as a fixture file under --out', async () => {
+    const upstream = await startEchoServer();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-record-e2e-'));
+    const outDir = path.join(tmpDir, 'fixtures');
+    try {
+      const scriptPath = writeProxiedGetScript(tmpDir, upstream.port, '/orders/1');
+
+      const result = await runTsx(['src/cli.ts', 'record', '--out', outDir, '--', process.execPath, scriptPath], {
+        cwd: REPO_ROOT,
+        reject: false,
+        timeout: 15_000,
+      });
+
+      expect(result.exitCode).toBe(0);
+      const files = fs.readdirSync(outDir).filter((name) => name.endsWith('.json'));
+      expect(files).toHaveLength(1);
+      const fixture = JSON.parse(fs.readFileSync(path.join(outDir, files[0]!), 'utf8'));
+      expect(fixture.method).toBe('GET');
+      expect(fixture.path).toBe('/orders/1');
+      expect(fixture.status).toBe(200);
+      expect(JSON.parse(fixture.responseBody)).toMatchObject({ method: 'GET', path: '/orders/1' });
+    } finally {
+      await upstream.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('detour serve replays a hand-written fixture with no proxy involved at all', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-serve-e2e-'));
+    let serve: { port: number; kill: () => Promise<void> } | undefined;
+    try {
+      fs.mkdirSync(tmpDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, '00001-get-orders-1.json'),
+        JSON.stringify({
+          method: 'GET',
+          path: '/orders/1',
+          status: 200,
+          responseHeaders: { 'content-type': 'application/json' },
+          responseBody: '{"id":1,"name":"widget"}',
+        }),
+      );
+
+      serve = await startDetourServe(tmpDir);
+      const result = await directGet(serve.port, '/orders/1');
+
+      expect(result.status).toBe(200);
+      expect(JSON.parse(result.body)).toEqual({ id: 1, name: 'widget' });
+    } finally {
+      await serve?.kill();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('detour serve responds 404 with a clear body for a request with no matching fixture', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-serve-e2e-'));
+    let serve: { port: number; kill: () => Promise<void> } | undefined;
+    try {
+      serve = await startDetourServe(tmpDir);
+      const result = await directGet(serve.port, '/unrecorded');
+
+      expect(result.status).toBe(404);
+      expect(JSON.parse(result.body).error).toContain('/unrecorded');
+    } finally {
+      await serve?.kill();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('round-trips: records real traffic with `detour record`, then replays it with `detour serve` — no proxy on the replay side', async () => {
+    const upstream = await startEchoServer();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-record-serve-e2e-'));
+    const outDir = path.join(tmpDir, 'fixtures');
+    let serve: { port: number; kill: () => Promise<void> } | undefined;
+    try {
+      const scriptPath = writeProxiedGetScript(tmpDir, upstream.port, '/orders/42');
+      const recordResult = await runTsx(['src/cli.ts', 'record', '--out', outDir, '--', process.execPath, scriptPath], {
+        cwd: REPO_ROOT,
+        reject: false,
+        timeout: 15_000,
+      });
+      expect(recordResult.exitCode).toBe(0);
+
+      serve = await startDetourServe(outDir);
+      const replayed = await directGet(serve.port, '/orders/42');
+
+      expect(replayed.status).toBe(200);
+      expect(JSON.parse(replayed.body)).toMatchObject({ method: 'GET', path: '/orders/42' });
+    } finally {
+      await serve?.kill();
+      await upstream.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
