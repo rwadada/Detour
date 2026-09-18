@@ -24,6 +24,13 @@ export interface ExchangeTiming {
   transferMs?: number;
 }
 
+/** Identifies the local process that owned a captured exchange's client→proxy TCP connection (issue #147) — see `CapturedExchange.clientProcess`. */
+export interface ClientProcessInfo {
+  pid: number;
+  /** The owning process's executable/command name, e.g. `Safari` or `node` — not a full path. */
+  name: string;
+}
+
 /**
  * A single HTTP(S) request/response pair captured by the proxy.
  * This is the shape shared over the in-memory event bus, and later
@@ -70,6 +77,17 @@ export interface CapturedExchange {
   durationMs?: number;
   /** DNS/TCP/TLS/TTFB/transfer breakdown of `durationMs` (issue #140) — see `ExchangeTiming`. Undefined for an exchange that never reached upstream. */
   timing?: ExchangeTiming;
+  /**
+   * The local process that opened the client→proxy TCP connection this
+   * exchange arrived on (issue #147, macOS-only) — identifies which app on
+   * *this* machine sent the request, useful when debugging a local
+   * simulator/desktop app rather than a physical device on the LAN.
+   * Undefined whenever it couldn't be determined: a non-macOS host (see
+   * `isClientProcessLookupSupported`), a client connecting from a different
+   * machine (nothing on this host owns that socket), or the lookup losing
+   * the race against the connection already having closed.
+   */
+  clientProcess?: ClientProcessInfo;
 
   error?: string;
   /** Name of the rules.json rule that handled this exchange, if any. */
