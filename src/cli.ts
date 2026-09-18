@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -5,10 +6,13 @@ import { Command } from 'commander';
 import { CliExitError } from './domain/daemon/errors';
 import { isDumpLevel } from './domain/dump/dumpPolicy';
 import type { DumpLevel } from './domain/dump/dumpPolicy';
+import type { CapturedExchange } from './domain/exchange/types';
 import { SAMPLE_RULES_FILE } from './domain/rules/sample';
 import { findUnreachableRules } from './domain/rules/unreachableRules';
 import { isSetupTarget, SETUP_TARGETS } from './domain/setup/targets';
 import type { SetupTarget } from './domain/setup/targets';
+import { evaluateAssertions } from './domain/test/evaluate';
+import { formatTestReport } from './domain/test/report';
 import { hashDashboardPassword } from './infra/dashboard/dashboardPasswordHash';
 import { startDashboardServer, WEB_DIST_DIR } from './infra/dashboard/dashboardServer';
 import { DetourEventBus } from './infra/eventBus';
@@ -22,6 +26,7 @@ import {
 } from './infra/fs/runStateStore';
 import { fsRuleProfileStore } from './infra/fs/ruleProfileStore';
 import { fsFileWatcher, fsRulesFileReader, fsRulesFileWriter, loadRulesFile } from './infra/fs/rulesFileSource';
+import { loadTestFile } from './infra/fs/testFileSource';
 import type { UserConfig } from './infra/fs/userConfigStore';
 import { loadUserConfig, resolveUserConfigPath, writeUserConfig } from './infra/fs/userConfigStore';
 import { buildGrpcExchangeInfo } from './infra/grpc/grpcExchangeInfo';
@@ -1031,6 +1036,207 @@ function crashGuardUnhandledRejectionListener(reason: unknown): void {
   process.exitCode = 1;
 }
 
+/** Default value of `--assertions` (issue #148) — unlike `--rules`'s auto-detection (which silently no-ops if `DEFAULT_RULES_FILENAME` isn't present), this filename is always the effective default, and `runTestCommand` fails fast if it doesn't exist. */
+const DEFAULT_TEST_ASSERTIONS_FILENAME = 'detour.test.json';
+
+/** Caps `runTestCommand`'s in-memory exchange array — see its `eventBus.on('response', ...)` listener's doc comment. */
+const MAX_CAPTURED_TEST_EXCHANGES = 10_000;
+
+interface TestOptions {
+  assertions: string;
+  rules?: string;
+  allowExternalScriptPaths?: boolean;
+  port: string;
+}
+
+/**
+ * Resolves what `NODE_EXTRA_CA_CERTS` should be for the command under test.
+ * If the parent process (or its own environment) already has one set, that
+ * bundle is trusted for a real reason — overwriting it with just detour's
+ * own CA would silently drop that trust for the command's whole run. Node
+ * only ever reads `NODE_EXTRA_CA_CERTS` as a single file, so the two are
+ * concatenated into a fresh temp file instead of simply picking one; the
+ * caller is responsible for deleting it (`cleanup`) once the command exits.
+ */
+function resolveCaCertsForCommand(caCertPath: string): { path: string; cleanup: () => void } {
+  const existing = process.env.NODE_EXTRA_CA_CERTS;
+  if (!existing) return { path: caCertPath, cleanup: () => {} };
+  let existingContents: string;
+  try {
+    existingContents = fs.readFileSync(existing, 'utf8');
+  } catch (err) {
+    throw new Error(
+      `Could not read the existing NODE_EXTRA_CA_CERTS bundle to merge it with detour's own CA: ${existing}\n  ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+  // `mkdtempSync` (not a predictable `<tmpdir>/detour-test-ca-<pid>-<ts>.pem`
+  // path built by hand) gets a securely, atomically created, uniquely-named
+  // directory from the OS — on a shared multi-user machine, a hand-built
+  // path is guessable ahead of time, letting another user pre-create a
+  // symlink there that a plain `writeFileSync` would happily follow.
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-test-ca-'));
+  const combinedPath = path.join(tmpDir, 'combined-ca.pem');
+  // `wx`: fails instead of following a pre-existing path (symlink or
+  // otherwise) at `combinedPath` — belt-and-suspenders alongside `mkdtemp`
+  // already giving this directory a name nothing else could have guessed.
+  fs.writeFileSync(combinedPath, `${existingContents}\n${fs.readFileSync(caCertPath, 'utf8')}`, { flag: 'wx' });
+  return {
+    path: combinedPath,
+    cleanup: () => {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        // Best-effort — a leftover temp dir in the OS tmp dir is harmless.
+      }
+    },
+  };
+}
+
+/** Runs `command` with the proxy env vars set, resolving with its exit code (or 1, if it was killed by a signal instead of exiting normally). */
+function runCommandUnderProxy(command: string[], proxyUrl: string, caCertPath: string): Promise<number> {
+  const [cmd, ...args] = command;
+  const { path: nodeExtraCaCerts, cleanup } = resolveCaCertsForCommand(caCertPath);
+  // Stripped, not just left alone: many CI/dev environments already set
+  // NO_PROXY/no_proxy to something like "localhost,127.0.0.1" for their own
+  // reasons, which — inherited unchanged here — would make a proxy-aware
+  // HTTP client under test bypass detour entirely for exactly the hosts a
+  // local test run is most likely to hit, silently capturing zero exchanges
+  // rather than failing loudly.
+  const envWithoutNoProxy = { ...process.env };
+  delete envWithoutNoProxy.NO_PROXY;
+  delete envWithoutNoProxy.no_proxy;
+  return new Promise<number>((resolve, reject) => {
+    // `spawn()` reports most failures (bad command, ENOENT) asynchronously
+    // via the 'error' event below, but it can also throw synchronously for
+    // a handful of argument-validation failures — a try/catch here is what
+    // makes `cleanup()` (deleting the temp CA-bundle directory) run on that
+    // path too, instead of only on the two async outcomes.
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(cmd!, args, {
+        stdio: 'inherit',
+        env: {
+          ...envWithoutNoProxy,
+          HTTP_PROXY: proxyUrl,
+          HTTPS_PROXY: proxyUrl,
+          http_proxy: proxyUrl,
+          https_proxy: proxyUrl,
+          // Lets a Node-based command under test (npm test, playwright, …)
+          // trust the MITM'd HTTPS connections without a manual `detour
+          // cert export`/trust step of its own.
+          NODE_EXTRA_CA_CERTS: nodeExtraCaCerts,
+        },
+      });
+    } catch (err) {
+      cleanup();
+      reject(err);
+      return;
+    }
+    child.on('error', (err) => {
+      cleanup();
+      reject(err);
+    });
+    child.on('exit', (code, signal) => {
+      cleanup();
+      resolve(code ?? (signal ? 1 : 0));
+    });
+  });
+}
+
+/**
+ * `detour test` (issue #148): runs `command` with `HTTP_PROXY`/`HTTPS_PROXY`
+ * pointed at a fresh, single-run proxy instance, then evaluates every
+ * exchange captured during that run against a `detour test` assertions
+ * file (header presence, PII leaks, p95 latency — see domain/test/types.ts)
+ * — a communication contract test suitable for CI, built on the same
+ * proxy core as `detour start` rather than a separate implementation.
+ * Deliberately no `--headless`/`--exit-on-idle`/dashboard/run-state
+ * tracking here: `command`'s own exit is what ends the run, and this is a
+ * one-shot CI step rather than a long-lived instance meant to be managed
+ * with `detour status`/`stop`.
+ */
+async function runTestCommand(command: string[], options: TestOptions): Promise<void> {
+  if (command.length === 0) {
+    throw new Error(
+      'detour test requires a command to run traffic through the proxy, e.g. `detour test -- npm run e2e`',
+    );
+  }
+
+  const assertionsPath = path.resolve(options.assertions);
+  if (!fs.existsSync(assertionsPath)) {
+    throw new Error(
+      `Test assertions file not found: ${assertionsPath}\n` +
+        `Pass --assertions <path>, or create ${DEFAULT_TEST_ASSERTIONS_FILENAME} in the current directory. Example:\n` +
+        `{\n  "assertions": [\n    { "type": "headerPresent", "name": "orders API requires auth", "match": { "url": "https://api.example.com/orders*" }, "header": "Authorization" }\n  ]\n}`,
+    );
+  }
+  // Loaded eagerly — same reasoning as `--rules`/`.proto` in runStartBody —
+  // so a broken assertions file fails before the command under test ever
+  // runs, rather than after paying for a full (possibly slow) test run.
+  const testFile = loadTestFile(assertionsPath);
+
+  const port = parsePort(options.port, '--port');
+
+  let ruleEngine: RuleEngine | undefined;
+  if (options.rules) {
+    ruleEngine = RuleEngine.load({
+      filePath: options.rules,
+      reader: fsRulesFileReader,
+      allowExternalScriptPaths: options.allowExternalScriptPaths ?? false,
+      watch: false,
+    });
+  }
+
+  const eventBus = new DetourEventBus();
+  // Mirrors `detour start`'s own wiring — without this, a proxy-level
+  // failure (a connect error, a broken tunnel) during the run would be
+  // silently dropped instead of explaining why a request never showed up
+  // as a captured exchange.
+  eventBus.on('error', logProxyError);
+  const exchanges: CapturedExchange[] = [];
+  let exchangeCapWarned = false;
+  eventBus.on('response', (exchange) => {
+    // Bounds memory use against a command under test that generates far
+    // more traffic than a contract-test run is expected to: once past the
+    // cap, later exchanges are dropped (evaluation just runs against
+    // whatever was captured) rather than growing this array — and thus
+    // detour test's own memory footprint — without limit toward an OOM.
+    if (exchanges.length >= MAX_CAPTURED_TEST_EXCHANGES) {
+      if (!exchangeCapWarned) {
+        console.error(
+          `⚠ detour test has captured ${MAX_CAPTURED_TEST_EXCHANGES} exchanges and will stop recording more to bound memory use — results below only reflect the first ${MAX_CAPTURED_TEST_EXCHANGES}.`,
+        );
+        exchangeCapWarned = true;
+      }
+      return;
+    }
+    exchanges.push(exchange);
+  });
+
+  const handle = await startProxyServer({ port, ruleEngine }, eventBus);
+  const proxyUrl = `http://localhost:${handle.port}`;
+  console.log(`ℹ Proxy listening on ${proxyUrl} — running: ${command.join(' ')}`);
+
+  try {
+    const childExitCode = await runCommandUnderProxy(command, proxyUrl, handle.caCertPath);
+
+    const results = evaluateAssertions(testFile.assertions, exchanges);
+    console.log('');
+    console.log(formatTestReport(results));
+
+    const anyAssertionFailed = results.some((r) => !r.passed);
+    if (childExitCode !== 0) {
+      console.error(`✖ Command exited with code ${childExitCode}`);
+      process.exitCode = childExitCode;
+    } else if (anyAssertionFailed) {
+      process.exitCode = 1;
+    }
+  } finally {
+    await handle.stop();
+  }
+}
+
 export function createCli(): Command {
   const program = new Command();
 
@@ -1338,6 +1544,35 @@ export function createCli(): Command {
     .option(...setupHostOption)
     .action(async (options: SetupCommandOptions) => {
       await runSetupCommand('cleanup', options);
+    });
+
+  program
+    .command('test')
+    .description(
+      'Runs a command with HTTP_PROXY/HTTPS_PROXY pointed at a fresh proxy instance, then checks the captured traffic against a communication contract (header presence, PII leaks, p95 latency — issue #148)',
+    )
+    .argument('<command...>', 'Command to run under the proxy, e.g. `detour test -- npm run e2e`')
+    .option(
+      '--assertions <path>',
+      `Path to a test assertions file (default: ${DEFAULT_TEST_ASSERTIONS_FILENAME} in the current directory)`,
+      DEFAULT_TEST_ASSERTIONS_FILENAME,
+    )
+    .option(
+      '--rules <path>',
+      'Path to a rules file to apply while under test (e.g. to mock a flaky third-party dependency) — same format as `detour start --rules`, loaded once and not watched for changes.',
+    )
+    .option(
+      '--allow-external-script-paths',
+      "Allow a rule's `script.path`/`mock.bodyFile` to resolve outside the directory rules.json lives in (including an absolute path) instead of being rejected — see `detour start`'s flag of the same name.",
+    )
+    .option('-p, --port <port>', 'Port the proxy listens on (default: an ephemeral free port)', '0')
+    .action(async (command: string[], options: TestOptions) => {
+      try {
+        await runTestCommand(command, options);
+      } catch (err) {
+        console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
     });
 
   const rules = program.command('rules').description('Manage rules.json (the declarative rule engine config)');

@@ -1,4 +1,5 @@
 import Ajv, { type ErrorObject } from 'ajv';
+import { MATCH_JSON_SCHEMA, validateMatchSemantics } from './matchSchema';
 import type { BodyReplace, Rule, RulesFile } from './types';
 
 const headerRewriteSchema = {
@@ -100,19 +101,13 @@ export const RULES_JSON_SCHEMA = {
       },
     },
     match: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        method: {
-          oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }],
-        },
-        url: { type: 'string', minLength: 1 },
-        urlRegex: { type: 'string', minLength: 1 },
-        // Catches obvious typos at the schema stage; `validateSemantics` below
-        // still compiles the regex to catch flag *combinations* RegExp itself
-        // rejects (e.g. duplicate flags) and invalid `urlRegex` patterns.
-        urlRegexFlags: { type: 'string', pattern: '^[dgimsuvy]*$' },
-      },
+      ...MATCH_JSON_SCHEMA,
+      // A rewrite/mock/route rule needs a decisive target to act on, unlike
+      // a `detour test` assertion's own use of this same fragment (see
+      // `MATCH_JSON_SCHEMA`'s doc comment) — `validateSemantics` below still
+      // compiles `urlRegex`/`urlRegexFlags` to catch flag *combinations*
+      // RegExp itself rejects (e.g. duplicate flags) and invalid patterns
+      // this schema-level check alone can't.
       oneOf: [{ required: ['url'] }, { required: ['urlRegex'] }],
     },
     mockAction: {
@@ -291,6 +286,9 @@ function validateSemantics(data: RulesFile): string[] {
         const reason = err instanceof Error ? err.message : String(err);
         errors.push(`rules[${index}] (${label}): invalid urlRegex/urlRegexFlags: ${reason}`);
       }
+    }
+    for (const message of validateMatchSemantics(rule.match)) {
+      errors.push(`rules[${index}] (${label}): ${message}`);
     }
     if (rule.action?.type === 'rewrite') {
       const pathSet = rule.action.request?.path?.set;

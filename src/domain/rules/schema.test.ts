@@ -31,6 +31,20 @@ describe('validateRulesData', () => {
     expect(result.valid).toBe(false);
   });
 
+  it('rejects an empty string match.method (would otherwise silently match every method)', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ match: { url: 'https://api.example.com/*', method: '' } })],
+    });
+    expect(result.valid).toBe(false);
+  });
+
+  it('rejects an empty string inside a match.method array', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ match: { url: 'https://api.example.com/*', method: ['GET', ''] } })],
+    });
+    expect(result.valid).toBe(false);
+  });
+
   it('rejects an action whose type is not one of mock/route/rewrite/breakpoint', () => {
     const result = validateRulesData({ rules: [baseRule({ action: { type: 'bogus' } })] });
     expect(result.valid).toBe(false);
@@ -280,6 +294,14 @@ describe('validateRulesData', () => {
       rules: [baseRule({ match: { urlRegex: '^/api/.*$', urlRegexFlags: 'i' } })],
     });
     expect(result.valid).toBe(true);
+  });
+
+  it('rejects urlRegexFlags set alongside url instead of urlRegex (flags would be silently ignored)', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ match: { url: 'https://api.example.com/*', urlRegexFlags: 'i' } })],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('urlRegexFlags is set without match.urlRegex'))).toBe(true);
   });
 
   it('collects every validation error rather than stopping at the first', () => {

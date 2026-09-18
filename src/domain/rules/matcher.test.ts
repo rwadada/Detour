@@ -81,6 +81,19 @@ describe('findMatchingRule', () => {
     const rules = [compileRule(rule())];
     expect(findMatchingRule(rules, { method: 'GET', url: 'https://unrelated.example.com/x' })).toBeUndefined();
   });
+
+  it('matches every request consistently with a stateful `g` urlRegexFlags, not just every other one (regression: RegExp.lastIndex must reset between requests)', () => {
+    const rules = [
+      compileRule(rule({ match: { urlRegex: 'https://api\\.example\\.com/orders', urlRegexFlags: 'g' } })),
+    ];
+    const req = { method: 'GET', url: 'https://api.example.com/orders' };
+    // 3 calls against the exact same URL must all agree — a shared
+    // RegExp's advancing `lastIndex` (unreset between calls) would instead
+    // alternate matched/unmatched.
+    expect(findMatchingRule(rules, req)).toBeDefined();
+    expect(findMatchingRule(rules, req)).toBeDefined();
+    expect(findMatchingRule(rules, req)).toBeDefined();
+  });
 });
 
 describe('findMatchingRules', () => {

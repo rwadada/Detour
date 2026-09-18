@@ -121,6 +121,48 @@ A handful of `start` flags and top-level commands exist specifically for running
 
 If you always want `start` to run detached, `detour config --default-detach on` persists that to `~/.detour/config.json` so plain `detour start` (no `--detach`) runs detached from then on — override it back for one run with `--foreground`, or turn it off again with `detour config --default-detach off`. Running `detour config` alone prints the current value.
 
+## Communication contract tests (`detour test`, issue #148)
+
+`detour test` checks real captured traffic against a set of assertions — a communication contract test suitable for CI, rather than a debugging session:
+
+```bash
+detour test -- npm run e2e
+```
+
+It starts a fresh, single-run proxy instance, runs the given command with `HTTP_PROXY`/`HTTPS_PROXY` (and `NODE_EXTRA_CA_CERTS`, so a Node-based command trusts the MITM'd HTTPS connections automatically) pointed at it, waits for that command to exit, then evaluates every assertion in `detour.test.json` (or `--assertions <path>`) against the traffic captured during the run. Exits with the command's own exit code if it failed, `1` if any assertion failed, `0` otherwise. Pass `--rules <path>` to also apply a rules.json file (e.g. to mock a flaky third-party dependency) while under test.
+
+```json
+{
+  "assertions": [
+    {
+      "type": "headerPresent",
+      "name": "orders API requires auth",
+      "match": { "url": "https://api.example.com/orders*" },
+      "header": "Authorization"
+    },
+    {
+      "type": "noPiiLeak",
+      "name": "no PII leaves to third-party analytics",
+      "match": { "urlRegex": "^https://analytics\\.example\\.net/" },
+      "patterns": ["email", "creditCard", "ssn"]
+    },
+    {
+      "type": "latencyP95",
+      "name": "orders API stays fast",
+      "match": { "url": "https://api.example.com/orders*" },
+      "maxMs": 500
+    }
+  ]
+}
+```
+
+- `match`: same shape as a rules.json rule's own `match` (`url` glob or `urlRegex`/`urlRegexFlags`, optional `method`) — omit both `url`/`urlRegex` to match every captured exchange
+- `headerPresent`: fails if any matching exchange is missing `header` on its request (or response, with `phase: "response"`)
+- `noPiiLeak`: fails if a matching exchange's headers or body look like they contain a built-in (`patterns`: `email`/`creditCard`/`ssn`) or custom (`customPatterns`, raw regex source) PII pattern — heuristic, not a compliance-grade scanner, and the matched value itself is never printed, only which field it was found in
+- `latencyP95`: fails if the 95th-percentile `durationMs` across every matching exchange exceeds `maxMs`
+
+`headerPresent`/`latencyP95` also fail if `match` selects nothing at all (almost always a typo) unless `allowNoMatches: true` is set; `noPiiLeak` passes vacuously with zero matches.
+
 ## Rule engine (rules.json)
 
 Traffic routing, rewriting, and mock substitution can be declared declaratively.
