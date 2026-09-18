@@ -22,6 +22,26 @@ interface LsofConnection {
 }
 
 /**
+ * Normalizes an address to the form used for comparison between `lsof`'s
+ * `n<name>` field and `net.Socket.remoteAddress`/`remotePort`. The two sides
+ * don't always agree on shape for the same endpoint: a dual-stack listener
+ * (Node binding `::`, or in some environments even `localhost`) reports an
+ * IPv4 client's `remoteAddress` as an IPv4-mapped IPv6 literal like
+ * `::ffff:127.0.0.1`, while `lsof -n -P`'s plain `ip:port` names print the
+ * bare `127.0.0.1` — an exact string match would silently miss that
+ * connection even though the right process is right there in the snapshot.
+ * Strips a `::ffff:` prefix down to the embedded IPv4 address, and unwraps a
+ * bracketed IPv6 literal (`[::1]` -> `::1`), which `net.Socket.remoteAddress`
+ * never produces but is worth tolerating defensively either way.
+ */
+function normalizeAddress(address: string): string {
+  const bracketed = address.match(/^\[(.+)\]$/);
+  const unwrapped = bracketed ? bracketed[1]! : address;
+  const mapped = unwrapped.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  return mapped ? mapped[1]! : unwrapped;
+}
+
+/**
  * Parses `lsof -F pcn` field-mode output (see `ClientProcessDirectory`'s own
  * command line) into one entry per open TCP connection. Field mode is used
  * instead of `lsof`'s default column-aligned text specifically to avoid
@@ -59,7 +79,7 @@ export function parseLsofFieldOutput(output: string): LsofConnection[] {
     if (!endpoints) continue;
     const local = endpoints[1]!.match(/^(.+):(\d+)$/);
     if (!local) continue;
-    connections.push({ pid, command, localAddress: local[1]!, localPort: Number(local[2]) });
+    connections.push({ pid, command, localAddress: normalizeAddress(local[1]!), localPort: Number(local[2]) });
   }
   return connections;
 }
@@ -140,7 +160,8 @@ export class ClientProcessDirectory {
    * elsewhere on the LAN), which is exactly the case issue #147 is about.
    */
   lookup(clientAddress: string, clientPort: number): ClientProcessInfo | undefined {
-    const match = this.connections.find((c) => c.localAddress === clientAddress && c.localPort === clientPort);
+    const normalizedAddress = normalizeAddress(clientAddress);
+    const match = this.connections.find((c) => c.localAddress === normalizedAddress && c.localPort === clientPort);
     return match ? { pid: match.pid, name: match.command } : undefined;
   }
 }

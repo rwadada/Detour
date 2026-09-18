@@ -55,6 +55,13 @@ describe('parseLsofFieldOutput', () => {
   it('returns an empty array for empty output', () => {
     expect(parseLsofFieldOutput('')).toEqual([]);
   });
+
+  it('normalizes an IPv4-mapped IPv6 local address down to its plain IPv4 form', () => {
+    const output = ['p1', 'cnode', 'f1', 'n::ffff:127.0.0.1:54321->127.0.0.1:8080'].join('\n');
+    expect(parseLsofFieldOutput(output)).toEqual([
+      { pid: 1, command: 'node', localAddress: '127.0.0.1', localPort: 54321 },
+    ]);
+  });
 });
 
 describe('ClientProcessDirectory', () => {
@@ -180,6 +187,21 @@ describe('ClientProcessDirectory', () => {
     await vi.advanceTimersByTimeAsync(2000);
 
     expect(directory.lookup('127.0.0.1', 1)).toEqual({ pid: 1, name: 'Safari' });
+    directory.stop();
+  });
+
+  it('matches an IPv4-mapped IPv6 client address against a plain-IPv4 lsof snapshot', async () => {
+    const directory = new ClientProcessDirectory(
+      fakeRunner(() => ({
+        stdout: ['p777', 'cSafari', 'f4', 'n127.0.0.1:54321->127.0.0.1:8080'].join('\n'),
+        stderr: '',
+      })),
+    );
+    directory.start();
+    await flushMicrotasks();
+
+    // eslint-disable-next-line sonarjs/no-hardcoded-ip -- loopback address used as an IPv4-mapped-IPv6 test fixture, not a real address.
+    expect(directory.lookup('::ffff:127.0.0.1', 54321)).toEqual({ pid: 777, name: 'Safari' });
     directory.stop();
   });
 
