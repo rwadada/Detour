@@ -105,6 +105,29 @@ describe('writeFixtureFile / loadFixtureFiles', () => {
     expect(() => loadFixtureFiles(dir)).toThrow(/"responseBodyEncoding" must be "base64"/);
   });
 
+  it('throws a clear error for responseBodyEncoding set without a responseBody', () => {
+    const dir = freshDir();
+    const withoutBody: Partial<Fixture> = { ...sample };
+    delete withoutBody.responseBody;
+    fs.writeFileSync(
+      path.join(dir, '00001-bad.json'),
+      JSON.stringify({ ...withoutBody, responseBodyEncoding: 'base64' }),
+    );
+    expect(() => loadFixtureFiles(dir)).toThrow(/"responseBodyEncoding" must not be set without a "responseBody"/);
+  });
+
+  it('throws a clear error for a path missing the leading "/" (it could never match a real request)', () => {
+    const dir = freshDir();
+    fs.writeFileSync(path.join(dir, '00001-bad.json'), JSON.stringify({ ...sample, path: 'orders/1' }));
+    expect(() => loadFixtureFiles(dir)).toThrow(/"path" must start with "\//);
+  });
+
+  it.each([200.5, 99, 600, -1, 0])('throws a clear error for an out-of-range or non-integer status (%s)', (status) => {
+    const dir = freshDir();
+    fs.writeFileSync(path.join(dir, '00001-bad.json'), JSON.stringify({ ...sample, status }));
+    expect(() => loadFixtureFiles(dir)).toThrow(/"status" must be an integer HTTP status code \(100-599\)/);
+  });
+
   it('collects every validation error rather than stopping at the first', () => {
     const dir = freshDir();
     fs.writeFileSync(path.join(dir, '00001-bad.json'), JSON.stringify({ method: 'GET' }));
@@ -114,7 +137,7 @@ describe('writeFixtureFile / loadFixtureFiles', () => {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       expect(message).toContain('"path" must be a string');
-      expect(message).toContain('"status" must be a number');
+      expect(message).toContain('"status" must be an integer HTTP status code (100-599)');
       expect(message).toContain('"responseHeaders" must be an object');
     }
   });

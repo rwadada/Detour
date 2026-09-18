@@ -2,9 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Fixture } from '../../domain/record/types';
 
-/** Writes one fixture (see `buildFixtureFromExchange`) as a JSON file under `dir`, creating the directory if it doesn't exist yet. */
+const ensuredDirs = new Set<string>();
+
+/** Writes one fixture (see `buildFixtureFromExchange`) as a JSON file under `dir`, creating the directory if it doesn't exist yet (only once per directory per process — `detour record` calls this once per captured exchange, and `mkdirSync` on every one of those would be a needless syscall on the hot path once the directory is already there). */
 export function writeFixtureFile(dir: string, filename: string, fixture: Fixture): void {
-  fs.mkdirSync(dir, { recursive: true });
+  if (!ensuredDirs.has(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+    ensuredDirs.add(dir);
+  }
   fs.writeFileSync(path.join(dir, filename), `${JSON.stringify(fixture, null, 2)}\n`, 'utf8');
 }
 
@@ -30,8 +35,22 @@ function assertFixtureShape(data: unknown, filePath: string): Fixture {
   const candidate = data as Partial<Fixture>;
 
   if (typeof candidate.method !== 'string') errors.push('"method" must be a string');
-  if (typeof candidate.path !== 'string') errors.push('"path" must be a string');
-  if (typeof candidate.status !== 'number') errors.push('"status" must be a number');
+  if (typeof candidate.path !== 'string') {
+    errors.push('"path" must be a string');
+  } else if (!candidate.path.startsWith('/')) {
+    // Node's `req.url` for an origin-form request always starts with '/' —
+    // a fixture path without it can never match a live request and would
+    // only ever surface later as a confusing 404.
+    errors.push('"path" must start with "/"');
+  }
+  if (
+    typeof candidate.status !== 'number' ||
+    !Number.isInteger(candidate.status) ||
+    candidate.status < 100 ||
+    candidate.status > 599
+  ) {
+    errors.push('"status" must be an integer HTTP status code (100-599)');
+  }
   if (
     typeof candidate.responseHeaders !== 'object' ||
     candidate.responseHeaders === null ||
@@ -54,6 +73,9 @@ function assertFixtureShape(data: unknown, filePath: string): Fixture {
   }
   if (candidate.responseBodyEncoding !== undefined && candidate.responseBodyEncoding !== 'base64') {
     errors.push('"responseBodyEncoding" must be "base64" if present');
+  }
+  if (candidate.responseBodyEncoding !== undefined && candidate.responseBody === undefined) {
+    errors.push('"responseBodyEncoding" must not be set without a "responseBody"');
   }
 
   if (errors.length > 0) {
