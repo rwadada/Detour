@@ -18,6 +18,13 @@ describe('validateTestData', () => {
     expect(result.valid).toBe(false);
   });
 
+  it('rejects an empty string match.method (would otherwise silently match every method)', () => {
+    const result = validateTestData({
+      assertions: [{ type: 'latencyP95', name: 'a', match: { url: 'https://x/*', method: '' }, maxMs: 100 }],
+    });
+    expect(result.valid).toBe(false);
+  });
+
   it('rejects an unknown assertion type', () => {
     const result = validateTestData({ assertions: [{ type: 'bogus', name: 'a', match: {} }] });
     expect(result.valid).toBe(false);

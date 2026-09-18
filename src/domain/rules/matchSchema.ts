@@ -10,8 +10,16 @@ export const MATCH_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
+    // `minLength: 1` on both branches matters beyond the usual "reject an
+    // empty string": `normalizeMethods` (domain/rules/matcher.ts) treats a
+    // falsy `method` as "no filter", so a schema that allowed `""` here
+    // would let a typo like `"method": ""` silently widen a match to every
+    // method instead of failing validation.
     method: {
-      oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }],
+      oneOf: [
+        { type: 'string', minLength: 1 },
+        { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 },
+      ],
     },
     url: { type: 'string', minLength: 1 },
     urlRegex: { type: 'string', minLength: 1 },

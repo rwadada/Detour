@@ -31,6 +31,20 @@ describe('validateRulesData', () => {
     expect(result.valid).toBe(false);
   });
 
+  it('rejects an empty string match.method (would otherwise silently match every method)', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ match: { url: 'https://api.example.com/*', method: '' } })],
+    });
+    expect(result.valid).toBe(false);
+  });
+
+  it('rejects an empty string inside a match.method array', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ match: { url: 'https://api.example.com/*', method: ['GET', ''] } })],
+    });
+    expect(result.valid).toBe(false);
+  });
+
   it('rejects an action whose type is not one of mock/route/rewrite/breakpoint', () => {
     const result = validateRulesData({ rules: [baseRule({ action: { type: 'bogus' } })] });
     expect(result.valid).toBe(false);
