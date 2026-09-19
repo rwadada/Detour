@@ -155,6 +155,19 @@ function positiveNumber(value, flag) {
 }
 
 /**
+ * `--connections` specifically (not `--duration`, which is a sensibly
+ * fractional number of seconds): it becomes a worker *count*
+ * (`Array.from({ length: connections }, ...)`), which silently floors a
+ * decimal — so `--connections 2.5` would run 2 workers while the banner
+ * and every report keep claiming 2.5.
+ */
+function positiveInteger(value, flag) {
+  const parsed = positiveNumber(value, flag);
+  if (!Number.isInteger(parsed)) throw new Error(`${flag} must be a whole number (got: ${value})`);
+  return parsed;
+}
+
+/**
  * Parses `--scenarios`' comma-separated list strictly: a bare `Number(...)`
  * map would silently turn a typo (`--scenarios 1,x`) into `NaN`, which then
  * matches nothing in `SCENARIOS.filter` and surfaces as the unhelpful
@@ -194,7 +207,7 @@ function parseArgs(argv) {
     };
     if (arg === '--scenarios') options.scenarios = parseScenarioIds(next());
     else if (arg === '--duration') options.durationMs = positiveNumber(next(), arg) * 1000;
-    else if (arg === '--connections') options.connections = positiveNumber(next(), arg);
+    else if (arg === '--connections') options.connections = positiveInteger(next(), arg);
     else if (arg === '--json') options.json = path.resolve(next());
     else if (arg === '--compare') options.compare = [path.resolve(next()), path.resolve(next())];
     else if (arg === '--gate') options.gate = true;
@@ -946,6 +959,9 @@ async function main() {
     return;
   }
 
+  const validIds = new Set(SCENARIOS.map((scenario) => scenario.id));
+  const unknownIds = options.scenarios.filter((id) => !validIds.has(id));
+  if (unknownIds.length > 0) throw new Error(`--scenarios: not a defined scenario id: ${unknownIds.join(',')}`);
   const selected = SCENARIOS.filter((scenario) => options.scenarios.includes(scenario.id));
   if (selected.length === 0) throw new Error(`no scenarios matched: ${options.scenarios.join(',')}`);
 
