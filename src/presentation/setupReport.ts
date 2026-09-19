@@ -13,6 +13,15 @@ function stepIcon(status: StepStatus): string {
       return '⚠';
     case 'manual':
       return 'ℹ';
+    default:
+      // TypeScript already makes this unreachable for a valid StepStatus —
+      // the guard is for a value that reaches here some other way (a stale
+      // build mismatched against a newer StepStatus, non-TS-checked JS
+      // calling in), so an unrecognized status prints as an error rather
+      // than a bare `undefined` in the middle of setup/doctor/cleanup's
+      // output.
+      status satisfies never;
+      throw new Error(`stepIcon: unhandled SetupStep status: ${String(status)}`);
   }
 }
 

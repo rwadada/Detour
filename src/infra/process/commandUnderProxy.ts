@@ -54,8 +54,17 @@ export function resolveCaCertsForCommand(caCertPath: string): { path: string; cl
   return { path: combinedPath, cleanup };
 }
 
-/** Runs `command` with the proxy env vars set, resolving with its exit code (or 1, if it was killed by a signal instead of exiting normally). */
+/**
+ * Runs `command` with the proxy env vars set, resolving with its exit code
+ * (or 1, if it was killed by a signal instead of exiting normally).
+ * Every current caller validates `command.length` before this point (see
+ * `runTestCommand`/`runRecordCommand`'s own "requires a command" checks) —
+ * this guard is for the module boundary itself: `infra/` is reusable code,
+ * and `spawn(undefined, ...)` failing deep inside a promise executor is a
+ * far less useful error than one that names what's actually wrong.
+ */
 export function runCommandUnderProxy(command: string[], proxyUrl: string, caCertPath: string): Promise<number> {
+  if (command.length === 0) throw new Error('runCommandUnderProxy requires a non-empty command');
   const [cmd, ...args] = command;
   const { path: nodeExtraCaCerts, cleanup } = resolveCaCertsForCommand(caCertPath);
   // Stripped, not just left alone: many CI/dev environments already set
