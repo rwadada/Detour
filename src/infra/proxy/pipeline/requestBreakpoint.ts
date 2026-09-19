@@ -1,5 +1,5 @@
 import { BodyCapture } from '../../../domain/exchange/bodyCapture';
-import { flattenHeaders } from '../../../domain/exchange/headers';
+import { deleteHeader, flattenHeaders } from '../../../domain/exchange/headers';
 import type { BreakpointRequestPayload, CapturedExchange } from '../../../domain/exchange/types';
 import type { Rule } from '../../../domain/rules/types';
 import type { BreakpointCoordinator } from '../../../usecase/breakpointCoordinator';
@@ -96,12 +96,18 @@ export function createRequestBreakpointHandler(deps: RequestBreakpointDeps) {
           if (edits?.headers) opts.headers = { ...edits.headers };
           // The edited body's length may differ from the original; drop
           // content-length so Node sends it chunked instead (same as
-          // installRequestBodyRewrite's callers do).
-          delete opts.headers['content-length'];
+          // installRequestBodyRewrite's callers do). Case-insensitive: a
+          // breakpoint edit is typed by hand in the dashboard and can carry
+          // any casing, unlike headers straight off the wire (always
+          // lowercased by Node).
+          deleteHeader(opts.headers, 'content-length');
           exchange.method = opts.method;
           exchange.url = `${ctx.isSSL ? 'https' : 'http'}://${exchange.host}${opts.path}`;
         }
-        if (edits?.headers) exchange.requestHeaders = edits.headers;
+        // From `opts.headers` (post-delete), not `edits.headers` — the
+        // dashboard's own copy of what was sent must not show a
+        // content-length that was actually stripped before forwarding.
+        if (edits?.headers) exchange.requestHeaders = opts?.headers ?? edits.headers;
         exchange.requestBodySize = finalBody.length;
         BodyCapture.of(finalBody).applyTo(exchange, 'request');
 

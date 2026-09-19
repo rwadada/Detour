@@ -1,5 +1,5 @@
 import { BodyCapture } from '../../../domain/exchange/bodyCapture';
-import { flattenHeaders } from '../../../domain/exchange/headers';
+import { deleteHeader, flattenHeaders } from '../../../domain/exchange/headers';
 import type { BreakpointResponsePayload, CapturedExchange } from '../../../domain/exchange/types';
 import type { Rule } from '../../../domain/rules/types';
 import type { BreakpointCoordinator } from '../../../usecase/breakpointCoordinator';
@@ -112,7 +112,10 @@ export function createResponseBreakpointHandler(deps: ResponseBreakpointDeps) {
         if (edits?.headers) res.headers = { ...edits.headers };
         // Same reasoning as the request phase: the edited body's length may
         // differ, so drop content-length and let it go out chunked.
-        delete res.headers['content-length'];
+        // Case-insensitive: a breakpoint edit is typed by hand in the
+        // dashboard and can carry any casing, unlike headers straight off
+        // the wire (always lowercased by Node).
+        deleteHeader(res.headers, 'content-length');
         const finalBody = edits?.body !== undefined ? Buffer.from(edits.body, 'base64') : rawBody;
 
         exchange.statusCode = res.statusCode;
