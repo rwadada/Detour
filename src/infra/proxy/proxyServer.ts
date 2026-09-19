@@ -22,13 +22,9 @@ import { resolveCertDir } from '../certStore';
 import type { DetourEventBus } from '../eventBus';
 import { assertPortAvailable } from '../portCheck';
 import { nodeCommandRunner } from '../process/nodeCommandRunner';
-import { attachTiming } from './attachTiming';
 import {
   applyRequestRewrite,
   applyRouteAction,
-  installResponseBodyRewrite,
-  loadScriptModule,
-  resolveMockResponse,
   sendMockResponse,
   sendMockSimulate,
   type MockResponse,
@@ -40,11 +36,13 @@ import { createConnectHandler } from './pipeline/connectHandler';
 import { createInterceptOffConnectHandler } from './pipeline/interceptOffConnect';
 import { createProxyErrorHandler } from './pipeline/proxyErrorHandler';
 import { createRequestBreakpointHandler } from './pipeline/requestBreakpoint';
+import { createResponseHandler } from './pipeline/responseHandler';
 import { createResponseBreakpointHandler } from './pipeline/responseBreakpoint';
 import { createResponseHeadersHandler } from './pipeline/responseHeadersHandler';
 import { createScriptRequestHookHandler } from './pipeline/scriptRequestHook';
 import { createScriptResponseHookHandler } from './pipeline/scriptResponseHook';
 import { createWebSocketHandlers } from './pipeline/webSocketHandlers';
+import { tryLoadScriptModule, tryResolveMock } from './scriptModuleLoader';
 
 /**
  * Captures the client's raw request body directly off `clientToProxyRequest`
@@ -177,53 +175,6 @@ function buildBaseExchange(
     }
   }
   return exchange;
-}
-
-/**
- * Resolves a `mock` rule's response, falling back to a 500 describing the
- * failure (e.g. an unreadable `bodyFile`) rather than crashing the proxy
- * or silently passing the request through.
- */
-function tryResolveMock(
-  rule: Rule,
-  basePath: string,
-  allowExternalPaths: boolean,
-  onError: (message: string) => void,
-): MockResponse {
-  try {
-    return resolveMockResponse(rule.action as Extract<Rule['action'], { type: 'mock' }>, basePath, allowExternalPaths);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    onError(message);
-    return {
-      status: 500,
-      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-      body: Buffer.from(`detour: mock rule "${rule.name}" failed to build its response: ${message}`, 'utf8'),
-    };
-  }
-}
-
-/**
- * Loads a `script` rule's module, reporting (via `onError`) rather than
- * throwing if the file is missing/unreadable/malformed — a broken script
- * shouldn't take down the proxy, just fall back to forwarding the exchange
- * untouched (same philosophy as `tryResolveMock`'s 500 fallback, minus the
- * mock response since a script rule has no response of its own to fall
- * back to).
- */
-function tryLoadScriptModule(
-  rule: Rule,
-  basePath: string,
-  allowExternalPaths: boolean,
-  onError: (message: string) => void,
-): ScriptModule | undefined {
-  try {
-    return loadScriptModule(rule.action as Extract<Rule['action'], { type: 'script' }>, basePath, allowExternalPaths);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    onError(`rule "${rule.name}": failed to load script "${(rule.action as { path: string }).path}": ${message}`);
-    return undefined;
-  }
 }
 
 /**
@@ -734,118 +685,18 @@ export async function startProxyServer(
     else run();
   });
 
-  proxy.onResponse((ctx, callback) => {
-    const exchange = inFlight.get(ctx.uuid);
-    const terminal = ruleContexts.get(ctx.uuid);
-
-    // Unlike the header/status rewrites above (moved ahead of these two
-    // branches in `onResponseHeaders`), a matching rule's `response.body`
-    // rewrite deliberately does NOT thread into a breakpoint/script
-    // response here (Copilot review, PR #150): both already consume the
-    // raw upstream body themselves, via their own `res.on('data', ...)`
-    // listener rather than the `onResponseData`/`onResponseEnd` hook chain
-    // `installResponseBodyRewrite` (below) uses — installing that hook
-    // chain *as well* would mean two independent consumers of the same
-    // response stream, each capable of writing to the client, risking a
-    // corrupted double-written response. A breakpoint's live-edit payload
-    // and a `beforeResponse` hook's `res.body` argument both still see
-    // upstream's real, unrewritten body.
-    if (terminal?.action.type === 'breakpoint' && terminal.action.response !== false) {
-      // Fully handled by handleResponseBreakpoint from the onResponseHeaders
-      // hook instead, which needs to pause *before* headers are flushed —
-      // skip the normal capture/bookkeeping below entirely so it isn't done
-      // twice (once here with an empty body, once there with the real one).
-      return callback();
-    }
-
-    if (terminal?.action.type === 'script') {
-      // Load (or reuse the cached) module now to decide whether this rule
-      // even has a `beforeResponse` hook — a rule with only `beforeRequest`
-      // has nothing left to do at the response phase and falls through to
-      // the normal capture/forwarding below, same as a `route`/no-op rule.
-      const module = tryLoadScriptModule(
-        terminal,
-        ruleEngine!.basePath,
-        ruleEngine!.allowExternalScriptPaths,
-        (message) => eventBus.emit('error', { id: ctx.uuid, errorKind: 'RULE_SCRIPT_ERROR', message }),
-      );
-      if (module?.beforeResponse) {
-        scriptModules.set(ctx.uuid, module);
-        // Fully handled by handleScriptResponseHook from onResponseHeaders
-        // instead (needs the response *before* headers are flushed — see
-        // its doc comment), mirroring the breakpoint skip just above.
-        return callback();
-      }
-      // No `beforeResponse` (or the module failed to load) — nothing will
-      // consume the full request body `handleScriptRequestHook` stashed
-      // for it (see `scriptRequestBodies`' doc comment); drop it here
-      // rather than leak it until `onError`.
-      scriptRequestBodies.delete(ctx.uuid);
-    }
-
-    if (exchange && ctx.serverToProxyResponse) {
-      exchange.statusCode = ctx.serverToProxyResponse.statusCode;
-      exchange.statusMessage = ctx.serverToProxyResponse.statusMessage;
-      exchange.responseHeaders = { ...ctx.serverToProxyResponse.headers };
-    }
-
-    // Every matching `rewrite` rule's `response.body` would each want to
-    // buffer and replace the whole body — like the request side, only the
-    // *last* one actually does (see `selectLastMatchingBodyRewriteRule`'s
-    // doc comment for why chaining more than one isn't safe).
-    const responseBodyRewriteRule = selectLastMatchingBodyRewriteRule(rewriteContexts.get(ctx.uuid) ?? [], 'response');
-
-    const responseCapture = new BodyCapture();
-    // Throttle's download bandwidth cap/packet-loss simulation, applied
-    // per-chunk as it streams to the client — see the upload side's
-    // identical comment in `proxy.onRequest` above. Skipped when a
-    // `rewrite` rule is also rewriting this body: its own onResponseData
-    // hook is registered *after* this one (right below), so if this hook
-    // reduced every chunk to empty first, the rewrite would see nothing to
-    // rewrite.
-    const throttleDownload =
-      throttleState.enabled &&
-      (throttleState.downKbps > 0 || throttleState.packetLossPct > 0) &&
-      !responseBodyRewriteRule;
-    const downBandwidth = new BandwidthState();
-    ctx.onResponseData((_dataCtx, chunk, cb) => {
-      if (exchange) {
-        exchange.responseBodySize += chunk.length;
-        responseCapture.add(chunk);
-      }
-      if (!throttleDownload) return cb(undefined, chunk);
-      const delay = transferDelayMs(chunk.length, throttleState.downKbps, throttleState.packetLossPct, downBandwidth);
-      if (delay > 0) setTimeout(() => cb(undefined, chunk), delay);
-      else cb(undefined, chunk);
-    });
-
-    if (responseBodyRewriteRule && responseBodyRewriteRule.action.type === 'rewrite') {
-      installResponseBodyRewrite(ctx, responseBodyRewriteRule.action.response!.body!, (finalSize) => {
-        if (exchange) exchange.responseBodySize = finalSize;
-      });
-    }
-
-    ctx.onResponseEnd((_endCtx, cb) => {
-      if (exchange) {
-        // Reflect a status rewrite applied in the onResponseHeaders hook above.
-        if (ctx.serverToProxyResponse) exchange.statusCode = ctx.serverToProxyResponse.statusCode;
-        exchange.finishedAt = Date.now();
-        exchange.durationMs = exchange.finishedAt - exchange.startedAt;
-        attachTiming(exchange, ctx);
-        // Captures the pre-rewrite body (mirroring responseBodySize's
-        // accounting above) — the dashboard shows what actually came from
-        // upstream, not what a rewrite rule replaced it with.
-        responseCapture.applyTo(exchange, 'response');
-        eventBus.emit('response', exchange);
-        inFlight.delete(ctx.uuid);
-      }
-      ruleContexts.delete(ctx.uuid);
-      rewriteContexts.delete(ctx.uuid);
-      cb();
-    });
-
-    return callback();
-  });
+  proxy.onResponse(
+    createResponseHandler({
+      eventBus,
+      getRuleEngine: () => ruleEngine,
+      getThrottleState: () => throttleState,
+      inFlight,
+      ruleContexts,
+      rewriteContexts,
+      scriptModules,
+      scriptRequestBodies,
+    }),
+  );
 
   return new Promise((resolve, reject) => {
     try {
