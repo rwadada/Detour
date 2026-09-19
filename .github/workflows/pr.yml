@@ -38,3 +38,36 @@ jobs:
       - run: npm ci
 
       - run: npm run verify
+
+  # Deliberately its own job, not a step inside `verify` (issue #163): the
+  # benchmark is timing-sensitive, so sharing a runner with the e2e suite
+  # would have it measure that suite's CPU contention as much as the proxy.
+  # Kept to the three short scenarios — a full run takes minutes.
+  #
+  # The gate compares each scenario against a direct, no-proxy request
+  # measured on this same runner seconds apart, so it stays meaningful
+  # despite GitHub runners varying in absolute speed from run to run. An
+  # absolute req/s threshold would not.
+  bench:
+    # Waits on (but still runs on its own separate runner from, per the
+    # comment above) `verify`: no point spending CI minutes benchmarking a
+    # change that already failed correctness checks.
+    needs: verify
+    runs-on: ubuntu-latest
+    # A bounded failure beats an unbounded one: this job drives real proxy
+    # processes and real sockets, so a hang is a plausible failure mode, and
+    # without a cap GitHub's 6-hour default leaves it sitting at "in
+    # progress" with no readable log — which is exactly what happened on
+    # this PR's first run. A full --quick run is well under two minutes.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+          cache: "npm"
+
+      - run: npm ci
+
+      - run: npm run bench -- --quick --gate
