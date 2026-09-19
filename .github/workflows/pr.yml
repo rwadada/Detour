@@ -50,6 +50,12 @@ jobs:
   # absolute req/s threshold would not.
   bench:
     runs-on: ubuntu-latest
+    # A bounded failure beats an unbounded one: this job drives real proxy
+    # processes and real sockets, so a hang is a plausible failure mode, and
+    # without a cap GitHub's 6-hour default leaves it sitting at "in
+    # progress" with no readable log — which is exactly what happened on
+    # this PR's first run. A full --quick run is well under two minutes.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 

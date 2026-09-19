@@ -247,7 +247,12 @@ function startUpstream({ tls, certs }) {
     const match = /^\/bytes\/(\d+)/.exec(req.url ?? '');
     const size = match ? Number(match[1]) : KB;
     const body = bodyFor(size);
-    res.writeHead(200, { 'content-type': 'application/json', 'content-length': String(body.length) });
+    // `application/octet-stream`, not `application/json`: the body is a run
+    // of filler bytes, and labelling it JSON would misrepresent it to
+    // anyone reading a capture while profiling. Nothing measured here
+    // branches on the type — `BodyCapture` counts bytes and is content-type
+    // agnostic — so this is honesty, not a change to the workload.
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': String(body.length) });
     res.end(body);
   };
 
@@ -259,6 +264,12 @@ function startUpstream({ tls, certs }) {
   return new Promise((resolve, reject) => {
     server.on('error', reject);
     server.listen(0, '127.0.0.1', () => {
+      // Belt and braces alongside the `finally` that closes these in
+      // `main`: an idle listening server that is unref'd can't keep the
+      // process alive on its own, so even a path that somehow skips that
+      // cleanup exits rather than hanging. In-flight request sockets are
+      // their own ref'd handles, so this doesn't cut a run short.
+      server.unref();
       resolve({ port: server.address().port, close: () => closeServer(server) });
     });
   });
@@ -731,6 +742,38 @@ function renderComparison(before, after) {
 // Entry point
 // ---------------------------------------------------------------------------
 
+/**
+ * Runs the no-proxy baselines and then every selected scenario, always
+ * shutting the upstreams down on the way out. The `finally` is the point: a
+ * scenario that throws (a proxy that never became ready, a failed bind)
+ * would otherwise leave two listening servers holding the event loop open,
+ * and the whole run would hang instead of failing — in CI, sitting at "in
+ * progress" until the job timeout with the actual error never printed.
+ */
+async function measureAll(selected, { upstreams, certs, options, tmpDir, upstreamCaPath }) {
+  try {
+    const { baselines, rows } = await measureBaselines(selected, { upstreams, certs, options });
+
+    for (const scenario of selected) {
+      process.stdout.write(`  running scenario ${scenario.id} (${scenario.name})...\n`);
+      const metrics = await measureScenario(scenario, { upstreams, options, tmpDir, upstreamCaPath });
+      const baseline = baselines.get(`${scenario.scheme}-${scenario.bodyBytes}`);
+      rows.push({
+        id: scenario.id,
+        key: `${scenario.id}`,
+        name: scenario.name,
+        metrics,
+        overhead: { p95Ratio: metrics.p95Ms / baseline.p95Ms, rpsRatio: metrics.rps / baseline.rps },
+      });
+    }
+    return rows;
+  } finally {
+    await upstreams.http.close();
+    await upstreams.https.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
 
@@ -761,32 +804,12 @@ async function main() {
   );
   console.log(`${os.type()} ${os.release()} · ${os.cpus()[0]?.model ?? 'unknown CPU'} · node ${process.version}\n`);
 
-  const { baselines, rows } = await measureBaselines(selected, { upstreams, certs, options });
-
-  for (const scenario of selected) {
-    process.stdout.write(`  running scenario ${scenario.id} (${scenario.name})...\n`);
-    const metrics = await measureScenario(scenario, { upstreams, options, tmpDir, upstreamCaPath });
-    const baseline = baselines.get(`${scenario.scheme}-${scenario.bodyBytes}`);
-    rows.push({
-      id: scenario.id,
-      key: `${scenario.id}`,
-      name: scenario.name,
-      metrics,
-      overhead: {
-        p95Ratio: metrics.p95Ms / baseline.p95Ms,
-        rpsRatio: metrics.rps / baseline.rps,
-      },
-    });
-  }
+  const rows = await measureAll(selected, { upstreams, certs, options, tmpDir, upstreamCaPath });
 
   rows.sort((a, b) => a.id - b.id || a.key.localeCompare(b.key));
   console.log('');
   renderTable(rows);
   console.log('\n"vs direct" compares each scenario against the same request with no proxy in the middle.');
-
-  await upstreams.http.close();
-  await upstreams.https.close();
-  fs.rmSync(tmpDir, { recursive: true, force: true });
 
   const run = {
     startedAt: new Date().toISOString(),
