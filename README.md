@@ -163,6 +163,33 @@ It starts a fresh, single-run proxy instance, runs the given command with `HTTP_
 
 `headerPresent`/`latencyP95` also fail if `match` selects nothing at all (almost always a typo) unless `allowNoMatches: true` is set; `noPiiLeak` passes vacuously with zero matches.
 
+## Recording and replaying fixtures (`detour record` / `detour serve`, issue #149)
+
+Records real traffic once, then replays it later as a standalone mock server — no proxy, no TLS interception, and no `HTTP_PROXY` for a test's own HTTP client to set. Useful for turning a real backend's actual responses into a fast, deterministic E2E test fixture.
+
+```bash
+detour record --out ./fixtures -- npm run e2e   # capture real traffic while a command runs
+detour serve ./fixtures                          # replay it as a plain HTTP server on :8081
+```
+
+`detour record` works just like `detour test`: it starts a fresh proxy, runs `<command>` with `HTTP_PROXY`/`HTTPS_PROXY` pointed at it, and writes one JSON fixture file per captured exchange to `--out` (default `./fixtures`) as the command runs. `--rules <path>` applies mock/route/rewrite rules while recording, the same as `detour test --rules`.
+
+`detour serve <dir>` loads every fixture in `<dir>` and starts a plain HTTP server (`-p, --port`, default `8081`) that matches an incoming request by `method` + path (falling back from an exact match including the query string to a pathname-only match, so a non-deterministic query param like a timestamp doesn't break replay) and responds with the recorded status/headers/body. Point a test's own HTTP client base URL directly at it — there's no proxy involved on this side at all. Multiple recordings of the same endpoint (e.g. paginated calls) replay round-robin in the order they were recorded, sticking on the last one once exhausted; a request with no matching fixture gets a `404` naming what it looked for.
+
+A fixture is a plain JSON file (safe to commit, diff, and hand-edit):
+
+```json
+{
+  "method": "GET",
+  "path": "/orders/1?expand=items",
+  "status": 200,
+  "responseHeaders": { "content-type": "application/json" },
+  "responseBody": "{\"id\":1,\"name\":\"widget\"}"
+}
+```
+
+A response body that isn't valid UTF-8 (binary content, or one still compressed — like `CapturedExchange` elsewhere, detour never decompresses a captured body) is stored as base64 instead, with `"responseBodyEncoding": "base64"` alongside it.
+
 ## Rule engine (rules.json)
 
 Traffic routing, rewriting, and mock substitution can be declared declaratively.
