@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/rwadada/Detour/compare/v1.4.0...v1.5.0) (2026-09-19)
+
+
+### Features
+
+* `detour record` / `detour serve` — traffic recording and proxy-less replay ([e43406b](https://github.com/rwadada/Detour/commit/e43406bdedbefdeb295bf6d8a5d0a7481ac74e9b))
+
 ## [1.4.0](https://github.com/rwadada/Detour/compare/v1.3.0...v1.4.0) (2026-09-18)
 
 
