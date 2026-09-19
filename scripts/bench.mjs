@@ -132,6 +132,20 @@ const QUICK_SCENARIOS = [1, 2, 5];
 // CLI arguments
 // ---------------------------------------------------------------------------
 
+/**
+ * Rejects a flag value that isn't a positive number. Unvalidated, `Number()`
+ * turns a typo into `NaN` and the run reports a confident `0 req/s` row
+ * instead of failing — a benchmark that quietly measures nothing is worse
+ * than one that refuses to start.
+ */
+function positiveNumber(value, flag) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${flag} must be a positive number (got: ${value})`);
+  }
+  return parsed;
+}
+
 function parseArgs(argv) {
   const options = {
     scenarios: SCENARIOS.map((s) => s.id),
@@ -151,8 +165,8 @@ function parseArgs(argv) {
       return value;
     };
     if (arg === '--scenarios') options.scenarios = next().split(',').map(Number);
-    else if (arg === '--duration') options.durationMs = Number(next()) * 1000;
-    else if (arg === '--connections') options.connections = Number(next());
+    else if (arg === '--duration') options.durationMs = positiveNumber(next(), arg) * 1000;
+    else if (arg === '--connections') options.connections = positiveNumber(next(), arg);
     else if (arg === '--json') options.json = path.resolve(next());
     else if (arg === '--compare') options.compare = [path.resolve(next()), path.resolve(next())];
     else if (arg === '--gate') options.gate = true;
@@ -340,17 +354,25 @@ async function startDetour({ rulesPath, dashboard, upstreamCaPath }) {
  * from `ps` rather than from inside the process: the whole point is to see
  * what the binary a user runs costs, and instrumenting it from within would
  * change the thing being measured.
+ *
+ * Skipped entirely on Windows, which has no `/bin/ps`: spawning a doomed
+ * process four times a second would burn real CPU next to the thing being
+ * timed, and the resulting skew is a worse outcome than two blank columns.
+ * Latency and throughput are measured from this process either way.
  */
+const PROCESS_SAMPLING_SUPPORTED = process.platform !== 'win32';
+
 function createProcessSampler(pid) {
   let peakRssMb = 0;
   let firstCpu;
   let lastCpu = 0;
 
   const sample = () => {
+    if (!PROCESS_SAMPLING_SUPPORTED) return;
     try {
-      // An absolute path, not a bare `ps` resolved through PATH: present at
-      // this exact location on both platforms this repo targets, and it
-      // keeps the lookup out of reach of whatever PATH happens to hold.
+      // An absolute path, not a bare `ps` resolved through PATH: it lives
+      // here on both Unix platforms that reach this line, and it keeps the
+      // lookup out of reach of whatever PATH happens to hold.
       const out = execFileSync('/bin/ps', ['-o', 'rss=,time=', '-p', String(pid)], { encoding: 'utf8' }).trim();
       if (!out) return;
       const [rssKb, cpuTime] = out.split(/\s+/);
@@ -588,7 +610,14 @@ function writeRules(dir, kind, { upstreamHttpsPort }) {
 // ---------------------------------------------------------------------------
 
 async function connectDashboard(port) {
-  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  // `localhost`, not `127.0.0.1`: the dashboard binds by *hostname*
+  // (`resolveDashboardHost` returns 'localhost' without --lan), and this
+  // repo's CI runner resolves that to the IPv6 loopback — so a client
+  // dialling 127.0.0.1 gets ECONNREFUSED while the server sits on [::1].
+  // That is precisely what failed this PR's first readable CI run, and the
+  // same trap `detour serve` hit in #149. Connecting by the same name the
+  // server bound to sidesteps it, which is what the CLI's own e2e tests do.
+  const socket = new WebSocket(`ws://localhost:${port}/ws`);
   await new Promise((resolve, reject) => {
     socket.once('open', resolve);
     socket.once('error', reject);
@@ -832,20 +861,38 @@ function formatBytes(bytes) {
 }
 
 /**
- * Fails the run when a gated scenario's p95 exceeds the ceiling relative to
- * its own no-proxy baseline. Both numbers come from the same machine minutes
- * apart, which is what makes this usable on a CI runner whose absolute speed
- * varies from run to run.
+ * Fails the run when a gated scenario is slower than its ceiling allows,
+ * relative to its own no-proxy baseline. Both numbers come from the same
+ * machine minutes apart, which is what makes this usable on a CI runner
+ * whose absolute speed varies from run to run.
+ *
+ * A failed request is a gate failure too, and that check has to come first:
+ * an errored request contributes no latency sample, so a scenario where
+ * *everything* failed has an empty sample set, a p95 of 0, and a ratio that
+ * sails under any ceiling. The gate would then certify a run that measured
+ * nothing — the one outcome worse than a slow one, because it reads as
+ * proof that nothing regressed.
  */
+function verdictFor(row) {
+  if (row.metrics.requests === 0) return { ok: false, why: 'no successful requests' };
+  if (row.metrics.errors > 0) {
+    return { ok: false, why: `${row.metrics.errors} failed request(s): ${row.metrics.firstError}` };
+  }
+  const ceiling = GATE_MAX_P95_RATIO[row.id];
+  const ratio = row.overhead.p95Ratio;
+  return ratio > ceiling
+    ? { ok: false, why: `p95 ${ratio.toFixed(1)}x baseline, over the ${ceiling}x ceiling` }
+    : { ok: true, why: `p95 ${ratio.toFixed(1)}x baseline (ceiling ${ceiling}x)` };
+}
+
 function enforceGate(rows) {
   const gated = rows.filter((row) => row.overhead && GATE_MAX_P95_RATIO[row.id] !== undefined);
-  const failures = gated.filter((row) => row.overhead.p95Ratio > GATE_MAX_P95_RATIO[row.id]);
+  const verdicts = gated.map((row) => ({ row, verdict: verdictFor(row) }));
+  const failures = verdicts.filter(({ verdict }) => !verdict.ok);
 
   console.log('');
-  for (const row of gated) {
-    const ceiling = GATE_MAX_P95_RATIO[row.id];
-    const verdict = row.overhead.p95Ratio > ceiling ? 'FAIL' : 'ok';
-    console.log(`  [${verdict}] scenario ${row.id}: p95 ${row.overhead.p95Ratio.toFixed(1)}x baseline (ceiling ${ceiling}x)`);
+  for (const { row, verdict } of verdicts) {
+    console.log(`  [${verdict.ok ? 'ok' : 'FAIL'}] scenario ${row.id}: ${verdict.why}`);
   }
 
   if (failures.length === 0) {
@@ -853,8 +900,9 @@ function enforceGate(rows) {
     return;
   }
   console.error(
-    `\nGate FAILED: ${failures.length} scenario(s) over their ceiling. This measures the proxy against a direct ` +
-      'request on the same runner, so a failure here is a real slowdown in the hot path, not runner noise.',
+    `\nGate FAILED: ${failures.length} scenario(s). Latency is measured against a direct request on the same ` +
+      'runner, so a ceiling breach is a real slowdown in the hot path rather than runner noise; a failed request ' +
+      'means the scenario did not measure what it claims to.',
   );
   process.exitCode = 1;
 }
