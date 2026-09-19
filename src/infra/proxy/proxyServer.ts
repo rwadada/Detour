@@ -6,10 +6,8 @@ import type {
   CapturedExchange,
   CapturedWebSocketConnection,
   ThrottleState,
-  WebSocketFrameRecord,
 } from '../../domain/exchange/types';
-import { recordWebSocketFrame } from '../../domain/exchange/webSocketCapture';
-import { formatHostPort, isHostFocused, normalizeFocusHosts } from '../../domain/focus/focusPolicy';
+import { normalizeFocusHosts } from '../../domain/focus/focusPolicy';
 import type { ScriptModule } from '../../domain/rules/scriptAction';
 import type { Rule } from '../../domain/rules/types';
 import { BandwidthState, transferDelayMs } from '../../domain/throttle/bandwidth';
@@ -27,7 +25,6 @@ import { nodeCommandRunner } from '../process/nodeCommandRunner';
 import { attachTiming } from './attachTiming';
 import {
   applyRequestRewrite,
-  applyResponseHeaderRewrite,
   applyRouteAction,
   installResponseBodyRewrite,
   loadScriptModule,
@@ -38,12 +35,16 @@ import {
 } from './actionsRuntime';
 import { ClientProcessDirectory, isClientProcessLookupSupported } from './clientProcessLookup';
 import { ProxyEngine } from './engine/proxyEngine';
-import type { IContext, IWebSocketContext } from './engine/types';
+import type { IContext } from './engine/types';
+import { createConnectHandler } from './pipeline/connectHandler';
 import { createInterceptOffConnectHandler } from './pipeline/interceptOffConnect';
+import { createProxyErrorHandler } from './pipeline/proxyErrorHandler';
 import { createRequestBreakpointHandler } from './pipeline/requestBreakpoint';
 import { createResponseBreakpointHandler } from './pipeline/responseBreakpoint';
+import { createResponseHeadersHandler } from './pipeline/responseHeadersHandler';
 import { createScriptRequestHookHandler } from './pipeline/scriptRequestHook';
 import { createScriptResponseHookHandler } from './pipeline/scriptResponseHook';
+import { createWebSocketHandlers } from './pipeline/webSocketHandlers';
 
 /**
  * Captures the client's raw request body directly off `clientToProxyRequest`
@@ -137,36 +138,6 @@ function resolveUrl(ctx: IContext): { url: string; host: string } {
   const hostname = port && Number(port) !== defaultPort ? `${host}:${port}` : String(host);
   const path = opts?.path ?? ctx.clientToProxyRequest.url ?? '/';
   return { url: `${scheme}://${hostname}${path}`, host: hostname };
-}
-
-/**
- * Extracts the target `ws://`/`wss://` URL and bare host from a WebSocket
- * context. `ctx.proxyToServerWebSocketOptions.url` is already fully
- * resolved by ProxyEngine by the time `onWebSocketConnection` fires (from
- * either the upgrade request's absolute URL, or its `Host` header — see
- * `handleWebSocketConnection` in engine/proxyEngine.ts), so unlike
- * `resolveUrl` above there's no host/port reassembly to do here.
- */
-function resolveWsUrl(ctx: IWebSocketContext): { url: string; host: string } {
-  const url = ctx.proxyToServerWebSocketOptions?.url ?? '';
-  try {
-    return { url, host: new URL(url).host };
-  } catch {
-    return { url, host: url };
-  }
-}
-
-/**
- * Coerces a WebSocket frame's raw payload (as delivered by the `ws`
- * library — a `Buffer` in the common case, but its types also allow
- * `ArrayBuffer`/`Buffer[]` depending on client options) into a plain
- * `Buffer` for capture.
- */
-function toBuffer(data: unknown): Buffer {
-  if (Buffer.isBuffer(data)) return data;
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  if (Array.isArray(data)) return Buffer.concat(data as Buffer[]);
-  return Buffer.from(String(data ?? ''), 'utf8');
 }
 
 /** Builds the initial `CapturedExchange` for a request just as it starts, before its outcome (blocked/mock/route/rewrite/forwarded) is known. Shared by the Block Hosts branch and the normal rule-resolution path in `proxy.onRequest` below. */
@@ -391,160 +362,33 @@ export async function startProxyServer(
     getThrottleState: () => throttleState,
   });
 
-  proxy.onConnect((req, socket, head, callback) => {
-    // An unparseable target can't be checked against Block Hosts/Focus —
-    // fall through to the normal intercept-enabled path (same as before
-    // this feature), rather than treating "can't tell" as blocked/unfocused.
-    const target = ProxyEngine.parseHostAndPort(req, 443);
-    const formatted = target?.host ? formatHostPort(target.host, target.port ?? 443, 443) : undefined;
-    if (formatted && isHostBlocked(blockHostsState.hosts, formatted)) {
-      eventBus.emit('error', {
-        errorKind: 'BLOCKED_HOST',
-        message: `blocked CONNECT to ${formatted} (${blockHostsState.mode})`,
-      });
-      if (blockHostsState.mode === 'reset') {
-        socket.destroy();
-      } else {
-        socket.end(
-          `HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\ndetour: CONNECT to "${formatted}" blocked by Block Hosts\n`,
-        );
-      }
-      return;
-    }
-    const focused = !formatted || isHostFocused(focusHosts, formatted);
-    if (interceptEnabled && focused) {
-      callback();
-      return;
-    }
-    handleInterceptOffConnect(req, socket, head as Buffer);
-  });
+  proxy.onConnect(
+    createConnectHandler({
+      eventBus,
+      getBlockHostsState: () => blockHostsState,
+      getFocusHosts: () => focusHosts,
+      getInterceptEnabled: () => interceptEnabled,
+      handleInterceptOffConnect,
+    }),
+  );
 
-  /**
-   * WebSocket support (issue #17): ProxyEngine relays `ws://`/`wss://`
-   * traffic transparently on its own (a `wss://` tunnel only ever reaches
-   * these hooks once intercept has already MITM-decrypted it — see
-   * `handleInterceptOffConnect` above; a passthrough tunnel's WS frames are
-   * just opaque encrypted bytes to us like the rest of its traffic), so
-   * these four hooks are purely observational: they build up a
-   * `CapturedWebSocketConnection` per connection and publish it on the
-   * event bus, mirroring `request`/`response` for HTTP exchanges. None of
-   * them touch `data`/`flags` before calling back, so the actual proxied
-   * traffic is never altered by recording it.
-   */
-  proxy.onWebSocketConnection((ctx, callback) => {
-    const { url, host } = resolveWsUrl(ctx);
-    const connection: CapturedWebSocketConnection = {
-      id: ctx.uuid,
-      url,
-      host,
-      isSSL: ctx.isSSL,
-      // `sec-websocket-*` headers are handshake plumbing (key/version/
-      // extensions), not application data — already stripped out by
-      // ProxyEngine when it built this options object, so what's left is
-      // exactly what's worth showing in a debug dump.
-      requestHeaders: { ...(ctx.proxyToServerWebSocketOptions?.headers as Record<string, string> | undefined) },
-      openedAt: Date.now(),
-      frames: [],
-      frameCount: 0,
-      framesTruncated: false,
-    };
-    wsConnections.set(ctx.uuid, connection);
-    eventBus.emit('wsOpen', connection);
-    callback();
-  });
+  const webSocketHandlers = createWebSocketHandlers({ eventBus, wsConnections });
+  proxy.onWebSocketConnection(webSocketHandlers.onConnection);
+  proxy.onWebSocketFrame(webSocketHandlers.onFrame);
+  proxy.onWebSocketClose(webSocketHandlers.onClose);
+  proxy.onWebSocketError(webSocketHandlers.onError);
 
-  proxy.onWebSocketFrame((ctx, type, fromServer, data, flags, callback) => {
-    const connection = wsConnections.get(ctx.uuid);
-    if (connection) {
-      recordWebSocketFrame(connection, {
-        type: type as WebSocketFrameRecord['type'],
-        direction: fromServer ? 'toClient' : 'toServer',
-        // For a `message` frame, ProxyEngine forwards the underlying `ws`
-        // library's `isBinary` event argument through as `flags` (despite
-        // the type declaring it `unknown` — see `relayFrame` in
-        // engine/proxyEngine.ts); `ping`/`pong` frames carry no such flag.
-        binary: typeof flags === 'boolean' ? flags : false,
-        payload: toBuffer(data),
-        at: Date.now(),
-      });
-      eventBus.emit('wsFrame', connection);
-    }
-    callback(null, data, flags);
-  });
-
-  proxy.onWebSocketClose((ctx, code, message, callback) => {
-    const connection = wsConnections.get(ctx.uuid);
-    if (connection) {
-      connection.closedAt = Date.now();
-      connection.durationMs = connection.closedAt - connection.openedAt;
-      connection.closeCode = typeof code === 'number' ? code : undefined;
-      connection.closeReason = Buffer.isBuffer(message) ? message.toString('utf8') : undefined;
-      connection.closedByServer = ctx.closedByServer;
-      wsConnections.delete(ctx.uuid);
-      eventBus.emit('wsClose', connection);
-    }
-    // Unlike `ErrorCallback` elsewhere in this file, `onWebSocketClose`'s
-    // callback type doesn't mark its `err` parameter optional — pass `null`
-    // explicitly to satisfy it (equivalent to "no error" here either way).
-    callback(null);
-  });
-
-  proxy.onWebSocketError((ctx, err) => {
-    // A connection already closed (and thus already reported via
-    // `wsClose` above) is removed from `wsConnections`, so a follow-up
-    // error on its other leg — see ProxyEngine's own close/error
-    // cross-signaling in `wsClose`/`wsError` (engine/proxyEngine.ts) — is a
-    // harmless no-op here rather than a second `wsClose` for the same
-    // connection.
-    const connection = wsConnections.get(ctx.uuid);
-    if (connection) {
-      connection.error = err?.message ?? 'unknown websocket error';
-      connection.closedAt = Date.now();
-      connection.durationMs = connection.closedAt - connection.openedAt;
-      wsConnections.delete(ctx.uuid);
-      eventBus.emit('wsClose', connection);
-    }
-    eventBus.emit('error', {
-      id: ctx.uuid,
-      errorKind: 'WEBSOCKET_ERROR',
-      message: err?.message ?? 'unknown websocket error',
-    });
-  });
-
-  proxy.onError((ctx, err, errorKind) => {
-    if (ctx) {
-      // Finalize the exchange this error belongs to (e.g. a `route` rule
-      // pointing at a host that fails to resolve/connect) before dropping
-      // it from `inFlight` — otherwise the dashboard never learns the
-      // request failed and shows it "pending" forever, with no indication
-      // anything went wrong (see issue #109: a `route` action's connection
-      // error was logged to the console but the exchange itself stayed
-      // stuck mid-flight). Guarded on `finishedAt` being unset so a
-      // late/unrelated error after the exchange already completed
-      // normally (e.g. a response-stream error after `response` was
-      // already emitted) doesn't overwrite it.
-      const exchange = inFlight.get(ctx.uuid);
-      if (exchange && exchange.finishedAt === undefined) {
-        exchange.error = `${errorKind ?? 'UNKNOWN'}: ${err?.message ?? 'unknown proxy error'}`;
-        exchange.finishedAt = Date.now();
-        exchange.durationMs = exchange.finishedAt - exchange.startedAt;
-        attachTiming(exchange, ctx);
-        eventBus.emit('response', exchange);
-      }
-      inFlight.delete(ctx.uuid);
-      ruleContexts.delete(ctx.uuid);
-      rewriteContexts.delete(ctx.uuid);
-      scriptModules.delete(ctx.uuid);
-      scriptRequestBodies.delete(ctx.uuid);
-      breakpoints.resolve({ id: ctx.uuid, phase: 'request', action: 'abort' });
-      breakpoints.resolve({ id: ctx.uuid, phase: 'response', action: 'abort' });
-    }
-    eventBus.emit('error', {
-      id: ctx?.uuid,
-      errorKind: errorKind ?? 'UNKNOWN',
-      message: err?.message ?? 'unknown proxy error',
-    });
-  });
+  proxy.onError(
+    createProxyErrorHandler({
+      eventBus,
+      breakpoints,
+      inFlight,
+      ruleContexts,
+      rewriteContexts,
+      scriptModules,
+      scriptRequestBodies,
+    }),
+  );
 
   /**
    * Pauses a request matched by a `breakpoint` rule (request phase) before
@@ -586,55 +430,16 @@ export async function startProxyServer(
 
   // Response header/status rewrites must run before ProxyEngine flushes
   // them to the client — see applyResponseHeaderRewrite's doc comment.
-  proxy.onResponseHeaders((ctx, callback) => {
-    const rule = ruleContexts.get(ctx.uuid);
-
-    // Apply every matching `rewrite` rule's response status/header changes
-    // first, before any terminal breakpoint/script handling below (Copilot
-    // review, PR #150) — so a paused breakpoint's live-edit payload and a
-    // `beforeResponse` hook's `res` argument both see the already-rewritten
-    // status/headers too, consistent with "every matching rewrite rule
-    // applies up to the first terminal rule." Safe to reorder: both
-    // `handleResponseBreakpoint` and `handleScriptResponseHook` read
-    // `ctx.serverToProxyResponse` by reference, the same object this
-    // mutates directly, rather than a separately-captured snapshot.
-    let appliedResponseHeaderRewrite = false;
-    for (const r of rewriteContexts.get(ctx.uuid) ?? []) {
-      if (r.action.type !== 'rewrite' || !r.action.response) continue;
-      applyResponseHeaderRewrite(ctx, r.action.response);
-      appliedResponseHeaderRewrite = true;
-    }
-    if (appliedResponseHeaderRewrite) {
-      // Re-sync the dashboard-visible snapshot from what was actually just
-      // mutated — same pattern `handleResponseBreakpoint`/
-      // `handleScriptResponseHook` already follow for their own edits.
-      // Without this, `exchange.statusCode`/`responseHeaders` were captured
-      // by the plain `onResponse` handler *before* this hook even runs (see
-      // `ProxyEngine.onUpstreamResponse`: `onResponseHandlers` fires, then
-      // `onResponseHeadersHandlers`), so a rewrite here was applied to the
-      // real response the client received but silently never shown here.
-      const exchange = inFlight.get(ctx.uuid);
-      if (exchange && ctx.serverToProxyResponse) {
-        exchange.statusCode = ctx.serverToProxyResponse.statusCode;
-        exchange.statusMessage = ctx.serverToProxyResponse.statusMessage;
-        exchange.responseHeaders = { ...ctx.serverToProxyResponse.headers };
-      }
-    }
-
-    if (rule?.action.type === 'breakpoint' && rule.action.response !== false) {
-      handleResponseBreakpoint(ctx, rule, callback);
-      return;
-    }
-    if (rule?.action.type === 'script') {
-      const module = scriptModules.get(ctx.uuid);
-      scriptModules.delete(ctx.uuid);
-      if (module) {
-        handleScriptResponseHook(ctx, rule, module, callback);
-        return;
-      }
-    }
-    return callback();
-  });
+  proxy.onResponseHeaders(
+    createResponseHeadersHandler({
+      inFlight,
+      ruleContexts,
+      rewriteContexts,
+      scriptModules,
+      handleResponseBreakpoint,
+      handleScriptResponseHook,
+    }),
+  );
 
   proxy.onRequest((ctx, callback) => {
     // The entire request handler — rule matching, mock/breakpoint/route/
