@@ -27,7 +27,15 @@ import { selectLastMatchingBodyRewriteRule } from './selectBodyRewriteRule';
 export function applyResponseRewritesToMock(mock: MockResponse, rewrites: readonly Rule[]): MockResponse {
   for (const rule of rewrites) {
     if (rule.action.type !== 'rewrite' || !rule.action.response) continue;
-    if (rule.action.response.status !== undefined) mock.status = rule.action.response.status;
+    if (rule.action.response.status !== undefined) {
+      mock.status = rule.action.response.status;
+      // The mock rule's own statusMessage (e.g. "Forbidden") was paired with
+      // its *original* status — left in place, sendMockResponse would still
+      // send it alongside the new code (a "200 Forbidden" status line).
+      // Node fills in the standard reason phrase for the new code once this
+      // is unset, same as an ordinary response with no explicit message.
+      mock.statusMessage = undefined;
+    }
     applyHeaderRewrite(mock.headers, rule.action.response.headers);
   }
 

@@ -25,6 +25,13 @@ describe('applyResponseRewritesToMock', () => {
     expect(mock.status).toBe(201);
   });
 
+  it('clears a stale statusMessage when a rewrite overrides the status, rather than pairing the old reason phrase with the new code', () => {
+    const mock = mockResponse({ status: 403, statusMessage: 'Forbidden' });
+    applyResponseRewritesToMock(mock, [rewriteRule('r', { status: 200 })]);
+    expect(mock.status).toBe(200);
+    expect(mock.statusMessage).toBeUndefined();
+  });
+
   it('stacks every matching header rewrite, unlike body which only takes the last', () => {
     const mock = mockResponse();
     applyResponseRewritesToMock(mock, [

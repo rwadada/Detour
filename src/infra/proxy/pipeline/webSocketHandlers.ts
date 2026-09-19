@@ -117,9 +117,10 @@ export function createWebSocketHandlers(deps: WebSocketHandlersDeps): {
       wsConnections.delete(ctx.uuid);
       eventBus.emit('wsClose', connection);
     }
-    // Unlike `ErrorCallback` elsewhere in the pipeline, `onWebSocketClose`'s
-    // callback type doesn't mark its `err` parameter optional — pass `null`
-    // explicitly to satisfy it (equivalent to "no error" here either way).
+    // `null`, not omitted: this is the same `ErrorCallback` used elsewhere
+    // in the pipeline (whose `error` param is in fact optional), but a
+    // close is never itself an error, so spelling out "no error" here reads
+    // clearer than an empty call would.
     callback(null);
   };
 
