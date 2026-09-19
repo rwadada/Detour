@@ -31,11 +31,12 @@ const printedLive = new WeakSet<SetupStep>();
  * eslint.config.mjs) — so a step that wants one just carries the URL
  * (`SetupStep.qrUrl`) and this function does the actual
  * rendering. Shared by `printTargetReports`'s final pass over a completed
- * `TargetOutcome` and by `runSetupCommand`'s `onProgress` wiring below,
- * which calls this the moment a step is ready rather than only once
- * everything is (see `SetupContext.onProgress`'s doc comment — currently
- * just android.ts's Wi-Fi/QR pairing fallback, so its QR code is on screen
- * before its own multi-minute wait for a download, not just after).
+ * `TargetOutcome` and by `runSetupCommand` (in `commands/setupCommand.ts`),
+ * which passes this as its `onProgress` so a step is printed the moment
+ * it's ready rather than only once everything is (see
+ * `SetupContext.onProgress`'s doc comment — currently just android.ts's
+ * Wi-Fi/QR pairing fallback, so its QR code is on screen before its own
+ * multi-minute wait for a download, not just after).
  */
 export async function printStep(step: SetupStep): Promise<void> {
   printedLive.add(step);

@@ -2,18 +2,25 @@ import type { RuleEngine } from '../usecase/ruleEngine';
 import { logUnreachableRuleWarnings } from './logger';
 
 /**
- * The core LAN-access security fact, worded once and reused everywhere
- * `--lan`/`lanAccess` is surfaced to the user: `--lan`'s own help text,
- * `detour config --lan`'s help text, and the startup banner's warning. One
- * shared string so refining the wording (or the security posture it
- * describes) can't drift between three independently hand-edited copies.
+ * The core LAN-access security fact, worded once and reused wherever
+ * `--lan`/`lanAccess` is surfaced *before* it's known whether a dashboard
+ * password is configured: `--lan`'s own help text and `detour config
+ * --lan`'s. One shared string so refining the wording (or the security
+ * posture it describes) can't drift between hand-edited copies.
+ *
+ * Hedged with "unless a dashboard password is set" deliberately. Help text
+ * is rendered while building the CLI, long before any config is read, so it
+ * can only describe the default posture honestly — flatly asserting "no
+ * authentication" would be wrong for anyone who has set one (issue #66).
+ * The banner, which runs when the answer is known, says which case actually
+ * applies instead of reusing this (see `printStartupBanner`).
  *
  * Scoped to the *dashboard* only — the proxy itself always binds to every
  * network interface regardless of `--lan`/`lanAccess` (see `PROXY_HOST`'s
  * doc comment), since a proxy nobody else's device can reach isn't much of
  * a proxy. This warning exists because the dashboard is the one piece
  * `--lan` still actually gates: it's where decrypted HTTPS traffic and rule
- * edits live, with no login of its own.
+ * edits live.
  *
  * `web/src/features/settings-panel/ui/SettingsPanel.tsx`'s dashboard-side
  * warning says the same thing in its own words — that's a separate,
@@ -21,7 +28,7 @@ import { logUnreachableRuleWarnings } from './logger';
  * to match by hand instead. Update both together.
  */
 export const LAN_ACCESS_WARNING =
-  'there is no authentication of any kind — anyone on your network can reach the dashboard, view decrypted HTTPS traffic through it, or edit rules';
+  'unless a dashboard password is set (`detour config --dashboard-password`), there is no authentication at all — anyone on your network can reach the dashboard, view decrypted HTTPS traffic through it, or edit rules';
 
 /**
  * Formats `detour start`'s banner. Everything it reports is passed in
@@ -97,14 +104,15 @@ export function printStartupBanner(info: {
     // this way, and has no comparable rule-editing/traffic-viewing surface
     // to expose — see `LAN_ACCESS_WARNING`'s doc comment).
     //
-    // Which half of that is true depends on `dashboardPasswordSet`: the
-    // unconditional "no authentication of any kind" wording contradicted
-    // the `Dashboard password: required` line printed just above it
-    // whenever one was actually set (issue #66), so a user who had done
-    // the right thing was told it counted for nothing.
+    // Stated outright rather than reusing `LAN_ACCESS_WARNING`'s hedged
+    // help-text wording: by now it's known which case applies. The old
+    // unconditional "no authentication of any kind" contradicted the
+    // `Dashboard password: required` line printed just above it whenever
+    // one was actually set (issue #66), telling a user who had done the
+    // right thing that it counted for nothing.
     const risk = info.dashboardPasswordSet
       ? 'the dashboard password is the only thing standing between anyone on your network and decrypted HTTPS traffic or rule edits'
-      : LAN_ACCESS_WARNING;
+      : 'no dashboard password is set (detour config --dashboard-password), so anyone on your network can reach the dashboard, view decrypted HTTPS traffic through it, or edit rules';
     console.log(
       `⚠ Dashboard bound to every network interface, not just this machine — SECURITY: ${risk}. Only do this on a network you trust.`,
     );

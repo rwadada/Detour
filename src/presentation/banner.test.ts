@@ -80,14 +80,14 @@ describe('printStartupBanner', () => {
 
   it('stops claiming there is no authentication once a dashboard password is set', () => {
     const noPassword = print({ dashboardHost: '0.0.0.0', dashboardPasswordSet: false });
-    expect(noPassword).toContain('no authentication of any kind');
+    expect(noPassword).toContain('no dashboard password is set');
 
     const withPassword = print({ dashboardHost: '0.0.0.0', dashboardPasswordSet: true });
     expect(withPassword).toContain('SECURITY');
     expect(withPassword).toContain('the dashboard password is the only thing standing between');
     // The old wording said this even with a password configured, directly
     // contradicting the `Dashboard password: required` line above it.
-    expect(withPassword).not.toContain('no authentication of any kind');
+    expect(withPassword).not.toContain('no dashboard password is set');
   });
 
   it('omits the LAN warning for a headless run, which has no dashboard to expose', () => {

@@ -30,21 +30,28 @@ export function resolveCaCertsForCommand(caCertPath: string): { path: string; cl
   // path is guessable ahead of time, letting another user pre-create a
   // symlink there that a plain `writeFileSync` would happily follow.
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-test-ca-'));
-  const combinedPath = path.join(tmpDir, 'combined-ca.pem');
-  // `wx`: fails instead of following a pre-existing path (symlink or
-  // otherwise) at `combinedPath` — belt-and-suspenders alongside `mkdtemp`
-  // already giving this directory a name nothing else could have guessed.
-  fs.writeFileSync(combinedPath, `${existingContents}\n${fs.readFileSync(caCertPath, 'utf8')}`, { flag: 'wx' });
-  return {
-    path: combinedPath,
-    cleanup: () => {
-      try {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      } catch {
-        // Best-effort — a leftover temp dir in the OS tmp dir is harmless.
-      }
-    },
+  const cleanup = () => {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // Best-effort — a leftover temp dir in the OS tmp dir is harmless.
+    }
   };
+
+  const combinedPath = path.join(tmpDir, 'combined-ca.pem');
+  try {
+    // `wx`: fails instead of following a pre-existing path (symlink or
+    // otherwise) at `combinedPath` — belt-and-suspenders alongside `mkdtemp`
+    // already giving this directory a name nothing else could have guessed.
+    fs.writeFileSync(combinedPath, `${existingContents}\n${fs.readFileSync(caCertPath, 'utf8')}`, { flag: 'wx' });
+  } catch (err) {
+    // The directory exists by this point but the caller never receives
+    // `cleanup`, so a failure here (an unreadable CA cert, a full disk)
+    // would strand it in the OS temp dir with nobody left holding its name.
+    cleanup();
+    throw err;
+  }
+  return { path: combinedPath, cleanup };
 }
 
 /** Runs `command` with the proxy env vars set, resolving with its exit code (or 1, if it was killed by a signal instead of exiting normally). */
