@@ -64,8 +64,12 @@ export function resolveCaCertsForCommand(caCertPath: string): { path: string; cl
  * far less useful error than one that names what's actually wrong.
  */
 export function runCommandUnderProxy(command: string[], proxyUrl: string, caCertPath: string): Promise<number> {
-  if (command.length === 0) throw new Error('runCommandUnderProxy requires a non-empty command');
   const [cmd, ...args] = command;
+  // Checked on the actual executable name, not just `command.length`: an
+  // empty array fails this too (`cmd` is `undefined`), but so does the less
+  // obvious `['']` or `['  ']` — a length check alone would let either
+  // through to `spawn()`, which fails with a far less direct error.
+  if (!cmd?.trim()) throw new Error('runCommandUnderProxy requires a non-empty command');
   const { path: nodeExtraCaCerts, cleanup } = resolveCaCertsForCommand(caCertPath);
   // Stripped, not just left alone: many CI/dev environments already set
   // NO_PROXY/no_proxy to something like "localhost,127.0.0.1" for their own

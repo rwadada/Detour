@@ -11,4 +11,15 @@ describe('runCommandUnderProxy', () => {
       'runCommandUnderProxy requires a non-empty command',
     );
   });
+
+  it('rejects a command whose executable name is empty or whitespace-only, not just an empty array', () => {
+    // command.length === 0 alone would miss this: ['', 'foo'] and ['  ']
+    // both have a positive length but no actual executable to run.
+    expect(() => runCommandUnderProxy([''], 'http://localhost:8080', '/does/not/matter/ca.pem')).toThrow(
+      'runCommandUnderProxy requires a non-empty command',
+    );
+    expect(() => runCommandUnderProxy(['   '], 'http://localhost:8080', '/does/not/matter/ca.pem')).toThrow(
+      'runCommandUnderProxy requires a non-empty command',
+    );
+  });
 });
