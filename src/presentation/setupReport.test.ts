@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import type { SetupStep, StepStatus } from '../usecase/setup/types';
 import { printStep } from './setupReport';
 
@@ -7,6 +7,13 @@ describe('printStep (stepIcon)', () => {
 
   afterEach(() => {
     spy.mockClear();
+  });
+
+  // Restored, not just cleared: vitest runs several test files per worker
+  // process, so a `console.log` left mocked here would silently swallow
+  // every other file's output for the rest of that worker's life.
+  afterAll(() => {
+    spy.mockRestore();
   });
 
   it.each([
