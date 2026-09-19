@@ -1,10 +1,7 @@
 import { isHostBlocked, normalizeBlockHosts } from '../../domain/blockHosts/blockHostsPolicy';
 import { BodyCapture } from '../../domain/exchange/bodyCapture';
-import { compactHeaders, deleteHeader, flattenHeaders } from '../../domain/exchange/headers';
 import type {
   BlockHostsState,
-  BreakpointRequestPayload,
-  BreakpointResponsePayload,
   BreakpointResumeCommand,
   CapturedExchange,
   CapturedWebSocketConnection,
@@ -13,7 +10,7 @@ import type {
 } from '../../domain/exchange/types';
 import { recordWebSocketFrame } from '../../domain/exchange/webSocketCapture';
 import { formatHostPort, isHostFocused, normalizeFocusHosts } from '../../domain/focus/focusPolicy';
-import type { ScriptModule, ScriptRequestInfo, ScriptResponseInfo } from '../../domain/rules/scriptAction';
+import type { ScriptModule } from '../../domain/rules/scriptAction';
 import type { Rule } from '../../domain/rules/types';
 import { BandwidthState, transferDelayMs } from '../../domain/throttle/bandwidth';
 import { DEFAULT_THROTTLE_STATE, normalizeThrottleState } from '../../domain/throttle/throttlePolicy';
@@ -23,11 +20,11 @@ import { resolveBlockedRequestOutcome } from '../../usecase/resolveBlockedReques
 import { resolveExchangeAction } from '../../usecase/resolveExchangeAction';
 import { selectLastMatchingBodyRewriteRule } from '../../usecase/selectBodyRewriteRule';
 import type { RuleEngine } from '../../usecase/ruleEngine';
-import { runBeforeRequest, runBeforeResponse } from '../../usecase/runScriptHooks';
 import { resolveCertDir } from '../certStore';
 import type { DetourEventBus } from '../eventBus';
 import { assertPortAvailable } from '../portCheck';
 import { nodeCommandRunner } from '../process/nodeCommandRunner';
+import { attachTiming } from './attachTiming';
 import {
   applyRequestRewrite,
   applyResponseHeaderRewrite,
@@ -41,8 +38,12 @@ import {
 } from './actionsRuntime';
 import { ClientProcessDirectory, isClientProcessLookupSupported } from './clientProcessLookup';
 import { ProxyEngine } from './engine/proxyEngine';
-import type { ErrorCallback, IContext, IWebSocketContext } from './engine/types';
+import type { IContext, IWebSocketContext } from './engine/types';
 import { createInterceptOffConnectHandler } from './pipeline/interceptOffConnect';
+import { createRequestBreakpointHandler } from './pipeline/requestBreakpoint';
+import { createResponseBreakpointHandler } from './pipeline/responseBreakpoint';
+import { createScriptRequestHookHandler } from './pipeline/scriptRequestHook';
+import { createScriptResponseHookHandler } from './pipeline/scriptResponseHook';
 
 /**
  * Captures the client's raw request body directly off `clientToProxyRequest`
@@ -205,35 +206,6 @@ function buildBaseExchange(
     }
   }
   return exchange;
-}
-
-/**
- * Copies the proxy→upstream DNS/TCP/TLS/TTFB timing ProxyEngine measured
- * (issue #140, `ctx.timing`) onto `exchange`, filling in the one phase only
- * knowable once the exchange is finishing — `transferMs`, the response
- * headers arriving (`ctx.responseHeadersAt`) to `exchange.finishedAt`,
- * which already reflects any Throttle delay/body rewrite applied to it. A
- * no-op for an exchange that never actually reached upstream, since
- * `ctx.timing` is only ever set once `ProxyEngine.makeProxyToServerRequest`
- * runs. Called at every place `exchange.finishedAt` is set for an exchange
- * that *did* reach upstream (a `mock`/blocked/request-phase-aborted
- * response never does, so never calls this).
- */
-function attachTiming(exchange: CapturedExchange, ctx: IContext): void {
-  if (!ctx.timing) return;
-  if (ctx.responseHeadersAt !== undefined && exchange.finishedAt !== undefined) {
-    ctx.timing.transferMs = exchange.finishedAt - ctx.responseHeadersAt;
-  }
-  // `ctx.timing` is set (to `{}`) the moment `makeProxyToServerRequest`
-  // dispatches, before any phase actually completes — a request that
-  // errors synchronously right after that (before even a 'socket' event)
-  // would otherwise attach a timing object with every field `undefined`,
-  // contradicting `CapturedExchange.timing`'s own doc comment ("absent
-  // for an exchange that never reached upstream" — in every way that
-  // actually matters here, one whose upstream connection never got far
-  // enough to measure anything is the same case).
-  if (Object.values(ctx.timing).every((value) => value === undefined)) return;
-  exchange.timing = ctx.timing;
 }
 
 /**
@@ -589,443 +561,28 @@ export async function startProxyServer(
    * client stream was already fully drained here and carries no more data
    * for ProxyEngine's own pipeline to forward.
    */
-  function handleRequestBreakpoint(
-    ctx: IContext,
-    rule: Rule,
-    exchange: CapturedExchange,
-    callback: ErrorCallback,
-  ): void {
-    // Mirrors handleScriptRequestHook: `chunks` is the real (uncapped) body
-    // that gets forwarded upstream once resumed; `displayCapture` is a
-    // separate, capped copy purely for the dashboard's `exchange.requestBody`.
-    // A single capped `BodyCapture` used for both (as this used to do) would
-    // truncate the body actually sent to the server at MAX_CAPTURED_BODY_BYTES
-    // for a request the user resumed without editing — see issue #95.
-    const displayCapture = new BodyCapture();
-    const chunks: Buffer[] = [];
-    ctx.clientToProxyRequest.on('data', (chunk: Buffer) => {
-      exchange.requestBodySize += chunk.length;
-      displayCapture.add(chunk);
-      chunks.push(chunk);
-    });
-    // See captureClientRequestBody's doc comment: without resuming the
-    // (pre-paused) stream here, it never emits 'data'/'end' at all.
-    ctx.clientToProxyRequest.resume();
-
-    const pause = () => {
-      displayCapture.applyTo(exchange, 'request');
-      const rawBody = Buffer.concat(chunks);
-      // `chunks` (via the still-registered 'data' listener's closure) and
-      // `rawBody` would otherwise both hold the full body in memory at
-      // once — for a large upload paused at a breakpoint, that's an
-      // avoidable doubling of peak memory. The individual chunk Buffers can
-      // be GC'd once `rawBody` (its single-buffer copy) exists.
-      chunks.length = 0;
-
-      const opts = ctx.proxyToServerRequestOptions;
-      const payload: BreakpointRequestPayload = {
-        phase: 'request',
-        id: ctx.uuid,
-        method: exchange.method,
-        path: opts?.path ?? ctx.clientToProxyRequest.url ?? '/',
-        headers: flattenHeaders(opts?.headers ?? ctx.clientToProxyRequest.headers),
-        body: exchange.requestBody,
-        // Read directly off `displayCapture` rather than the exchange field
-        // it just set — a re-wrap of an already-capped buffer later (see the
-        // `BodyCapture.of(finalBody)` below) must never be mistaken for this.
-        bodyTruncated: displayCapture.isTruncated,
-      };
-      eventBus.emit('breakpointHit', { exchange: { ...exchange, breakpoint: 'request' }, payload });
-
-      breakpoints.wait(ctx.uuid, 'request').then((command) => {
-        if (command.action === 'abort') {
-          inFlight.delete(ctx.uuid);
-          ruleContexts.delete(ctx.uuid);
-          rewriteContexts.delete(ctx.uuid);
-          exchange.error = `rule "${rule.name}": request aborted via breakpoint`;
-          exchange.finishedAt = Date.now();
-          exchange.durationMs = exchange.finishedAt - exchange.startedAt;
-          eventBus.emit('response', exchange);
-          ctx.proxyToClientResponse.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-          ctx.proxyToClientResponse.end(`detour: request aborted via breakpoint rule "${rule.name}"`);
-          // Deliberately never calls `callback`: leaving it uncalled is how
-          // ProxyEngine is designed to skip forwarding to upstream.
-          return;
-        }
-
-        const edits = command.edits;
-        const finalBody = edits?.body !== undefined ? Buffer.from(edits.body, 'base64') : rawBody;
-
-        if (opts) {
-          if (edits?.method) opts.method = edits.method.toUpperCase();
-          if (edits?.path) opts.path = edits.path;
-          if (edits?.headers) opts.headers = { ...edits.headers };
-          // The edited body's length may differ from the original; drop
-          // content-length so Node sends it chunked instead (same as
-          // installRequestBodyRewrite's callers do).
-          delete opts.headers['content-length'];
-          exchange.method = opts.method;
-          exchange.url = `${ctx.isSSL ? 'https' : 'http'}://${exchange.host}${opts.path}`;
-        }
-        if (edits?.headers) exchange.requestHeaders = edits.headers;
-        exchange.requestBodySize = finalBody.length;
-        BodyCapture.of(finalBody).applyTo(exchange, 'request');
-
-        ctx.onRequestData((_dataCtx, _chunk, cb) => cb(undefined, Buffer.alloc(0)));
-        ctx.onRequestEnd((_endCtx, cb) => {
-          if (finalBody.length > 0) ctx.proxyToServerRequest?.write(finalBody);
-          eventBus.emit('request', exchange);
-          return cb();
-        });
-
-        callback();
-      });
-    };
-
-    if (ctx.clientToProxyRequest.complete) pause();
-    else ctx.clientToProxyRequest.once('end', pause);
-  }
-
-  /**
-   * Runs for every `script` rule at the request phase (issue #9), whether
-   * or not its module actually defines `beforeRequest` — see the doc
-   * comment on `scriptRequestBodies` for why: a `beforeResponse` hook must
-   * always see the *real* request body, so the full body has to be
-   * captured here unconditionally rather than only when there's a
-   * transform to apply. Mirrors `handleRequestBreakpoint`'s shape (capture
-   * the full body directly off `clientToProxyRequest`, then decide) rather
-   * than the `rewrite` action's onRequestData/onRequestEnd streaming style:
-   * a header/method change from the hook must land on
-   * `proxyToServerRequestOptions` before the outer `callback` runs —
-   * ProxyEngine creates the actual upstream request right after that (see
-   * `makeProxyToServerRequest` in engine/proxyEngine.ts), so a change
-   * applied any later would silently miss the request that already went
-   * out. One consequence: unlike a plain forwarded request, a `script`
-   * rule's (fully-buffered) upload never participates in Throttle's upload
-   * simulation — the same trade-off `mock`/`breakpoint` already make.
-   *
-   * Deliberately does NOT reuse `captureClientRequestBody`/`BodyCapture` for
-   * the body actually handed to the hook (and forwarded upstream): that
-   * capture is capped at `MAX_CAPTURED_BODY_BYTES` for the dashboard's own
-   * display copy, and per its doc comment the cap must never affect what's
-   * actually proxied — silently truncating a large upload here would be
-   * exactly that. `chunks` below is the real (uncapped) body; `displayCapture`
-   * is a second, capped copy purely for `exchange.requestBody`.
-   */
-  function handleScriptRequestHook(
-    ctx: IContext,
-    matched: { rule: Rule; module: ScriptModule },
-    exchange: CapturedExchange,
-    callback: ErrorCallback,
-  ): void {
-    const { rule, module } = matched;
-    const displayCapture = new BodyCapture();
-    const chunks: Buffer[] = [];
-    ctx.clientToProxyRequest.on('data', (chunk: Buffer) => {
-      exchange.requestBodySize += chunk.length;
-      displayCapture.add(chunk);
-      chunks.push(chunk);
-    });
-    // See captureClientRequestBody's doc comment: without resuming the
-    // (pre-paused) stream here, it never emits 'data'/'end' at all.
-    ctx.clientToProxyRequest.resume();
-
-    const forwardBody = (body: Buffer) => {
-      // Handed to `beforeResponse` (if this rule also defines one) as its
-      // `req.body` — see `scriptRequestBodies`' doc comment.
-      scriptRequestBodies.set(ctx.uuid, body);
-      ctx.onRequestData((_dataCtx, _chunk, cb) => cb(undefined, Buffer.alloc(0)));
-      ctx.onRequestEnd((_endCtx, cb) => {
-        if (body.length > 0) ctx.proxyToServerRequest?.write(body);
-        eventBus.emit('request', exchange);
-        return cb();
-      });
-      callback();
-    };
-
-    const run = () => {
-      displayCapture.applyTo(exchange, 'request');
-      const opts = ctx.proxyToServerRequestOptions;
-      const body = Buffer.concat(chunks);
-      if (!opts) {
-        forwardBody(body);
-        return;
-      }
-
-      const req: ScriptRequestInfo = {
-        method: exchange.method,
-        url: exchange.url,
-        headers: flattenHeaders(opts.headers),
-        body,
-      };
-
-      const applyResult = (result: ScriptRequestInfo) => {
-        opts.method = result.method;
-        opts.headers = { ...result.headers };
-        // The (possibly rewritten) body's length is unknown up front — send
-        // chunked instead, same as installRequestBodyRewrite. Case-
-        // insensitive: a hook can spell it any way it likes, unlike headers
-        // straight off the wire (always lowercased by Node).
-        deleteHeader(opts.headers, 'content-length');
-        exchange.method = result.method;
-        // From `opts.headers` (post-delete), not `result.headers` — the
-        // dashboard's own copy of what was sent must not show a
-        // content-length that was actually stripped before forwarding.
-        exchange.requestHeaders = opts.headers;
-        exchange.requestBodySize = result.body.length;
-        BodyCapture.of(result.body).applyTo(exchange, 'request');
-        forwardBody(result.body);
-      };
-
-      runBeforeRequest(module, req)
-        .then(applyResult)
-        .catch((err) => {
-          const message = err instanceof Error ? err.message : String(err);
-          eventBus.emit('error', {
-            id: ctx.uuid,
-            errorKind: 'RULE_SCRIPT_ERROR',
-            message: `rule "${rule.name}": beforeRequest failed: ${message}`,
-          });
-          forwardBody(body); // Forward the original, untouched request rather than drop it.
-        });
-    };
-
-    if (ctx.clientToProxyRequest.complete) run();
-    else ctx.clientToProxyRequest.once('end', run);
-  }
-
-  /**
-   * Pauses a response matched by a `breakpoint` rule (response phase) once
-   * it's fully arrived from upstream but before any of it reaches the
-   * client, and resumes/aborts it once the dashboard responds.
-   *
-   * Must run from the proxy-level `onResponseHeaders` hook (see
-   * applyResponseHeaderRewrite's doc comment for why) — which is also the
-   * only point status/headers can still be edited, since ProxyEngine
-   * flushes them to the client immediately once this hook's callback fires.
-   * Reads the upstream body directly off `serverToProxyResponse` (mirroring
-   * handleRequestBreakpoint) so the full body is available before that
-   * callback is released; once resumed, the (possibly edited) body is
-   * written directly from `onResponseEnd` — mirroring
-   * `installResponseBodyRewrite` — since the upstream stream was already
-   * fully drained here.
-   */
-  function handleResponseBreakpoint(ctx: IContext, rule: Rule, callback: ErrorCallback): void {
-    const exchange = inFlight.get(ctx.uuid);
-    const res = ctx.serverToProxyResponse;
-    if (!res || !exchange) {
-      callback();
-      return;
-    }
-
-    // Mirrors handleScriptResponseHook: `chunks` is the real (uncapped)
-    // upstream body that gets forwarded to the client once resumed;
-    // `displayCapture` is a separate, capped copy purely for the dashboard.
-    // A single capped `BodyCapture` used for both (as this used to do) would
-    // truncate the body actually sent to the client at MAX_CAPTURED_BODY_BYTES
-    // for a response the user resumed without editing, and re-wrapping that
-    // already-capped buffer for the snapshot would also silently launder
-    // `responseBodyTruncated` back to `false` — see issue #95.
-    const displayCapture = new BodyCapture();
-    const chunks: Buffer[] = [];
-    res.on('data', (chunk: Buffer) => {
-      displayCapture.add(chunk);
-      chunks.push(chunk);
-    });
-    // `serverToProxyResponse` is paused by ProxyEngine before this hook
-    // runs; without resuming it here, it never emits 'data'/'end' and the
-    // wait below deadlocks forever (same reasoning as the mock branch above).
-    res.resume();
-
-    const pause = () => {
-      const rawBody = Buffer.concat(chunks);
-      // See handleRequestBreakpoint's identical fix above: without this,
-      // `chunks` and `rawBody` both hold the full response body in memory
-      // at once for as long as this closure is alive.
-      chunks.length = 0;
-      const snapshot: CapturedExchange = { ...exchange, breakpoint: 'response' };
-      snapshot.statusCode = res.statusCode;
-      snapshot.statusMessage = res.statusMessage;
-      snapshot.responseHeaders = { ...res.headers };
-      snapshot.responseBodySize = rawBody.length;
-      displayCapture.applyTo(snapshot, 'response');
-
-      const payload: BreakpointResponsePayload = {
-        phase: 'response',
-        id: ctx.uuid,
-        status: res.statusCode ?? 200,
-        statusMessage: res.statusMessage,
-        headers: flattenHeaders(res.headers),
-        body: snapshot.responseBody,
-        // Read directly off `displayCapture` — see the request phase's
-        // identical fix above for why this must not go through a re-wrap of
-        // an already-capped buffer.
-        bodyTruncated: displayCapture.isTruncated,
-      };
-      eventBus.emit('breakpointHit', { exchange: snapshot, payload });
-
-      breakpoints.wait(ctx.uuid, 'response').then((command) => {
-        if (command.action === 'abort') {
-          inFlight.delete(ctx.uuid);
-          ruleContexts.delete(ctx.uuid);
-          rewriteContexts.delete(ctx.uuid);
-          exchange.error = `rule "${rule.name}": response aborted via breakpoint (connection closed)`;
-          exchange.finishedAt = Date.now();
-          exchange.durationMs = exchange.finishedAt - exchange.startedAt;
-          attachTiming(exchange, ctx);
-          eventBus.emit('response', exchange);
-          ctx.proxyToClientResponse.destroy();
-          // Deliberately never calls `callback`: leaving it uncalled stops
-          // headers/body from ever reaching the client, same convention as
-          // the request-phase abort above.
-          return;
-        }
-
-        const edits = command.edits;
-        if (edits?.status !== undefined) res.statusCode = edits.status;
-        if (edits?.statusMessage !== undefined) res.statusMessage = edits.statusMessage;
-        if (edits?.headers) res.headers = { ...edits.headers };
-        // Same reasoning as the request phase: the edited body's length may
-        // differ, so drop content-length and let it go out chunked.
-        delete res.headers['content-length'];
-        const finalBody = edits?.body !== undefined ? Buffer.from(edits.body, 'base64') : rawBody;
-
-        exchange.statusCode = res.statusCode;
-        exchange.statusMessage = res.statusMessage;
-        exchange.responseHeaders = { ...res.headers };
-        exchange.responseBodySize = finalBody.length;
-        BodyCapture.of(finalBody).applyTo(exchange, 'response');
-        exchange.finishedAt = Date.now();
-        exchange.durationMs = exchange.finishedAt - exchange.startedAt;
-        attachTiming(exchange, ctx);
-
-        ctx.onResponseData((_dataCtx, _chunk, cb) => cb(undefined, Buffer.alloc(0)));
-        ctx.onResponseEnd((_endCtx, cb) => {
-          if (finalBody.length > 0) ctx.proxyToClientResponse.write(finalBody);
-          eventBus.emit('response', exchange);
-          inFlight.delete(ctx.uuid);
-          ruleContexts.delete(ctx.uuid);
-          rewriteContexts.delete(ctx.uuid);
-          return cb();
-        });
-
-        callback();
-      });
-    };
-
-    if (res.complete) pause();
-    else res.once('end', pause);
-  }
-
-  /**
-   * Runs a `script` rule's `beforeResponse` hook (issue #9), invoked from
-   * `onResponseHeaders` — same reasoning as `applyResponseHeaderRewrite`/
-   * `handleResponseBreakpoint`: status/headers can only still be edited
-   * there, since ProxyEngine flushes them to the client the moment its
-   * callback fires. Reads the upstream body directly off
-   * `serverToProxyResponse` (mirroring `handleResponseBreakpoint`) so the
-   * hook sees the full response before that callback is released; the
-   * (possibly rewritten) body is then written from `onResponseEnd`, mirroring
-   * `installResponseBodyRewrite`. `module` is passed in already-loaded (see
-   * the `onResponse` handler below, which decided to route here in the
-   * first place based on whether it defines `beforeResponse`).
-   *
-   * Deliberately accumulates the raw upstream body into a plain (uncapped)
-   * `chunks` array rather than a capped `BodyCapture` — same reasoning as
-   * `handleScriptRequestHook`: what's captured here is what's actually sent
-   * back to the client, so it must never be silently truncated the way the
-   * dashboard's own display copy is (see `finish`'s `BodyCapture.of` call,
-   * which caps *that* copy on purpose).
-   */
-  function handleScriptResponseHook(ctx: IContext, rule: Rule, module: ScriptModule, callback: ErrorCallback): void {
-    const exchange = inFlight.get(ctx.uuid);
-    const res = ctx.serverToProxyResponse;
-    if (!res || !exchange) {
-      callback();
-      return;
-    }
-
-    const chunks: Buffer[] = [];
-    res.on('data', (chunk: Buffer) => chunks.push(chunk));
-    res.resume();
-
-    // Applies a (possibly hook-rewritten) response and releases `callback`,
-    // flushing status/headers to the client. Shared by the success and
-    // error paths below, mirroring `handleResponseBreakpoint`'s `resume`.
-    const finish = (result: ScriptResponseInfo) => {
-      res.statusCode = result.status;
-      res.statusMessage = result.statusMessage;
-      res.headers = { ...result.headers };
-      // The final body's length may differ from upstream's — drop
-      // content-length and let it go out chunked, same as elsewhere.
-      // Case-insensitive: see the request-phase hook's identical fix.
-      deleteHeader(res.headers, 'content-length');
-
-      exchange.statusCode = result.status;
-      exchange.statusMessage = result.statusMessage;
-      // From `res.headers` (post-delete), not `result.headers` — same
-      // reasoning as the request-phase hook's identical fix.
-      exchange.responseHeaders = { ...res.headers };
-      exchange.responseBodySize = result.body.length;
-      BodyCapture.of(result.body).applyTo(exchange, 'response');
-      exchange.finishedAt = Date.now();
-      exchange.durationMs = exchange.finishedAt - exchange.startedAt;
-      attachTiming(exchange, ctx);
-
-      ctx.onResponseData((_dataCtx, _chunk, cb) => cb(undefined, Buffer.alloc(0)));
-      ctx.onResponseEnd((_endCtx, cb) => {
-        if (result.body.length > 0) ctx.proxyToClientResponse.write(result.body);
-        eventBus.emit('response', exchange);
-        inFlight.delete(ctx.uuid);
-        ruleContexts.delete(ctx.uuid);
-        rewriteContexts.delete(ctx.uuid);
-        return cb();
-      });
-      callback();
-    };
-
-    const run = () => {
-      // The exact body `handleScriptRequestHook` forwarded upstream for
-      // this same exchange — see `scriptRequestBodies`' doc comment. Falls
-      // back to the dashboard's own (possibly truncated) display copy only
-      // in the rare case that path never ran at all, e.g. the module
-      // failed to load at the request phase but a fixed version loads
-      // successfully by the time this (independent) response-phase load
-      // runs — see the `onRequest` handler's script branch.
-      const requestBody = scriptRequestBodies.get(ctx.uuid);
-      scriptRequestBodies.delete(ctx.uuid);
-      const reqInfo: ScriptRequestInfo = {
-        method: exchange.method,
-        url: exchange.url,
-        headers: flattenHeaders(exchange.requestHeaders),
-        body: requestBody ?? (exchange.requestBody ? Buffer.from(exchange.requestBody, 'base64') : Buffer.alloc(0)),
-      };
-      const resInfo: ScriptResponseInfo = {
-        status: res.statusCode ?? 200,
-        statusMessage: res.statusMessage,
-        // Preserves a multi-value header (e.g. `set-cookie`) as an array —
-        // see `compactHeaders`' doc comment for why `flattenHeaders`
-        // (comma-joining) would corrupt it.
-        headers: compactHeaders(res.headers),
-        body: Buffer.concat(chunks),
-      };
-
-      runBeforeResponse(module, reqInfo, resInfo)
-        .then(finish)
-        .catch((err) => {
-          const message = err instanceof Error ? err.message : String(err);
-          eventBus.emit('error', {
-            id: ctx.uuid,
-            errorKind: 'RULE_SCRIPT_ERROR',
-            message: `rule "${rule.name}": beforeResponse failed: ${message}`,
-          });
-          finish(resInfo); // Forward the original, untouched response rather than drop it.
-        });
-    };
-
-    if (res.complete) run();
-    else res.once('end', run);
-  }
+  const handleRequestBreakpoint = createRequestBreakpointHandler({
+    eventBus,
+    breakpoints,
+    inFlight,
+    ruleContexts,
+    rewriteContexts,
+  });
+  const handleScriptRequestHook = createScriptRequestHookHandler({ eventBus, scriptRequestBodies });
+  const handleResponseBreakpoint = createResponseBreakpointHandler({
+    eventBus,
+    breakpoints,
+    inFlight,
+    ruleContexts,
+    rewriteContexts,
+  });
+  const handleScriptResponseHook = createScriptResponseHookHandler({
+    eventBus,
+    inFlight,
+    ruleContexts,
+    rewriteContexts,
+    scriptRequestBodies,
+  });
 
   // Response header/status rewrites must run before ProxyEngine flushes
   // them to the client — see applyResponseHeaderRewrite's doc comment.
