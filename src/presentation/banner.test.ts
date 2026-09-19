@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { printStartupBanner } from './banner';
 
 /**
@@ -17,6 +17,13 @@ describe('printStartupBanner', () => {
   afterEach(() => {
     logged.length = 0;
     spy.mockClear();
+  });
+
+  // Restored, not just cleared: vitest runs several test files per worker
+  // process, so a `console.log` left mocked here would silently swallow
+  // every other file's output for the rest of that worker's life.
+  afterAll(() => {
+    spy.mockRestore();
   });
 
   /** Clears first, so two calls in one test compare two banners rather than one concatenated with the other. */
@@ -69,6 +76,18 @@ describe('printStartupBanner', () => {
   it('warns loudly when the dashboard is bound to every interface', () => {
     expect(print({ dashboardHost: '0.0.0.0' })).toContain('SECURITY');
     expect(print({ dashboardHost: 'localhost' })).not.toContain('SECURITY');
+  });
+
+  it('stops claiming there is no authentication once a dashboard password is set', () => {
+    const noPassword = print({ dashboardHost: '0.0.0.0', dashboardPasswordSet: false });
+    expect(noPassword).toContain('no authentication of any kind');
+
+    const withPassword = print({ dashboardHost: '0.0.0.0', dashboardPasswordSet: true });
+    expect(withPassword).toContain('SECURITY');
+    expect(withPassword).toContain('the dashboard password is the only thing standing between');
+    // The old wording said this even with a password configured, directly
+    // contradicting the `Dashboard password: required` line above it.
+    expect(withPassword).not.toContain('no authentication of any kind');
   });
 
   it('omits the LAN warning for a headless run, which has no dashboard to expose', () => {

@@ -91,14 +91,22 @@ export function printStartupBanner(info: {
   }
   if (dashboardOnLan) {
     // `--lan`/`detour config --lan on`: called out loudly rather than
-    // folded quietly into the URL above — LAN access has no authentication
-    // of its own, so anyone on the network can reach the dashboard and,
-    // from there, decrypted HTTPS traffic and rule edits (the proxy itself
-    // isn't part of this warning: it's always reachable this way, and has
-    // no comparable rule-editing/traffic-viewing surface to expose — see
-    // `LAN_ACCESS_WARNING`'s doc comment).
+    // folded quietly into the URL above — anyone on the network can reach
+    // the dashboard and, from there, decrypted HTTPS traffic and rule edits
+    // (the proxy itself isn't part of this warning: it's always reachable
+    // this way, and has no comparable rule-editing/traffic-viewing surface
+    // to expose — see `LAN_ACCESS_WARNING`'s doc comment).
+    //
+    // Which half of that is true depends on `dashboardPasswordSet`: the
+    // unconditional "no authentication of any kind" wording contradicted
+    // the `Dashboard password: required` line printed just above it
+    // whenever one was actually set (issue #66), so a user who had done
+    // the right thing was told it counted for nothing.
+    const risk = info.dashboardPasswordSet
+      ? 'the dashboard password is the only thing standing between anyone on your network and decrypted HTTPS traffic or rule edits'
+      : LAN_ACCESS_WARNING;
     console.log(
-      `⚠ Dashboard bound to every network interface, not just this machine — SECURITY: ${LAN_ACCESS_WARNING}. Only do this on a network you trust.`,
+      `⚠ Dashboard bound to every network interface, not just this machine — SECURITY: ${risk}. Only do this on a network you trust.`,
     );
   }
   if (info.ruleEngine) {
