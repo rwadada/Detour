@@ -29,7 +29,7 @@
 //
 // Usage:
 //   npm run bench                          # all scenarios
-//   npm run bench -- --scenarios 1,2,8     # a subset
+//   npm run bench -- --scenarios 1,2       # a subset (scenario 8, the no-proxy baseline, is implicit — see SCENARIOS below)
 //   npm run bench -- --quick               # CI-sized: short, scenarios 1,2,5
 //   npm run bench -- --json out.json       # save results
 //   npm run bench -- --compare a.json b.json   # diff two saved runs
@@ -660,6 +660,21 @@ async function measureBaselines(selected, { upstreams, certs, options }) {
     const label = `${scenario.scheme}, ${formatBytes(scenario.bodyBytes)}`;
     process.stdout.write(`  running baseline (${label})...\n`);
     const metrics = await measureBaseline({ ...scenario, upstreams, certs, options });
+    if (metrics.requests === 0 || metrics.errors > 0) {
+      // The denominator every ratio in this run divides by. A silent
+      // failure here doesn't just produce one bad row the way a scenario
+      // failure does — `enforceGate` only checks gated *scenario* rows, so
+      // a broken baseline would leak into every ratio (an Infinity for a
+      // gated scenario happens to fail safe; a NaN for an ungated one, or
+      // for the table's own display, would not) instead of failing loudly
+      // at the one place that actually knows something is wrong.
+      const cause = metrics.firstError ? `: ${metrics.firstError}` : '';
+      throw new Error(
+        `Baseline measurement (${label}) is broken — ${metrics.errors} failed request(s), ` +
+          `${metrics.requests} succeeded${cause}. ` +
+          'Every scenario is measured against this baseline, so a bad one invalidates the whole run.',
+      );
+    }
     baselines.set(key, metrics);
     rows.push({ id: 8, key: `8-${key}`, name: `Direct, no proxy (${label})`, metrics });
   }
