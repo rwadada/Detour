@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { MockResponse } from '../domain/rules/mockResponse';
-import type { Rule } from '../domain/rules/types';
+import type { Rule, RewriteAction } from '../domain/rules/types';
 import { applyResponseRewritesToMock } from './applyResponseRewritesToMock';
 
 function mockResponse(overrides: Partial<MockResponse> = {}): MockResponse {
   return { status: 200, headers: {}, body: Buffer.from('original'), ...overrides };
 }
 
-function rewriteRule(name: string, response: object): Rule {
+function rewriteRule(name: string, response: RewriteAction['response']): Rule {
   return { name, match: { url: '*' }, action: { type: 'rewrite', response } };
 }
 

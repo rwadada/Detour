@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { Rule } from '../domain/rules/types';
+import type { Rule, RewriteAction } from '../domain/rules/types';
 import { selectLastMatchingBodyRewriteRule } from './selectBodyRewriteRule';
 
-function rewriteRule(name: string, overrides: { request?: object; response?: object }): Rule {
+function rewriteRule(name: string, overrides: Pick<RewriteAction, 'request' | 'response'>): Rule {
   return {
     name,
     match: { url: '*' },
