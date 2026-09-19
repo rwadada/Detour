@@ -39,6 +39,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -146,6 +147,21 @@ function positiveNumber(value, flag) {
   return parsed;
 }
 
+/**
+ * Parses `--scenarios`' comma-separated list strictly: a bare `Number(...)`
+ * map would silently turn a typo (`--scenarios 1,x`) into `NaN`, which then
+ * matches nothing in `SCENARIOS.filter` and surfaces as the unhelpful
+ * "no scenarios matched" error further downstream instead of naming the
+ * actual bad input.
+ */
+function parseScenarioIds(value) {
+  return value.split(',').map((part) => {
+    const id = Number(part);
+    if (!Number.isInteger(id)) throw new Error(`--scenarios: not a valid scenario id: ${part}`);
+    return id;
+  });
+}
+
 function parseArgs(argv) {
   const options = {
     scenarios: SCENARIOS.map((s) => s.id),
@@ -164,7 +180,7 @@ function parseArgs(argv) {
       i += 1;
       return value;
     };
-    if (arg === '--scenarios') options.scenarios = next().split(',').map(Number);
+    if (arg === '--scenarios') options.scenarios = parseScenarioIds(next());
     else if (arg === '--duration') options.durationMs = positiveNumber(next(), arg) * 1000;
     else if (arg === '--connections') options.connections = positiveNumber(next(), arg);
     else if (arg === '--json') options.json = path.resolve(next());
@@ -304,12 +320,27 @@ async function startDetour({ rulesPath, dashboard, upstreamCaPath }) {
   else args.push('--headless');
   if (rulesPath) args.push('--rules', rulesPath);
 
+  // A scratch HOME, not the caller's real one: every persistent-config path
+  // in the CLI (rules profile, dashboard password, run state, certs) is
+  // resolved off `os.homedir()`, so without this a bench run would read and
+  // write the developer's actual `~/.detour` — non-hermetic (results depend
+  // on whatever config happens to be there) and, worse, a dashboard password
+  // set there would make scenario 5's WebSocket connect unauthenticated and
+  // silently stop measuring broadcast traffic at all. Same pattern as
+  // `withTempHome` in cli.e2e.test.ts.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-bench-home-'));
+
   const child = spawn(process.execPath, args, {
     cwd: repoRoot,
-    // The upstream's throwaway CA (see generateUpstreamCert) — without it the
-    // proxy's own upstream leg fails verification and every scenario measures
-    // a 502 instead of a proxied request.
-    env: { ...process.env, NODE_EXTRA_CA_CERTS: upstreamCaPath },
+    env: {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      // The upstream's throwaway CA (see generateUpstreamCert) — without it
+      // the proxy's own upstream leg fails verification and every scenario
+      // measures a 502 instead of a proxied request.
+      NODE_EXTRA_CA_CERTS: upstreamCaPath,
+    },
   });
 
   let stdout = '';
@@ -321,19 +352,29 @@ async function startDetour({ rulesPath, dashboard, upstreamCaPath }) {
     stderr += chunk;
   });
 
-  const deadline = Date.now() + 30_000;
-  while (!/DETOUR_READY /.test(stdout)) {
-    if (child.exitCode !== null || Date.now() > deadline) {
-      child.kill('SIGKILL');
-      throw new Error(`detour start never became ready.\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+  let ready;
+  let caMatch;
+  try {
+    const deadline = Date.now() + 30_000;
+    while (!/DETOUR_READY /.test(stdout)) {
+      if (child.exitCode !== null || Date.now() > deadline) {
+        child.kill('SIGKILL');
+        throw new Error(`detour start never became ready.\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+      }
+      await sleep(50);
     }
-    await sleep(50);
-  }
 
-  const ready = /DETOUR_READY proxyPort=(\d+)(?: dashboardPort=(\d+))? pid=(\d+)/.exec(stdout);
-  if (!ready) throw new Error(`could not parse DETOUR_READY from:\n${stdout}`);
-  const caMatch = /Root CA certificate: (.+)/.exec(stdout);
-  if (!caMatch) throw new Error(`could not parse the CA cert path from:\n${stdout}`);
+    ready = /DETOUR_READY proxyPort=(\d+)(?: dashboardPort=(\d+))? pid=(\d+)/.exec(stdout);
+    if (!ready) throw new Error(`could not parse DETOUR_READY from:\n${stdout}`);
+    caMatch = /Root CA certificate: (.+)/.exec(stdout);
+    if (!caMatch) throw new Error(`could not parse the CA cert path from:\n${stdout}`);
+  } catch (err) {
+    // Cleans up the scratch HOME on any failure to get this far — past this
+    // point, `stop()` (which the caller is now responsible for calling) owns
+    // that cleanup instead.
+    fs.rmSync(home, { recursive: true, force: true });
+    throw err;
+  }
 
   return {
     proxyPort: Number(ready[1]),
@@ -345,6 +386,7 @@ async function startDetour({ rulesPath, dashboard, upstreamCaPath }) {
       const stopBy = Date.now() + 5_000;
       while (child.exitCode === null && Date.now() < stopBy) await sleep(50);
       if (child.exitCode === null) child.kill('SIGKILL');
+      fs.rmSync(home, { recursive: true, force: true });
     },
   };
 }
@@ -422,8 +464,15 @@ function sleep(ms) {
 function requestOnce({ agent, scheme, host, port, requestPath, ca }) {
   const transport = scheme === 'https' ? https : http;
   return new Promise((resolve, reject) => {
+    // No SNI for a literal IP `host` (the direct-to-upstream baseline, now
+    // that it targets 127.0.0.1 instead of 'localhost'): RFC 6066 forbids an
+    // IP address there, and Node deprecation-warns on it. The upstream's
+    // cert already carries an IP SAN for this exact case, so verification
+    // still passes without it. A `*.bench.invalid` hostname (scenario 7,
+    // routed to a different address than it names) still needs it.
+    const servername = scheme === 'https' && !net.isIP(host) ? host : undefined;
     const req = transport.request(
-      { host, port, path: requestPath, method: 'GET', agent, ca, servername: scheme === 'https' ? host : undefined },
+      { host, port, path: requestPath, method: 'GET', agent, ca, servername },
       (res) => {
         let bytes = 0;
         res.on('data', (chunk) => {
@@ -631,7 +680,13 @@ async function connectDashboard(port) {
 async function measureBaseline({ scheme, bodyBytes, upstreams, certs, options }) {
   const target = {
     scheme,
-    host: 'localhost',
+    // 127.0.0.1, not 'localhost': `startUpstream` binds the literal address
+    // `127.0.0.1` (not the hostname), so dialling 'localhost' only works by
+    // accident of DNS resolution order — on a system where it resolves to
+    // ::1 first, this would ECONNREFUSED against a server that never bound
+    // there (the same class of trap `connectDashboard`'s comment describes,
+    // just the opposite direction: that server binds by hostname).
+    host: '127.0.0.1',
     port: scheme === 'https' ? upstreams.https.port : upstreams.http.port,
     requestPath: `/bytes/${bodyBytes}`,
     ca: scheme === 'https' ? certs.caPem : undefined,
@@ -690,7 +745,10 @@ async function measureScenario(scenario, { upstreams, options, tmpDir, upstreamC
 
     const target = {
       scheme: scenario.scheme,
-      host: 'localhost',
+      // See measureBaseline's identical comment: startUpstream binds the
+      // literal address 127.0.0.1, so the request must target that address
+      // too rather than rely on how 'localhost' happens to resolve.
+      host: '127.0.0.1',
       port: scenario.scheme === 'https' ? upstreams.https.port : upstreams.http.port,
       requestPath: `/bytes/${scenario.bodyBytes}`,
       proxyUrl: `http://127.0.0.1:${detour.proxyPort}`,
