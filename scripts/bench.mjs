@@ -35,7 +35,7 @@
 //   npm run bench -- --compare a.json b.json   # diff two saved runs
 //   npm run bench -- --gate                # exit 1 if overhead exceeds the ceiling
 
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
@@ -421,34 +421,57 @@ function createProcessSampler(pid) {
   let firstCpu;
   let lastCpu = 0;
 
-  const sample = () => {
-    if (!PROCESS_SAMPLING_SUPPORTED) return;
-    try {
-      // An absolute path, not a bare `ps` resolved through PATH: it lives
-      // here on both Unix platforms that reach this line, and it keeps the
-      // lookup out of reach of whatever PATH happens to hold.
-      const out = execFileSync('/bin/ps', ['-o', 'rss=,time=', '-p', String(pid)], { encoding: 'utf8' }).trim();
-      if (!out) return;
-      const [rssKb, cpuTime] = out.split(/\s+/);
-      peakRssMb = Math.max(peakRssMb, Number(rssKb) / 1024);
-      const seconds = parseCpuTime(cpuTime);
-      if (firstCpu === undefined) firstCpu = seconds;
-      lastCpu = seconds;
-    } catch {
+  const recordSample = (out) => {
+    if (!out) return;
+    const [rssKb, cpuTime] = out.trim().split(/\s+/);
+    peakRssMb = Math.max(peakRssMb, Number(rssKb) / 1024);
+    const seconds = parseCpuTime(cpuTime);
+    if (firstCpu === undefined) firstCpu = seconds;
+    lastCpu = seconds;
+  };
+
+  // Async (`execFile`), not `execFileSync`: the load generator and its
+  // latency timing (`performance.now()` around each request) run in this
+  // same process, so a blocking spawn-and-wait every 250ms would inflate
+  // whatever request happens to overlap it — exactly the p95/p99 skew this
+  // harness exists to measure accurately. `inFlight` guards against `ps`
+  // itself being slow enough (a loaded CI runner) that one sample is still
+  // running when the next interval tick fires.
+  let inFlight = false;
+  const sampleAsync = () => {
+    if (!PROCESS_SAMPLING_SUPPORTED || inFlight) return;
+    inFlight = true;
+    // An absolute path, not a bare `ps` resolved through PATH: it lives here
+    // on both Unix platforms that reach this line, and it keeps the lookup
+    // out of reach of whatever PATH happens to hold.
+    execFile('/bin/ps', ['-o', 'rss=,time=', '-p', String(pid)], { encoding: 'utf8' }, (err, stdout) => {
+      inFlight = false;
       // The process is gone (or `ps` is unavailable on this platform) — the
       // latency numbers are still valid, so report what we have instead of
       // failing the whole run over a secondary metric.
-    }
+      if (!err) recordSample(stdout);
+    });
   };
 
-  sample();
-  const timer = setInterval(sample, 250);
+  sampleAsync();
+  const timer = setInterval(sampleAsync, 250);
   timer.unref();
 
   return {
     stop: () => {
       clearInterval(timer);
-      sample();
+      // Synchronous here, unlike the periodic samples above: the load this
+      // sampler runs alongside has already finished, so there's nothing
+      // left for a blocking call to skew, and it guarantees the final
+      // reading lands (an in-flight async sample from the last tick could
+      // otherwise resolve after this return, or not at all).
+      if (PROCESS_SAMPLING_SUPPORTED) {
+        try {
+          recordSample(execFileSync('/bin/ps', ['-o', 'rss=,time=', '-p', String(pid)], { encoding: 'utf8' }));
+        } catch {
+          // Same reasoning as the periodic sampler's own catch.
+        }
+      }
       return { peakRssMb, cpuSeconds: firstCpu === undefined ? 0 : lastCpu - firstCpu };
     },
   };
