@@ -55,6 +55,13 @@ const detourEntry = path.join(repoRoot, 'bin/detour.js');
 const KB = 1024;
 const MB = 1024 * KB;
 
+// Generous relative to any real scenario here (the slowest, fresh-host cert
+// issuance, is ~300ms) but still bounded: a stalled tunnel or a socket that
+// never ends would otherwise hang a worker (and the whole CI job) until the
+// workflow-level timeout, with no indication which request or scenario it
+// was stuck in.
+const REQUEST_TIMEOUT_MS = 15_000;
+
 /**
  * `--gate` ceilings, as a multiple of the same request made with no proxy in
  * the middle. Per scenario rather than one global number, because the three
@@ -487,6 +494,13 @@ function requestOnce({ agent, scheme, host, port, requestPath, ca }) {
         res.on('error', reject);
       },
     );
+    // Node's own socket timeout, not a manual setTimeout: it resets on every
+    // byte of activity, so a slow-but-progressing 10 MB streaming response
+    // (scenario 6) is never mistaken for a stall the way a single fixed
+    // deadline for the whole request would.
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error(`request to ${host}:${port} timed out after ${REQUEST_TIMEOUT_MS}ms`));
+    });
     req.on('error', reject);
     req.end();
   });
@@ -766,7 +780,18 @@ async function measureScenario(scenario, { upstreams, options, tmpDir, upstreamC
 
     if (scenario.freshHosts) {
       const warmupHosts = Array.from({ length: 5 }, (_, i) => `warmup-${i}.bench.invalid`);
-      await runFreshHosts({ connections: options.connections, hosts: warmupHosts, target: { ...target, port: 443 } });
+      const warmup = await runFreshHosts({ connections: options.connections, hosts: warmupHosts, target: { ...target, port: 443 } });
+      // Ignoring this would let a cert/SNI mismatch or a proxy that isn't
+      // ready yet slip silently into the measured run below, which exists
+      // specifically to *exclude* those one-time costs — the measurement
+      // would then either include them anyway or fail later with a much
+      // less direct error.
+      if (warmup.counters.errors > 0) {
+        const cause = warmup.counters.firstError ? `: ${warmup.counters.firstError}` : '';
+        throw new Error(
+          `warmup for scenario ${scenario.id} (${scenario.name}) had ${warmup.counters.errors} failed request(s)${cause}`,
+        );
+      }
       const hosts = Array.from({ length: scenario.freshHosts }, (_, i) => `host-${i}.bench.invalid`);
       const sampler = createProcessSampler(detour.pid);
       // Port 443 is what the CONNECT names; the route rule redirects the
