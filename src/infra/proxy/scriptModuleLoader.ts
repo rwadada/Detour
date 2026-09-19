@@ -40,11 +40,12 @@ export function tryLoadScriptModule(
   allowExternalPaths: boolean,
   onError: (message: string) => void,
 ): ScriptModule | undefined {
+  const action = rule.action as Extract<Rule['action'], { type: 'script' }>;
   try {
-    return loadScriptModule(rule.action as Extract<Rule['action'], { type: 'script' }>, basePath, allowExternalPaths);
+    return loadScriptModule(action, basePath, allowExternalPaths);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    onError(`rule "${rule.name}": failed to load script "${(rule.action as { path: string }).path}": ${message}`);
+    onError(`rule "${rule.name}": failed to load script "${action.path}": ${message}`);
     return undefined;
   }
 }

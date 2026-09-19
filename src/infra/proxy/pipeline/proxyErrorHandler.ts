@@ -1,4 +1,5 @@
 import type { CapturedExchange } from '../../../domain/exchange/types';
+import type { ScriptModule } from '../../../domain/rules/scriptAction';
 import type { Rule } from '../../../domain/rules/types';
 import type { BreakpointCoordinator } from '../../../usecase/breakpointCoordinator';
 import type { DetourEventBus } from '../../eventBus';
@@ -12,7 +13,7 @@ export interface ProxyErrorHandlerDeps {
   inFlight: Map<string, CapturedExchange>;
   ruleContexts: Map<string, Rule>;
   rewriteContexts: Map<string, Rule[]>;
-  scriptModules: Map<string, unknown>;
+  scriptModules: Map<string, ScriptModule>;
   scriptRequestBodies: Map<string, Buffer>;
 }
 
