@@ -155,7 +155,12 @@ function positiveNumber(value, flag) {
  * actual bad input.
  */
 function parseScenarioIds(value) {
-  return value.split(',').map((part) => {
+  return value.split(',').map((raw) => {
+    const part = raw.trim();
+    // `Number('')` is 0, not NaN — a trailing/doubled comma (`1,2,`) would
+    // otherwise silently pass as scenario 0 instead of failing like any
+    // other bad input.
+    if (part === '') throw new Error(`--scenarios: empty scenario id in "${value}"`);
     const id = Number(part);
     if (!Number.isInteger(id)) throw new Error(`--scenarios: not a valid scenario id: ${part}`);
     return id;
@@ -602,7 +607,10 @@ function summarize({ latencies, counters, elapsedMs }, processStats) {
     errors: counters.errors,
     firstError: counters.firstError,
     rps: latencies.length / (elapsedMs / 1000),
-    throughputMbps: counters.bytes / (elapsedMs / 1000) / MB,
+    // MB/s (mebibytes/sec, matching this file's own MB constant), not
+    // megabits/sec despite how "Mbps" usually reads — named accordingly so
+    // a consumer of the --json output doesn't read it as an 8x-too-small bit rate.
+    throughputMBps: counters.bytes / (elapsedMs / 1000) / MB,
     p50Ms: percentile(sorted, 0.5),
     p95Ms: percentile(sorted, 0.95),
     p99Ms: percentile(sorted, 0.99),

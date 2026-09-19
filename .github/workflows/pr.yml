@@ -49,6 +49,10 @@ jobs:
   # despite GitHub runners varying in absolute speed from run to run. An
   # absolute req/s threshold would not.
   bench:
+    # Waits on (but still runs on its own separate runner from, per the
+    # comment above) `verify`: no point spending CI minutes benchmarking a
+    # change that already failed correctness checks.
+    needs: verify
     runs-on: ubuntu-latest
     # A bounded failure beats an unbounded one: this job drives real proxy
     # processes and real sockets, so a hang is a plausible failure mode, and
