@@ -30,7 +30,7 @@ Please include, where relevant:
 
 ## What to expect
 
-This is a solo-maintained, pre-1.0 project — there's no dedicated security
+This is a solo-maintained project — there's no dedicated security
 team and no guaranteed SLA. That said, reports are read promptly, and a fix
 or mitigation is prioritized over other work once a report is confirmed.
 Credit is happily given in the fix's release notes, unless you'd rather stay
