@@ -601,10 +601,11 @@
         <li><a class="nav-link" data-page="getting-started" href="#getting-started"><span class="n">02</span>Getting started</a></li>
         <li><a class="nav-link" data-page="dashboard" href="#dashboard"><span class="n">03</span>Web dashboard</a></li>
         <li><a class="nav-link" data-page="rules" href="#rules"><span class="n">04</span>Rule engine</a></li>
-        <li><a class="nav-link" data-page="platforms" href="#platforms"><span class="n">05</span>Setup &amp; platforms</a></li>
-        <li><a class="nav-link" data-page="security" href="#security"><span class="n">06</span>LAN &amp; security</a></li>
-        <li><a class="nav-link" data-page="cli" href="#cli"><span class="n">07</span>CLI reference</a></li>
-        <li><a class="nav-link" data-page="troubleshooting" href="#troubleshooting"><span class="n">08</span>Troubleshooting</a></li>
+        <li><a class="nav-link" data-page="testing" href="#testing"><span class="n">05</span>Testing &amp; fixtures</a></li>
+        <li><a class="nav-link" data-page="platforms" href="#platforms"><span class="n">06</span>Setup &amp; platforms</a></li>
+        <li><a class="nav-link" data-page="security" href="#security"><span class="n">07</span>LAN &amp; security</a></li>
+        <li><a class="nav-link" data-page="cli" href="#cli"><span class="n">08</span>CLI reference</a></li>
+        <li><a class="nav-link" data-page="troubleshooting" href="#troubleshooting"><span class="n">09</span>Troubleshooting</a></li>
       </ul>
     </div>
   </nav>
@@ -647,6 +648,7 @@
         <div class="feature-card"><h3><span class="dot"></span>Declarative rules</h3><p>Mock, route, rewrite, breakpoint, or run a JS hook — all from one <code class="inline">rules.json</code>, hot-reloaded the moment you save it.</p></div>
         <div class="feature-card"><h3><span class="dot"></span>Live dashboard</h3><p>Every exchange streams in over WebSocket as it happens. Filter, inspect, diff two requests, replay one, or pause it mid-flight.</p></div>
         <div class="feature-card"><h3><span class="dot"></span>Setup that's actually automated</h3><p><code class="inline">detour setup</code> trusts the CA cert and points the system proxy at itself for mac/Android/iOS Simulator/Linux — no more hand-copying certificates.</p></div>
+        <div class="feature-card"><h3><span class="dot"></span>Usable from CI</h3><p><code class="inline">detour test</code> asserts on the traffic a command produced — missing auth headers, PII leaking to a third party, p95 latency. <code class="inline">detour record</code>/<code class="inline">serve</code> freeze a real backend into replayable fixtures.</p></div>
       </div>
 
       <h2>Quickstart</h2>
@@ -719,8 +721,11 @@ npm start -- start</pre>
             <tr><td class="flag">--rules &lt;path&gt;</td><td>Load a rules file; hot-reloads on save. Omit it and a <code class="inline">passthrough.rule.json</code> in the current directory — just a plain rules file under a conventional name — is loaded automatically, if one exists</td></tr>
             <tr><td class="flag">--dump &lt;level&gt;</td><td>How much each exchange is logged. <code class="inline">summary</code> (default) is one line; <code class="inline">full</code> adds headers and body to the console; <code class="inline">file</code> writes that same detail to <code class="inline">~/.detour/dumps</code> instead. <code class="inline">full</code> and <code class="inline">file</code> redact sensitive headers</td></tr>
             <tr><td class="flag">--no-http2</td><td>Falls back to HTTP/1.1-only on MITM'd HTTPS</td></tr>
-            <tr><td class="flag">--proto &lt;path&gt;</td><td>.proto schema for pretty-printed gRPC bodies in the CLI's <code class="inline">full</code>/<code class="inline">file</code> dumps only — the dashboard's body viewer always shows gRPC as raw bytes</td></tr>
+            <tr><td class="flag">--proto &lt;path&gt;</td><td>.proto schema for decoding gRPC message bodies — in the CLI's <code class="inline">full</code>/<code class="inline">file</code> dumps <em>and</em> in the dashboard's body viewer, which decodes each frame in the browser. Repeatable. gRPC traffic is detected either way; without a schema the viewer says what it was missing rather than showing raw bytes</td></tr>
             <tr><td class="flag">--no-open</td><td>Don't auto-open the dashboard in a browser on startup</td></tr>
+            <tr><td class="flag">--persist [path]</td><td>Persist finished exchanges to SQLite so the dashboard's History can search past the live 500-item backlog. Off by default; <code class="inline">~/.detour/history.db</code> when passed with no path. Needs Node 22.5+ (<code class="inline">node:sqlite</code>)</td></tr>
+            <tr><td class="flag">--upstream-proxy &lt;url&gt;</td><td>Send every proxy→upstream connection through another HTTP(S)/SOCKS proxy — for a network only reachable through an existing egress. <code class="inline">http</code>, <code class="inline">https</code>, <code class="inline">socks</code>/<code class="inline">socks4</code>/<code class="inline">socks4a</code>/<code class="inline">socks5</code>/<code class="inline">socks5h</code>, with optional <code class="inline">user:pass@</code></td></tr>
+            <tr><td class="flag">--allow-external-script-paths</td><td>Lets a rule's <code class="inline">script.path</code>/<code class="inline">mock.bodyFile</code> point outside the rules file's own directory. Off by default — see <a href="#rules">Rule engine</a></td></tr>
           </tbody>
         </table>
       </div>
@@ -758,6 +763,23 @@ npm start -- start</pre>
         </table>
       </div>
 
+      <h2>Reading a body</h2>
+      <p>The inspector renders a body by its <code class="inline">Content-Type</code> instead of dumping text at
+        you: images as images; HTML, CSS, JavaScript, XML and JSON syntax-highlighted (the last two
+        pretty-printed); <code class="inline">x-www-form-urlencoded</code> and
+        <code class="inline">multipart/form-data</code> broken out field by field, with file parts listed by
+        name and type rather than inlined. A <code class="inline">gzip</code>/<code class="inline">br</code>
+        body is decompressed first, and anything unrecognized falls back to "pretty-print as JSON if it parses,
+        raw text otherwise". A gRPC exchange is decoded frame by frame when
+        <code class="inline">detour start --proto</code> loaded a schema.</p>
+
+      <h2>Timing</h2>
+      <p>The inspector's <strong>Timing</strong> tab breaks an exchange's total duration into a waterfall —
+        DNS, TCP, TLS, time-to-first-byte, and response transfer. Phases that don't apply are simply absent:
+        no TLS for a plain-HTTP upstream, no DNS for a bare IP literal, and no timing at all for an exchange
+        that never reached upstream (a <code class="inline">mock</code>, a blocked host, an aborted
+        breakpoint).</p>
+
       <h2>Traffic controls</h2>
       <p>Four controls in the header. Each one changes the <strong>proxy itself</strong>, not just your view —
         so it takes effect immediately, for every client running through Detour, and every open dashboard tab
@@ -779,6 +801,9 @@ npm start -- start</pre>
         <li><strong>Export &amp; import</strong> — Export the log as HAR 1.2 (for other tools) or Detour's own JSON, honoring whatever filter is currently applied. "Save session" goes further: it captures the traffic <em>and</em> the proxy's live state — Intercept, Focus, Throttle, Block Hosts — so loading it later restores the conditions the capture happened under, not just the rows. Any HAR or JSON file can also be imported and browsed with no proxy running.</li>
         <li><strong>Group by host</strong> — collapse the log into per-host sections, with Expand all / Collapse all buttons for moving between "which hosts is this app even talking to" and the detail of one of them.</li>
         <li><strong>Tail</strong> — pauses auto-scroll, so incoming traffic doesn't yank you off the row you're reading.</li>
+        <li><strong>History</strong> — with <code class="inline">detour start --persist</code>, search SQLite-persisted traffic by method, exact host, or a URL substring for the exchange that already scrolled out of the live backlog. Results page into the same table and inspector as live traffic. The control is hidden entirely without <code class="inline">--persist</code>.</li>
+        <li><strong>Rule badge</strong> — a row handled by a <code class="inline">rules.json</code> rule carries that rule's name, so a mocked or rewritten response is obvious without opening it.</li>
+        <li><strong>Client process</strong> — on macOS, an exchange from a client on <em>this</em> machine shows which local process sent it, for telling a simulator and a desktop app apart when both run through the proxy at once.</li>
         <li><strong>Settings panel</strong> — the sidebar's gear icon opens a form for everything <code class="inline">detour config</code> does from the terminal (LAN access, dashboard password, run-detached-by-default) plus theme and the four traffic-control toggles, for anyone who'd rather not touch the CLI.</li>
         <li><strong>Proxy URL QR code</strong> — the sidebar's copyable Proxy URL has a "Show QR code" button next to it, for pointing a phone's Wi-Fi proxy settings at Detour by scanning instead of typing.</li>
       </ul>
@@ -875,6 +900,18 @@ detour start --rules rules.json    <span class="tok-com"># start with rules appl
   },
 };</pre>
       </div>
+      <div class="callout warn"><span class="mark">SECURITY</span><p>A <code class="inline">script</code>
+        module is loaded with plain Node <code class="inline">require()</code> and runs with the
+        <code class="inline">detour</code> process's own permissions — anything that code can do, so can whoever
+        gets a rule into <code class="inline">rules.json</code> (by hand, or through the dashboard's rule
+        editor). To bound that, <code class="inline">script.path</code> and
+        <code class="inline">mock.bodyFile</code> both resolve relative to <code class="inline">rules.json</code>'s
+        own directory and are <strong>rejected</strong> if they'd land outside it — an absolute path or a
+        <code class="inline">../</code> traversal included — so a rules file can't point either at, say,
+        <code class="inline">~/.detour/certs/keys/ca.private.key</code>. Pass
+        <code class="inline">detour start --allow-external-script-paths</code> to opt back into unrestricted
+        paths for both fields.</p></div>
+
       <p class="muted">Either hook may be <code class="inline">async</code>; a thrown error leaves that phase
         forwarded untouched rather than dropping the exchange. Reloaded automatically on change, same as
         <code class="inline">rules.json</code> itself. The example above only touches headers/body —
@@ -882,9 +919,112 @@ detour start --rules rules.json    <span class="tok-com"># start with rules appl
         <code class="inline">beforeResponse</code> a new <code class="inline">status</code>/<code class="inline">statusMessage</code>.</p>
     </section>
 
-    <!-- ============ 05 PLATFORMS ============ -->
+    <!-- ============ 05 TESTING ============ -->
+    <section class="page" id="page-testing" data-title="Testing &amp; fixtures">
+      <div class="eyebrow">05 · detour test / record / serve</div>
+      <h1>Testing &amp; fixtures</h1>
+      <p class="lede">The same capture engine, pointed at CI instead of at you: assert on what your app actually
+        sent, or freeze a real backend's responses into fixtures you can replay without a network.</p>
+
+      <h2>Contract tests — <code class="inline">detour test</code></h2>
+      <p><code class="inline">detour test</code> runs a command with <code class="inline">HTTP_PROXY</code>/<code class="inline">HTTPS_PROXY</code>
+        (and <code class="inline">NODE_EXTRA_CA_CERTS</code>, so a Node-based command trusts the MITM'd HTTPS
+        connections without any setup) pointed at a fresh, single-run proxy, waits for it to exit, then checks
+        the captured traffic against a set of assertions. Nothing is installed, trusted, or left running
+        afterwards — it's a self-contained command, suited to a CI job.</p>
+      <div class="code-block">
+        <div class="code-head"><span>terminal</span><button class="copy" data-copy="detour test -- npm run e2e">copy</button></div>
+        <pre>detour test -- npm run e2e</pre>
+      </div>
+      <p>Assertions live in <code class="inline">detour.test.json</code> (or <code class="inline">--assertions &lt;path&gt;</code>):</p>
+      <div class="code-block">
+        <div class="code-head"><span>detour.test.json</span></div>
+        <pre>{
+  <span class="tok-key">"assertions"</span>: [
+    {
+      <span class="tok-key">"type"</span>: <span class="tok-str">"headerPresent"</span>,
+      <span class="tok-key">"name"</span>: <span class="tok-str">"orders API requires auth"</span>,
+      <span class="tok-key">"match"</span>: { <span class="tok-key">"url"</span>: <span class="tok-str">"https://api.example.com/orders*"</span> },
+      <span class="tok-key">"header"</span>: <span class="tok-str">"Authorization"</span>
+    },
+    {
+      <span class="tok-key">"type"</span>: <span class="tok-str">"noPiiLeak"</span>,
+      <span class="tok-key">"name"</span>: <span class="tok-str">"no PII leaves to third-party analytics"</span>,
+      <span class="tok-key">"match"</span>: { <span class="tok-key">"urlRegex"</span>: <span class="tok-str">"^https://analytics\\.example\\.net/"</span> },
+      <span class="tok-key">"patterns"</span>: [<span class="tok-str">"email"</span>, <span class="tok-str">"creditCard"</span>, <span class="tok-str">"ssn"</span>]
+    },
+    {
+      <span class="tok-key">"type"</span>: <span class="tok-str">"latencyP95"</span>,
+      <span class="tok-key">"name"</span>: <span class="tok-str">"orders API stays fast"</span>,
+      <span class="tok-key">"match"</span>: { <span class="tok-key">"url"</span>: <span class="tok-str">"https://api.example.com/orders*"</span> },
+      <span class="tok-key">"maxMs"</span>: 500
+    }
+  ]
+}</pre>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Assertion</th><th>Fails when</th></tr></thead>
+          <tbody>
+            <tr><td class="flag">headerPresent</td><td>A matching exchange's request is missing <code class="inline">header</code> — or its response, with <code class="inline">"phase": "response"</code></td></tr>
+            <tr><td class="flag">noPiiLeak</td><td>A matching exchange's headers or body look like they carry a built-in (<code class="inline">email</code>, <code class="inline">creditCard</code>, <code class="inline">ssn</code>) or custom (<code class="inline">customPatterns</code>) PII pattern. Heuristic, not a compliance scanner — and the matched value is never printed, only the field it was found in</td></tr>
+            <tr><td class="flag">latencyP95</td><td>The 95th-percentile <code class="inline">durationMs</code> across matching exchanges exceeds <code class="inline">maxMs</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><code class="inline">match</code> is the same shape a <code class="inline">rules.json</code> rule uses
+        (<code class="inline">url</code> glob or <code class="inline">urlRegex</code>/<code class="inline">urlRegexFlags</code>,
+        optional <code class="inline">method</code>) — omit both and it matches every captured exchange.
+        <code class="inline">headerPresent</code> and <code class="inline">latencyP95</code> also fail when
+        <code class="inline">match</code> selects nothing at all (nearly always a typo) unless
+        <code class="inline">"allowNoMatches": true</code> is set; <code class="inline">noPiiLeak</code> passes
+        vacuously on zero matches.</p>
+      <div class="callout info"><span class="mark">EXIT CODES</span><p>The command's own exit code if it failed,
+        <code class="inline">1</code> if any assertion failed, <code class="inline">0</code> otherwise.
+        <code class="inline">--rules &lt;path&gt;</code> applies a rules file for the run (mocking a flaky
+        third-party dependency, say); it's loaded once and not watched for changes.</p></div>
+
+      <h2>Record &amp; replay — <code class="inline">detour record</code> / <code class="inline">detour serve</code></h2>
+      <p>Capture a real backend once, replay it forever: <code class="inline">detour serve</code> is a plain HTTP
+        mock server, so the replay side involves no proxy, no TLS interception, and no
+        <code class="inline">HTTP_PROXY</code> for the test's own client to set — just a base URL.</p>
+      <div class="code-block">
+        <div class="code-head"><span>terminal</span><button class="copy" data-copy="detour record --out ./fixtures -- npm run e2e&#10;detour serve ./fixtures">copy</button></div>
+        <pre><span class="tok-com"># capture real traffic while a command runs</span>
+detour record --out ./fixtures -- npm run e2e
+
+<span class="tok-com"># replay it as a plain HTTP server on :8081</span>
+detour serve ./fixtures</pre>
+      </div>
+      <p><code class="inline">detour record</code> works exactly like <code class="inline">detour test</code> —
+        fresh proxy, <code class="inline">HTTP_PROXY</code>-wrapped command, optional
+        <code class="inline">--rules</code> — but writes one JSON fixture per captured exchange to
+        <code class="inline">--out</code> (default <code class="inline">./fixtures</code>) as the command runs.</p>
+      <p><code class="inline">detour serve &lt;dir&gt;</code> loads every fixture in the directory and matches an
+        incoming request on <code class="inline">method</code> + path, falling back from an exact match
+        (query string included) to a pathname-only one — so a timestamp or other non-deterministic query
+        param doesn't break replay. Repeat recordings of one endpoint (paginated calls, say) replay
+        round-robin in the order they were recorded and stick on the last once exhausted; a request nothing
+        matches gets a <code class="inline">404</code> naming what it looked for.</p>
+      <p>A fixture is plain JSON — safe to commit, diff, and hand-edit:</p>
+      <div class="code-block">
+        <div class="code-head"><span>fixtures/…json</span></div>
+        <pre>{
+  <span class="tok-key">"method"</span>: <span class="tok-str">"GET"</span>,
+  <span class="tok-key">"path"</span>: <span class="tok-str">"/orders/1?expand=items"</span>,
+  <span class="tok-key">"status"</span>: 200,
+  <span class="tok-key">"responseHeaders"</span>: { <span class="tok-key">"content-type"</span>: <span class="tok-str">"application/json"</span> },
+  <span class="tok-key">"responseBody"</span>: <span class="tok-str">"{\"id\":1,\"name\":\"widget\"}"</span>
+}</pre>
+      </div>
+      <p class="muted">A response body that isn't valid UTF-8 — binary content, or one still compressed, since
+        Detour never decompresses a captured body — is stored as base64 with
+        <code class="inline">"responseBodyEncoding": "base64"</code> alongside it.</p>
+    </section>
+
+    <!-- ============ 06 PLATFORMS ============ -->
     <section class="page" id="page-platforms" data-title="Setup & platforms">
-      <div class="eyebrow">05 · detour setup / doctor / cleanup</div>
+      <div class="eyebrow">06 · detour setup / doctor / cleanup</div>
       <h1>Setup &amp; platforms</h1>
       <p class="lede"><code class="inline">detour setup --target &lt;target&gt;</code> trusts the CA certificate and
         points a platform's system proxy at Detour, as far as that platform allows.</p>
@@ -919,9 +1059,9 @@ detour cleanup --target mac  <span class="tok-com"># revert what setup applied</
         useful when auto-detecting a device's LAN IP picks the wrong network interface.</p>
     </section>
 
-    <!-- ============ 06 SECURITY ============ -->
+    <!-- ============ 07 SECURITY ============ -->
     <section class="page" id="page-security" data-title="LAN & security">
-      <div class="eyebrow">06 · Network exposure</div>
+      <div class="eyebrow">07 · Network exposure</div>
       <h1>LAN access &amp; security</h1>
       <p class="lede">The proxy is reachable from your LAN by default; the dashboard is localhost-only until
         you opt it in — one flag, and it comes with a password gate if you want one.</p>
@@ -959,9 +1099,9 @@ detour config --dashboard-password off  <span class="tok-com"># remove it</span>
         <code class="inline">detour start</code>, not the session you're currently looking at.</p>
     </section>
 
-    <!-- ============ 07 CLI ============ -->
+    <!-- ============ 08 CLI ============ -->
     <section class="page" id="page-cli" data-title="CLI reference">
-      <div class="eyebrow">07 · Reference</div>
+      <div class="eyebrow">08 · Reference</div>
       <h1>CLI reference</h1>
       <p class="lede">Every top-level command Detour ships.</p>
 
@@ -970,6 +1110,9 @@ detour config --dashboard-password off  <span class="tok-com"># remove it</span>
           <thead><tr><th>Command</th><th>Does</th></tr></thead>
           <tbody>
             <tr><td class="flag">detour start</td><td>Runs the proxy (and dashboard, unless <code class="inline">--headless</code>)</td></tr>
+            <tr><td class="flag">detour test -- &lt;cmd&gt;</td><td>Runs a command through a throwaway proxy and asserts on the traffic it produced — see <a href="#testing">Testing &amp; fixtures</a></td></tr>
+            <tr><td class="flag">detour record -- &lt;cmd&gt;</td><td>Same, but writes each captured exchange to a fixture file</td></tr>
+            <tr><td class="flag">detour serve &lt;dir&gt;</td><td>Replays those fixtures as a plain HTTP mock server — no proxy involved</td></tr>
             <tr><td class="flag">detour setup</td><td>Trusts the CA cert and configures a target's system proxy</td></tr>
             <tr><td class="flag">detour doctor</td><td>Checks setup without changing anything; scriptable exit code</td></tr>
             <tr><td class="flag">detour cleanup</td><td>Reverts what <code class="inline">setup</code> applied</td></tr>
@@ -1024,12 +1167,12 @@ detour config --dashboard-password off  <span class="tok-com"># remove it</span>
 
       <hr class="rule">
       <p class="muted">Detour is licensed under the Apache License 2.0. Source and issues: <a href="https://github.com/rwadada/Detour" target="_blank" rel="noopener" style="color:var(--accent); font-weight:600;">github.com/rwadada/Detour</a>.</p>
-      <p class="muted">Detour is at 0.x — <code class="inline">rules.json</code>'s schema and the CLI's flags may still change between minor versions.</p>
+      <p class="muted">Detour follows semantic versioning, and releases are cut automatically from Conventional Commit messages — see the <a href="https://github.com/rwadada/Detour/blob/main/CHANGELOG.md" target="_blank" rel="noopener">changelog</a> for what landed in each version.</p>
     </section>
 
-    <!-- ============ 08 TROUBLESHOOTING ============ -->
+    <!-- ============ 09 TROUBLESHOOTING ============ -->
     <section class="page" id="page-troubleshooting" data-title="Troubleshooting">
-      <div class="eyebrow">08 · First run</div>
+      <div class="eyebrow">09 · First run</div>
       <h1>Nothing is showing up</h1>
       <p class="lede">Traffic isn't appearing in the log or the console. In rough order of how often each one
         turns out to be it:</p>
