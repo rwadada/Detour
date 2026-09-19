@@ -98,19 +98,29 @@ export default tseslint.config(
       // Presentation, enforced mechanically below rather than by convention.
       // Element patterns intentionally name only the folder (no file
       // extension) — every file nested under it, at any depth, inherits
-      // that element's type. `src/cli.ts` deliberately matches none of
-      // these — it's the composition root, the one place allowed to wire
-      // concrete Infra adapters into UseCases (see cli.ts's own doc
-      // comment). `*.test.ts` files are classified separately, by file
-      // category (see `boundaries/files` below), so a test living under
-      // e.g. usecase/ (like ruleEngine.test.ts, which wires a real Infra
-      // adapter for an integration-style test) isn't held to the same
+      // that element's type. `*.test.ts` files are classified separately,
+      // by file category (see `boundaries/files` below), so a test living
+      // under e.g. usecase/ (like ruleEngine.test.ts, which wires a real
+      // Infra adapter for an integration-style test) isn't held to the same
       // restrictions as the UseCase code it's testing.
+      //
+      // `main` is the composition root: `src/cli.ts` and the per-command
+      // modules it wires together, the one place allowed to reach into every
+      // layer at once (issue #168). It's an explicit element rather than
+      // "whatever matches nothing", which is what it used to be — being
+      // unclassified meant the largest file in the repo was exempt from the
+      // dependency rules entirely, and nothing stopped another one appearing
+      // beside it. `no-unknown-files` below now makes that impossible.
       'boundaries/elements': [
         { type: 'domain', pattern: 'src/domain/**' },
         { type: 'usecase', pattern: 'src/usecase/**' },
         { type: 'infra', pattern: 'src/infra/**' },
         { type: 'presentation', pattern: 'src/presentation/**' },
+        { type: 'main', pattern: ['src/cli.ts', 'src/cli.test.ts', 'src/cli.e2e.test.ts'], mode: 'full' },
+        { type: 'main', pattern: 'src/commands/**' },
+        // Ambient declarations for untyped dependencies — no runtime code,
+        // so no layer of their own to belong to.
+        { type: 'types', pattern: 'src/types/**' },
       ],
       'boundaries/files': [{ category: 'test', pattern: 'src/**/*.test.ts' }],
     },
@@ -166,12 +176,32 @@ export default tseslint.config(
               allow: { to: { element: { types: { anyOf: ['domain', 'usecase', 'presentation'] } } } },
             },
             {
+              // The composition root, by definition: wiring concrete Infra
+              // adapters into UseCases is the whole job, so it's the one
+              // element allowed to depend on every other.
+              from: { element: { type: 'main' } },
+              allow: {
+                to: { element: { types: { anyOf: ['domain', 'usecase', 'infra', 'presentation', 'main', 'types'] } } },
+              },
+            },
+            {
               from: { file: { categories: 'test' } },
-              allow: { to: { element: { types: { anyOf: ['domain', 'usecase', 'infra', 'presentation'] } } } },
+              allow: {
+                to: {
+                  element: { types: { anyOf: ['domain', 'usecase', 'infra', 'presentation', 'main', 'types'] } },
+                },
+              },
             },
           ],
         },
       ],
+      // Every file under src/ must belong to one of the elements above
+      // (issue #168). Without this, a file that matches none is silently
+      // exempt from the dependency rules — which is exactly how the former
+      // 1,837-line `cli.ts` ended up as the largest unchecked file in the
+      // repo. Layer discipline that only applies to files someone remembered
+      // to put in the right folder isn't discipline.
+      'boundaries/no-unknown-files': 'error',
     },
   },
   {
