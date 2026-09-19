@@ -270,3 +270,36 @@ The repository ships two rules files for different purposes at its root:
 
 ### Proxy core
 The MITM proxy engine (CONNECT tunneling, on-the-fly per-host TLS certs, HTTP/1.1 and HTTP/2 forwarding — [`src/infra/proxy/engine/`](./src/infra/proxy/engine/)) is a from-scratch implementation on top of Node's own `http`/`https`/`http2`/`tls`/`net` modules and `node-forge` for certificate signing, rather than a third-party MITM library (issue #42) — this avoids depending on a library patched for macOS support and HTTP/2, and allows the request/response pipeline to genuinely stream/throttle chunk-by-chunk instead of buffering whole bodies.
+
+## Performance (`npm run bench`, issue #163)
+
+```bash
+npm run bench                            # all scenarios
+npm run bench -- --quick                 # the three short ones CI runs
+npm run bench -- --json new.json         # save a run
+npm run bench -- --compare old.json new.json   # diff two runs
+```
+
+[`scripts/bench.mjs`](./scripts/bench.mjs) starts a local upstream, runs load through a real `detour start`, and — this is the part that matters — measures the **same request with no proxy in the middle** as the denominator. Absolute req/s mostly describes the machine; the ratio against a direct request measured on that same machine seconds apart is what survives being run somewhere else.
+
+Measured on a 2.10 GHz Intel Xeon cloud VM, Linux 6.18, Node 22.22, loopback upstream, 8 connections, 10 s per scenario, client-side keep-alive on throughout. **Your absolute numbers will differ; the ratios are the point.**
+
+| # | Scenario | req/s | p50 | p95 | p95 vs direct |
+|---|---|---|---|---|---|
+| 1 | HTTP passthrough | 1,567 | 4.9 ms | 6.4 ms | 15x |
+| 2 | HTTPS (MITM) passthrough | 300 | 25.1 ms | 36.9 ms | 60x |
+| 3 | HTTPS + 100 non-matching rules | 312 | 24.3 ms | 35.5 ms | 58x |
+| 4 | HTTPS + `rewrite` rule applied | 306 | 24.9 ms | 35.3 ms | 57x |
+| 5 | HTTPS + dashboard connected | 299 | 25.4 ms | 36.5 ms | 60x |
+| 6 | HTTPS streaming, 10 MB body | 30 | 264.7 ms | 316.7 ms | 2.2x |
+| 7 | HTTPS to 100 fresh hosts | 27 | 298.6 ms | 344.5 ms | 562x |
+| 8 | Direct, no proxy (the denominator) | 16,320 | 0.5 ms | 0.6 ms | — |
+
+What this says, including the unflattering parts:
+
+- **Rules, rewriting, and the dashboard are free.** Scenarios 3, 4 and 5 are indistinguishable from plain MITM passthrough (2) — 100 rules evaluated per request, a body rewrite, and a live dashboard broadcasting every exchange all land inside the run-to-run noise. None of them is where the time goes.
+- **Streaming holds up.** A 10 MB body costs 2.2x, not 60x, because the pipeline streams chunk-by-chunk instead of buffering whole bodies (issue #42). Per-request overhead simply stops mattering when there's real data to move.
+- **Per-request connection setup dominates everything else.** Every proxied request currently opens a fresh TCP+TLS connection upstream — the proxy's agents are `keepAlive: false` ([issue #162](https://github.com/rwadada/Detour/issues/162)) — while the direct baseline reuses one connection for the whole run. That single difference is most of the 60x.
+- **A first-ever request to a host is expensive.** ~300 ms of it is issuing that host's leaf certificate with pure-JS RSA-2048 ([issue #164](https://github.com/rwadada/Detour/issues/164)). It's a once-per-host cost that the cache then absorbs, but it's the first thing a user feels.
+
+`bench` is deliberately **not** part of `npm run verify` — it takes minutes and its numbers move with the machine, the same reason `knip` and `test:mutation` sit outside that gate. CI runs `--quick --gate` as its own job, failing only when a scenario's p95 blows past a generous per-scenario multiple of the direct baseline measured on the same runner.
