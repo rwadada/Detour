@@ -7,7 +7,7 @@ import { selectLastMatchingBodyRewriteRule } from '../../../usecase/selectBodyRe
 import type { RuleEngine } from '../../../usecase/ruleEngine';
 import type { DetourEventBus } from '../../eventBus';
 import { installResponseBodyRewrite } from '../actionsRuntime';
-import { attachCertificate, attachTiming } from '../attachTiming';
+import { attachCertificate, attachTiming, attachUpstreamProtocol } from '../attachTiming';
 import type { OnRequestParams } from '../engine/types';
 import { tryLoadScriptModule } from '../scriptModuleLoader';
 
@@ -151,6 +151,7 @@ export function createResponseHandler(deps: ResponseHandlerDeps): OnRequestParam
         exchange.durationMs = exchange.finishedAt - exchange.startedAt;
         attachTiming(exchange, ctx);
         attachCertificate(exchange, ctx);
+        attachUpstreamProtocol(exchange, ctx);
         // Captures the pre-rewrite body (mirroring responseBodySize's
         // accounting above) — the dashboard shows what actually came from
         // upstream, not what a rewrite rule replaced it with.

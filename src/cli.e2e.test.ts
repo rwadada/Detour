@@ -437,6 +437,101 @@ function startHttpsUpstreamServer(): Promise<{ port: number; close: () => Promis
 }
 
 /**
+ * Starts a real HTTP/2-only upstream server (issue #166) — `allowHTTP1:
+ * false`, so this only ever exercises Detour's own ALPN probe actually
+ * negotiating h2 with a real server, not silently falling back and still
+ * happening to work over h1. `onTrailers`, when given, is called with the
+ * request path and returns trailers to send after the response body — for
+ * exercising the gRPC-style `grpc-status`/`grpc-message` trailer forwarding
+ * this issue's own acceptance criteria calls out.
+ */
+function startHttp2UpstreamServer(
+  onTrailers?: (path: string) => http2.OutgoingHttpHeaders,
+): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const { key, cert } = generateSelfSignedCert('127.0.0.1');
+    const server = http2.createSecureServer({ key, cert, allowHTTP1: false });
+    // Detour's own `UpstreamHttp2Pool` deliberately keeps its session to
+    // this server open indefinitely for reuse (issue #166's whole point) —
+    // `server.close()` alone would then hang forever waiting for that
+    // still-open session, same reasoning (and same fix) as the
+    // `slowUpstream` helper above for a still-open HTTP/1.1 connection.
+    const sockets = new Set<import('node:stream').Duplex>();
+    server.on('connection', (socket) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+    });
+    server.on('stream', (stream, headers) => {
+      const reqPath = String(headers[':path'] ?? '/');
+      const trailers = onTrailers?.(reqPath);
+      stream.respond(
+        { ':status': 200, 'content-type': 'application/json' },
+        { waitForTrailers: trailers !== undefined },
+      );
+      if (trailers) stream.once('wantTrailers', () => stream.sendTrailers(trailers));
+      stream.end(JSON.stringify({ method: headers[':method'], path: reqPath }));
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('failed to bind http2 upstream server'));
+      resolve({
+        port: address.port,
+        close: () =>
+          new Promise((res) => {
+            for (const socket of sockets) socket.destroy();
+            server.close(() => res());
+          }),
+      });
+    });
+  });
+}
+
+/**
+ * Starts an upstream server that offers *both* protocols via ALPN
+ * (`allowHTTP1: true`, mirroring exactly how `ProxyEngine`'s own internal
+ * MITM'd server is built) and answers either one identically — for testing
+ * `--no-http2-upstream` (issue #166): unlike `startHttp2UpstreamServer`'s
+ * h2-*only* server (which simply wouldn't accept an HTTP/1.1 connection at
+ * all, too blunt an instrument for proving the flag skips the ALPN probe
+ * specifically), this lets the same successful request be checked either
+ * way — h2 when Detour's probe offers it, h1 when `--no-http2-upstream`
+ * means it never does.
+ */
+function startDualProtocolUpstreamServer(): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const { key, cert } = generateSelfSignedCert('127.0.0.1');
+    const server = http2.createSecureServer({ key, cert, allowHTTP1: true });
+    // Same still-open-connection reasoning as `startHttp2UpstreamServer`
+    // above — Detour's `httpsAgent` (issue #162's keep-alive) or
+    // `UpstreamHttp2Pool` (issue #166) can each just as easily be the one
+    // keeping a connection to this server open when `close()` runs.
+    const sockets = new Set<import('node:stream').Duplex>();
+    server.on('connection', (socket) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+    });
+    server.on('request', (req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ method: req.method, path: req.url }));
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('failed to bind dual-protocol upstream'));
+      resolve({
+        port: address.port,
+        close: () =>
+          new Promise((res) => {
+            for (const socket of sockets) socket.destroy();
+            server.close(() => res());
+          }),
+      });
+    });
+  });
+}
+
+/**
  * Generates a CA + a leaf certificate it signs (issue #160) — distinct from
  * `generateSelfSignedCert`'s bare self-signed leaf, for testing
  * `--upstream-ca` trusting a private CA (the case a self-signed leaf can't
@@ -730,6 +825,8 @@ interface DashboardExchange {
     authorized: boolean;
     authorizationError?: string;
   };
+  /** Issue #166. */
+  upstreamProtocol?: 'HTTP/1.1' | 'HTTP/2';
 }
 
 /**
@@ -3098,6 +3195,125 @@ describe('detour start (CLI, end-to-end)', () => {
         await slowUpstream.close();
       }
     }, 15_000);
+  });
+
+  describe('upstream HTTP/2 (issue #166)', () => {
+    const insecureUpstreamEnv = { NODE_TLS_REJECT_UNAUTHORIZED: '0' };
+
+    it('ALPN-negotiates HTTP/2 with a real h2-only upstream server (h1 client) and reports upstreamProtocol', async () => {
+      const upstream = await startHttp2UpstreamServer();
+      cli = await startDetourCli([], insecureUpstreamEnv);
+      try {
+        const { exchange } = await waitForExchange(
+          cli.dashboardPort,
+          'response',
+          `https://localhost:${upstream.port}/hello`,
+        );
+        const result = await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/hello');
+        expect(result.status).toBe(200);
+        expect(JSON.parse(result.body)).toEqual({ method: 'GET', path: '/hello' });
+        expect((await exchange).upstreamProtocol).toBe('HTTP/2');
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('an h2 client through an h2-only upstream stays h2 on both legs', async () => {
+      const upstream = await startHttp2UpstreamServer();
+      cli = await startDetourCli([], insecureUpstreamEnv);
+      let session: http2.ClientHttp2Session | undefined;
+      let tlsSocket: tls.TLSSocket | undefined;
+      try {
+        const { exchange } = await waitForExchange(
+          cli.dashboardPort,
+          'response',
+          `https://localhost:${upstream.port}/hello`,
+        );
+        const connected = await connectHttp2ThroughProxy(cli.port, 'localhost', upstream.port, cli.caCertPath);
+        session = connected.session;
+        tlsSocket = connected.tlsSocket;
+        expect(connected.tlsSocket.alpnProtocol).toBe('h2');
+
+        const result = await h2Get(session, `localhost:${upstream.port}`, '/hello');
+        expect(result.status).toBe(200);
+        expect(JSON.parse(result.body)).toEqual({ method: 'GET', path: '/hello' });
+        expect((await exchange).upstreamProtocol).toBe('HTTP/2');
+      } finally {
+        session?.close();
+        tlsSocket?.destroy();
+        await upstream.close();
+      }
+    });
+
+    it('multiplexes a second request to the same h2 upstream host onto the already-established session', async () => {
+      const upstream = await startHttp2UpstreamServer();
+      cli = await startDetourCli([], insecureUpstreamEnv);
+      try {
+        const first = await waitForExchange(cli.dashboardPort, 'response', `https://localhost:${upstream.port}/one`);
+        await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/one');
+        expect((await first.exchange).upstreamProtocol).toBe('HTTP/2');
+
+        const second = await waitForExchange(cli.dashboardPort, 'response', `https://localhost:${upstream.port}/two`);
+        await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/two');
+        expect((await second.exchange).upstreamProtocol).toBe('HTTP/2');
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('--no-http2-upstream pins the proxy→upstream leg to HTTP/1.1 even though the upstream offers h2', async () => {
+      // A dual-protocol upstream (h1 *and* h2 via ALPN), not the h2-only
+      // one above: proves specifically that `--no-http2-upstream` skips the
+      // ALPN probe (this server would happily negotiate h2 if it were
+      // offered), rather than merely that an h2-only server was
+      // unreachable for some other reason.
+      const upstream = await startDualProtocolUpstreamServer();
+      cli = await startDetourCli(['--no-http2-upstream'], insecureUpstreamEnv);
+      try {
+        const { exchange } = await waitForExchange(
+          cli.dashboardPort,
+          'response',
+          `https://localhost:${upstream.port}/hello`,
+        );
+        const result = await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/hello');
+        expect(result.status).toBe(200);
+        expect(JSON.parse(result.body)).toEqual({ method: 'GET', path: '/hello' });
+        expect((await exchange).upstreamProtocol).toBe('HTTP/1.1');
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('forwards an h2 upstream response’s gRPC-style trailers on to an h2 client (issue #166’s gRPC acceptance criterion)', async () => {
+      const upstream = await startHttp2UpstreamServer(() => ({ 'grpc-status': '0', 'grpc-message': 'OK' }));
+      cli = await startDetourCli([], insecureUpstreamEnv);
+      let session: http2.ClientHttp2Session | undefined;
+      let tlsSocket: tls.TLSSocket | undefined;
+      try {
+        const connected = await connectHttp2ThroughProxy(cli.port, 'localhost', upstream.port, cli.caCertPath);
+        session = connected.session;
+        tlsSocket = connected.tlsSocket;
+
+        const trailers = await new Promise<http2.IncomingHttpHeaders>((resolve, reject) => {
+          const req = session!.request({
+            ':path': '/hello',
+            ':method': 'GET',
+            ':authority': `localhost:${upstream.port}`,
+            te: 'trailers',
+          });
+          req.on('trailers', resolve);
+          req.on('error', reject);
+          req.resume();
+          req.end();
+        });
+        expect(trailers['grpc-status']).toBe('0');
+        expect(trailers['grpc-message']).toBe('OK');
+      } finally {
+        session?.close();
+        tlsSocket?.destroy();
+        await upstream.close();
+      }
+    });
   });
 
   describe('gRPC detection and decoding (issue #18)', () => {

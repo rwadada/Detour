@@ -47,6 +47,16 @@ export interface ProxyServerOptions {
    */
   http2Enabled?: boolean;
   /**
+   * Whether the proxy→upstream leg attempts HTTP/2 at all (issue #166's
+   * `--no-http2-upstream`) — independent of `http2Enabled` above, which
+   * only ever governs the client-facing MITM'd side. `false` pins every
+   * upstream request to HTTP/1.1, matching Detour's behavior before this
+   * existed; also implicitly `false` once `upstreamProxyUrl` is set,
+   * regardless of this option — see `UpstreamHttp2Pool`'s own doc comment.
+   * @default true
+   */
+  http2UpstreamEnabled?: boolean;
+  /**
    * Routes every proxy→upstream connection through this HTTP(S)/SOCKS proxy
    * instead of connecting to the real destination directly (issue #145) —
    * see `ProxyEngineOptions.upstreamProxyUrl`'s doc comment. Already
@@ -349,6 +359,7 @@ export async function startProxyServer(
           host,
           sslCaDir,
           http2: options.http2Enabled ?? true,
+          http2Upstream: options.http2UpstreamEnabled ?? true,
           upstreamProxyUrl: options.upstreamProxyUrl,
           proxyAuth: options.proxyAuth,
           upstreamTls: options.upstreamTls,

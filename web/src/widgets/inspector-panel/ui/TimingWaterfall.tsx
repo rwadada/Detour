@@ -19,7 +19,14 @@ const PHASES: ReadonlyArray<{ key: keyof ExchangeTiming; label: string; color: s
  * HTTP, or every field when the exchange never reached upstream) is simply
  * absent — its color never appears in the bar or the legend.
  */
-export function TimingWaterfall({ timing }: { timing: ExchangeTiming | undefined }) {
+export function TimingWaterfall({
+  timing,
+  upstreamProtocol,
+}: {
+  timing: ExchangeTiming | undefined;
+  /** Which protocol the proxy→upstream leg actually spoke (issue #166) — surfaced here since it's a connection-level fact, same as `connectionReused` below. */
+  upstreamProtocol?: 'HTTP/1.1' | 'HTTP/2';
+}) {
   const measured = PHASES.map((phase) => ({ ...phase, ms: timing?.[phase.key] })).filter(
     (phase): phase is { key: keyof ExchangeTiming; label: string; color: string; ms: number } => phase.ms !== undefined,
   );
@@ -45,6 +52,9 @@ export function TimingWaterfall({ timing }: { timing: ExchangeTiming | undefined
         <p className="mb-2 text-xs text-[var(--muted)]">
           Connection reused (keep-alive) — DNS/TCP/TLS were not repeated for this request.
         </p>
+      )}
+      {upstreamProtocol === 'HTTP/2' && (
+        <p className="mb-2 text-xs text-[var(--muted)]">Upstream connection: HTTP/2 (multiplexed).</p>
       )}
       <div
         className="flex h-4 w-full overflow-hidden rounded-sm border border-[var(--border)]"

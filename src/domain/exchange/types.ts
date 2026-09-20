@@ -105,11 +105,26 @@ export interface CapturedExchange {
    * The protocol version negotiated with the client for this exchange
    * (issue #16) — `'HTTP/2'` when the client ALPN-negotiated h2 against the
    * MITM'd TLS server (only possible when `listen.http2` is enabled; see
-   * `ProxyServerOptions.http2Enabled`), `'HTTP/1.1'` otherwise. The
-   * proxy→upstream leg is always HTTP/1.1 regardless of this value — only
-   * the client-facing side can differ.
+   * `ProxyServerOptions.http2Enabled`), `'HTTP/1.1'` otherwise. Independent
+   * of `upstreamProtocol` below (issue #166) — the two legs can differ in
+   * either direction.
    */
   protocol: 'HTTP/1.1' | 'HTTP/2';
+  /**
+   * The protocol version the proxy→upstream leg actually spoke for this
+   * exchange (issue #166) — `'HTTP/2'` once the real upstream server
+   * ALPN-negotiates h2 (an internal per-host decision; see
+   * `UpstreamHttp2Pool`), `'HTTP/1.1'` otherwise, including every
+   * plain-HTTP request (h2c is out of scope — see that same doc comment).
+   * Undefined for an exchange that never reached upstream (a `mock`/
+   * blocked/request-phase-aborted response). Before this existed, this leg
+   * was always HTTP/1.1 with no way to tell — now it's worth surfacing on
+   * its own, since it can differ from `protocol` above in either direction
+   * (an h1 client through an h2 upstream, or vice versa), which is exactly
+   * the mismatch this issue's own gRPC-over-h2-only-upstream scenario cares
+   * about being able to see.
+   */
+  upstreamProtocol?: 'HTTP/1.1' | 'HTTP/2';
   requestHeaders: IncomingHttpHeaders;
   requestBodySize: number;
   /**
