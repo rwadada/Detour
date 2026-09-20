@@ -5,6 +5,12 @@ import https from 'node:https';
 import net from 'node:net';
 import type { Duplex } from 'node:stream';
 import WebSocket, { WebSocketServer } from 'ws';
+import {
+  PROXY_AUTHENTICATE_CHALLENGE,
+  PROXY_AUTHORIZATION_HEADER,
+  verifyProxyCredentials,
+  type ProxyAuthCredentials,
+} from '../../../domain/auth/proxyAuth';
 import type { ExchangeTiming } from '../../../domain/exchange/types';
 import { createUpstreamProxyAgents } from '../upstreamProxyAgent';
 import { CertAuthority } from './certAuthority';
@@ -38,6 +44,13 @@ export interface ProxyEngineOptions {
    * Omit for direct connections (the default).
    */
   upstreamProxyUrl?: string;
+  /**
+   * Requires every client to present these credentials (as
+   * `Proxy-Authorization: Basic …`) before the proxy will do anything for
+   * it — issue #158's `--proxy-auth`. Omit (the default) to accept every
+   * client, which is what Detour did before this existed.
+   */
+  proxyAuth?: ProxyAuthCredentials;
 }
 
 /** A request/response pair's actual mutable hook lists — `IContext`'s public surface plus the bookkeeping `ProxyEngine` needs internally, never exposed to consumers. */
@@ -74,6 +87,30 @@ function underlyingSocket(ws: WebSocket): net.Socket | undefined {
 
 function flattenHeaderValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value.join(', ') : (value ?? '');
+}
+
+/**
+ * Reads the client's `Proxy-Authorization` header (issue #158). Anything
+ * other than a single string value — absent, or the array Node produces for
+ * a header sent more than once — is treated as "no credentials": an
+ * ambiguous pair of values is exactly the sort of request smuggling that
+ * shouldn't get a second chance at guessing.
+ */
+function readProxyAuthorization(req: IncomingMessage): string | undefined {
+  const value = req.headers[PROXY_AUTHORIZATION_HEADER];
+  return typeof value === 'string' ? value : undefined;
+}
+
+/** The `407` sent down a raw CONNECT socket, which (unlike the request path) has no `ServerResponse` to write through — hand-built and closed immediately, so no tunnel is ever established. */
+function rejectUnauthenticatedConnect(socket: Duplex): void {
+  if (socket.destroyed) return;
+  socket.end(
+    'HTTP/1.1 407 Proxy Authentication Required\r\n' +
+      `Proxy-Authenticate: ${PROXY_AUTHENTICATE_CHALLENGE}\r\n` +
+      'Content-Length: 0\r\n' +
+      'Connection: close\r\n' +
+      '\r\n',
+  );
 }
 
 /** Runs `handlers` in series against `ctx`, short-circuiting on the first error — the `async.forEach`-with-one-registration-in-practice pattern `http-mitm-proxy` used, minus the parallel-execution semantics that never actually mattered here (see proxyEngine.ts's module doc comment). */
@@ -160,6 +197,9 @@ export class ProxyEngine {
   private httpServer: http.Server | undefined;
   private tlsServer: https.Server | http2.Http2SecureServer | undefined;
 
+  /** `ProxyEngineOptions.proxyAuth` (issue #158), captured on `listen` — `undefined` leaves the proxy open to every client, as it was before that flag existed. */
+  private proxyAuth: ProxyAuthCredentials | undefined;
+
   ca!: CertAuthority;
   httpPort = 0;
 
@@ -244,6 +284,7 @@ export class ProxyEngine {
   async listen(options: ProxyEngineOptions, callback: ErrorCallback = () => undefined): Promise<void> {
     try {
       this.ca = CertAuthority.load(options.sslCaDir);
+      this.proxyAuth = options.proxyAuth;
 
       if (options.upstreamProxyUrl) {
         const agents = createUpstreamProxyAgents(options.upstreamProxyUrl);
@@ -305,10 +346,46 @@ export class ProxyEngine {
     return server;
   }
 
-  /** Runs the registered `onConnect` handlers (Block Hosts / Focus / passthrough dispatch — see `proxyServer.ts`); if every one calls back without handling the tunnel itself, MITMs it by bridging the raw client socket into the internal TLS/HTTP2 server. */
+  /**
+   * Gates `req` on `--proxy-auth` (issue #158), calling `onAllowed` when the
+   * client presented valid credentials (or when no credentials are
+   * configured at all) and `onDenied` when it didn't.
+   *
+   * Called at the very top of every client-facing entry point *before* any
+   * registered hook runs — which is what puts it ahead of Block Hosts,
+   * Focus, and the rule engine as a whole (all of them live in
+   * `proxyServer.ts`'s `onConnect`/`onRequest` handlers): an unauthenticated
+   * client never reaches any of that, and never produces a captured
+   * exchange, a dashboard broadcast or a dump file.
+   *
+   * A rejected verification promise denies rather than propagating: there's
+   * no failure mode of the KDF that should be answered by letting the client
+   * through, and an unhandled rejection here would take the process down.
+   */
+  private guardProxyAuth(req: IncomingMessage, onDenied: () => void, onAllowed: () => void): void {
+    const credentials = this.proxyAuth;
+    if (!credentials) {
+      onAllowed();
+      return;
+    }
+    verifyProxyCredentials(credentials, readProxyAuthorization(req)).then(
+      (authenticated) => (authenticated ? onAllowed() : onDenied()),
+      () => onDenied(),
+    );
+  }
+
+  /** Authenticates the CONNECT itself (issue #158) before anything else sees it — a client that can't authenticate gets a `407` and no tunnel, so it never even reaches the `onConnect` handlers below. */
   private handleConnect(req: IncomingMessage, socket: Duplex, head: Buffer, internalPort: number): void {
     socket.on('error', (err) => this.onSocketError('CLIENT_TO_PROXY_SOCKET', err));
+    this.guardProxyAuth(
+      req,
+      () => rejectUnauthenticatedConnect(socket),
+      () => this.runConnectHandlers(req, socket, head, internalPort),
+    );
+  }
 
+  /** Runs the registered `onConnect` handlers (Block Hosts / Focus / passthrough dispatch — see `proxyServer.ts`); if every one calls back without handling the tunnel itself, MITMs it by bridging the raw client socket into the internal TLS/HTTP2 server. */
+  private runConnectHandlers(req: IncomingMessage, socket: Duplex, head: Buffer, internalPort: number): void {
     let i = 0;
     const next = (err?: MaybeError): void => {
       if (err) {
@@ -377,12 +454,51 @@ export class ProxyEngine {
     };
   }
 
+  /**
+   * Entry point for every request the client sends *to the proxy itself*
+   * (`isSSL: false`) and for every request inside an already-established
+   * MITM tunnel (`isSSL: true`).
+   *
+   * Only the former is gated on `--proxy-auth` (issue #158): a tunnelled
+   * request arrives on a connection whose own CONNECT already authenticated
+   * (`handleConnect`), and no client re-sends `Proxy-Authorization` inside
+   * the tunnel — it's a hop-by-hop header addressed to the proxy, and the
+   * proxy's hop ended at the CONNECT. Re-checking here would reject every
+   * HTTPS request in existence.
+   */
   private handleRequest(req: IncomingMessage, res: ServerResponse, isSSL: boolean): void {
     const ctx = this.buildContext(req, res, isSSL);
     req.on('error', (err) => this.emitError('CLIENT_TO_PROXY_REQUEST_ERROR', ctx, err));
     res.on('error', (err) => this.emitError('PROXY_TO_CLIENT_RESPONSE_ERROR', ctx, err));
     req.pause();
 
+    if (isSSL) {
+      this.forwardRequest(ctx);
+      return;
+    }
+    this.guardProxyAuth(
+      req,
+      () => this.rejectUnauthenticatedRequest(ctx),
+      () => this.forwardRequest(ctx),
+    );
+  }
+
+  /** Answers a request that failed `--proxy-auth` (issue #158) with the `407` challenge, draining whatever body it carried first so the client reads the response instead of an abruptly-reset socket. Only ever reached on the plain HTTP/1.1 proxy port, so the HTTP/1-only `Connection` header is always legal here. */
+  private rejectUnauthenticatedRequest(ctx: Context): void {
+    ctx.clientToProxyRequest.resume();
+    const res = ctx.proxyToClientResponse;
+    res.writeHead(407, {
+      'Proxy-Authenticate': PROXY_AUTHENTICATE_CHALLENGE,
+      'Content-Type': 'text/plain; charset=utf-8',
+      Connection: 'close',
+    });
+    res.end('Proxy authentication required', 'utf-8');
+  }
+
+  private forwardRequest(ctx: Context): void {
+    const req = ctx.clientToProxyRequest;
+    const res = ctx.proxyToClientResponse;
+    const isSSL = ctx.isSSL;
     const hostPort = ProxyEngine.parseHostAndPort(req, isSSL ? 443 : 80);
     if (!hostPort) {
       req.resume();
@@ -746,8 +862,36 @@ export class ProxyEngine {
 
   // ---- WebSocket relay (issue #17) ----
 
+  /**
+   * `--proxy-auth` (issue #158) has to be enforced here too, not just in
+   * `handleConnect`/`handleRequest`: a `ws://` upgrade sent to the proxy
+   * port is consumed by this `WebSocketServer`'s own `'upgrade'` listener
+   * and never reaches `handleRequest` at all, so without this gate an
+   * unauthenticated client could still relay arbitrary traffic through
+   * Detour over a WebSocket. `verifyClient`'s callback form runs *before*
+   * the handshake completes, so a denial is a plain `407` with the same
+   * challenge every other rejection carries — not a socket that opens and
+   * then closes.
+   *
+   * Only for the plain proxy port (`isSSL: false`) — a `wss://` upgrade
+   * inside a MITM tunnel was already authenticated by its CONNECT, same
+   * reasoning as `handleRequest`'s.
+   */
   private attachWebSocketServer(server: http.Server | https.Server | http2.Http2SecureServer, isSSL: boolean): void {
-    const wss = new WebSocketServer({ server: server as http.Server });
+    const wss = new WebSocketServer({
+      server: server as http.Server,
+      verifyClient: isSSL
+        ? undefined
+        : (info, callback) =>
+            this.guardProxyAuth(
+              info.req,
+              () =>
+                callback(false, 407, 'Proxy Authentication Required', {
+                  'Proxy-Authenticate': PROXY_AUTHENTICATE_CHALLENGE,
+                }),
+              () => callback(true),
+            ),
+    });
     wss.on('error', (err) => this.emitError('HTTP_SERVER_ERROR', null, err));
     wss.on('connection', (ws, upgradeReq) => this.handleWebSocketConnection(ws, upgradeReq, isSSL));
   }
@@ -772,7 +916,17 @@ export class ProxyEngine {
     }
     const headers: Record<string, string> = {};
     for (const key in upgradeReq.headers) {
-      if (!key.toLowerCase().startsWith('sec-websocket')) headers[key] = flattenHeaderValue(upgradeReq.headers[key]);
+      const lower = key.toLowerCase();
+      // `sec-websocket-*` belongs to this hop's handshake (`ws` mints its
+      // own for the upstream leg), and `proxy-*` is addressed to the proxy
+      // rather than the origin — `Proxy-Authorization` above all, which
+      // carries Detour's own credentials (issue #158) and must never be
+      // relayed onward or land in this connection's captured
+      // `requestHeaders` (see `proxyServer.ts`'s `onWebSocketConnection`,
+      // which copies this object verbatim). Mirrors the identical
+      // `/^proxy-/i` filter on the plain-request path in `forwardRequest`.
+      if (lower.startsWith('sec-websocket') || lower.startsWith('proxy-')) continue;
+      headers[key] = flattenHeaderValue(upgradeReq.headers[key]);
     }
     ctx.proxyToServerWebSocketOptions = { url, headers };
 

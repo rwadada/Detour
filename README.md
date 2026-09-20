@@ -109,7 +109,7 @@ During development, run `npm run dev` to watch and run the TypeScript sources di
 
 The dashboard's source lives in [`web/`](./web) (React 19 + Vite + Tailwind CSS + Zustand) and is built to `web-dist/`, which `npm run build` produces alongside the CLI's `dist/`. To iterate on the UI with `npm run dev:dashboard` (Vite's dev server with hot reload) instead of rebuilding, run `detour start` in one terminal and `npm run dev:dashboard` in another — Vite proxies `/ws` through to the default dashboard port.
 
-## LAN access and the dashboard password (issue #66)
+## LAN access, proxy authentication, and the dashboard password (issues #66, #158)
 
 The **dashboard** binds to `localhost` only by default — nothing else on your network can reach it. `detour start --lan` (or `detour config --lan on` to make it the default for every future `start`) binds it to every network interface (`0.0.0.0`) instead, so another device on the same Wi-Fi/LAN can open it in a browser.
 
@@ -117,7 +117,29 @@ The **proxy** always binds to every interface, with or without `--lan` — a pro
 
 Once bound to the network, both the terminal's startup banner and the dashboard's sidebar ("LAN Access" section, only shown while `--lan` is active) list every reachable address, so you don't have to go find this machine's IP yourself — copy the URL straight from either place.
 
-**LAN access has no authentication of its own** — anyone on the network can reach the dashboard (and, from there, decrypted HTTPS traffic and rule edits) or use the proxy. If that's a concern, `detour config --dashboard-password <value>` (or the dashboard's Settings panel) requires a password before the dashboard will send any traffic, rules, or accept any control message over its connection — takes effect for new connections immediately, no restart needed. Pass `--dashboard-password off` (or clear it from the Settings panel) to remove it. This only protects the dashboard itself; the proxy remains open to anything that's configured to use it.
+**Out of the box, neither the proxy nor the dashboard authenticates anyone.** Anyone who can reach this machine can use the proxy — which means *their* HTTPS traffic gets decrypted with your CA and recorded into your dumps and dashboard, and your machine becomes their egress hop — and, with `--lan`, can also open the dashboard and read that traffic or edit rules. There are two independent locks for that.
+
+### `--proxy-auth`: credentials for the proxy itself
+
+```bash
+detour start --proxy-auth me:s3cret     # this run only
+detour config --proxy-auth me:s3cret    # persisted — applies to every later `detour start`
+detour config --proxy-auth off          # remove it again
+```
+
+Every client must then send `Proxy-Authorization: Basic <base64 of user:pass>` — exactly what a browser's proxy-credentials prompt, `curl -x http://me:s3cret@host:8080`, or a phone's "proxy requires authentication" setting already produces. Anything else gets `407 Proxy Authentication Required` with a `Proxy-Authenticate: Basic realm="Detour"` challenge.
+
+- Enforced on both `CONNECT` (HTTPS) and plain HTTP requests, **before** Block Hosts, Focus and the rule engine — an unauthenticated client never reaches any of them, and never shows up in the dashboard or in a dump.
+- **No exception for loopback.** `127.0.0.1` is asked for credentials too: another user or process on the same machine isn't automatically you.
+- The password is stored only as an scrypt hash (in `~/.detour/config.json`, mode `0600`), never in plaintext, and comparison is timing-safe. `Proxy-Authorization` is never forwarded upstream and never captured or dumped in plaintext — it shows up as `[REDACTED]`.
+- Read at startup, so changing it needs a restart (it gates a connection handshake, not a message) — unlike the dashboard password below.
+- A value passed on the command line is visible in this machine's process list; `detour config --proxy-auth` avoids that for a long-running session.
+
+### `--dashboard-password`: a password for the dashboard
+
+`detour config --dashboard-password <value>` (or the dashboard's Settings panel) requires a password before the dashboard will send any traffic, rules, or accept any control message over its connection — takes effect for new connections immediately, no restart needed. Pass `--dashboard-password off` (or clear it from the Settings panel) to remove it. This protects the dashboard only; the proxy port needs `--proxy-auth`.
+
+Neither is a hardened auth system: both are scrypt-hashed and compared in constant time, but there's no rate limiting or lockout, and the dashboard connection itself is still plain HTTP. They exist to keep a shared network's other occupants out, not to withstand a determined attacker.
 
 ## Daemon mode, CI, and automation (issue #20)
 

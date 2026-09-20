@@ -1,8 +1,11 @@
 import { EventEmitter } from 'node:events';
 import type { IncomingMessage } from 'node:http';
 import type { Socket } from 'node:net';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
+import { hashPassword } from '../../../domain/auth/passwordHash';
+import * as proxyAuth from '../../../domain/auth/proxyAuth';
+import type { ProxyAuthCredentials } from '../../../domain/auth/proxyAuth';
 import type { ExchangeTiming } from '../../../domain/exchange/types';
 import { ProxyEngine } from './proxyEngine';
 
@@ -205,5 +208,64 @@ describe('ProxyEngine.trackSocketTiming', () => {
     expect(timing.dnsMs).toBeUndefined();
     expect(timing.tcpMs).toBeUndefined();
     expect(timing.tlsMs).toBeUndefined();
+  });
+});
+
+/** Exposes `ProxyEngine`'s private `--proxy-auth` gate (issue #158), plus the `proxyAuth` field `listen` normally fills in, for direct testing without binding a port. */
+function proxyAuthInternals(proxyAuth?: ProxyAuthCredentials) {
+  const engine = new ProxyEngine() as unknown as {
+    proxyAuth: ProxyAuthCredentials | undefined;
+    guardProxyAuth(req: IncomingMessage, onDenied: () => void, onAllowed: () => void): void;
+  };
+  engine.proxyAuth = proxyAuth;
+  return engine;
+}
+
+/** The decision `guardProxyAuth` reaches for `header`, as a promise so the scrypt verification it awaits has somewhere to settle. */
+function guardDecision(engine: ReturnType<typeof proxyAuthInternals>, header?: string): Promise<'allowed' | 'denied'> {
+  return new Promise((resolve) => {
+    engine.guardProxyAuth(
+      fakeRequest('/', header === undefined ? {} : { 'proxy-authorization': header }),
+      () => resolve('denied'),
+      () => resolve('allowed'),
+    );
+  });
+}
+
+describe('ProxyEngine proxy authentication gate (issue #158)', () => {
+  const credentials: ProxyAuthCredentials = { username: 'agent', passwordHash: 'filled in below' };
+
+  beforeAll(async () => {
+    credentials.passwordHash = await hashPassword('hunter2');
+  });
+
+  it('allows every client when no credentials are configured', async () => {
+    expect(await guardDecision(proxyAuthInternals())).toBe('allowed');
+  });
+
+  it('allows a client presenting the configured credentials', async () => {
+    const header = `Basic ${Buffer.from('agent:hunter2', 'utf8').toString('base64')}`;
+    expect(await guardDecision(proxyAuthInternals(credentials), header)).toBe('allowed');
+  });
+
+  it.each([
+    ['no header at all', undefined],
+    ['the wrong password', `Basic ${Buffer.from('agent:nope', 'utf8').toString('base64')}`],
+    ['the wrong username', `Basic ${Buffer.from('mallory:hunter2', 'utf8').toString('base64')}`],
+    ['another scheme', 'Bearer some-token'],
+  ])('denies a client with %s', async (_label, header) => {
+    expect(await guardDecision(proxyAuthInternals(credentials), header)).toBe('denied');
+  });
+
+  // Fails closed, and without an unhandled rejection: there's no failure of
+  // the KDF that should be answered by proxying for the client anyway, and
+  // an escaping rejection here would take the whole process down.
+  it('denies the client when verification itself throws', async () => {
+    const spy = vi.spyOn(proxyAuth, 'verifyProxyCredentials').mockRejectedValue(new Error('scrypt exploded'));
+    try {
+      expect(await guardDecision(proxyAuthInternals(credentials), 'Basic anything')).toBe('denied');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

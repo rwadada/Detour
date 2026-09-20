@@ -15,12 +15,14 @@ import { logUnreachableRuleWarnings } from './logger';
  * The banner, which runs when the answer is known, says which case actually
  * applies instead of reusing this (see `printStartupBanner`).
  *
- * Scoped to the *dashboard* only — the proxy itself always binds to every
+ * Mostly about the *dashboard* — the proxy itself always binds to every
  * network interface regardless of `--lan`/`lanAccess` (see `PROXY_HOST`'s
  * doc comment), since a proxy nobody else's device can reach isn't much of
- * a proxy. This warning exists because the dashboard is the one piece
- * `--lan` still actually gates: it's where decrypted HTTPS traffic and rule
- * edits live.
+ * a proxy — but it's named here too (issue #158): it's unauthenticated by
+ * default, so anyone who points a device at it gets their HTTPS decrypted
+ * and recorded, and `--proxy-auth` is the flag that closes that.
+ * `printStartupBanner`'s own `PROXY_OPEN_WARNING` says so much louder in the
+ * one place it actually matters (once it's known whether one is set).
  *
  * `web/src/features/settings-panel/ui/SettingsPanel.tsx`'s dashboard-side
  * warning says the same thing in its own words — that's a separate,
@@ -28,7 +30,18 @@ import { logUnreachableRuleWarnings } from './logger';
  * to match by hand instead. Update both together.
  */
 export const LAN_ACCESS_WARNING =
-  'unless a dashboard password is set (`detour config --dashboard-password`), there is no authentication at all — anyone on your network can reach the dashboard, view decrypted HTTPS traffic through it, or edit rules';
+  'unless a dashboard password is set (`detour config --dashboard-password`), there is no authentication at all — anyone on your network can reach the dashboard, view decrypted HTTPS traffic through it, or edit rules, and the proxy itself serves anyone who asks unless you set --proxy-auth';
+
+/**
+ * The startup banner's callout (issue #158) for the combination that
+ * actually creates an open forward proxy on a shared network: `--lan`/
+ * `lanAccess` on, `--proxy-auth`/`proxyAuth` unset. Worth shouting about
+ * separately from `LAN_ACCESS_WARNING` because the consequence isn't
+ * "someone could snoop on your session" but "someone else's traffic ends up
+ * decrypted in your dumps, and your machine is their egress hop".
+ */
+const PROXY_OPEN_WARNING =
+  'the proxy requires no credentials — anyone on your network who points a device at it has their HTTPS decrypted into this session (and can use this machine as an egress hop). Require credentials with `--proxy-auth <user:pass>`, or persist them with `detour config --proxy-auth <user:pass>`';
 
 /**
  * Formats `detour start`'s banner. Everything it reports is passed in
@@ -51,6 +64,8 @@ export function printStartupBanner(info: {
   protoPaths: string[];
   /** Whether `detour config --dashboard-password`/the Settings panel currently requires one (issue #66) — only relevant when `dashboardPort` isn't undefined. */
   dashboardPasswordSet: boolean;
+  /** Whether `--proxy-auth`/`proxyAuth` requires credentials from every proxy client (issue #158). */
+  proxyAuthSet: boolean;
   /** `--persist`'s resolved SQLite path (issue #144), undefined when not given. */
   historyDbPath: string | undefined;
   /** `--upstream-proxy`'s URL (issue #145) with any credentials already redacted, undefined when not given. */
@@ -63,6 +78,7 @@ export function printStartupBanner(info: {
   console.log(
     `Detour proxy started → http://localhost:${info.proxyPort} (HTTP/2: ${info.http2Enabled ? 'on' : 'off'})`,
   );
+  console.log(`Proxy authentication: ${info.proxyAuthSet ? 'required (Basic)' : 'off (--proxy-auth <user:pass>)'}`);
   console.log(`Root CA certificate: ${info.caCertPath}`);
   console.log('  To decrypt HTTPS traffic, install this CA certificate as trusted on your target device/browser.');
   if (info.dashboardPort === undefined) {
@@ -87,7 +103,8 @@ export function printStartupBanner(info: {
   // the proxy from elsewhere on the network. The dashboard only joins this
   // list (and only then gets the SECURITY callout below) when it's
   // actually bound to every interface too.
-  const dashboardOnLan = info.dashboardPort !== undefined && info.dashboardHost !== 'localhost';
+  const lanEnabled = info.dashboardHost !== 'localhost';
+  const dashboardOnLan = info.dashboardPort !== undefined && lanEnabled;
   const addresses = info.lanAddresses;
   if (addresses.length > 0) {
     console.log('Reachable on your network at:');
@@ -116,6 +133,17 @@ export function printStartupBanner(info: {
     console.log(
       `⚠ Dashboard bound to every network interface, not just this machine — SECURITY: ${risk}. Only do this on a network you trust.`,
     );
+  }
+  // Issue #158. Keyed off `--lan`/`lanAccess` (`lanEnabled`, what
+  // `dashboardHost` encodes) rather than `dashboardOnLan`: the proxy is
+  // reachable from the network either way, so `--headless --lan` — a
+  // CI/scripted session with no dashboard at all — needs this warning just
+  // as much. Not keyed off "is this machine actually on a network"
+  // (`lanAddresses`), since `--lan` is an explicit statement of intent to be
+  // reachable, and a warning that disappeared while offline would be
+  // missing exactly when someone joins a café Wi-Fi mid-session.
+  if (lanEnabled && !info.proxyAuthSet) {
+    console.log(`⚠ SECURITY: ${PROXY_OPEN_WARNING}.`);
   }
   if (info.ruleEngine) {
     console.log(

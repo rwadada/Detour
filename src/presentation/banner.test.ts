@@ -39,6 +39,11 @@ describe('printStartupBanner', () => {
       http2Enabled: true,
       protoPaths: [],
       dashboardPasswordSet: false,
+      // Defaults to authenticated so the pre-existing tests below (which
+      // predate issue #158 and don't care about it) don't incidentally trip
+      // the new PROXY_OPEN_WARNING — its own tests override this back to
+      // `false` explicitly.
+      proxyAuthSet: true,
       historyDbPath: undefined,
       upstreamProxyUrl: undefined,
       dashboardBuilt: true,
@@ -90,8 +95,28 @@ describe('printStartupBanner', () => {
     expect(withPassword).not.toContain('no dashboard password is set');
   });
 
-  it('omits the LAN warning for a headless run, which has no dashboard to expose', () => {
+  it('omits the dashboard LAN warning for a headless run, which has no dashboard to expose', () => {
     expect(print({ dashboardHost: '0.0.0.0', dashboardPort: undefined })).not.toContain('SECURITY');
+  });
+
+  it('reports proxy authentication state right after the startup line', () => {
+    expect(print({ proxyAuthSet: false })).toContain('Proxy authentication: off (--proxy-auth <user:pass>)');
+    expect(print({ proxyAuthSet: true })).toContain('Proxy authentication: required (Basic)');
+  });
+
+  it('warns about an open proxy when bound to the network with no --proxy-auth, even headless', () => {
+    const open = print({ dashboardHost: '0.0.0.0', dashboardPort: undefined, proxyAuthSet: false });
+    expect(open).toContain('SECURITY');
+    expect(open).toContain('the proxy requires no credentials');
+
+    const authenticated = print({ dashboardHost: '0.0.0.0', dashboardPort: undefined, proxyAuthSet: true });
+    expect(authenticated).not.toContain('the proxy requires no credentials');
+  });
+
+  it('omits the open-proxy warning when not bound to the network at all', () => {
+    expect(print({ dashboardHost: 'localhost', proxyAuthSet: false })).not.toContain(
+      'the proxy requires no credentials',
+    );
   });
 
   it('prints the upstream proxy URL exactly as given, already redacted by the caller', () => {
