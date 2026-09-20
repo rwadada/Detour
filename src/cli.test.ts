@@ -4,7 +4,7 @@ import {
   installProcessCrashGuards,
   resolveDashboardPort,
   shouldAutoOpenDashboard,
-} from './cli';
+} from './commands/startCommand';
 
 /**
  * `resolveDashboardPort` is the one piece of pure, synchronous logic in

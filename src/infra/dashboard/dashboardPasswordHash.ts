@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 /**
  * Optional dashboard password (issue #66): a lightweight gate on the `/ws`
  * connection, not a hardened auth system — same posture as the rest of
- * `detour start`'s security surface (see `LAN_ACCESS_WARNING` in `cli.ts`).
+ * `detour start`'s security surface (see `LAN_ACCESS_WARNING` in `presentation/banner.ts`).
  * scrypt is deliberately slow (basic brute-force resistance), and comparison
  * is timing-safe, but there's no rate limiting, account lockout, or TLS —
  * this protects against casual snooping on a shared network, not a
