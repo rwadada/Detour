@@ -25,11 +25,14 @@ export function TimingWaterfall({ timing }: { timing: ExchangeTiming | undefined
   );
 
   if (measured.length === 0) {
+    // `timing.connectionReused` (issue #162) never coincides with an empty
+    // `measured` here: `attachTiming` only ever attaches a `timing` object
+    // once at least one of these same five phases is set, so a `timing`
+    // that reaches this component at all always has something to show.
     return (
       <p className="p-3 text-xs text-[var(--muted)]">
-        {timing?.connectionReused
-          ? 'No timing breakdown available — this request reused an existing keep-alive connection to the upstream server, so DNS/TCP/TLS were not repeated.'
-          : 'No timing breakdown available — this request never reached an upstream server (e.g. a mock, a blocked host, or a breakpoint aborted before forwarding).'}
+        No timing breakdown available — this request never reached an upstream server (e.g. a mock, a blocked host, or a
+        breakpoint aborted before forwarding).
       </p>
     );
   }

@@ -217,24 +217,35 @@ describe('ProxyEngine.trackSocketTiming', () => {
     expect(timing.connectionReused).toBeUndefined();
   });
 
-  it("measures dnsMs/tcpMs from when the socket was actually handed to it, not from an earlier caller timestamp (issue #162's own Copilot finding: a bounded maxSockets can now queue a request before a socket exists, and that queue wait must not leak into DNS/TCP)", async () => {
-    const socket = fakeConnectingSocket(true);
-    const timing: ExchangeTiming = {};
+  it("measures dnsMs/tcpMs from when the socket was actually handed to it, not from an earlier caller timestamp (issue #162's own Copilot finding: a bounded maxSockets can now queue a request before a socket exists, and that queue wait must not leak into DNS/TCP)", () => {
+    // Fake timers (which vitest's default preset also applies to `Date`)
+    // make the "time elapsed before a socket existed" simulation below
+    // exact rather than a real setTimeout delay racing actual wall-clock
+    // jitter on a loaded CI runner — this test's whole point is measuring
+    // a handful of milliseconds precisely, so it can't tolerate that noise.
+    vi.useFakeTimers();
+    try {
+      const socket = fakeConnectingSocket(true);
+      const timing: ExchangeTiming = {};
 
-    // Simulates a request that sat in the Agent's queue for a while before a
-    // socket was even created — trackSocketTiming only runs once that
-    // happens (on the request's 'socket' event), so this delay is deliberately
-    // *before* the call below, unseen by it, the same way a real queue wait
-    // would be invisible to whatever timestamp trackSocketTiming captures.
-    await new Promise((resolve) => setTimeout(resolve, 30));
+      // Simulates a request that sat in the Agent's queue for a while before
+      // a socket was even created — trackSocketTiming only runs once that
+      // happens (on the request's 'socket' event), so this advance is
+      // deliberately *before* the call below, unseen by it, the same way a
+      // real queue wait would be invisible to whatever timestamp
+      // trackSocketTiming captures.
+      vi.advanceTimersByTime(30);
 
-    timingInternals().trackSocketTiming(socket, false, timing, () => undefined);
-    socket.emit('lookup');
+      timingInternals().trackSocketTiming(socket, false, timing, () => undefined);
+      socket.emit('lookup');
 
-    // If this were measured from a timestamp captured before the 30ms
-    // queue wait above, dnsMs would be >= 30; measured from when this
-    // actually started running, it's near-zero instead.
-    expect(timing.dnsMs).toBeLessThan(20);
+      // If this were measured from a timestamp captured before the 30ms
+      // queue wait above, dnsMs would be 30; measured from when this
+      // actually started running, it's exactly 0 instead.
+      expect(timing.dnsMs).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
