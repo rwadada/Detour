@@ -109,7 +109,7 @@ During development, run `npm run dev` to watch and run the TypeScript sources di
 
 The dashboard's source lives in [`web/`](./web) (React 19 + Vite + Tailwind CSS + Zustand) and is built to `web-dist/`, which `npm run build` produces alongside the CLI's `dist/`. To iterate on the UI with `npm run dev:dashboard` (Vite's dev server with hot reload) instead of rebuilding, run `detour start` in one terminal and `npm run dev:dashboard` in another — Vite proxies `/ws` through to the default dashboard port.
 
-## LAN access, proxy authentication, and the dashboard password (issues #66, #158)
+## LAN access, proxy authentication, and the dashboard password (issues #66, #158, #159)
 
 The **dashboard** binds to `localhost` only by default — nothing else on your network can reach it. `detour start --lan` (or `detour config --lan on` to make it the default for every future `start`) binds it to every network interface (`0.0.0.0`) instead, so another device on the same Wi-Fi/LAN can open it in a browser.
 
@@ -139,7 +139,21 @@ Every client must then send `Proxy-Authorization: Basic <base64 of user:pass>` �
 
 `detour config --dashboard-password <value>` (or the dashboard's Settings panel) requires a password before the dashboard will send any traffic, rules, or accept any control message over its connection — takes effect for new connections immediately, no restart needed. Pass `--dashboard-password off` (or clear it from the Settings panel) to remove it. This protects the dashboard only; the proxy port needs `--proxy-auth`.
 
-Neither is a hardened auth system: both are scrypt-hashed and compared in constant time, but there's no rate limiting or lockout, and the dashboard connection itself is still plain HTTP. They exist to keep a shared network's other occupants out, not to withstand a determined attacker.
+A failed `login` doesn't get unlimited retries: five wrong guesses (counted per IP, so reconnecting doesn't reset it) closes the socket, each guess backs off a little longer than the last, and an IP can't hold more than a few unauthenticated connections open at once — closing the door `scrypt`'s own thread-pool cost alone doesn't (issue #159).
+
+### `--dashboard-tls`: HTTPS for the dashboard
+
+`--lan` serves the dashboard over HTTPS by default now (issue #159) — plain HTTP meant the `login` password, and everything sent after it (the full decrypted-HTTPS backlog, cookies and `Authorization` headers included), crossed a shared network in the clear. The leaf cert is minted by Detour's own CA and covers every LAN address shown in the startup banner, so a device that's already trusted that CA (which decrypting HTTPS through the proxy requires anyway) opens the dashboard with no separate certificate warning.
+
+```bash
+detour start --lan                        # HTTPS by default
+detour start --lan --dashboard-tls off    # force plain HTTP back on
+detour start --dashboard-tls on           # force HTTPS even for a localhost-only dashboard
+```
+
+A `localhost`-only dashboard (no `--lan`) stays plain HTTP by default — TLS buys nothing over loopback.
+
+Neither password is a hardened auth system: both are scrypt-hashed and compared in constant time, but there's no account lockout, and (outside `--dashboard-tls`) the connection can still be plain HTTP. They exist to keep a shared network's other occupants out, not to withstand a determined attacker.
 
 ## Daemon mode, CI, and automation (issue #20)
 

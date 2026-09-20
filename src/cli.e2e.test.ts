@@ -778,7 +778,9 @@ async function startDetourCli(
 
   const portMatch = stdout.match(/Detour proxy started .*http:\/\/localhost:(\d+)/);
   if (!portMatch) throw new Error(`could not parse proxy port from stdout: ${stdout}`);
-  const dashboardMatch = stdout.match(/Dashboard → http:\/\/localhost:(\d+)/);
+  // https:// once --lan defaults the dashboard to TLS (issue #159) — either
+  // scheme is a valid "the dashboard bound to this port" signal here.
+  const dashboardMatch = stdout.match(/Dashboard → https?:\/\/localhost:(\d+)/);
   if (!dashboardMatch) throw new Error(`could not parse dashboard port from stdout: ${stdout}`);
   const caCertMatch = stdout.match(/Root CA certificate: (.+)/);
   if (!caCertMatch) throw new Error(`could not parse CA cert path from stdout: ${stdout}`);
@@ -2510,6 +2512,103 @@ describe('detour start (CLI, end-to-end)', () => {
     }, 40_000);
   });
 
+  /**
+   * Dashboard HTTPS (issue #159). `dashboardServer.rateLimit.test.ts` and
+   * `dashboardServer.tls.test.ts` already cover the login rate limiting and
+   * the TLS mechanics themselves against `startDashboardServer` directly —
+   * these focus on what only a real spawned CLI process can prove: that
+   * `--lan` actually flips the default, `--dashboard-tls off` actually
+   * overrides it, and the cert a real client receives really is CA-signed
+   * (not just "some TLS handshake succeeded").
+   */
+  describe('dashboard HTTPS (issue #159)', () => {
+    /** The dashboard cert is CA-signed but the CA itself isn't in this test process's trust store — same as a real one until a user installs it. */
+    function connectDashboardTls(port: number): Promise<tls.PeerCertificate> {
+      return new Promise((resolve, reject) => {
+        const socket = tls.connect({ host: 'localhost', port, rejectUnauthorized: false }, () => {
+          resolve(socket.getPeerCertificate());
+          socket.destroy();
+        });
+        socket.on('error', reject);
+      });
+    }
+
+    function connectDashboardWs(scheme: 'ws' | 'wss', port: number): Promise<unknown> {
+      return new Promise((resolve, reject) => {
+        const socket = new WebSocket(`${scheme}://localhost:${port}/ws`, { rejectUnauthorized: false });
+        const onMessage = (raw: WebSocket.RawData) => {
+          const message = JSON.parse(raw.toString()) as { type: string };
+          if (message.type !== 'backlog') return;
+          socket.off('message', onMessage);
+          resolve(message);
+          socket.close();
+        };
+        socket.on('message', onMessage);
+        socket.once('error', reject);
+      });
+    }
+
+    it('defaults the dashboard to HTTPS once --lan is on, with a CA-signed cert and real traffic over it', async () => {
+      const cli = await startDetourCliReady(['--port', '0', '--dashboard-port', '0', '--lan']);
+      try {
+        expect(cli.stdout()).toContain("Dashboard transport: HTTPS (Detour's CA)");
+        expect(cli.stdout()).toMatch(new RegExp(`Dashboard → https://localhost:${cli.dashboardPort}\\b`));
+
+        const cert = await connectDashboardTls(cli.dashboardPort!);
+        expect(cert.subjectaltname).toMatch(/DNS:\s*localhost\b/);
+        expect(cert.subjectaltname).toMatch(/IP Address:\s*127\.0\.0\.1\b/);
+
+        const message = await connectDashboardWs('wss', cli.dashboardPort!);
+        expect(message).toMatchObject({ type: 'backlog' });
+      } finally {
+        await cli.kill();
+      }
+    }, 20_000);
+
+    it('stays on plain HTTP for a localhost-only dashboard (no --lan)', async () => {
+      const cli = await startDetourCliReady(['--port', '0', '--dashboard-port', '0']);
+      try {
+        expect(cli.stdout()).toContain('Dashboard transport: HTTP (--dashboard-tls on to encrypt)');
+        expect(cli.stdout()).toMatch(new RegExp(`Dashboard → http://localhost:${cli.dashboardPort}\\b`));
+        const message = await connectDashboardWs('ws', cli.dashboardPort!);
+        expect(message).toMatchObject({ type: 'backlog' });
+      } finally {
+        await cli.kill();
+      }
+    }, 20_000);
+
+    it('--dashboard-tls off overrides the --lan default back to plain HTTP', async () => {
+      const cli = await startDetourCliReady([
+        '--port',
+        '0',
+        '--dashboard-port',
+        '0',
+        '--lan',
+        '--dashboard-tls',
+        'off',
+      ]);
+      try {
+        expect(cli.stdout()).toContain('Dashboard transport: HTTP (--dashboard-tls on to encrypt)');
+        expect(cli.stdout()).toMatch(new RegExp(`Dashboard → http://localhost:${cli.dashboardPort}\\b`));
+        const message = await connectDashboardWs('ws', cli.dashboardPort!);
+        expect(message).toMatchObject({ type: 'backlog' });
+      } finally {
+        await cli.kill();
+      }
+    }, 20_000);
+
+    it('--dashboard-tls on forces HTTPS even without --lan', async () => {
+      const cli = await startDetourCliReady(['--port', '0', '--dashboard-port', '0', '--dashboard-tls', 'on']);
+      try {
+        expect(cli.stdout()).toContain("Dashboard transport: HTTPS (Detour's CA)");
+        const message = await connectDashboardWs('wss', cli.dashboardPort!);
+        expect(message).toMatchObject({ type: 'backlog' });
+      } finally {
+        await cli.kill();
+      }
+    }, 20_000);
+  });
+
   describe('HTTP/2 (issue #16)', () => {
     // Detour's outbound request to the fake upstream server below hits its
     // throwaway self-signed cert — the same trust problem a real dev
@@ -3380,8 +3479,11 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
         if (
           Object.values(os.networkInterfaces()).some((iface) => iface?.some((i) => i.family === 'IPv4' && !i.internal))
         ) {
+          // The dashboard's own scheme is https:// by default under --lan
+          // now (issue #159) — the proxy's stays http:// either way (it has
+          // no TLS listener of its own; `--proxy-auth` is its equivalent).
           expect(cli.stdout()).toMatch(
-            /Reachable on your network at:\n {2}Proxy\s+→ http:\/\/\d+\.\d+\.\d+\.\d+:\d+\n {2}Dashboard → http:\/\/\d+\.\d+\.\d+\.\d+:\d+/,
+            /Reachable on your network at:\n {2}Proxy\s+→ http:\/\/\d+\.\d+\.\d+\.\d+:\d+\n {2}Dashboard → https:\/\/\d+\.\d+\.\d+\.\d+:\d+/,
           );
         }
       } finally {
