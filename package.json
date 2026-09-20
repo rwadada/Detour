@@ -33,6 +33,7 @@
     "test:web": "npm run test --workspace web",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "bench": "npm run build:cli && node scripts/bench.mjs",
     "dep-cruise": "depcruise --config .dependency-cruiser.cjs --output-type err src bin && cd web && depcruise --config ../.dependency-cruiser.cjs --ts-config tsconfig.app.json --output-type err src",
     "lint:fsd": "npm run lint:fsd --workspace web",
     "dup-check": "jscpd",
