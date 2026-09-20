@@ -578,7 +578,7 @@ export class ProxyEngine {
     });
     ctx.proxyToServerRequest = upstreamReq;
     upstreamReq.on('socket', (socket) =>
-      this.trackSocketTiming(socket, ctx.isSSL, timing, dispatchedAt, (readyAt) => {
+      this.trackSocketTiming(socket, ctx.isSSL, timing, (readyAt) => {
         connectionReadyAt = readyAt;
       }),
     );
@@ -598,34 +598,48 @@ export class ProxyEngine {
    * socket can only be trusted to still be connecting via this flag, not
    * assumed, which is exactly what makes this branch reachable at all now
    * that `httpAgent`/`httpsAgent` are `keepAlive: true`.
+   *
+   * The DNS/TCP baseline is `Date.now()` taken right here, at the moment
+   * this actually runs (the request's `'socket'` event) — not the caller's
+   * pre-dispatch timestamp. Those used to be indistinguishable: `keepAlive:
+   * false` paired with an unbounded default `maxSockets` meant the Agent
+   * always created (or, now, reused) a socket and fired `'socket'`
+   * essentially synchronously with `transport.request()`. Now that
+   * `httpAgent`/`httpsAgent` cap `maxSockets` (issue #162), a request past
+   * that cap sits in the Agent's own internal queue until a socket frees up
+   * — an unbounded wait that has nothing to do with DNS or TCP. Measuring
+   * from the caller's timestamp would silently fold that queue wait into
+   * `dnsMs`/`tcpMs`, inflating them for a reason that has nothing to do
+   * with the network; measuring from here instead means those phases only
+   * ever cover what actually happens once a socket exists.
    */
   private trackSocketTiming(
     socket: net.Socket,
     isSSL: boolean,
     timing: ExchangeTiming,
-    dispatchedAt: number,
     onReady: (readyAt: number) => void,
   ): void {
+    const socketAssignedAt = Date.now();
     if (!socket.connecting) {
       timing.connectionReused = true;
-      onReady(Date.now());
+      onReady(socketAssignedAt);
       return;
     }
     let lookupDoneAt: number | undefined;
     let connectedAt: number | undefined;
     socket.once('lookup', () => {
       lookupDoneAt = Date.now();
-      timing.dnsMs = lookupDoneAt - dispatchedAt;
+      timing.dnsMs = lookupDoneAt - socketAssignedAt;
     });
     socket.once('connect', () => {
       connectedAt = Date.now();
-      timing.tcpMs = connectedAt - (lookupDoneAt ?? dispatchedAt);
+      timing.tcpMs = connectedAt - (lookupDoneAt ?? socketAssignedAt);
       if (!isSSL) onReady(connectedAt);
     });
     if (isSSL) {
       socket.once('secureConnect', () => {
         const securedAt = Date.now();
-        timing.tlsMs = securedAt - (connectedAt ?? dispatchedAt);
+        timing.tlsMs = securedAt - (connectedAt ?? socketAssignedAt);
         onReady(securedAt);
       });
     }
