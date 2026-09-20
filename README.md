@@ -153,7 +153,7 @@ detour start --dashboard-tls on           # force HTTPS even for a localhost-onl
 
 A `localhost`-only dashboard (no `--lan`) stays plain HTTP by default — TLS buys nothing over loopback.
 
-Neither password is a hardened auth system: both are scrypt-hashed and compared in constant time, but there's no account lockout, and (outside `--dashboard-tls`) the connection can still be plain HTTP. They exist to keep a shared network's other occupants out, not to withstand a determined attacker.
+Neither password is a hardened auth system — both are scrypt-hashed and compared in constant time, but they exist to keep a shared network's other occupants out, not to withstand a determined attacker. The dashboard password has the per-IP backoff/disconnect described above (issue #159); `--proxy-auth` doesn't, and (outside `--dashboard-tls`) the dashboard connection can still be plain HTTP.
 
 ## Daemon mode, CI, and automation (issue #20)
 

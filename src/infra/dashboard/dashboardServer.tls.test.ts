@@ -18,12 +18,15 @@ import { startDashboardServer, type DashboardServerHandle } from './dashboardSer
  */
 describe('startDashboardServer — TLS (issue #159)', () => {
   let certDir: string;
+  /** A scratch config path (Copilot review, PR #175) — without this, `startDashboardServer` falls back to the real `~/.detour/config.json`, so a developer machine with a dashboard password already set would get `authRequired` instead of `backlog` as the first message and make these tests environment-dependent. */
+  let configPath: string;
   let eventBus: DetourEventBus;
   let handle: DashboardServerHandle | undefined;
   let sockets: WebSocket[];
 
   beforeEach(() => {
     certDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-dashboard-tls-test-'));
+    configPath = path.join(certDir, 'config.json');
     eventBus = new DetourEventBus();
     sockets = [];
   });
@@ -56,7 +59,7 @@ describe('startDashboardServer — TLS (issue #159)', () => {
   }
 
   it('serves plain HTTP/WS when tlsKeyCert is omitted (the default)', async () => {
-    handle = await startDashboardServer({ port: 0 }, eventBus);
+    handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);
     const socket = new WebSocket(`ws://localhost:${handle.port}/ws`);
     sockets.push(socket);
     const message = await waitForMessage(socket, (m) => m.type === 'backlog');
@@ -66,7 +69,7 @@ describe('startDashboardServer — TLS (issue #159)', () => {
   it('serves HTTPS/WSS when a tlsKeyCert is given, and traffic flows normally over it', async () => {
     const ca = CertAuthority.load(certDir);
     const tlsKeyCert = ca.getMultiHostKeyCert(['localhost', '127.0.0.1']);
-    handle = await startDashboardServer({ port: 0, tlsKeyCert }, eventBus);
+    handle = await startDashboardServer({ port: 0, tlsKeyCert, userConfigPath: configPath }, eventBus);
 
     // `rejectUnauthorized: false`: this test's throwaway CertAuthority isn't
     // in any trust store, same as a real one is until a user installs it —
@@ -82,7 +85,7 @@ describe('startDashboardServer — TLS (issue #159)', () => {
   it("the presented cert's SAN covers every host getMultiHostKeyCert was given", async () => {
     const ca = CertAuthority.load(certDir);
     const tlsKeyCert = ca.getMultiHostKeyCert(['localhost', '127.0.0.1']);
-    handle = await startDashboardServer({ port: 0, tlsKeyCert }, eventBus);
+    handle = await startDashboardServer({ port: 0, tlsKeyCert, userConfigPath: configPath }, eventBus);
 
     const cert = await new Promise<tls.PeerCertificate>((resolve, reject) => {
       const socket = tls.connect({ host: 'localhost', port: handle!.port, rejectUnauthorized: false }, () => {
@@ -98,7 +101,7 @@ describe('startDashboardServer — TLS (issue #159)', () => {
   it('a plain (non-TLS) client cannot speak to the HTTPS listener', async () => {
     const ca = CertAuthority.load(certDir);
     const tlsKeyCert = ca.getMultiHostKeyCert(['localhost', '127.0.0.1']);
-    handle = await startDashboardServer({ port: 0, tlsKeyCert }, eventBus);
+    handle = await startDashboardServer({ port: 0, tlsKeyCert, userConfigPath: configPath }, eventBus);
 
     const socket = new WebSocket(`ws://localhost:${handle.port}/ws`);
     sockets.push(socket);
