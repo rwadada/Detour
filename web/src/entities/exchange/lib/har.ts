@@ -1,4 +1,4 @@
-import type { CapturedExchange, HeaderMap } from '@/shared/api';
+import type { CapturedExchange, HeaderMap, UpstreamCertificate } from '@/shared/api';
 
 /**
  * HAR 1.2 export/import (issue #19). HAR is a lossy format relative to
@@ -44,6 +44,8 @@ export interface DetourHarExtension {
   statusMessage?: string;
   ruleName?: string;
   error?: string;
+  /** The upstream server's real TLS certificate (issue #160) — no standard HAR field for it. */
+  certificate?: UpstreamCertificate;
 }
 
 export interface HarEntry {
@@ -219,6 +221,7 @@ function exchangeToHarEntry(exchange: CapturedExchange): HarEntry {
       statusMessage: exchange.statusMessage,
       ruleName: exchange.ruleName,
       error: exchange.error,
+      certificate: exchange.certificate,
     },
   };
 }
@@ -278,6 +281,7 @@ function harEntryToExchange(entry: HarEntry, fallbackIndex: number): CapturedExc
     durationMs,
     error: ext?.error,
     ruleName: ext?.ruleName,
+    certificate: ext?.certificate,
   };
 }
 

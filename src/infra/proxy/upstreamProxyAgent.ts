@@ -85,6 +85,21 @@ export function redactProxyUrlCredentials(url: string): string {
  * HTTPS-destination one does TLS underneath — `http.request`/`https.request`
  * only care that the object behaves like an `http.Agent` at runtime, not
  * which concrete subclass it is.
+ *
+ * Deliberately takes no `upstreamTls` (issue #160) parameter: `ca`/
+ * `rejectUnauthorized`/`cert`/`key` for the *final* destination have to be
+ * threaded through as per-request options instead (see `ProxyEngine.
+ * forwardRequest`), not baked into these agents' own constructor options —
+ * verified empirically (a constructor-level `ca` here reaches the TLS
+ * handshake to the *upstream proxy itself* when it's HTTPS, via
+ * `HttpsProxyAgent`'s own `connectOpts`, but never the CONNECT-tunneled
+ * destination behind it; `SocksProxyAgent` ignores unknown constructor
+ * options for that leg entirely). A per-request option instead reaches
+ * `HttpsProxyAgent.connect()`/`SocksProxyAgent.connect()`'s own `opts`
+ * parameter, which both use directly for the destination's `tls.connect()`
+ * — that's also what makes it apply identically whether or not
+ * `--upstream-proxy` is even in play, so `ProxyEngine` doesn't need two
+ * different code paths for it.
  */
 export function createUpstreamProxyAgents(upstreamProxyUrl: string): { httpAgent: http.Agent; httpsAgent: http.Agent } {
   const parsed = validateUpstreamProxyUrl(upstreamProxyUrl);

@@ -5,7 +5,7 @@ import type { ScriptModule, ScriptRequestInfo, ScriptResponseInfo } from '../../
 import type { Rule } from '../../../domain/rules/types';
 import { runBeforeResponse } from '../../../usecase/runScriptHooks';
 import type { DetourEventBus } from '../../eventBus';
-import { attachTiming } from '../attachTiming';
+import { attachCertificate, attachTiming } from '../attachTiming';
 import type { ErrorCallback, IContext } from '../engine/types';
 
 export interface ScriptResponseHookDeps {
@@ -80,6 +80,7 @@ export function createScriptResponseHookHandler(deps: ScriptResponseHookDeps) {
       exchange.finishedAt = Date.now();
       exchange.durationMs = exchange.finishedAt - exchange.startedAt;
       attachTiming(exchange, ctx);
+      attachCertificate(exchange, ctx);
 
       ctx.onResponseData((_dataCtx, _chunk, cb) => cb(undefined, Buffer.alloc(0)));
       ctx.onResponseEnd((_endCtx, cb) => {

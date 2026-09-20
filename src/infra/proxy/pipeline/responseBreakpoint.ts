@@ -4,7 +4,7 @@ import type { BreakpointResponsePayload, CapturedExchange } from '../../../domai
 import type { Rule } from '../../../domain/rules/types';
 import type { BreakpointCoordinator } from '../../../usecase/breakpointCoordinator';
 import type { DetourEventBus } from '../../eventBus';
-import { attachTiming } from '../attachTiming';
+import { attachCertificate, attachTiming } from '../attachTiming';
 import type { ErrorCallback, IContext } from '../engine/types';
 
 export interface ResponseBreakpointDeps {
@@ -98,6 +98,7 @@ export function createResponseBreakpointHandler(deps: ResponseBreakpointDeps) {
           exchange.finishedAt = Date.now();
           exchange.durationMs = exchange.finishedAt - exchange.startedAt;
           attachTiming(exchange, ctx);
+          attachCertificate(exchange, ctx);
           eventBus.emit('response', exchange);
           ctx.proxyToClientResponse.destroy();
           // Deliberately never calls `callback`: leaving it uncalled stops
@@ -126,6 +127,7 @@ export function createResponseBreakpointHandler(deps: ResponseBreakpointDeps) {
         exchange.finishedAt = Date.now();
         exchange.durationMs = exchange.finishedAt - exchange.startedAt;
         attachTiming(exchange, ctx);
+        attachCertificate(exchange, ctx);
 
         ctx.onResponseData((_dataCtx, _chunk, cb) => cb(undefined, Buffer.alloc(0)));
         ctx.onResponseEnd((_endCtx, cb) => {

@@ -7,7 +7,7 @@ import WebSocket from 'ws';
 import { hashPassword } from '../../../domain/auth/passwordHash';
 import * as proxyAuth from '../../../domain/auth/proxyAuth';
 import type { ProxyAuthCredentials } from '../../../domain/auth/proxyAuth';
-import type { ExchangeTiming } from '../../../domain/exchange/types';
+import type { ExchangeTiming, UpstreamCertificate } from '../../../domain/exchange/types';
 import { ProxyEngine } from './proxyEngine';
 
 /** Builds just enough of an `IncomingMessage` for `parseHostAndPort` — it only ever reads `.url`/`.headers`. */
@@ -133,15 +133,41 @@ describe('ProxyEngine WebSocket close/error cross-signaling', () => {
   });
 });
 
-/** Minimal `net.Socket`-shaped double: an `EventEmitter` with a `connecting` flag — exactly what `trackSocketTiming` reads. */
-function fakeConnectingSocket(connecting: boolean): Socket {
-  return Object.assign(new EventEmitter(), { connecting }) as unknown as Socket;
+/**
+ * Minimal `net.Socket`-shaped double: an `EventEmitter` with a `connecting`
+ * flag plus the `tls.TLSSocket` surface `captureUpstreamCertificate` reads
+ * (issue #160) — `getPeerCertificate`/`authorized`/`authorizationError`.
+ * `tls` defaults to an empty peer certificate (no SSL info at all), which
+ * `captureUpstreamCertificate` correctly reads as "no certificate captured"
+ * — the right default for every plain-HTTP test below, and harmless for an
+ * HTTPS test that doesn't care about certificate capture specifically.
+ */
+function fakeConnectingSocket(
+  connecting: boolean,
+  tls?: { peerCertificate?: Record<string, unknown>; authorized?: boolean; authorizationError?: Error | null },
+): Socket {
+  return Object.assign(new EventEmitter(), {
+    connecting,
+    getPeerCertificate: () => tls?.peerCertificate ?? {},
+    authorized: tls?.authorized ?? true,
+    authorizationError: tls?.authorizationError ?? null,
+  }) as unknown as Socket;
+}
+
+/** A `trackSocketTiming` callbacks pair that does nothing — for a test that only cares about `timing`, not `onReady`/`onCertificate`. */
+function noopCallbacks(): { onReady: () => void; onCertificate: () => void } {
+  return { onReady: () => undefined, onCertificate: () => undefined };
 }
 
 /** Exposes `ProxyEngine`'s private DNS/TCP/TLS timing tracker (issue #140) for direct testing, without needing a real socket connection. */
 function timingInternals() {
   return new ProxyEngine() as unknown as {
-    trackSocketTiming(socket: Socket, isSSL: boolean, timing: ExchangeTiming, onReady: (readyAt: number) => void): void;
+    trackSocketTiming(
+      socket: Socket,
+      isSSL: boolean,
+      timing: ExchangeTiming,
+      callbacks: { onReady: (readyAt: number) => void; onCertificate: (cert: UpstreamCertificate) => void },
+    ): void;
   };
 }
 
@@ -150,8 +176,11 @@ describe('ProxyEngine.trackSocketTiming', () => {
     const socket = fakeConnectingSocket(true);
     const timing: ExchangeTiming = {};
     let readyAt: number | undefined;
-    timingInternals().trackSocketTiming(socket, false, timing, (at) => {
-      readyAt = at;
+    timingInternals().trackSocketTiming(socket, false, timing, {
+      ...noopCallbacks(),
+      onReady: (at) => {
+        readyAt = at;
+      },
     });
 
     socket.emit('lookup');
@@ -167,8 +196,11 @@ describe('ProxyEngine.trackSocketTiming', () => {
     const socket = fakeConnectingSocket(true);
     const timing: ExchangeTiming = {};
     let readyAt: number | undefined;
-    timingInternals().trackSocketTiming(socket, true, timing, (at) => {
-      readyAt = at;
+    timingInternals().trackSocketTiming(socket, true, timing, {
+      ...noopCallbacks(),
+      onReady: (at) => {
+        readyAt = at;
+      },
     });
 
     socket.emit('lookup');
@@ -183,7 +215,7 @@ describe('ProxyEngine.trackSocketTiming', () => {
   it('omits dnsMs when no lookup event fires (an IP-literal host)', () => {
     const socket = fakeConnectingSocket(true);
     const timing: ExchangeTiming = {};
-    timingInternals().trackSocketTiming(socket, false, timing, () => undefined);
+    timingInternals().trackSocketTiming(socket, false, timing, noopCallbacks());
 
     socket.emit('connect');
 
@@ -195,8 +227,11 @@ describe('ProxyEngine.trackSocketTiming', () => {
     const socket = fakeConnectingSocket(false);
     const timing: ExchangeTiming = {};
     let readyAt: number | undefined;
-    timingInternals().trackSocketTiming(socket, true, timing, (at) => {
-      readyAt = at;
+    timingInternals().trackSocketTiming(socket, true, timing, {
+      ...noopCallbacks(),
+      onReady: (at) => {
+        readyAt = at;
+      },
     });
 
     expect(readyAt).toBeDefined();
@@ -209,7 +244,7 @@ describe('ProxyEngine.trackSocketTiming', () => {
   it('leaves connectionReused unset for a fresh (still-connecting) socket', () => {
     const socket = fakeConnectingSocket(true);
     const timing: ExchangeTiming = {};
-    timingInternals().trackSocketTiming(socket, false, timing, () => undefined);
+    timingInternals().trackSocketTiming(socket, false, timing, noopCallbacks());
 
     socket.emit('lookup');
     socket.emit('connect');
@@ -236,7 +271,7 @@ describe('ProxyEngine.trackSocketTiming', () => {
       // trackSocketTiming captures.
       vi.advanceTimersByTime(30);
 
-      timingInternals().trackSocketTiming(socket, false, timing, () => undefined);
+      timingInternals().trackSocketTiming(socket, false, timing, noopCallbacks());
       socket.emit('lookup');
 
       // If this were measured from a timestamp captured before the 30ms
@@ -246,6 +281,89 @@ describe('ProxyEngine.trackSocketTiming', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('captures the upstream certificate off secureConnect (issue #160) and caches it for a socket reused by a later exchange', () => {
+    const peerCertificate = {
+      subject: { CN: 'example.com' },
+      issuer: { CN: 'Example CA' },
+      valid_from: 'Jan 1 00:00:00 2024 GMT',
+      valid_to: 'Jan 1 00:00:00 2025 GMT',
+      subjectaltname: 'DNS:example.com',
+      fingerprint256: 'AA:BB:CC',
+    };
+    const socket = fakeConnectingSocket(true, { peerCertificate, authorized: true });
+    const timing: ExchangeTiming = {};
+    const engine = timingInternals();
+    let firstCert: UpstreamCertificate | undefined;
+    engine.trackSocketTiming(socket, true, timing, {
+      onReady: () => undefined,
+      onCertificate: (cert) => {
+        firstCert = cert;
+      },
+    });
+    socket.emit('secureConnect');
+
+    expect(firstCert).toEqual({
+      subject: 'CN=example.com',
+      issuer: 'CN=Example CA',
+      validFrom: peerCertificate.valid_from,
+      validTo: peerCertificate.valid_to,
+      subjectAltName: peerCertificate.subjectaltname,
+      fingerprint256: peerCertificate.fingerprint256,
+      authorized: true,
+      authorizationError: undefined,
+    });
+
+    // The *same* socket, now reused (`connecting: false`) — as it would be
+    // for a 2nd+ request over the same keep-alive connection (issue #162).
+    // No 'secureConnect' fires again (a reused socket never re-handshakes),
+    // so the only way this request's exchange can still get a certificate
+    // at all is `certificatesBySocket`'s cache, keyed by this exact socket.
+    Object.assign(socket, { connecting: false });
+    const reuseTiming: ExchangeTiming = {};
+    let reusedCert: UpstreamCertificate | undefined;
+    engine.trackSocketTiming(socket, true, reuseTiming, {
+      onReady: () => undefined,
+      onCertificate: (cert) => {
+        reusedCert = cert;
+      },
+    });
+
+    expect(reusedCert).toEqual({ ...firstCert, fromReusedConnection: true });
+  });
+
+  it('reports authorized: false with the reason when verification failed but the connection proceeded anyway (--insecure-upstream)', () => {
+    const authorizationError = new Error('self signed certificate');
+    const socket = fakeConnectingSocket(true, {
+      peerCertificate: { subject: { CN: 'self-signed.example' }, fingerprint256: 'DD:EE:FF' },
+      authorized: false,
+      authorizationError,
+    });
+    const timing: ExchangeTiming = {};
+    let cert: UpstreamCertificate | undefined;
+    timingInternals().trackSocketTiming(socket, true, timing, {
+      onReady: () => undefined,
+      onCertificate: (c) => {
+        cert = c;
+      },
+    });
+    socket.emit('secureConnect');
+
+    expect(cert?.authorized).toBe(false);
+    expect(cert?.authorizationError).toBe('self signed certificate');
+  });
+
+  it('never calls onCertificate for a plain HTTP socket', () => {
+    const socket = fakeConnectingSocket(true);
+    const timing: ExchangeTiming = {};
+    const onCertificate = vi.fn();
+    timingInternals().trackSocketTiming(socket, false, timing, { onReady: () => undefined, onCertificate });
+
+    socket.emit('lookup');
+    socket.emit('connect');
+
+    expect(onCertificate).not.toHaveBeenCalled();
   });
 });
 

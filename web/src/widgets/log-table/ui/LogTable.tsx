@@ -9,6 +9,7 @@ import {
   ProtocolBadge,
   RuleBadge,
   StatusBadge,
+  UnverifiedCertBadge,
   useExchangeStore,
 } from '@/entities/exchange';
 import {
@@ -362,6 +363,11 @@ function LogRow({
         {exchange.ruleName && (
           <>
             <RuleBadge ruleName={exchange.ruleName} />{' '}
+          </>
+        )}
+        {exchange.certificate?.authorized === false && (
+          <>
+            <UnverifiedCertBadge reason={exchange.certificate.authorizationError} />{' '}
           </>
         )}
         {exchange.url}

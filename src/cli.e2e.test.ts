@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
 import { execa, type Options } from 'execa';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import forge from 'node-forge';
 import protobuf from 'protobufjs';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -436,6 +437,123 @@ function startHttpsUpstreamServer(): Promise<{ port: number; close: () => Promis
 }
 
 /**
+ * Generates a CA + a leaf certificate it signs (issue #160) — distinct from
+ * `generateSelfSignedCert`'s bare self-signed leaf, for testing
+ * `--upstream-ca` trusting a private CA (the case a self-signed leaf can't
+ * exercise, since there's no separate CA cert for the flag to point at).
+ */
+function generateCaAndLeaf(leafCommonName: string): { caPem: string; key: string; cert: string } {
+  const caKeys = forge.pki.rsa.generateKeyPair(2048);
+  const caCert = forge.pki.createCertificate();
+  caCert.publicKey = caKeys.publicKey;
+  caCert.serialNumber = '01';
+  caCert.validity.notBefore = new Date();
+  caCert.validity.notAfter = new Date();
+  caCert.validity.notAfter.setFullYear(caCert.validity.notBefore.getFullYear() + 1);
+  const caAttrs = [{ name: 'commonName', value: 'e2e-test-ca' }];
+  caCert.setSubject(caAttrs);
+  caCert.setIssuer(caAttrs);
+  caCert.setExtensions([
+    { name: 'basicConstraints', cA: true },
+    { name: 'keyUsage', keyCertSign: true },
+  ]);
+  caCert.sign(caKeys.privateKey, forge.md.sha256.create());
+
+  const leafKeys = forge.pki.rsa.generateKeyPair(2048);
+  const leafCert = forge.pki.createCertificate();
+  leafCert.publicKey = leafKeys.publicKey;
+  leafCert.serialNumber = '02';
+  leafCert.validity.notBefore = new Date();
+  leafCert.validity.notAfter = new Date();
+  leafCert.validity.notAfter.setFullYear(leafCert.validity.notBefore.getFullYear() + 1);
+  leafCert.setSubject([{ name: 'commonName', value: leafCommonName }]);
+  leafCert.setIssuer(caAttrs);
+  leafCert.sign(caKeys.privateKey, forge.md.sha256.create());
+
+  return {
+    caPem: forge.pki.certificateToPem(caCert),
+    key: forge.pki.privateKeyToPem(leafKeys.privateKey),
+    cert: forge.pki.certificateToPem(leafCert),
+  };
+}
+
+/**
+ * Starts an HTTPS server with `serverCert` for its own identity, requiring
+ * (and verifying against `clientCaPem`) a client certificate — for testing
+ * `--client-cert`/`--client-key` (issue #160's mTLS support). Rejects the
+ * TLS handshake outright (never reaching the request handler) for a client
+ * that doesn't present a cert signed by `clientCaPem`.
+ */
+function startMtlsUpstreamServer(
+  serverCert: { key: string; cert: string },
+  clientCaPem: string,
+): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const server = https.createServer(
+      { key: serverCert.key, cert: serverCert.cert, ca: clientCaPem, requestCert: true, rejectUnauthorized: true },
+      (req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ method: req.method, path: req.url }));
+      },
+    );
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('failed to bind mTLS upstream server'));
+      resolve({ port: address.port, close: () => new Promise((res) => server.close(() => res())) });
+    });
+  });
+}
+
+/**
+ * Sends one HTTPS request through the proxy's CONNECT tunnel using a real
+ * `HttpsProxyAgent` (issue #160) — trusting Detour's own CA (`caCertPath`)
+ * for the client↔proxy leg, exactly as a real device configured with it
+ * would. Resolves with the response on success, rejects with the
+ * connection error on failure (a TLS handshake failure on the upstream leg
+ * surfaces to this client as the tunnel dying mid-request, not a clean HTTP
+ * error response — there's no status line to send once the CONNECT already
+ * answered 200).
+ */
+function httpsRequestThroughProxy(
+  proxyPort: number,
+  caCertPath: string,
+  targetPort: number,
+  reqPath: string,
+  clientCert?: { cert: string; key: string },
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    // `ca` has to be a per-request option, not the agent's own constructor
+    // option — `HttpsProxyAgent`'s constructor-level TLS options only ever
+    // apply to its own connection to the (plain-HTTP, in this test) proxy
+    // itself, never to the CONNECT-tunneled destination behind it, which
+    // reads its TLS options from this per-request `opts` object instead
+    // (the exact same distinction `ProxyEngine.forwardRequest`'s own
+    // `upstreamTls` threading — issue #160 — has to account for).
+    const agent = new HttpsProxyAgent(`http://localhost:${proxyPort}`);
+    const req = https.request(
+      {
+        host: 'localhost',
+        port: targetPort,
+        path: reqPath,
+        method: 'GET',
+        agent,
+        ca: fs.readFileSync(caCertPath, 'utf8'),
+        rejectUnauthorized: true,
+        ...clientCert,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+/**
  * Opens a CONNECT tunnel to `targetHost:targetPort` through the proxy (see
  * `connectTunnel`), then performs a real TLS handshake through it —
  * against Detour's dynamically-generated, CA-signed leaf cert for that
@@ -604,6 +722,14 @@ interface DashboardExchange {
   ruleName?: string;
   passthrough?: boolean;
   error?: string;
+  /** Issue #160. */
+  certificate?: {
+    subject: string;
+    issuer: string;
+    fingerprint256: string;
+    authorized: boolean;
+    authorizationError?: string;
+  };
 }
 
 /**
@@ -2607,6 +2733,119 @@ describe('detour start (CLI, end-to-end)', () => {
         await cli.kill();
       }
     }, 20_000);
+  });
+
+  describe('upstream TLS verification and mTLS (issue #160)', () => {
+    it('reports a specific "certificate verification failed" message (not a generic error) against an untrusted self-signed upstream by default', async () => {
+      const upstream = await startHttpsUpstreamServer();
+      cli = await startDetourCli();
+      try {
+        const url = `https://localhost:${upstream.port}/hello`;
+        const { exchange } = await waitForExchange(cli.dashboardPort, 'response', url);
+        await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/hello').catch(() => undefined);
+        const result = await exchange;
+        expect(result.error).toContain('Upstream certificate verification failed');
+        expect(result.error).toMatch(/self.signed/i);
+        expect(result.error).toContain('--upstream-ca');
+        expect(result.error).toContain('--insecure-upstream');
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('--upstream-ca <path> reaches a private-CA-signed upstream, and the dashboard shows its real certificate', async () => {
+      const { caPem, key, cert } = generateCaAndLeaf('localhost');
+      const upstream = await new Promise<{ port: number; close: () => Promise<void> }>((resolve, reject) => {
+        const server = https.createServer({ key, cert }, (req, res) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ method: req.method, path: req.url }));
+        });
+        server.on('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+          const address = server.address();
+          if (!address || typeof address === 'string') return reject(new Error('failed to bind'));
+          resolve({ port: address.port, close: () => new Promise((res) => server.close(() => res())) });
+        });
+      });
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+      const caPath = path.join(tmpDir, 'upstream-ca.pem');
+      fs.writeFileSync(caPath, caPem);
+      cli = await startDetourCli(['--upstream-ca', caPath]);
+      try {
+        const url = `https://localhost:${upstream.port}/hello`;
+        const { exchange } = await waitForExchange(cli.dashboardPort, 'response', url);
+        const result = await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/hello');
+        expect(result.status).toBe(200);
+
+        const captured = await exchange;
+        expect(captured.certificate?.authorized).toBe(true);
+        expect(captured.certificate?.subject).toContain('localhost');
+        expect(captured.certificate?.issuer).toContain('e2e-test-ca');
+        expect(captured.certificate?.fingerprint256).toBeTruthy();
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('--insecure-upstream reaches a self-signed upstream, and flags the exchange as unverified', async () => {
+      const upstream = await startHttpsUpstreamServer();
+      cli = await startDetourCli(['--insecure-upstream']);
+      try {
+        expect(cli.stdout()).toContain('upstream TLS certificate verification is OFF for this entire session');
+
+        const url = `https://localhost:${upstream.port}/hello`;
+        const { exchange } = await waitForExchange(cli.dashboardPort, 'response', url);
+        const result = await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/hello');
+        expect(result.status).toBe(200);
+
+        const captured = await exchange;
+        expect(captured.certificate?.authorized).toBe(false);
+        expect(captured.certificate?.authorizationError).toBeTruthy();
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('--client-cert/--client-key present a client certificate an mTLS-requiring upstream accepts, where a plain --insecure-upstream request is rejected', async () => {
+      const server = generateCaAndLeaf('localhost');
+      const client = generateCaAndLeaf('e2e-client');
+      const upstream = await startMtlsUpstreamServer({ key: server.key, cert: server.cert }, client.caPem);
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+      const clientCertPath = path.join(tmpDir, 'client.crt');
+      const clientKeyPath = path.join(tmpDir, 'client.key');
+      fs.writeFileSync(clientCertPath, client.cert);
+      fs.writeFileSync(clientKeyPath, client.key);
+      // `--insecure-upstream` here is only about trusting the *server's* own
+      // cert (self-signed from this test's perspective) — orthogonal to
+      // mTLS, which is the server separately demanding a client cert.
+      cli = await startDetourCli([
+        '--insecure-upstream',
+        '--client-cert',
+        clientCertPath,
+        '--client-key',
+        clientKeyPath,
+      ]);
+      try {
+        const result = await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/hello');
+        expect(result.status).toBe(200);
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('rejects the mTLS-requiring upstream without --client-cert (proving the previous test actually needed it)', async () => {
+      const server = generateCaAndLeaf('localhost');
+      const client = generateCaAndLeaf('e2e-client');
+      const upstream = await startMtlsUpstreamServer({ key: server.key, cert: server.cert }, client.caPem);
+      cli = await startDetourCli(['--insecure-upstream']);
+      try {
+        const result = await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/hello');
+        expect(result.status).toBe(504);
+        expect(result.body).toContain('certificate required');
+      } finally {
+        await upstream.close();
+      }
+    });
   });
 
   describe('HTTP/2 (issue #16)', () => {

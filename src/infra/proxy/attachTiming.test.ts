@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { CapturedExchange, ExchangeTiming } from '../../domain/exchange/types';
-import { attachTiming } from './attachTiming';
+import type { CapturedExchange, ExchangeTiming, UpstreamCertificate } from '../../domain/exchange/types';
+import { attachCertificate, attachTiming } from './attachTiming';
 import type { IContext } from './engine/types';
 
 function fakeExchange(finishedAt?: number): CapturedExchange {
@@ -9,6 +9,18 @@ function fakeExchange(finishedAt?: number): CapturedExchange {
 
 function fakeContext(timing: ExchangeTiming | undefined, responseHeadersAt?: number): IContext {
   return { timing, responseHeadersAt } as unknown as IContext;
+}
+
+function fakeCertificate(overrides: Partial<UpstreamCertificate> = {}): UpstreamCertificate {
+  return {
+    subject: 'CN=example.com',
+    issuer: 'CN=Example CA',
+    validFrom: 'Jan 1 00:00:00 2024 GMT',
+    validTo: 'Jan 1 00:00:00 2025 GMT',
+    fingerprint256: 'AA:BB:CC',
+    authorized: true,
+    ...overrides,
+  };
 }
 
 describe('attachTiming', () => {
@@ -47,5 +59,20 @@ describe('attachTiming', () => {
     const ctx = fakeContext({}, 970);
     attachTiming(exchange, ctx);
     expect(exchange.timing).toEqual({ transferMs: 30 });
+  });
+});
+
+describe('attachCertificate', () => {
+  it('does nothing when ctx.certificate was never set (plain HTTP, or a handshake that never completed)', () => {
+    const exchange = fakeExchange();
+    attachCertificate(exchange, { certificate: undefined } as unknown as IContext);
+    expect(exchange.certificate).toBeUndefined();
+  });
+
+  it('attaches ctx.certificate onto the exchange when set', () => {
+    const exchange = fakeExchange();
+    const certificate = fakeCertificate();
+    attachCertificate(exchange, { certificate } as unknown as IContext);
+    expect(exchange.certificate).toBe(certificate);
   });
 });

@@ -15,6 +15,7 @@ import {
   parseQueryParams,
 } from '@/shared/lib/utils';
 import { Button, CopyIconButton, Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/ui';
+import { CertificateView } from './CertificateView';
 import { CreateRuleButton } from './CreateRuleButton';
 import { TimingWaterfall } from './TimingWaterfall';
 
@@ -151,6 +152,7 @@ export function InspectorPanel() {
           </TabsTrigger>
           <TabsTrigger value="body">Body</TabsTrigger>
           <TabsTrigger value="timing">Timing</TabsTrigger>
+          {exchange.isSSL && <TabsTrigger value="certificate">Certificate</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="headers" className="p-3">
@@ -187,6 +189,12 @@ export function InspectorPanel() {
         <TabsContent value="timing" className="overflow-auto">
           <TimingWaterfall timing={exchange.timing} />
         </TabsContent>
+
+        {exchange.isSSL && (
+          <TabsContent value="certificate" className="overflow-auto">
+            <CertificateView certificate={exchange.certificate} />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   );

@@ -30,6 +30,7 @@ import { createResponseHeadersHandler } from './pipeline/responseHeadersHandler'
 import { createScriptRequestHookHandler } from './pipeline/scriptRequestHook';
 import { createScriptResponseHookHandler } from './pipeline/scriptResponseHook';
 import { createWebSocketHandlers } from './pipeline/webSocketHandlers';
+import type { UpstreamTlsOptions } from './upstreamTlsOptions';
 
 export interface ProxyServerOptions {
   port: number;
@@ -60,6 +61,15 @@ export interface ProxyServerOptions {
    * from an authenticated client. Omit (the default) to accept every client.
    */
   proxyAuth?: ProxyAuthCredentials;
+  /**
+   * Upstream TLS verification/mTLS overrides (issue #160's `--upstream-ca`/
+   * `--insecure-upstream`/`--client-cert`+`--client-key`) — see
+   * `ProxyEngineOptions.upstreamTls`'s doc comment. Already read/validated
+   * by the caller (`upstreamTlsOptions.ts`'s `resolveUpstreamTlsOptions`).
+   * Omit for Node's own default verification behavior, with no client
+   * certificate — what Detour did before this existed.
+   */
+  upstreamTls?: UpstreamTlsOptions;
 }
 
 export interface ProxyServerHandle {
@@ -341,6 +351,7 @@ export async function startProxyServer(
           http2: options.http2Enabled ?? true,
           upstreamProxyUrl: options.upstreamProxyUrl,
           proxyAuth: options.proxyAuth,
+          upstreamTls: options.upstreamTls,
         },
         () => {
           clientProcessDirectory?.start();

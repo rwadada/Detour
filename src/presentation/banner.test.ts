@@ -49,6 +49,9 @@ describe('printStartupBanner', () => {
       upstreamProxyUrl: undefined,
       dashboardBuilt: true,
       lanAddresses: [],
+      insecureUpstream: false,
+      upstreamCaCount: 0,
+      clientCertSet: false,
       ...overrides,
     });
     return logged.join('\n');

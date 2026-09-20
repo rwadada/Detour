@@ -89,6 +89,7 @@ During development, run `npm run dev` to watch and run the TypeScript sources di
 - The body viewer renders a body by its `Content-Type` rather than dumping text at you: images are shown as images; HTML/CSS/JavaScript/XML/JSON get syntax highlighting (XML and JSON pretty-printed); `application/x-www-form-urlencoded` and `multipart/form-data` are broken out into their fields (a file part listed by filename/type rather than inlined). A `gzip`/`br`-compressed body is decompressed for display first, and anything unrecognized falls back to "pretty-print as JSON if it parses, raw text otherwise"
 - A gRPC (`application/grpc*`) exchange is decoded frame by frame in the body viewer when `detour start --proto <path>` loaded a schema — the descriptor is relayed to the browser on connect and decoded there. Without one, the viewer says which schema/RPC it was missing instead of showing raw bytes
 - The inspector's **Timing** tab breaks an exchange's total duration down into DNS, TCP, TLS, TTFB, and response-transfer phases as a waterfall (issue #140). Phases that don't apply are simply absent — no TLS for a plain-HTTP upstream, no DNS for a bare IP literal, no DNS/TCP/TLS (with a "connection reused" note instead) when the request rode an existing keep-alive connection to the same upstream host ([issue #162](https://github.com/rwadada/Detour/issues/162)), and no timing at all for an exchange that never reached upstream (a `mock`/`block-hosts`/aborted-`breakpoint` response)
+- The inspector's **Certificate** tab (HTTPS exchanges only) shows the real upstream server's certificate — subject, issuer, validity, SANs, SHA-256 fingerprint, and whether it actually verified ([issue #160](https://github.com/rwadada/Detour/issues/160)) — the one thing the client-facing side can never show, since it only ever sees Detour's own substituted leaf cert. See "Upstream TLS trust, mTLS, and certificate visibility" below.
 - On macOS, an exchange captured from a client on *this* machine shows which local process sent it (issue #147) — handy when a simulator and a desktop app are both talking through the proxy at once. Not available on other platforms, or for a client connecting from another machine
 - A row handled by a `rules.json` rule is badged with that rule's name, so a mocked/rewritten response is obvious in the list without opening it
 - An exchange paused by a `breakpoint` rule (see below) shows up live with a "paused" indicator; opening it lets you edit its method/path/headers/body (or status/headers/body, for a paused response) and either resume it or abort it outright
@@ -154,6 +155,29 @@ detour start --dashboard-tls on           # force HTTPS even for a localhost-onl
 A `localhost`-only dashboard (no `--lan`) stays plain HTTP by default — TLS buys nothing over loopback.
 
 Neither password is a hardened auth system — both are scrypt-hashed and compared in constant time, but they exist to keep a shared network's other occupants out, not to withstand a determined attacker. The dashboard password has the per-IP backoff/disconnect described above (issue #159); `--proxy-auth` doesn't, and (outside `--dashboard-tls`) the dashboard connection can still be plain HTTP.
+
+## Upstream TLS trust, mTLS, and certificate visibility (issue #160)
+
+By default Detour verifies every upstream HTTPS server's certificate against Node's own bundled root CA store — exactly what a real client does — and, because it's MITM'ing the connection, can show you that real certificate even though the client only ever sees Detour's own substituted one.
+
+**A dev/staging server with a self-signed or private-CA cert fails that verification**, same as it would for any other client, and previously Detour could only report a generic connection error for it. Two flags fix that:
+
+```bash
+detour start --upstream-ca ./internal-ca.pem     # trust one more CA, on top of the system root store
+detour start --insecure-upstream                 # skip verification entirely for this session
+```
+
+Prefer `--upstream-ca` — it lets you reach a server signed by a CA you actually trust without weakening verification for anything else. `--insecure-upstream` is the last resort: it accepts *any* certificate from *any* upstream server for the whole session, self-signed, expired, or otherwise, and is flagged loudly wherever it applies — the startup banner, a persistent (not a toast) "⚠ Upstream TLS unverified" indicator in the dashboard's status bar for as long as a client stays connected, and a badge on every affected row. A verification failure without either flag now shows a specific message (e.g. "the server presented a self-signed certificate") instead of a raw connection error.
+
+**mTLS-requiring upstreams** (internal APIs, financial/IoT backends) need a client certificate Detour didn't have a way to present:
+
+```bash
+detour start --client-cert ./client.pem --client-key ./client.key
+```
+
+Both flags are required together. This applies to every upstream HTTPS request for the session — there's no per-host override yet.
+
+**The upstream certificate itself is visible** in the dashboard's inspector: a new **Certificate** tab (alongside Headers/Body/Timing, shown for any HTTPS exchange) lists the real subject, issuer, validity period, SANs, and SHA-256 fingerprint, plus whether it actually verified. Since connection reuse (issue #162) means only the *first* request on a keep-alive connection re-handshakes, a reused connection's exchanges show the same certificate, cached from that original handshake, rather than nothing at all. Certificate data round-trips through both session-file export/import and HAR export (as a `_detour` extension field, same as the other Detour-specific fields HAR's own schema has no slot for).
 
 ## Daemon mode, CI, and automation (issue #20)
 

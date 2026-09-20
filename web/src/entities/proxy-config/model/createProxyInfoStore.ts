@@ -8,6 +8,8 @@ export interface ProxyInfoState {
   lanAddresses: string[];
   /** Whether the *dashboard* (not just the proxy, which is covered by `lanAddresses` alone) is also bound to every network interface right now — from `lanInfo`'s own field, or `resolveDashboardOnLan`'s fallback for an older server that predates it. Gates whether the sidebar's LAN Access section shows a Dashboard URL alongside each address's Proxy URL, since a Dashboard URL would be a dead link on any address but this one otherwise. Defaults to `false` until `lanInfo` arrives — the safer guess, since showing a dead Dashboard link is worse than briefly not showing a live one. */
   dashboardOnLan: boolean;
+  /** Whether this session was started with `--insecure-upstream` (issue #160), from `proxyInfo`'s own field — `false` (verification on) until that message arrives, or on an older server that predates the field. Powers the persistent "upstream verification off" indicator (`ContextBar`) and the log table's per-row unverified badge. */
+  insecureUpstream: boolean;
 }
 
 /** How an older server's `lanInfo` (one predating the `dashboardOnLan` field) is read: back then `addresses` was only ever sent non-empty when the dashboard itself was LAN-bound (there was no proxy-always-on-LAN split yet), so "field missing" safely means "yes" under that older server's own semantics, not "no". Exported for the test below; not meant as a general-purpose default. */
@@ -16,26 +18,30 @@ export function resolveDashboardOnLan(message: { addresses: string[]; dashboardO
 }
 
 /**
- * Builds a store holding the proxy's port and this machine's LAN addresses,
- * sent once by the dashboard server right after connecting (issues #24 and
- * #66). Lives under `widgets/sidebar` rather than as its own `entities`
- * slice — Sidebar is currently its only consumer, and FSD's steiger linter
- * (`fsd/insignificant-slice`) flags a one-consumer entity as better merged
- * into that consumer.
+ * Builds a store holding the proxy's port, this machine's LAN addresses,
+ * and whether upstream TLS verification is disabled — each sent once by
+ * the dashboard server right after connecting (issues #24, #66, #160).
+ * Lives under `entities/proxy-config` (not `widgets/sidebar`, where this
+ * originated) since it's now read by more than one widget (`Sidebar` and
+ * `ContextBar`) — FSD forbids widget→widget imports, and entities are the
+ * layer everything above is allowed to share (mirrors this same directory's
+ * `createInterceptStore`/etc., whose own doc comment explains the same
+ * move for the same reason).
  *
  * `connection` is a required parameter (no default) precisely so importing
  * this module never has the side effect of opening a real WebSocket — see
- * `ui/Sidebar.tsx`, which wires the app's real singleton.
+ * this package's `index.ts`, which wires the app's real singleton.
  */
 export function createProxyInfoStore(connection: DashboardConnection) {
   return create<ProxyInfoState>((set) => {
     connection.onMessage((message) => {
-      if (message.type === 'proxyInfo') set({ proxyPort: message.proxyPort });
-      else if (message.type === 'lanInfo') {
+      if (message.type === 'proxyInfo') {
+        set({ proxyPort: message.proxyPort, insecureUpstream: message.insecureUpstream ?? false });
+      } else if (message.type === 'lanInfo') {
         set({ lanAddresses: message.addresses, dashboardOnLan: resolveDashboardOnLan(message) });
       }
     });
 
-    return { proxyPort: null, lanAddresses: [], dashboardOnLan: false };
+    return { proxyPort: null, lanAddresses: [], dashboardOnLan: false, insecureUpstream: false };
   });
 }

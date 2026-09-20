@@ -91,8 +91,18 @@ export type DashboardServerMessage =
    * `--dashboard-port`), but sent explicitly rather than left for the
    * client to back-compute — `--dashboard-port` can still be overridden
    * independently of that default.
+   *
+   * `insecureUpstream` (issue #160) is this session's `--insecure-upstream`
+   * setting — fixed for the process's whole lifetime, unlike every other
+   * field sent here or in the rest of this just-connected snapshot, so it's
+   * carried on this one-time message rather than needing its own `set*`/
+   * `*Changed` pair. The dashboard shows this as a persistent header
+   * indicator (not a toast) for as long as a client stays connected: it
+   * means upstream TLS certificate errors are being silently ignored for
+   * this entire session, and that's not something a user should be able to
+   * miss by looking away for a moment.
    */
-  | { type: 'proxyInfo'; proxyPort: number }
+  | { type: 'proxyInfo'; proxyPort: number; insecureUpstream: boolean }
   /**
    * Sent once, right after connecting (issue #66): every non-internal IPv4
    * address this machine has. Non-empty regardless of `--lan`/`lanAccess` —

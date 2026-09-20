@@ -1,4 +1,4 @@
-import { Tag } from 'lucide-react';
+import { ShieldAlert, Tag } from 'lucide-react';
 import { Badge } from '@/shared/ui';
 import { cn } from '@/shared/lib/utils';
 
@@ -115,6 +115,31 @@ export function RuleBadge({ ruleName }: { ruleName: string }) {
       title={label}
     >
       <Tag className="h-3 w-3" aria-hidden="true" />
+    </span>
+  );
+}
+
+/**
+ * Shown next to an exchange whose upstream TLS certificate didn't actually
+ * verify (issue #160) — only reachable at all under `--insecure-upstream`,
+ * since the default (`rejectUnauthorized: true`) aborts the connection
+ * outright instead of completing it with an unverified certificate. Mirrors
+ * `RuleBadge`'s fixed-size-icon-over-text-badge choice for the same reason:
+ * the row is already tight on width, and the full reason is always
+ * available as the accessible name/tooltip here and on `InspectorPanel`'s
+ * own Certificate tab once the row is selected.
+ */
+export function UnverifiedCertBadge({ reason }: { reason?: string }) {
+  const label = reason ? `Upstream certificate not verified: ${reason}` : 'Upstream certificate not verified';
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      className="inline-flex shrink-0 items-center"
+      style={{ color: 'var(--status-4xx)' }}
+      title={label}
+    >
+      <ShieldAlert className="h-3 w-3" aria-hidden="true" />
     </span>
   );
 }

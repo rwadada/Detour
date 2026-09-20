@@ -4,6 +4,7 @@ import http2 from 'node:http2';
 import https from 'node:https';
 import net from 'node:net';
 import type { Duplex } from 'node:stream';
+import type { PeerCertificate, TLSSocket } from 'node:tls';
 import WebSocket, { WebSocketServer } from 'ws';
 import {
   PROXY_AUTHENTICATE_CHALLENGE,
@@ -11,8 +12,9 @@ import {
   verifyProxyCredentials,
   type ProxyAuthCredentials,
 } from '../../../domain/auth/proxyAuth';
-import type { ExchangeTiming } from '../../../domain/exchange/types';
+import type { ExchangeTiming, UpstreamCertificate } from '../../../domain/exchange/types';
 import { createUpstreamProxyAgents } from '../upstreamProxyAgent';
+import type { UpstreamTlsOptions } from '../upstreamTlsOptions';
 import { CertAuthority } from './certAuthority';
 import type {
   ErrorCallback,
@@ -51,7 +53,32 @@ export interface ProxyEngineOptions {
    * client, which is what Detour did before this existed.
    */
   proxyAuth?: ProxyAuthCredentials;
+  /**
+   * Upstream TLS verification/mTLS overrides (issue #160) — `--upstream-ca`/
+   * `--insecure-upstream`/`--client-cert`+`--client-key`. Applied as
+   * per-request options in `forwardRequest` (see that method's own doc
+   * comment for why it can't be baked into `httpsAgent`'s constructor
+   * instead), so this applies identically whether or not `upstreamProxyUrl`
+   * is also given. Omit for Node's own default verification behavior
+   * against its bundled root store, with no client certificate — what
+   * Detour did before this existed.
+   */
+  upstreamTls?: UpstreamTlsOptions;
 }
+
+/**
+ * `httpAgent`/`httpsAgent`'s shared keep-alive tuning (issue #162) — pulled
+ * out to a constant so `listen()` can rebuild `httpsAgent` with different
+ * TLS options (issue #160's `upstreamTls`) without duplicating (or
+ * accidentally drifting from) these values.
+ */
+const KEEP_ALIVE_AGENT_OPTIONS = {
+  keepAlive: true,
+  keepAliveMsecs: 1000,
+  maxSockets: 128,
+  maxFreeSockets: 32,
+  timeout: 60_000,
+} as const;
 
 /** A request/response pair's actual mutable hook lists — `IContext`'s public surface plus the bookkeeping `ProxyEngine` needs internally, never exposed to consumers. */
 interface Context extends IContext {
@@ -87,6 +114,44 @@ function underlyingSocket(ws: WebSocket): net.Socket | undefined {
 
 function flattenHeaderValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value.join(', ') : (value ?? '');
+}
+
+/** Flattens a `tls.PeerCertificate.subject`/`.issuer` object (e.g. `{ C: 'US', O: 'Example', CN: 'example.com' }`) to a single distinguished-name-style string, for display. */
+function formatDistinguishedName(name: PeerCertificate['subject'] | undefined): string {
+  if (!name) return '';
+  return Object.entries(name)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(', ');
+}
+
+/**
+ * Reads the upstream server's real TLS certificate off a just-handshaked
+ * socket (issue #160) — the one piece of the real connection a client can
+ * never see for itself once Detour is MITM'ing it. `getPeerCertificate(true)`
+ * (the `true` includes the full chain, not just the leaf, though only the
+ * leaf's own fields are surfaced here) returns an empty object rather than
+ * `null`/`undefined` when no certificate is available; `Object.keys` is how
+ * Node's own docs say to detect that case. `socket.authorized`/
+ * `authorizationError` reflect the real verification outcome regardless of
+ * `rejectUnauthorized` — `authorized` is `false` whenever the chain didn't
+ * actually validate, `--insecure-upstream` or not, since that setting only
+ * controls whether the connection is *allowed to proceed* despite that.
+ */
+function captureUpstreamCertificate(socket: TLSSocket): UpstreamCertificate | undefined {
+  const peer = socket.getPeerCertificate(true);
+  if (!peer || Object.keys(peer).length === 0) return undefined;
+  return {
+    subject: formatDistinguishedName(peer.subject),
+    issuer: formatDistinguishedName(peer.issuer),
+    validFrom: peer.valid_from,
+    validTo: peer.valid_to,
+    subjectAltName: peer.subjectaltname,
+    fingerprint256: peer.fingerprint256,
+    authorized: socket.authorized,
+    authorizationError: socket.authorized
+      ? undefined
+      : ((socket.authorizationError as unknown as Error | null)?.message ?? String(socket.authorizationError)),
+  };
 }
 
 /**
@@ -208,26 +273,30 @@ export class ProxyEngine {
   // values Node's own docs suggest as sane defaults for a keep-alive pool
   // this size; `maxFreeSockets` caps how many idle-but-reusable sockets
   // stick around per host once traffic quiets down.
-  private httpAgent: http.Agent = new http.Agent({
-    keepAlive: true,
-    keepAliveMsecs: 1000,
-    maxSockets: 128,
-    maxFreeSockets: 32,
-    timeout: 60_000,
-  });
-  private httpsAgent: http.Agent = new https.Agent({
-    keepAlive: true,
-    keepAliveMsecs: 1000,
-    maxSockets: 128,
-    maxFreeSockets: 32,
-    timeout: 60_000,
-  });
+  private httpAgent: http.Agent = new http.Agent(KEEP_ALIVE_AGENT_OPTIONS);
+  private httpsAgent: http.Agent = new https.Agent(KEEP_ALIVE_AGENT_OPTIONS);
 
   private httpServer: http.Server | undefined;
   private tlsServer: https.Server | http2.Http2SecureServer | undefined;
 
   /** `ProxyEngineOptions.proxyAuth` (issue #158), captured on `listen` — `undefined` leaves the proxy open to every client, as it was before that flag existed. */
   private proxyAuth: ProxyAuthCredentials | undefined;
+
+  /** `ProxyEngineOptions.upstreamTls` (issue #160), captured on `listen` — `undefined` leaves every HTTPS upstream request at Node's own default verification, no client certificate, as it was before this flag existed. */
+  private upstreamTls: UpstreamTlsOptions | undefined;
+
+  /**
+   * Caches each fresh socket's real upstream TLS certificate (issue #160),
+   * keyed by the socket itself — a `WeakMap` so an entry is reclaimed
+   * automatically once its socket closes and is garbage-collected, with no
+   * eviction logic to write or bound to pick. Populated once, in
+   * `trackSocketTiming`'s fresh-connection branch (on `secureConnect`), and
+   * read back in its reused-connection branch: a keep-alive socket
+   * (`keepAlive: true`, issue #162) only ever re-handshakes on its first
+   * use, so every later request riding the same socket needs this cache to
+   * still report a certificate at all.
+   */
+  private certificatesBySocket = new WeakMap<net.Socket, UpstreamCertificate>();
 
   ca!: CertAuthority;
   httpPort = 0;
@@ -314,6 +383,7 @@ export class ProxyEngine {
     try {
       this.ca = CertAuthority.load(options.sslCaDir);
       this.proxyAuth = options.proxyAuth;
+      this.upstreamTls = options.upstreamTls;
 
       if (options.upstreamProxyUrl) {
         const agents = createUpstreamProxyAgents(options.upstreamProxyUrl);
@@ -552,6 +622,10 @@ export class ProxyEngine {
       port: hostPort.port,
       headers,
       agent: isSSL ? this.httpsAgent : this.httpAgent,
+      // Per-request, not baked into `httpsAgent` — see this field's own doc
+      // comment in `engine/types.ts` for why (issue #160). Only meaningful
+      // for `isSSL`; harmless (and ignored by `http.request`) otherwise.
+      ...(isSSL ? this.upstreamTls : undefined),
     };
 
     runChain(this.onRequestHandlers, ctx, (err) => {
@@ -578,8 +652,13 @@ export class ProxyEngine {
     });
     ctx.proxyToServerRequest = upstreamReq;
     upstreamReq.on('socket', (socket) =>
-      this.trackSocketTiming(socket, ctx.isSSL, timing, (readyAt) => {
-        connectionReadyAt = readyAt;
+      this.trackSocketTiming(socket, ctx.isSSL, timing, {
+        onReady: (readyAt) => {
+          connectionReadyAt = readyAt;
+        },
+        onCertificate: (cert) => {
+          ctx.certificate = cert;
+        },
       }),
     );
     upstreamReq.on('error', (err) => this.emitError('PROXY_TO_SERVER_REQUEST_ERROR', ctx, err));
@@ -612,17 +691,32 @@ export class ProxyEngine {
    * `dnsMs`/`tcpMs`, inflating them for a reason that has nothing to do
    * with the network; measuring from here instead means those phases only
    * ever cover what actually happens once a socket exists.
+   *
+   * `onCertificate` (issue #160) reports the upstream's real TLS
+   * certificate once known: for a fresh HTTPS socket, captured off
+   * `secureConnect` and cached in `certificatesBySocket` (keyed by the
+   * socket itself) for any later request that reuses it; for a reused one,
+   * read straight back out of that cache — a keep-alive socket only ever
+   * re-handshakes on its first use, so this is the only way a 2nd+ request
+   * on it still gets a certificate at all. Grouped with `onReady` into one
+   * options object (rather than a 5th positional parameter) to keep this
+   * method's own parameter count from creeping back up.
    */
   private trackSocketTiming(
     socket: net.Socket,
     isSSL: boolean,
     timing: ExchangeTiming,
-    onReady: (readyAt: number) => void,
+    callbacks: { onReady: (readyAt: number) => void; onCertificate: (cert: UpstreamCertificate) => void },
   ): void {
+    const { onReady, onCertificate } = callbacks;
     const socketAssignedAt = Date.now();
     if (!socket.connecting) {
       timing.connectionReused = true;
       onReady(socketAssignedAt);
+      if (isSSL) {
+        const cached = this.certificatesBySocket.get(socket);
+        if (cached) onCertificate({ ...cached, fromReusedConnection: true });
+      }
       return;
     }
     let lookupDoneAt: number | undefined;
@@ -640,6 +734,11 @@ export class ProxyEngine {
       socket.once('secureConnect', () => {
         const securedAt = Date.now();
         timing.tlsMs = securedAt - (connectedAt ?? socketAssignedAt);
+        const cert = captureUpstreamCertificate(socket as TLSSocket);
+        if (cert) {
+          this.certificatesBySocket.set(socket, cert);
+          onCertificate(cert);
+        }
         onReady(securedAt);
       });
     }

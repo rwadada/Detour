@@ -43,6 +43,11 @@ export function collectProtoPath(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
+/** Accumulates repeated `--upstream-ca <path>` flags (issue #160) into an array — same convention as `collectProtoPath`. */
+export function collectUpstreamCaPath(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
 /** Validates `--target`, narrowing it to `SetupTarget` — a plain guard clause doesn't narrow `options.target` itself since it's a mutable object property, so this gives `runSetupCommand` a local value TypeScript can track. */
 export function parseSetupTarget(value: string | undefined): SetupTarget | undefined {
   if (value === undefined) return undefined;

@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { matchesFilters, useExchangeStore } from '@/entities/exchange';
+import { useProxyInfoStore } from '@/entities/proxy-config';
 import { PausedBreakpointsIndicator } from '@/features/breakpoint-resume';
 import { CompareBar } from '@/features/compare';
 import { cn } from '@/shared/lib/utils';
@@ -39,6 +40,7 @@ export function ContextBar() {
   const paused = useExchangeStore((s) => s.paused);
   const filters = useExchangeStore((s) => s.filters);
   const exchanges = useExchangeStore((s) => s.exchanges);
+  const insecureUpstream = useProxyInfoStore((s) => s.insecureUpstream);
   const shownCount = useMemo(
     () => exchanges.reduce((n, e) => n + (matchesFilters(e, filters) ? 1 : 0), 0),
     [exchanges, filters],
@@ -53,6 +55,19 @@ export function ContextBar() {
         <span className={cn('h-1.5 w-1.5 rounded-full', MODE_DOT_CLASS[mode])} />
         {MODE_LABEL[mode]}
       </span>
+
+      {insecureUpstream && (
+        // Persistent, not a toast (issue #160): `--insecure-upstream` skips
+        // upstream certificate verification for the *entire session*, so
+        // this needs to stay visible the whole time a client is connected,
+        // not just flash once at connect time.
+        <span
+          className="flex items-center gap-1 font-medium uppercase tracking-wide text-[var(--status-4xx)]"
+          title="This session was started with --insecure-upstream: upstream TLS certificates are not being verified."
+        >
+          ⚠ Upstream TLS unverified
+        </span>
+      )}
 
       <span className="font-mono-ui">
         {isFiltered ? `${shownCount} of ${exchanges.length} shown` : `${exchanges.length} shown`}
