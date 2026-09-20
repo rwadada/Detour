@@ -107,6 +107,20 @@ describe('CertAuthority', () => {
       expect(() => ca.getMultiHostKeyCert(['localhost', 'localhost', '127.0.0.1'])).not.toThrow();
     });
 
+    // Copilot review, PR #175: an empty SAN is presented as a "valid" cert
+    // by this method's own contract but rejected by every real client
+    // (browsers ignore commonName and require a matching SAN entry).
+    it('falls back to a localhost SAN rather than minting an empty one for an empty hostname list', () => {
+      const ca = CertAuthority.load(dir);
+      const { cert: leafPem } = ca.getMultiHostKeyCert([]);
+      const leaf = forge.pki.certificateFromPem(leafPem);
+      const san = leaf.getExtension('subjectAltName') as
+        | { altNames: Array<{ type: number; value?: string }> }
+        | undefined;
+      expect(san?.altNames).toHaveLength(1);
+      expect(san?.altNames[0]).toMatchObject({ type: 2, value: 'localhost' });
+    });
+
     it("the leaf cert's SAN covers every hostname given, IP and DNS alike, in order", () => {
       const ca = CertAuthority.load(dir);
       const { cert: leafPem } = (

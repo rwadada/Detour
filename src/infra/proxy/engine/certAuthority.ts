@@ -236,10 +236,18 @@ export class CertAuthority {
    * Not cached: unlike `getSecureContext` (called once per intercepted
    * host, for the life of a long-running proxy), this runs once per `detour
    * start` — there's nothing to amortize.
+   *
+   * Falls back to `['localhost']` for an empty `hostnames` (Copilot review,
+   * PR #175) rather than minting a cert with an empty SAN: browsers ignore
+   * a leaf cert's `commonName` entirely and require a matching SAN entry,
+   * so `altNames: []` would be presented as valid by this method yet
+   * rejected by every real client — the same "never silently produce a
+   * cert nothing can use" reasoning `getDefaultKeyCert()`'s own `localhost`
+   * default follows.
    */
   getMultiHostKeyCert(hostnames: readonly string[]): { key: string; cert: string } {
-    const uniqueHosts = [...new Set(hostnames)];
-    return this.mintLeafPem(uniqueHosts, uniqueHosts[0] ?? 'localhost');
+    const uniqueHosts = hostnames.length > 0 ? [...new Set(hostnames)] : ['localhost'];
+    return this.mintLeafPem(uniqueHosts, uniqueHosts[0]!);
   }
 
   /** The leaf PEM pair used as the TLS server's static default (pre-SNI) `key`/`cert` options. */

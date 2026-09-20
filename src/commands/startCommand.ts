@@ -487,6 +487,17 @@ async function runStartBody({
     return engine;
   }
 
+  // Computed once and reused everywhere below (Copilot review, PR #175) —
+  // the dashboard's TLS cert SAN, the CSWSH allowlist `startDashboardServer`
+  // builds from its own `lanAddresses` option, and the startup banner's
+  // "Reachable on your network at" list all need to agree on the exact same
+  // set. `os.networkInterfaces()` is a live snapshot; calling it three
+  // separate times could in principle observe a NIC coming up or down
+  // between calls (unlikely in the few milliseconds this all takes, but a
+  // real inconsistency if it happened) and mint a cert whose SAN doesn't
+  // match what the allowlist or banner then claims.
+  const lanAddrs = lanAddresses();
+
   // `--headless` (issue #20): CI/scripted use has no need for the web
   // dashboard — skip starting it entirely rather than starting it and just
   // not opening a browser to it.
@@ -510,7 +521,7 @@ async function runStartBody({
     // might be reached at, alongside localhost/127.0.0.1/::1 — matching
     // `computeAllowedHostnames`'s own allowlist (issue #159).
     const tlsKeyCert = dashboardTls
-      ? CertAuthority.load(resolveCertDir()).getMultiHostKeyCert(['localhost', '127.0.0.1', '::1', ...lanAddresses()])
+      ? CertAuthority.load(resolveCertDir()).getMultiHostKeyCert(['localhost', '127.0.0.1', '::1', ...lanAddrs])
       : undefined;
     try {
       dashboardHandle = await startDashboardServer(
@@ -534,7 +545,7 @@ async function runStartBody({
           // fronts always binds to every interface, so its LAN address(es)
           // are always worth knowing. See `DashboardServerOptions.lanAddresses`'s
           // doc comment (issue #66).
-          lanAddresses: lanAddresses(),
+          lanAddresses: lanAddrs,
         },
         eventBus,
       );
@@ -603,7 +614,7 @@ async function runStartBody({
     // module that knows how to strip them (see `printStartupBanner`).
     upstreamProxyUrl: options.upstreamProxy ? redactProxyUrlCredentials(options.upstreamProxy) : undefined,
     dashboardBuilt: isDashboardBuilt(),
-    lanAddresses: lanAddresses(),
+    lanAddresses: lanAddrs,
   });
 
   // DETOUR_READY (issue #20): a stable, greppable line a CI script can wait
