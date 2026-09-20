@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import type http from 'node:http';
 import type { IncomingMessage } from 'node:http';
 import type { Socket } from 'node:net';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
@@ -196,7 +197,7 @@ describe('ProxyEngine.trackSocketTiming', () => {
     expect(timing.tcpMs).toBeDefined();
   });
 
-  it('skips straight to ready with no phases measured for a socket that is not connecting (a reused keep-alive socket)', () => {
+  it('skips straight to ready with no phases measured and flags connectionReused for a socket that is not connecting (a reused keep-alive socket, issue #162)', () => {
     const socket = fakeConnectingSocket(false);
     const timing: ExchangeTiming = {};
     let readyAt: number | undefined;
@@ -208,6 +209,30 @@ describe('ProxyEngine.trackSocketTiming', () => {
     expect(timing.dnsMs).toBeUndefined();
     expect(timing.tcpMs).toBeUndefined();
     expect(timing.tlsMs).toBeUndefined();
+    expect(timing.connectionReused).toBe(true);
+  });
+
+  it('leaves connectionReused unset for a fresh (still-connecting) socket', () => {
+    const socket = fakeConnectingSocket(true);
+    const timing: ExchangeTiming = {};
+    timingInternals().trackSocketTiming(socket, false, timing, Date.now(), () => undefined);
+
+    socket.emit('lookup');
+    socket.emit('connect');
+
+    expect(timing.connectionReused).toBeUndefined();
+  });
+});
+
+describe('ProxyEngine upstream agents (issue #162)', () => {
+  it('configures both httpAgent and httpsAgent for keep-alive connection reuse', () => {
+    const engine = new ProxyEngine() as unknown as { httpAgent: http.Agent; httpsAgent: http.Agent };
+    const keepAliveOf = (agent: http.Agent) => (agent as unknown as { keepAlive: boolean }).keepAlive;
+
+    expect(keepAliveOf(engine.httpAgent)).toBe(true);
+    expect(keepAliveOf(engine.httpsAgent)).toBe(true);
+    expect(engine.httpAgent.maxSockets).toBe(128);
+    expect(engine.httpsAgent.maxSockets).toBe(128);
   });
 });
 

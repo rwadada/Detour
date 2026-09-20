@@ -27,8 +27,9 @@ export function TimingWaterfall({ timing }: { timing: ExchangeTiming | undefined
   if (measured.length === 0) {
     return (
       <p className="p-3 text-xs text-[var(--muted)]">
-        No timing breakdown available — this request never reached an upstream server (e.g. a mock, a blocked host, or a
-        breakpoint aborted before forwarding).
+        {timing?.connectionReused
+          ? 'No timing breakdown available — this request reused an existing keep-alive connection to the upstream server, so DNS/TCP/TLS were not repeated.'
+          : 'No timing breakdown available — this request never reached an upstream server (e.g. a mock, a blocked host, or a breakpoint aborted before forwarding).'}
       </p>
     );
   }
@@ -37,6 +38,11 @@ export function TimingWaterfall({ timing }: { timing: ExchangeTiming | undefined
 
   return (
     <div className="p-3">
+      {timing?.connectionReused && (
+        <p className="mb-2 text-xs text-[var(--muted)]">
+          Connection reused (keep-alive) — DNS/TCP/TLS were not repeated for this request.
+        </p>
+      )}
       <div
         className="flex h-4 w-full overflow-hidden rounded-sm border border-[var(--border)]"
         role="img"

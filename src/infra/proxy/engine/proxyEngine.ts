@@ -191,8 +191,37 @@ export class ProxyEngine {
   // `createUpstreamProxyAgents`'s doc comment for why that matters once
   // `--upstream-proxy` (issue #145) replaces these with a proxy-routing
   // agent that isn't literally an `https.Agent` instance.
-  private httpAgent: http.Agent = new http.Agent({ keepAlive: false });
-  private httpsAgent: http.Agent = new https.Agent({ keepAlive: false });
+  //
+  // `keepAlive: true` (issue #162): every proxied request used to pay a
+  // fresh TCP+TLS handshake to the upstream host, even the 2nd+ request to
+  // the exact same one in the same session — 2 round trips of pure overhead
+  // a real (non-proxied) client never pays past its first request. Bounded
+  // rather than left at the default `Infinity`: an HTTP/2 client fanning
+  // many concurrent streams out to the same upstream host (Detour always
+  // downgrades to HTTP/1.1 on that leg) would otherwise open one socket per
+  // stream with no ceiling, which is both a local fd-exhaustion risk and a
+  // good way to trip an upstream server's own per-client connection limit.
+  // Once `maxSockets` is reached, Node's own `Agent` queues further
+  // requests to that host rather than rejecting them — the "queueing"
+  // acceptance criterion falls out of the built-in behavior, not something
+  // this needs to implement itself. `keepAliveMsecs`/`timeout` are the
+  // values Node's own docs suggest as sane defaults for a keep-alive pool
+  // this size; `maxFreeSockets` caps how many idle-but-reusable sockets
+  // stick around per host once traffic quiets down.
+  private httpAgent: http.Agent = new http.Agent({
+    keepAlive: true,
+    keepAliveMsecs: 1000,
+    maxSockets: 128,
+    maxFreeSockets: 32,
+    timeout: 60_000,
+  });
+  private httpsAgent: http.Agent = new https.Agent({
+    keepAlive: true,
+    keepAliveMsecs: 1000,
+    maxSockets: 128,
+    maxFreeSockets: 32,
+    timeout: 60_000,
+  });
 
   private httpServer: http.Server | undefined;
   private tlsServer: https.Server | http2.Http2SecureServer | undefined;
@@ -563,9 +592,12 @@ export class ProxyEngine {
    * `timing` as each stage completes and reporting via `onReady` once the
    * connection is actually usable — the point `ttfbMs` is measured from. A
    * reused keep-alive socket (`!socket.connecting`) skips straight to
-   * `onReady` with no phases measured; `httpAgent`/`httpsAgent` are both
-   * `keepAlive: false` so this never happens today, but a socket can only
-   * be trusted to still be connecting via this flag, not assumed.
+   * `onReady` with no phases measured, flagging `timing.connectionReused`
+   * (issue #162) so the dashboard's Waterfall can tell "genuinely nothing to
+   * measure" apart from "this exchange rode an existing connection" — a
+   * socket can only be trusted to still be connecting via this flag, not
+   * assumed, which is exactly what makes this branch reachable at all now
+   * that `httpAgent`/`httpsAgent` are `keepAlive: true`.
    */
   private trackSocketTiming(
     socket: net.Socket,
@@ -575,6 +607,7 @@ export class ProxyEngine {
     onReady: (readyAt: number) => void,
   ): void {
     if (!socket.connecting) {
+      timing.connectionReused = true;
       onReady(Date.now());
       return;
     }
@@ -763,9 +796,13 @@ export class ProxyEngine {
         delete res.headers['content-length'];
         if (!clientIsHttp2) res.headers['transfer-encoding'] = 'chunked';
       }
-      // Detour never keeps upstream/downstream connections alive across
-      // requests (`keepAlive: false` on both agents above) — telling an
-      // HTTP/1.1 client to close matches what actually happens.
+      // The client→proxy leg is still always closed after one response,
+      // regardless of whether the proxy→upstream leg above just reused a
+      // keep-alive socket (issue #162) — reusing the *downstream* connection
+      // too needs its own careful pass (response-framing correctness under
+      // a `rewrite`/`script`/gzip'd body first — see issue #162's own
+      // writeup) and is deliberately out of scope here. Telling an HTTP/1.1
+      // client to close still matches what actually happens on this leg.
       if (!clientIsHttp2) res.headers['connection'] = 'close';
 
       runChain(this.onResponseHeadersHandlers, ctx, (err2) => {
