@@ -24,7 +24,7 @@ import type { ProtoRegistry } from '../grpc/protoRegistry';
 import { assertPortAvailable } from '../portCheck';
 import type { HistoryStore } from '../persistence/historyStore';
 import { nodeHttpRequester } from '../proxy/nodeHttpRequester';
-import { hashDashboardPassword, verifyDashboardPassword } from './dashboardPasswordHash';
+import { hashPassword, verifyPassword } from '../../domain/auth/passwordHash';
 import { serveStatic } from './staticServer';
 
 /**
@@ -367,7 +367,7 @@ export async function startDashboardServer(
   // than a plain property on the socket so nothing here needs to remember to
   // clean up on close — an unreachable socket just falls out of it.
   const authenticatedSockets = new WeakSet<WebSocket>();
-  // Sockets with a `login` currently awaiting `verifyDashboardPassword` —
+  // Sockets with a `login` currently awaiting `verifyPassword` —
   // guards against two `login` frames racing each other: both would pass
   // the `!authenticatedSockets.has(socket)` check below before either
   // resolves, and depending on which `await` settles second, that one could
@@ -591,9 +591,9 @@ export async function startDashboardServer(
     // directly here rather than via the event bus, since they need
     // synchronous validation and per-attempt error feedback that a fire-and-
     // forget event emit can't give — see `handleRulesMessage` below.
-    // `async`, not sync: `verifyDashboardPassword`/`hashDashboardPassword`
+    // `async`, not sync: `verifyPassword`/`hashPassword`
     // below are async precisely so scrypt's work runs off the main thread
-    // (see `dashboardPasswordHash.ts`) — awaiting them here is what actually
+    // (see `domain/auth/passwordHash.ts`) — awaiting them here is what actually
     // gets that benefit, rather than serializing right back onto this
     // handler anyway. `ws` doesn't care that the listener returns a promise;
     // nothing here needs the caller to wait on it.
@@ -637,8 +637,7 @@ export async function startDashboardServer(
               // than not setting one at all, since it looks protected.
               throw new Error('Dashboard password must not be empty — pass null to remove it.');
             }
-            const dashboardPasswordHash =
-              message.password === null ? null : await hashDashboardPassword(message.password);
+            const dashboardPasswordHash = message.password === null ? null : await hashPassword(message.password);
             writeUserConfig({ dashboardPasswordHash }, options.userConfigPath);
             // Updates `lastKnownPasswordHash` immediately rather than
             // waiting for some future `currentPasswordHash()` call to catch
@@ -700,7 +699,7 @@ export async function startDashboardServer(
       const hash = currentPasswordHash();
       let verified: boolean;
       try {
-        verified = !hash || (await verifyDashboardPassword(message.password, hash));
+        verified = !hash || (await verifyPassword(message.password, hash));
       } catch {
         // A crypto failure verifying the password is the server's problem,
         // not proof the client is wrong — but it still needs *some*

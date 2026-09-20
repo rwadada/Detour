@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Command } from 'commander';
+import { hashPassword } from '../domain/auth/passwordHash';
+import { parseProxyAuthFlag, type ProxyAuthCredentials } from '../domain/auth/proxyAuth';
 import { CliExitError } from '../domain/daemon/errors';
 import { startDashboardServer, WEB_DIST_DIR } from '../infra/dashboard/dashboardServer';
 import { DetourEventBus } from '../infra/eventBus';
@@ -87,6 +89,33 @@ interface StartOptions {
    * doc comment for the supported URL schemes.
    */
   upstreamProxy?: string;
+  /**
+   * `--proxy-auth <user:pass>` (issue #158): require these credentials
+   * (`Proxy-Authorization: Basic …`) from every client before the proxy
+   * serves it, for this invocation. Undefined when the flag isn't passed —
+   * `resolveProxyAuth` then falls back to `~/.detour/config.json`'s
+   * `proxyAuth`, same shape as `--lan`/`lanAccess`.
+   */
+  proxyAuth?: string;
+}
+
+/**
+ * Resolves the credentials the proxy will demand for this `start`
+ * invocation: an explicit `--proxy-auth <user:pass>` (hashed here, so the
+ * plaintext never outlives this call), else `~/.detour/config.json`'s
+ * already-hashed `proxyAuth`, else none at all — the out-of-the-box default,
+ * an open proxy (see `PROXY_OPEN_WARNING` in `presentation/banner.ts`).
+ *
+ * Note that passing credentials on the command line makes them visible to
+ * anything that can read this machine's process list; `detour config
+ * --proxy-auth` exists partly so a long-running session doesn't have to.
+ */
+async function resolveProxyAuth(options: StartOptions): Promise<ProxyAuthCredentials | undefined> {
+  if (options.proxyAuth !== undefined) {
+    const { username, password } = parseProxyAuthFlag(options.proxyAuth);
+    return { username, passwordHash: await hashPassword(password) };
+  }
+  return loadUserConfig().proxyAuth ?? undefined;
 }
 
 /**
@@ -273,6 +302,11 @@ async function runStartBody({
   // every proxied request thereafter silently failing to connect.
   if (options.upstreamProxy) validateUpstreamProxyUrl(options.upstreamProxy);
 
+  // Resolved (and validated) eagerly for the same reason: a malformed
+  // `--proxy-auth` value should fail CLI startup loudly rather than start a
+  // proxy nobody — including its owner — can authenticate against.
+  const proxyAuth = await resolveProxyAuth(options);
+
   // Opened eagerly (same reasoning as rules.json/`.proto` above) so a bad
   // `--persist` path (unwritable directory, an unsupported Node runtime)
   // fails CLI startup with a clear error rather than every exchange
@@ -352,7 +386,14 @@ async function runStartBody({
   let handle: Awaited<ReturnType<typeof startProxyServer>>;
   try {
     handle = await startProxyServer(
-      { port, host: PROXY_HOST, ruleEngine, http2Enabled: options.http2, upstreamProxyUrl: options.upstreamProxy },
+      {
+        port,
+        host: PROXY_HOST,
+        ruleEngine,
+        http2Enabled: options.http2,
+        upstreamProxyUrl: options.upstreamProxy,
+        proxyAuth,
+      },
       eventBus,
     );
   } catch (err) {
@@ -516,6 +557,7 @@ async function runStartBody({
     http2Enabled: options.http2,
     protoPaths: options.proto,
     dashboardPasswordSet: readDashboardPasswordSet(),
+    proxyAuthSet: proxyAuth !== undefined,
     historyDbPath,
     // Redacted here rather than inside the banner: credentials can be
     // embedded in the URL, and `presentation/` may not import the `infra/`
@@ -761,6 +803,10 @@ export function registerStartCommand(program: Command): void {
     .option(
       '--upstream-proxy <url>',
       'Route every proxy→upstream connection through this HTTP(S)/SOCKS proxy instead of connecting to the real destination directly — for a network (e.g. a corporate egress) only reachable that way. Supports http://, https://, socks://, socks4://, socks4a://, socks5://, and socks5h:// (with optional user:pass@ auth embedded in the URL).',
+    )
+    .option(
+      '--proxy-auth <user:pass>',
+      "Require these credentials (HTTP Basic, via Proxy-Authorization) from every client before the proxy will serve it — without them the proxy is open to anything on your network that points itself at it (issue #158). Checked on both CONNECT and plain HTTP, before Block Hosts/Focus/rules, with no exception for localhost. Overrides `proxyAuth` from `detour config` for this invocation; the password is never stored or logged in plaintext (note that the value itself is visible in this machine's process list — `detour config --proxy-auth` avoids that).",
     )
     .action(async (options: StartOptions) => {
       try {

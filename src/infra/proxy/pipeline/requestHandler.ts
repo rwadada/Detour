@@ -1,4 +1,7 @@
+import type { IncomingHttpHeaders } from 'node:http';
+import { PROXY_AUTHORIZATION_HEADER } from '../../../domain/auth/proxyAuth';
 import { isHostBlocked } from '../../../domain/blockHosts/blockHostsPolicy';
+import { REDACTED } from '../../../domain/dump/dumpPolicy';
 import { BodyCapture } from '../../../domain/exchange/bodyCapture';
 import type { BlockHostsState, CapturedExchange, ThrottleState } from '../../../domain/exchange/types';
 import type { Rule } from '../../../domain/rules/types';
@@ -69,6 +72,28 @@ function resolveUrl(ctx: IContext): { url: string; host: string } {
   return { url: `${scheme}://${hostname}${path}`, host: hostname };
 }
 
+/**
+ * Copies the client's request headers for capture, with
+ * `Proxy-Authorization` replaced by `[REDACTED]` (issue #158).
+ *
+ * That header carries Detour's *own* `--proxy-auth` credentials, not the
+ * origin's — it's never useful debugging output, and leaving it in would put
+ * a base64'd username and password into the dashboard, into `--dump full`'s
+ * console output and into every `--dump file` dump on disk. `dumpPolicy.ts`
+ * redacts it at render time as well; doing it here too means the plaintext
+ * never enters a `CapturedExchange` in the first place, so nothing that
+ * reads one (the dashboard's WebSocket broadcast, `--persist`'s SQLite
+ * history, a `script` rule) can see it either.
+ */
+function captureRequestHeaders(headers: Readonly<IncomingHttpHeaders>): IncomingHttpHeaders {
+  const captured = { ...headers };
+  // Node lowercases every header name it parses off the wire, so this
+  // header only ever reaches here under its canonical lowercase key — no
+  // case-insensitive lookup needed.
+  if (captured[PROXY_AUTHORIZATION_HEADER] !== undefined) captured[PROXY_AUTHORIZATION_HEADER] = REDACTED;
+  return captured;
+}
+
 /** Builds the initial `CapturedExchange` for a request just as it starts, before its outcome (blocked/mock/route/rewrite/forwarded) is known. Shared by the Block Hosts branch and the normal rule-resolution path below. */
 function buildBaseExchange(
   ctx: IContext,
@@ -86,7 +111,7 @@ function buildBaseExchange(
     // server, `1` otherwise. The proxy→upstream leg is unaffected either
     // way — ProxyEngine always forwards as plain HTTP/1.1.
     protocol: ctx.clientToProxyRequest.httpVersionMajor === 2 ? 'HTTP/2' : 'HTTP/1.1',
-    requestHeaders: { ...ctx.clientToProxyRequest.headers },
+    requestHeaders: captureRequestHeaders(ctx.clientToProxyRequest.headers),
     requestBodySize: 0,
     responseBodySize: 0,
     startedAt: Date.now(),

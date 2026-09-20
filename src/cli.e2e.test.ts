@@ -72,6 +72,40 @@ function startEchoServer(): Promise<{ port: number; close: () => Promise<void> }
 }
 
 /**
+ * Starts a plain HTTP server that echoes back the exact request headers it
+ * received, as JSON — the only way to prove from the outside that a header
+ * the client sent to the *proxy* (`Proxy-Authorization`, issue #158) never
+ * made it onto the proxy→upstream leg. Also counts the requests that
+ * actually arrived, so a test can assert an unauthenticated request was
+ * stopped at the proxy rather than merely answered oddly.
+ */
+function startHeaderEchoServer(): Promise<{
+  port: number;
+  requestCount: () => number;
+  close: () => Promise<void>;
+}> {
+  return new Promise((resolve, reject) => {
+    let requestCount = 0;
+    const server = http.createServer((req, res) => {
+      requestCount++;
+      req.resume();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ headers: req.headers }));
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('failed to bind header echo server'));
+      resolve({
+        port: address.port,
+        requestCount: () => requestCount,
+        close: () => new Promise((res) => server.close(() => res())),
+      });
+    });
+  });
+}
+
+/**
  * Starts a plain HTTP server that always responds with a fixed-size body
  * (`'a'` repeated `bodyBytes` times), regardless of the request — used by
  * the Throttle bandwidth tests, where the response size (not its content)
@@ -327,10 +361,19 @@ function connectWebSocketThroughProxy(
  * established (after the `200` response header) — any tunnel bytes that
  * arrived in the same packet are pushed back for the next read.
  */
-function connectTunnel(proxyPort: number, targetHost: string, targetPort: number): Promise<net.Socket> {
+function connectTunnel(
+  proxyPort: number,
+  targetHost: string,
+  targetPort: number,
+  /** Extra request headers for the CONNECT itself — `Proxy-Authorization` for the `--proxy-auth` tests (issue #158). */
+  headers: Record<string, string> = {},
+): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
+    const extra = Object.entries(headers)
+      .map(([name, value]) => `${name}: ${value}\r\n`)
+      .join('');
     const socket = net.connect({ host: 'localhost', port: proxyPort }, () => {
-      socket.write(`CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\n\r\n`);
+      socket.write(`CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\n${extra}\r\n`);
     });
     let buffered = Buffer.alloc(0);
     const onData = (chunk: Buffer) => {
@@ -2244,6 +2287,227 @@ describe('detour start (CLI, end-to-end)', () => {
         fs.rmSync(dumpFile, { force: true });
       }
     });
+  });
+
+  /**
+   * `--proxy-auth` (issue #158). Everything here drives the real CLI over
+   * real sockets from `127.0.0.1`/`localhost`, which is also the point of
+   * the "loopback isn't exempt" cases: the credentials are demanded of every
+   * client, including one on this very machine, because "same host" is not
+   * the same thing as "same user".
+   */
+  describe('proxy authentication (issue #158)', () => {
+    const CREDENTIALS = 'agent:hunter2';
+    const AUTH_HEADER = `Basic ${Buffer.from(CREDENTIALS, 'utf8').toString('base64')}`;
+    const WRONG_AUTH_HEADER = `Basic ${Buffer.from('agent:wrong-guess', 'utf8').toString('base64')}`;
+
+    let headerEcho: Awaited<ReturnType<typeof startHeaderEchoServer>> | undefined;
+    let marker: Awaited<ReturnType<typeof startMarkerEchoServer>> | undefined;
+    let home: string | undefined;
+
+    afterEach(async () => {
+      await headerEcho?.close();
+      await marker?.close();
+      if (home) fs.rmSync(home, { recursive: true, force: true });
+      headerEcho = undefined;
+      marker = undefined;
+      home = undefined;
+    });
+
+    /** Issues a request through the proxy and resolves with its status plus the `Proxy-Authenticate` challenge, which `requestThroughProxy` doesn't surface. */
+    function requestWithChallenge(
+      proxyPort: number,
+      targetPort: number,
+      headers?: http.OutgoingHttpHeaders,
+    ): Promise<{ status: number; challenge: string | undefined }> {
+      return new Promise((resolve, reject) => {
+        const req = http.request(
+          {
+            host: 'localhost',
+            port: proxyPort,
+            path: `http://127.0.0.1:${targetPort}/guarded`,
+            method: 'GET',
+            headers,
+          },
+          (res) => {
+            res.resume();
+            res.on('end', () =>
+              resolve({
+                status: res.statusCode ?? 0,
+                challenge: res.headers['proxy-authenticate'] as string | undefined,
+              }),
+            );
+          },
+        );
+        req.on('error', reject);
+        req.end();
+      });
+    }
+
+    it('answers an HTTP request with no credentials with 407 and a Basic challenge, without reaching upstream', async () => {
+      headerEcho = await startHeaderEchoServer();
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS]);
+
+      const result = await requestWithChallenge(cli.port, headerEcho.port);
+      expect(result.status).toBe(407);
+      expect(result.challenge).toBe('Basic realm="Detour"');
+      expect(headerEcho.requestCount()).toBe(0);
+    });
+
+    it('answers an HTTP request with the wrong credentials with 407 too', async () => {
+      headerEcho = await startHeaderEchoServer();
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS]);
+
+      const result = await requestWithChallenge(cli.port, headerEcho.port, {
+        'Proxy-Authorization': WRONG_AUTH_HEADER,
+      });
+      expect(result.status).toBe(407);
+      expect(headerEcho.requestCount()).toBe(0);
+    });
+
+    it('proxies an HTTP request normally once the right credentials are presented', async () => {
+      echo = await startEchoServer();
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS]);
+
+      const result = await requestThroughProxy(cli.port, echo.port, '/hello', { 'Proxy-Authorization': AUTH_HEADER });
+      expect(result.status).toBe(200);
+      expect(JSON.parse(result.body)).toEqual({ method: 'GET', path: '/hello', body: '' });
+    });
+
+    it('never forwards Proxy-Authorization to the upstream server', async () => {
+      headerEcho = await startHeaderEchoServer();
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS]);
+
+      const result = await requestThroughProxy(cli.port, headerEcho.port, '/guarded', {
+        'Proxy-Authorization': AUTH_HEADER,
+      });
+      expect(result.status).toBe(200);
+      const { headers } = JSON.parse(result.body) as { headers: Record<string, string> };
+      expect(headers['proxy-authorization']).toBeUndefined();
+      expect(JSON.stringify(headers)).not.toContain(AUTH_HEADER.split(' ')[1]);
+    });
+
+    it('refuses a CONNECT with no credentials with 407, establishing no tunnel', async () => {
+      marker = await startMarkerEchoServer('upstream');
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS]);
+
+      await expect(connectTunnel(cli.port, '127.0.0.1', marker.port)).rejects.toThrow(/407/);
+    });
+
+    it('establishes a CONNECT tunnel once the right credentials are presented', async () => {
+      marker = await startMarkerEchoServer('upstream');
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS]);
+      // Intercept off, so the tunnel stays a raw byte-level passthrough the
+      // marker echo server can answer — a MITM'd tunnel would try to
+      // TLS-terminate it instead (see the passthrough tests above).
+      await setIntercept(cli.dashboardPort, false);
+
+      const socket = await connectTunnel(cli.port, '127.0.0.1', marker.port, {
+        'Proxy-Authorization': AUTH_HEADER,
+      });
+      try {
+        expect(await writeAndRead(socket, 'ping')).toBe('upstream:ping');
+      } finally {
+        socket.destroy();
+      }
+    });
+
+    // A `ws://` upgrade is consumed by ProxyEngine's own WebSocketServer and
+    // never reaches its request handler — without a gate of its own it would
+    // be a way to relay traffic through an otherwise-authenticated proxy.
+    it('rejects an unauthenticated ws:// upgrade through the proxy port', async () => {
+      const wsEcho = await startWsEchoServer();
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS]);
+      try {
+        const socket = connectWebSocketThroughProxy(cli.port, wsEcho.port, '/echo');
+        const error = await new Promise<Error>((resolve, reject) => {
+          socket.on('error', resolve);
+          socket.on('open', () => reject(new Error('the upgrade succeeded without credentials')));
+        });
+        expect(error.message).toContain('407');
+      } finally {
+        await wsEcho.close();
+      }
+    });
+
+    // Authentication runs inside ProxyEngine, ahead of every handler
+    // proxyServer.ts registers — so an unauthenticated client gets 407 even
+    // for a host Block Hosts would otherwise have rejected first, which is
+    // what "before Block Hosts, before Focus" actually looks like from
+    // outside.
+    it('answers 407 before Block Hosts (and the rest of the rule engine) ever runs', async () => {
+      headerEcho = await startHeaderEchoServer();
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS]);
+      await setBlockHosts(cli.dashboardPort, { hosts: ['127.0.0.1'], mode: 'forbidden' });
+
+      const result = await requestWithChallenge(cli.port, headerEcho.port);
+      expect(result.status).toBe(407);
+      expect(result.challenge).toBe('Basic realm="Detour"');
+    });
+
+    it('keeps Proxy-Authorization out of the dashboard capture and out of --dump full output', async () => {
+      echo = await startEchoServer();
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS, '--dump', 'full']);
+      const url = `http://127.0.0.1:${echo.port}/redacted`;
+      const { exchange } = await waitForExchange(cli.dashboardPort, 'request', url);
+
+      await requestThroughProxy(cli.port, echo.port, '/redacted', { 'Proxy-Authorization': AUTH_HEADER });
+
+      const captured = await exchange;
+      expect(captured.requestHeaders?.['proxy-authorization']).toBe('[REDACTED]');
+      await waitForStdout(cli, /Request headers:/);
+      expect(cli.stdout()).toContain('proxy-authorization: [REDACTED]');
+      expect(cli.stdout()).not.toContain(AUTH_HEADER.split(' ')[1]);
+    });
+
+    it('warns at startup when --lan is on but no credentials are configured, and stops warning once they are', async () => {
+      cli = await startDetourCli(['--lan']);
+      expect(cli.stdout()).toContain('the proxy requires no credentials');
+      expect(cli.stdout()).toContain('Proxy authentication: off');
+      await cli.kill();
+
+      cli = await startDetourCli(['--lan', '--proxy-auth', CREDENTIALS]);
+      expect(cli.stdout()).not.toContain('the proxy requires no credentials');
+      expect(cli.stdout()).toContain('Proxy authentication: required');
+    });
+
+    it('rejects a malformed --proxy-auth value without starting the proxy', async () => {
+      const result = await runTsx(
+        ['src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', '--proxy-auth', 'no-colon-here'],
+        { cwd: REPO_ROOT, reject: false },
+      );
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain('--proxy-auth must be in the form <user>:<pass>');
+    });
+
+    it('persists credentials via `detour config --proxy-auth` (hashed) and applies them to a later start', async () => {
+      home = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-proxy-auth-e2e-'));
+      const env = { HOME: home, USERPROFILE: home };
+      headerEcho = await startHeaderEchoServer();
+
+      const configured = await runTsx(['src/cli.ts', 'config', '--proxy-auth', CREDENTIALS], {
+        cwd: REPO_ROOT,
+        reject: false,
+        env,
+      });
+      expect(configured.exitCode).toBe(0);
+      expect(configured.stdout).toContain('proxyAuth = on (user agent)');
+      const stored = JSON.parse(fs.readFileSync(path.join(home, '.detour', 'config.json'), 'utf8')) as {
+        proxyAuth: { username: string; passwordHash: string };
+      };
+      expect(stored.proxyAuth.username).toBe('agent');
+      expect(JSON.stringify(stored)).not.toContain('hunter2');
+
+      // No `--proxy-auth` on this start at all — it has to come from the
+      // config file written just above.
+      cli = await startDetourCli([], env);
+      expect(cli.stdout()).toContain('Proxy authentication: required');
+      expect((await requestWithChallenge(cli.port, headerEcho.port)).status).toBe(407);
+      const allowed = await requestThroughProxy(cli.port, headerEcho.port, '/guarded', {
+        'Proxy-Authorization': AUTH_HEADER,
+      });
+      expect(allowed.status).toBe(200);
+    }, 40_000);
   });
 
   describe('HTTP/2 (issue #16)', () => {

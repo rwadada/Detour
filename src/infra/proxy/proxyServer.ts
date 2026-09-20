@@ -1,3 +1,4 @@
+import type { ProxyAuthCredentials } from '../../domain/auth/proxyAuth';
 import { normalizeBlockHosts } from '../../domain/blockHosts/blockHostsPolicy';
 import type {
   BlockHostsState,
@@ -51,6 +52,14 @@ export interface ProxyServerOptions {
    * validated by the caller (`cli.ts`). Omit for direct connections.
    */
   upstreamProxyUrl?: string;
+  /**
+   * Requires every client to authenticate before the proxy will serve it
+   * (issue #158's `--proxy-auth`) — see `ProxyEngineOptions.proxyAuth`'s doc
+   * comment. Enforced by `ProxyEngine` itself, ahead of every handler wired
+   * below, so Block Hosts, Focus and the rule engine only ever see traffic
+   * from an authenticated client. Omit (the default) to accept every client.
+   */
+  proxyAuth?: ProxyAuthCredentials;
 }
 
 export interface ProxyServerHandle {
@@ -331,6 +340,7 @@ export async function startProxyServer(
           sslCaDir,
           http2: options.http2Enabled ?? true,
           upstreamProxyUrl: options.upstreamProxyUrl,
+          proxyAuth: options.proxyAuth,
         },
         () => {
           clientProcessDirectory?.start();
