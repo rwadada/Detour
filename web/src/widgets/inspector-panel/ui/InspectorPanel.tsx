@@ -144,7 +144,22 @@ export function InspectorPanel() {
         </div>
       </div>
 
-      <Tabs defaultValue="headers" className="flex flex-1 flex-col overflow-hidden">
+      <Tabs
+        // Keyed by `isSSL` (issue #160): the Tabs root is uncontrolled
+        // (`defaultValue`), so its active-tab state otherwise survives a
+        // switch to a different exchange unchanged — normally desired (stay
+        // on "Body" while browsing rows), but the Certificate tab only
+        // renders for an HTTPS exchange. Without this key, selecting it and
+        // then a plain-HTTP exchange would leave Radix pointed at a
+        // "certificate" value with no matching trigger/content left to
+        // render — a blank panel until the user manually picks another tab.
+        // Keying on `isSSL` specifically (not `exchange.id`) forces a
+        // remount only when the *set* of available tabs actually changes,
+        // preserving the normal stay-on-this-tab behavior otherwise.
+        key={exchange.isSSL ? 'ssl' : 'plain'}
+        defaultValue="headers"
+        className="flex flex-1 flex-col overflow-hidden"
+      >
         <TabsList className="px-3">
           <TabsTrigger value="headers">Headers</TabsTrigger>
           <TabsTrigger value="query">

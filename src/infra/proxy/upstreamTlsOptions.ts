@@ -1,14 +1,21 @@
 import fs from 'node:fs';
 
 /**
- * Upstream TLS behavior for the `httpsAgent`(s) every proxy→upstream HTTPS
- * request goes through (issue #160): trusting an additional CA
- * (`--upstream-ca`), skipping verification entirely (`--insecure-upstream`),
- * and/or presenting a client certificate for mTLS (`--client-cert`/
- * `--client-key`). Resolved once at `detour start` time and baked into the
- * Agent's own constructor options rather than threaded per-request — none
- * of these is ever per-rule or per-request, so a single shared setting
- * already covers everything they're for.
+ * Upstream TLS behavior for every proxy→upstream HTTPS request (issue
+ * #160): trusting an additional CA (`--upstream-ca`), skipping
+ * verification entirely (`--insecure-upstream`), and/or presenting a
+ * client certificate for mTLS (`--client-cert`/`--client-key`). Resolved
+ * once at `detour start` time, then applied as a **per-request** option on
+ * `ctx.proxyToServerRequestOptions` (see `ProxyEngine.forwardRequest`),
+ * not baked into `httpsAgent`'s own constructor — verified empirically
+ * that a constructor-level option on `HttpsProxyAgent`/`SocksProxyAgent`
+ * (the `--upstream-proxy` case) only ever reaches that agent's own
+ * connection to the upstream proxy itself, never the CONNECT-tunneled
+ * destination behind it. None of these fields is ever per-rule or
+ * per-request in practice (the same resolved value applies to every
+ * request all session), so this is still a single shared setting in
+ * effect — just plumbed through per-request options because that's what
+ * actually reaches the destination's handshake in every case.
  */
 export interface UpstreamTlsOptions {
   /** Extra CA cert(s) to trust, alongside Node's own bundled root store — one PEM-file's contents per `--upstream-ca <path>` flag (repeatable). */

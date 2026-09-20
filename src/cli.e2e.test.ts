@@ -2791,6 +2791,15 @@ describe('detour start (CLI, end-to-end)', () => {
       const upstream = await startHttpsUpstreamServer();
       cli = await startDetourCli(['--insecure-upstream']);
       try {
+        // Waits for the banner's very last line rather than asserting on
+        // `cli.stdout()` immediately: `startDetourCli`'s own ready-wait only
+        // waits for the earlier "Dashboard →" line, and this warning is
+        // printed several lines after it in the same (synchronous) banner —
+        // late enough that it can still be in flight over the child
+        // process's stdout pipe by the time this assertion would otherwise
+        // run, an intermittent race unrelated to whether the flag actually
+        // took effect.
+        await waitForStdout(cli, /Press Ctrl\+C to stop\./);
         expect(cli.stdout()).toContain('upstream TLS certificate verification is OFF for this entire session');
 
         const url = `https://localhost:${upstream.port}/hello`;
