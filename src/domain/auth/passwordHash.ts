@@ -11,7 +11,7 @@ import { promisify } from 'node:util';
  *
  * A lightweight gate, not a hardened auth system — same posture as the rest
  * of `detour start`'s security surface (see `LAN_ACCESS_WARNING` in
- * `cli.ts`). scrypt is deliberately slow (basic brute-force resistance), and
+ * `presentation/banner.ts`). scrypt is deliberately slow (basic brute-force resistance), and
  * comparison is timing-safe, but there's no rate limiting, account lockout,
  * or TLS — this protects against casual snooping on a shared network, not a
  * determined attacker. Never store or log the plaintext password.

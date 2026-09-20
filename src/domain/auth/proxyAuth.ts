@@ -9,7 +9,7 @@ import { isValidPasswordHash, verifyPassword } from './passwordHash';
  *
  * Without this, `detour start` is an open forward proxy the moment it's
  * reachable from a network (which it always is — see `PROXY_HOST`'s doc
- * comment in `cli.ts`): anyone who points their device at it gets their
+ * comment in `commands/startCommand.ts`): anyone who points their device at it gets their
  * HTTPS traffic MITM'd with Detour's CA, decrypted, and recorded into
  * `~/.detour/` and the dashboard, and can use the machine as an egress hop.
  *
