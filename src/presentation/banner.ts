@@ -54,6 +54,8 @@ const PROXY_OPEN_WARNING =
 export function printStartupBanner(info: {
   /** The dashboard's own bind host (`localhost` or `0.0.0.0`) — the proxy's is always `PROXY_HOST` ('0.0.0.0'), not passed in since this function never needs to branch on it. */
   dashboardHost: string;
+  /** Whether the dashboard is serving over HTTPS instead of plain HTTP (issue #159's `--dashboard-tls`) — only relevant when `dashboardPort` isn't undefined; decides the URL scheme printed for it. */
+  dashboardTls: boolean;
   proxyPort: number;
   caCertPath: string;
   /** Undefined when started with `--headless`. */
@@ -81,16 +83,20 @@ export function printStartupBanner(info: {
   console.log(`Proxy authentication: ${info.proxyAuthSet ? 'required (Basic)' : 'off (--proxy-auth <user:pass>)'}`);
   console.log(`Root CA certificate: ${info.caCertPath}`);
   console.log('  To decrypt HTTPS traffic, install this CA certificate as trusted on your target device/browser.');
+  const dashboardScheme = info.dashboardTls ? 'https' : 'http';
   if (info.dashboardPort === undefined) {
     console.log('Dashboard → disabled (--headless)');
   } else if (info.dashboardBuilt) {
-    console.log(`Dashboard → http://localhost:${info.dashboardPort}`);
+    console.log(`Dashboard → ${dashboardScheme}://localhost:${info.dashboardPort}`);
   } else {
     console.log(
-      `Dashboard → http://localhost:${info.dashboardPort} (not built yet — run \`npm run build\`, or use \`npm run dev:dashboard\` for a dev server with hot reload)`,
+      `Dashboard → ${dashboardScheme}://localhost:${info.dashboardPort} (not built yet — run \`npm run build\`, or use \`npm run dev:dashboard\` for a dev server with hot reload)`,
     );
   }
   if (info.dashboardPort !== undefined) {
+    console.log(
+      `Dashboard transport: ${info.dashboardTls ? "HTTPS (Detour's CA)" : 'HTTP (--dashboard-tls on to encrypt)'}`,
+    );
     console.log(
       `Dashboard password: ${info.dashboardPasswordSet ? 'required' : 'off (detour config --dashboard-password <value>)'}`,
     );
@@ -110,7 +116,7 @@ export function printStartupBanner(info: {
     console.log('Reachable on your network at:');
     for (const address of addresses) {
       console.log(`  Proxy     → http://${address}:${info.proxyPort}`);
-      if (dashboardOnLan) console.log(`  Dashboard → http://${address}:${info.dashboardPort}`);
+      if (dashboardOnLan) console.log(`  Dashboard → ${dashboardScheme}://${address}:${info.dashboardPort}`);
     }
   }
   if (dashboardOnLan) {

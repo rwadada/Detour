@@ -86,6 +86,75 @@ describe('CertAuthority', () => {
     expect(san?.altNames[0]).toMatchObject({ type: 7, ip: '127.0.0.1' });
   });
 
+  describe('getMultiHostKeyCert (issue #159)', () => {
+    it('produces a usable key/cert PEM pair', () => {
+      const ca = CertAuthority.load(dir);
+      // eslint-disable-next-line sonarjs/no-hardcoded-ip -- example LAN address fixture, not a real one.
+      const { key, cert } = ca.getMultiHostKeyCert(['localhost', '127.0.0.1', '192.168.1.5']);
+      expect(key).toContain('-----BEGIN');
+      expect(cert).toContain('-----BEGIN CERTIFICATE-----');
+    });
+
+    it('is not cached — unlike getSecureContext, each call mints a fresh cert', () => {
+      const ca = CertAuthority.load(dir);
+      const a = ca.getMultiHostKeyCert(['localhost']);
+      const b = ca.getMultiHostKeyCert(['localhost']);
+      expect(a.cert).not.toBe(b.cert);
+    });
+
+    it('tolerates a repeated hostname without minting a duplicate SAN entry for it', () => {
+      const ca = CertAuthority.load(dir);
+      expect(() => ca.getMultiHostKeyCert(['localhost', 'localhost', '127.0.0.1'])).not.toThrow();
+    });
+
+    // Copilot review, PR #175: an empty SAN is presented as a "valid" cert
+    // by this method's own contract but rejected by every real client
+    // (browsers ignore commonName and require a matching SAN entry).
+    it('falls back to a localhost SAN rather than minting an empty one for an empty hostname list', () => {
+      const ca = CertAuthority.load(dir);
+      const { cert: leafPem } = ca.getMultiHostKeyCert([]);
+      const leaf = forge.pki.certificateFromPem(leafPem);
+      const san = leaf.getExtension('subjectAltName') as
+        | { altNames: Array<{ type: number; value?: string }> }
+        | undefined;
+      expect(san?.altNames).toHaveLength(1);
+      expect(san?.altNames[0]).toMatchObject({ type: 2, value: 'localhost' });
+    });
+
+    it("the leaf cert's SAN covers every hostname given, IP and DNS alike, in order", () => {
+      const ca = CertAuthority.load(dir);
+      const { cert: leafPem } = (
+        ca as unknown as { mintLeafPem(hosts: readonly string[], commonName: string): { key: string; cert: string } }
+      )
+        // eslint-disable-next-line sonarjs/no-hardcoded-ip -- example LAN address fixture, not a real one.
+        .mintLeafPem(['localhost', '127.0.0.1', '192.168.1.5'], 'localhost');
+      const leaf = forge.pki.certificateFromPem(leafPem);
+      const san = leaf.getExtension('subjectAltName') as
+        | { altNames: Array<{ type: number; value?: string; ip?: string }> }
+        | undefined;
+      expect(san?.altNames).toHaveLength(3);
+      expect(san?.altNames[0]).toMatchObject({ type: 2, value: 'localhost' });
+      expect(san?.altNames[1]).toMatchObject({ type: 7, ip: '127.0.0.1' });
+      // eslint-disable-next-line sonarjs/no-hardcoded-ip -- example LAN address fixture, not a real one.
+      expect(san?.altNames[2]).toMatchObject({ type: 7, ip: '192.168.1.5' });
+    });
+
+    it('is signed by the CA, verifiable via OpenSSL parsing, and its SAN is real', () => {
+      const ca = CertAuthority.load(dir);
+      const caCertX509 = new X509Certificate(fs.readFileSync(ca.getCACertPath(), 'utf8'));
+      const { cert: leafPem } = (
+        ca as unknown as { mintLeafPem(hosts: readonly string[], commonName: string): { key: string; cert: string } }
+      )
+        // eslint-disable-next-line sonarjs/no-hardcoded-ip -- example LAN address fixture, not a real one.
+        .mintLeafPem(['localhost', '192.168.1.5'], 'localhost');
+      const leafX509 = new X509Certificate(leafPem);
+      expect(leafX509.checkIssued(caCertX509)).toBe(true);
+      expect(leafX509.verify(caCertX509.publicKey)).toBe(true);
+      expect(leafX509.subjectAltName).toMatch(/DNS:\s*localhost\b/);
+      expect(leafX509.subjectAltName).toMatch(/IP Address:\s*192\.168\.1\.5\b/);
+    });
+  });
+
   // Windows has no POSIX permission bits — `mode`/`chmodSync` are no-ops
   // there (see certAuthority.ts's comments), so these only mean anything on
   // POSIX platforms (issue #96).

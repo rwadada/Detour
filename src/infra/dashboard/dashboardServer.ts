@@ -1,4 +1,5 @@
-import http from 'node:http';
+import http, { type IncomingMessage } from 'node:http';
+import https from 'node:https';
 import path from 'node:path';
 import WebSocket, { WebSocketServer } from 'ws';
 import type {
@@ -136,6 +137,19 @@ export interface DashboardServerOptions {
    * wasn't started with `--persist`.
    */
   historyStore?: HistoryStore;
+  /**
+   * Serves the dashboard over HTTPS using this `{key, cert}` PEM pair
+   * instead of plain HTTP (issue #159) — its SAN should carry every LAN
+   * address this server might be reached at (see `CertAuthority`'s
+   * `getMultiHostKeyCert`), since a browser could connect via any of them.
+   * Appropriate once `--lan` exposes the dashboard to the network: without
+   * it, the `login` message (and the password inside it) — and everything
+   * sent afterwards, the full decrypted-HTTPS backlog included — crosses
+   * the wire in the clear to anyone who can see the traffic. Omit for plain
+   * HTTP (the default), matching a `localhost`-only bind where TLS buys
+   * nothing over loopback.
+   */
+  tlsKeyCert?: { key: string; cert: string };
 }
 
 export interface DashboardServerHandle {
@@ -349,14 +363,23 @@ export async function startDashboardServer(
     return defaultPort === boundPort;
   }
 
-  const httpServer = http.createServer((req, res) => {
+  const requestListener: http.RequestListener = (req, res) => {
     if (!isAllowedHost(req.headers.host)) {
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Forbidden');
       return;
     }
     serveStatic(WEB_DIST_DIR, req, res);
-  });
+  };
+  // `https.Server` (issue #159) when `--lan` is on and TLS hasn't been
+  // opted out of via `--dashboard-tls off` — see `tlsKeyCert`'s own doc
+  // comment. Both share the same listen()/address()/close() shape
+  // `net.Server` defines (`https.Server` extends it via `tls.Server`), so
+  // everything below (binding, `WebSocketServer`, teardown) works unchanged
+  // regardless of which one this actually is.
+  const httpServer: http.Server | https.Server = options.tlsKeyCert
+    ? https.createServer(options.tlsKeyCert, requestListener)
+    : http.createServer(requestListener);
   const verifyClient: WebSocket.VerifyClientCallbackSync = (info) =>
     isAllowedHost(info.req.headers.host) && isAllowedOrigin(info.origin);
   const wss = new WebSocketServer({ server: httpServer, path: '/ws', verifyClient });
@@ -376,6 +399,67 @@ export async function startDashboardServer(
   // one's already in flight for that socket is dropped rather than queued —
   // a real client only ever has one outstanding attempt at a time.
   const loginInFlight = new WeakSet<WebSocket>();
+  // Login rate limiting (issue #159): `dashboardServer.ts` had nothing
+  // beyond `loginInFlight`'s single-socket concurrency guard, so a `--lan`-
+  // exposed password could be brute-forced at whatever rate a client's own
+  // sequential attempts (or however many parallel sockets it opened)
+  // allowed. Tracked by *IP*, not per-socket — closing a socket and opening
+  // a fresh one is free, so a per-socket counter would reset on every
+  // reconnect and defend nothing. In-memory only: resetting on a `detour
+  // start` restart is fine, nothing here needs to survive one.
+  const MAX_LOGIN_FAILURES = 5;
+  const MAX_UNAUTHENTICATED_SOCKETS_PER_IP = 3;
+  const LOGIN_BACKOFF_BASE_MS = 20;
+  const LOGIN_BACKOFF_MAX_MS = 320;
+  // Bounds how many distinct IPs `loginFailuresByIp` tracks at once (Copilot
+  // review, PR #175) — unlike `unauthenticatedSocketCountByIp` (an entry is
+  // always removed on auth/close, so it can never outgrow the number of
+  // sockets actually open right now), a failure record has no such natural
+  // ceiling: it lives until that IP eventually logs in successfully, which
+  // an attacker has no reason to ever do. Enough distinct source IPs
+  // failing once would otherwise grow this map forever. `recordLoginFailure`
+  // evicts the oldest-inserted entry once at this cap, rather than refusing
+  // new ones — a memory ceiling matters more here than perfect fairness
+  // toward whichever IP happens to hit it first.
+  const MAX_TRACKED_LOGIN_FAILURE_IPS = 1000;
+  const loginFailuresByIp = new Map<string, number>();
+  const unauthenticatedSocketCountByIp = new Map<string, number>();
+  // Which sockets currently hold a counted slot in
+  // `unauthenticatedSocketCountByIp` — released (see `releaseUnauthenticatedSlot`)
+  // exactly once, whichever of "authenticated" or "closed" happens first,
+  // so the count never double-decrements if both eventually fire for the
+  // same socket.
+  const unauthenticatedSlotSockets = new WeakSet<WebSocket>();
+
+  /** The IP a connection's rate-limit counters are tracked under — the raw socket address, not anything a client-controlled header could spoof. */
+  function clientIp(req: IncomingMessage): string {
+    return req.socket.remoteAddress ?? 'unknown';
+  }
+
+  /** Releases `socket`'s counted slot in `unauthenticatedSocketCountByIp` (idempotent — a no-op if it never held one, or already released it). */
+  function releaseUnauthenticatedSlot(socket: WebSocket, ip: string): void {
+    if (!unauthenticatedSlotSockets.has(socket)) return;
+    unauthenticatedSlotSockets.delete(socket);
+    const current = unauthenticatedSocketCountByIp.get(ip) ?? 0;
+    if (current <= 1) unauthenticatedSocketCountByIp.delete(ip);
+    else unauthenticatedSocketCountByIp.set(ip, current - 1);
+  }
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /** Records one more login failure for `ip` and returns its new total, evicting the oldest-tracked IP first if `loginFailuresByIp` is already at its cap (see that map's own doc comment). */
+  function recordLoginFailure(ip: string): number {
+    const failures = (loginFailuresByIp.get(ip) ?? 0) + 1;
+    if (!loginFailuresByIp.has(ip) && loginFailuresByIp.size >= MAX_TRACKED_LOGIN_FAILURE_IPS) {
+      const oldestIp = loginFailuresByIp.keys().next().value;
+      if (oldestIp !== undefined) loginFailuresByIp.delete(oldestIp);
+    }
+    loginFailuresByIp.set(ip, failures);
+    return failures;
+  }
+
   // Read fresh on every check (connect, login attempt, `setDashboardPassword`)
   // rather than cached once at startup — same "no other writer to stay in
   // sync with, so just read the file" reasoning as `userConfigMessage`
@@ -566,13 +650,42 @@ export async function startDashboardServer(
     socket.send(JSON.stringify(historyStatusMessage));
   };
 
-  wss.on('connection', (socket: WebSocket) => {
+  wss.on('connection', (socket: WebSocket, req: IncomingMessage) => {
     // No password configured: grandfather this socket in permanently, even
     // if a password gets set later while it's still open — same "changing
     // the Wi-Fi password doesn't kick already-connected devices" posture as
     // `--lan`'s own bind-at-spawn-time semantics. Only *new* connections
     // made after that point are asked for it.
     if (!currentPasswordHash()) authenticatedSockets.add(socket);
+
+    const ip = clientIp(req);
+    if (!authenticatedSockets.has(socket)) {
+      // An IP that's already exhausted its attempts (see
+      // `handleLoginMessage`) doesn't get a fresh set just by reconnecting —
+      // closing a socket and opening a new one is free, so a per-socket-only
+      // limit would defend nothing.
+      if ((loginFailuresByIp.get(ip) ?? 0) >= MAX_LOGIN_FAILURES) {
+        socket.close(1008, 'Too many failed login attempts');
+        return;
+      }
+      // Bounds how many *unauthenticated* sockets one IP can hold open at
+      // once (issue #159) — without this, one client could open many
+      // parallel connections to run scrypt verifications concurrently
+      // (`login`'s KDF work runs on libuv's shared threadpool — see
+      // `domain/auth/passwordHash.ts` — so enough parallel attempts starve
+      // every other `fs`-backed operation sharing that pool, rules/dump/
+      // cert reads included) or to spread brute-force attempts across more
+      // sockets than the per-socket concurrency guard (`loginInFlight`)
+      // alone limits.
+      const unauthenticatedCount = unauthenticatedSocketCountByIp.get(ip) ?? 0;
+      if (unauthenticatedCount >= MAX_UNAUTHENTICATED_SOCKETS_PER_IP) {
+        socket.close(1008, 'Too many concurrent unauthenticated connections');
+        return;
+      }
+      unauthenticatedSocketCountByIp.set(ip, unauthenticatedCount + 1);
+      unauthenticatedSlotSockets.add(socket);
+      socket.once('close', () => releaseUnauthenticatedSlot(socket, ip));
+    }
 
     if (authenticatedSockets.has(socket)) {
       sendInitialPayload(socket);
@@ -606,7 +719,7 @@ export async function startDashboardServer(
           // malicious device on the network that skipped straight to
           // `setRules`/`replay`/etc. without ever proving it knows the
           // password gets silently ignored, same as a malformed frame.
-          if (message.type === 'login') await handleLoginMessage(socket, message);
+          if (message.type === 'login') await handleLoginMessage(socket, ip, message);
           return;
         }
 
@@ -691,6 +804,7 @@ export async function startDashboardServer(
    */
   async function handleLoginMessage(
     socket: WebSocket,
+    ip: string,
     message: Extract<DashboardClientMessage, { type: 'login' }>,
   ): Promise<void> {
     if (loginInFlight.has(socket)) return;
@@ -709,11 +823,31 @@ export async function startDashboardServer(
         verified = false;
       }
       if (verified) {
+        loginFailuresByIp.delete(ip);
+        releaseUnauthenticatedSlot(socket, ip);
         authenticatedSockets.add(socket);
         sendInitialPayload(socket);
-      } else {
-        const authFailedMessage: DashboardServerMessage = { type: 'authFailed' };
-        socket.send(JSON.stringify(authFailedMessage));
+        return;
+      }
+      // Exponential backoff (issue #159) before even answering: makes each
+      // successive wrong guess from this IP slower than the last, on top of
+      // scrypt's own ~20ms+ per attempt — friction a plain
+      // `Math.min`-capped delay adds cheaply, well before the hard cutoff
+      // below ever kicks in.
+      const failures = recordLoginFailure(ip);
+      await sleep(Math.min(LOGIN_BACKOFF_BASE_MS * 2 ** (failures - 1), LOGIN_BACKOFF_MAX_MS));
+      // The socket (or the whole server) could have gone away during that
+      // delay — nothing left to answer or disconnect.
+      if (socket.readyState !== WebSocket.OPEN) return;
+      const authFailedMessage: DashboardServerMessage = { type: 'authFailed' };
+      socket.send(JSON.stringify(authFailedMessage));
+      // Issue #159's acceptance criterion: the 5th consecutive failure from
+      // an IP ends that socket outright, rather than leaving it free to
+      // keep guessing indefinitely — reconnecting doesn't help either,
+      // since `wss.on('connection', ...)` checks this same counter before a
+      // new socket is ever handed an `authRequired` at all.
+      if (failures >= MAX_LOGIN_FAILURES) {
+        socket.close(1008, 'Too many failed login attempts');
       }
     } finally {
       loginInFlight.delete(socket);

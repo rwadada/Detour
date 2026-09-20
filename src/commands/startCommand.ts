@@ -5,6 +5,7 @@ import type { Command } from 'commander';
 import { hashPassword } from '../domain/auth/passwordHash';
 import { parseProxyAuthFlag, type ProxyAuthCredentials } from '../domain/auth/proxyAuth';
 import { CliExitError } from '../domain/daemon/errors';
+import { resolveCertDir } from '../infra/certStore';
 import { startDashboardServer, WEB_DIST_DIR } from '../infra/dashboard/dashboardServer';
 import { DetourEventBus } from '../infra/eventBus';
 import { resolveDumpDir, writeExchangeDumpFile, writeWebSocketDumpFile } from '../infra/fs/dumpFileWriter';
@@ -18,6 +19,7 @@ import { lanAddresses } from '../infra/network/lanAddresses';
 import { isHistoryPersistenceSupported, openHistoryStore, type HistoryStore } from '../infra/persistence/historyStore';
 import { isDaemonChild, signalDaemonError, signalDaemonReady, spawnDaemonChild } from '../infra/process/daemonize';
 import { openBrowser } from '../infra/process/openBrowser';
+import { CertAuthority } from '../infra/proxy/engine/certAuthority';
 import { startIdleWatcher } from '../infra/proxy/idleWatcher';
 import { startProxyServer } from '../infra/proxy/proxyServer';
 import { redactProxyUrlCredentials, validateUpstreamProxyUrl } from '../infra/proxy/upstreamProxyAgent';
@@ -32,7 +34,7 @@ import {
   logWebSocketFull,
 } from '../presentation/logger';
 import { RuleEngine } from '../usecase/ruleEngine';
-import { collectProtoPath, describeError, parseDumpLevel, parseIdleMs, parsePort } from './optionParsers';
+import { collectProtoPath, describeError, parseDumpLevel, parseIdleMs, parseOnOff, parsePort } from './optionParsers';
 
 /** Auto-loaded when `--rules` isn't given and this file exists in the current directory. */
 const DEFAULT_RULES_FILENAME = 'passthrough.rule.json';
@@ -71,6 +73,16 @@ interface StartOptions {
   open: boolean;
   /** `--lan`/`--no-lan`: bind the *dashboard* to every network interface (`0.0.0.0`) instead of just `localhost`, for this invocation — the proxy always binds to every interface regardless (see `PROXY_HOST`'s doc comment). Undefined when neither flag is passed — `resolveDashboardHost` then falls back to `~/.detour/config.json`'s `lanAccess`. Security-sensitive: see `UserConfigState.lanAccess`'s doc comment. */
   lan?: boolean;
+  /**
+   * `--dashboard-tls <on|off>` (issue #159): forces HTTPS on/off for the
+   * dashboard, overriding the default of on once `--lan`/`lanAccess` binds
+   * it to every interface (where the `login` password — and everything
+   * sent afterward, the decrypted-HTTPS backlog included — would otherwise
+   * cross the wire in the clear) and off for a `localhost`-only bind, where
+   * TLS buys nothing over loopback. Undefined when the flag isn't passed —
+   * `resolveDashboardTls` then falls back to that default.
+   */
+  dashboardTls?: string;
   /**
    * `--persist [path]` (issue #144): opt-in SQLite persistence of every
    * finished exchange, queryable from the dashboard's History feature
@@ -172,6 +184,21 @@ const PROXY_HOST = '0.0.0.0';
 function resolveDashboardHost(options: StartOptions): string {
   const lan = options.lan ?? loadUserConfig().lanAccess ?? false;
   return lan ? '0.0.0.0' : 'localhost';
+}
+
+/**
+ * Resolves whether the dashboard serves over HTTPS for this invocation
+ * (issue #159): an explicit `--dashboard-tls on|off` wins outright;
+ * otherwise it follows `dashboardHost` — on once `--lan` binds it to every
+ * interface, off for a `localhost`-only bind, where TLS buys nothing over
+ * loopback. Unlike `resolveDashboardHost`/`resolveShouldDetach`, there's no
+ * `~/.detour/config.json` fallback in between: this isn't a "remember my
+ * preference across runs" setting, it's derived from `dashboardHost`, which
+ * itself already folds in that config file's `lanAccess`.
+ */
+function resolveDashboardTls(options: StartOptions, dashboardHost: string): boolean {
+  if (options.dashboardTls !== undefined) return parseOnOff(options.dashboardTls, '--dashboard-tls');
+  return dashboardHost !== 'localhost';
 }
 
 /**
@@ -383,6 +410,7 @@ async function runStartBody({
   }
 
   const dashboardHost = resolveDashboardHost(options);
+  const dashboardTls = resolveDashboardTls(options, dashboardHost);
   let handle: Awaited<ReturnType<typeof startProxyServer>>;
   try {
     handle = await startProxyServer(
@@ -459,6 +487,17 @@ async function runStartBody({
     return engine;
   }
 
+  // Computed once and reused everywhere below (Copilot review, PR #175) —
+  // the dashboard's TLS cert SAN, the CSWSH allowlist `startDashboardServer`
+  // builds from its own `lanAddresses` option, and the startup banner's
+  // "Reachable on your network at" list all need to agree on the exact same
+  // set. `os.networkInterfaces()` is a live snapshot; calling it three
+  // separate times could in principle observe a NIC coming up or down
+  // between calls (unlikely in the few milliseconds this all takes, but a
+  // real inconsistency if it happened) and mint a cert whose SAN doesn't
+  // match what the allowlist or banner then claims.
+  const lanAddrs = lanAddresses();
+
   // `--headless` (issue #20): CI/scripted use has no need for the web
   // dashboard — skip starting it entirely rather than starting it and just
   // not opening a browser to it.
@@ -475,6 +514,25 @@ async function runStartBody({
     // would overflow could fail this validation even under `--headless`,
     // where no dashboard port is ever bound at all.
     requestedDashboardPort = resolveDashboardPort(port, options.dashboardPort);
+    // Loaded only when actually needed: reuses the same on-disk CA the
+    // proxy above already loaded/created (`CertAuthority.load` is a plain
+    // disk read once it exists — see `resolveCertDir`'s doc comment), minted
+    // into one leaf cert whose SAN covers every LAN address this dashboard
+    // might be reached at, alongside localhost/127.0.0.1/::1 — matching
+    // `computeAllowedHostnames`'s own allowlist (issue #159). LAN addresses
+    // are only actually reachable when `dashboardHost` is bound to every
+    // interface (`--lan`) — a `--dashboard-tls on` with no `--lan` still
+    // binds `localhost`-only, so including them there would pad the SAN
+    // with addresses this dashboard was never going to accept a connection
+    // on anyway (Copilot review, PR #175).
+    const tlsKeyCert = dashboardTls
+      ? CertAuthority.load(resolveCertDir()).getMultiHostKeyCert([
+          'localhost',
+          '127.0.0.1',
+          '::1',
+          ...(dashboardHost === '0.0.0.0' ? lanAddrs : []),
+        ])
+      : undefined;
     try {
       dashboardHandle = await startDashboardServer(
         {
@@ -483,6 +541,7 @@ async function runStartBody({
           proxyPort: handle.port,
           ruleEngine,
           ruleProfileStore: fsRuleProfileStore,
+          tlsKeyCert,
           // Lets the dashboard provision a `RuleEngine` itself the first time
           // one's actually needed (issue #123: applying a just-created Rule
           // Profile from a session that started with no rules file at all —
@@ -496,7 +555,7 @@ async function runStartBody({
           // fronts always binds to every interface, so its LAN address(es)
           // are always worth knowing. See `DashboardServerOptions.lanAddresses`'s
           // doc comment (issue #66).
-          lanAddresses: lanAddresses(),
+          lanAddresses: lanAddrs,
         },
         eventBus,
       );
@@ -544,11 +603,12 @@ async function runStartBody({
     requestedDashboardPort !== undefined &&
     shouldAutoOpenDashboard({ open: options.open, dashboardPort: requestedDashboardPort, built: isDashboardBuilt() })
   ) {
-    openBrowser(`http://localhost:${dashboardHandle.port}`);
+    openBrowser(`${dashboardTls ? 'https' : 'http'}://localhost:${dashboardHandle.port}`);
   }
 
   printStartupBanner({
     dashboardHost,
+    dashboardTls,
     proxyPort: handle.port,
     caCertPath: handle.caCertPath,
     dashboardPort: dashboardHandle?.port,
@@ -564,7 +624,7 @@ async function runStartBody({
     // module that knows how to strip them (see `printStartupBanner`).
     upstreamProxyUrl: options.upstreamProxy ? redactProxyUrlCredentials(options.upstreamProxy) : undefined,
     dashboardBuilt: isDashboardBuilt(),
-    lanAddresses: lanAddresses(),
+    lanAddresses: lanAddrs,
   });
 
   // DETOUR_READY (issue #20): a stable, greppable line a CI script can wait
@@ -795,6 +855,10 @@ export function registerStartCommand(program: Command): void {
     .option(
       '--no-lan',
       'Force the dashboard to localhost-only for this invocation even if `lanAccess` is enabled via `detour config` — the opposite of --lan. Never affects the proxy, which always binds to every interface regardless.',
+    )
+    .option(
+      '--dashboard-tls <on|off>',
+      "Force HTTPS on/off for the dashboard, overriding the default (on once --lan exposes it to the network — where the login password, and every decrypted HTTPS exchange sent after it, would otherwise cross the wire in the clear; off for a localhost-only bind, where TLS buys nothing over loopback). Uses a leaf cert from Detour's own CA covering every LAN address, so a device that's already trusted it (issue #159) can open the dashboard with no separate warning.",
     )
     .option(
       '--persist [path]',

@@ -164,18 +164,24 @@ export class CertAuthority {
     return path.join(this.certsDir, 'ca.pem');
   }
 
-  /** Mints (and caches) a CA-signed leaf certificate for `hostname`, as a PEM `{key, cert}` pair. */
-  private getLeafPem(hostname: string): { key: string; cert: string } {
-    const cached = this.leafPemCache.get(hostname);
-    if (cached) return cached;
-
+  /**
+   * Signs a fresh CA-issued leaf certificate carrying every one of
+   * `sanHosts` as a SAN, subject `commonName` set to the first — the actual
+   * cert-building logic shared by the single-host `getLeafPem` (the proxy's
+   * per-SNI case, one SAN) and `getMultiHostSecureContext` (the dashboard's
+   * `--lan` case, one cert covering every LAN address a browser might reach
+   * it at). Neither hostname list nor the resulting PEM is cached here —
+   * that's each caller's own concern, since they cache under different keys
+   * (a bare hostname vs. a whole list of them).
+   */
+  private mintLeafPem(sanHosts: readonly string[], commonName: string): { key: string; cert: string } {
     const leafKeys = this.getLeafKeys();
     const cert = pki.createCertificate();
     cert.publicKey = leafKeys.publicKey;
     cert.serialNumber = randomSerialNumber();
     cert.validity.notBefore = new Date(Date.now() - 24 * 60 * 60 * 1000);
     cert.validity.notAfter = new Date(Date.now() + ONE_YEAR_MS);
-    cert.setSubject([{ name: 'commonName', value: hostname }, ...LEAF_ATTRS]);
+    cert.setSubject([{ name: 'commonName', value: commonName }, ...LEAF_ATTRS]);
     cert.setIssuer(this.caCert.subject.attributes);
     cert.setExtensions([
       { name: 'basicConstraints', cA: false },
@@ -183,12 +189,18 @@ export class CertAuthority {
       { name: 'extKeyUsage', serverAuth: true },
       {
         name: 'subjectAltName',
-        altNames: [isIpAddress(hostname) ? { type: 7, ip: hostname } : { type: 2, value: hostname }],
+        altNames: sanHosts.map((host) => (isIpAddress(host) ? { type: 7, ip: host } : { type: 2, value: host })),
       },
     ]);
     cert.sign(this.caKey, md.sha256.create());
+    return { key: pki.privateKeyToPem(leafKeys.privateKey), cert: pki.certificateToPem(cert) };
+  }
 
-    const pem = { key: pki.privateKeyToPem(leafKeys.privateKey), cert: pki.certificateToPem(cert) };
+  /** Mints (and caches) a CA-signed leaf certificate for `hostname`, as a PEM `{key, cert}` pair. */
+  private getLeafPem(hostname: string): { key: string; cert: string } {
+    const cached = this.leafPemCache.get(hostname);
+    if (cached) return cached;
+    const pem = this.mintLeafPem([hostname], hostname);
     this.leafPemCache.set(hostname, pem);
     return pem;
   }
@@ -200,6 +212,42 @@ export class CertAuthority {
     const context = tls.createSecureContext(this.getLeafPem(hostname));
     this.contextCache.set(hostname, context);
     return context;
+  }
+
+  /**
+   * A CA-signed leaf `{key, cert}` PEM pair whose SAN carries every one of
+   * `hostnames` (issue #159) — for the dashboard's HTTPS listener on
+   * `--lan`, reachable at any of several LAN addresses (plus `localhost`/
+   * `127.0.0.1`) rather than the one hostname `getSecureContext`'s per-SNI
+   * model assumes: a dashboard TLS server has no per-connection SNI routing
+   * to key off of, just one cert presented to whoever connects.
+   *
+   * Deliberately PEM, not a pre-built `tls.SecureContext` the way
+   * `getSecureContext` returns: `https.createServer({ secureContext })`
+   * with no accompanying `key`/`cert` fails the TLS handshake outright
+   * (verified empirically — `ssl3_read_bytes:...:handshake failure` from
+   * every client, `key`/`cert` passed directly works) even though
+   * `tls.createServer`'s own docs describe `secureContext` as a supported
+   * standalone option; `getSecureContext`'s own SecureContext is only ever
+   * consumed as `SNICallback`'s return value, a different code path in
+   * Node's TLS internals that this bug (or documented-but-unsupported
+   * combination) doesn't affect.
+   *
+   * Not cached: unlike `getSecureContext` (called once per intercepted
+   * host, for the life of a long-running proxy), this runs once per `detour
+   * start` — there's nothing to amortize.
+   *
+   * Falls back to `['localhost']` for an empty `hostnames` (Copilot review,
+   * PR #175) rather than minting a cert with an empty SAN: browsers ignore
+   * a leaf cert's `commonName` entirely and require a matching SAN entry,
+   * so `altNames: []` would be presented as valid by this method yet
+   * rejected by every real client — the same "never silently produce a
+   * cert nothing can use" reasoning `getDefaultKeyCert()`'s own `localhost`
+   * default follows.
+   */
+  getMultiHostKeyCert(hostnames: readonly string[]): { key: string; cert: string } {
+    const uniqueHosts = hostnames.length > 0 ? [...new Set(hostnames)] : ['localhost'];
+    return this.mintLeafPem(uniqueHosts, uniqueHosts[0]!);
   }
 
   /** The leaf PEM pair used as the TLS server's static default (pre-SNI) `key`/`cert` options. */

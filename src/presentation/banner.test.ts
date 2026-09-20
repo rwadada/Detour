@@ -31,6 +31,7 @@ describe('printStartupBanner', () => {
     logged.length = 0;
     printStartupBanner({
       dashboardHost: 'localhost',
+      dashboardTls: false,
       proxyPort: 8080,
       caCertPath: '/home/u/.detour/certs/certs/ca.pem',
       dashboardPort: 9080,
@@ -76,6 +77,25 @@ describe('printStartupBanner', () => {
 
     const onLan = print({ lanAddresses: ['lan-host.local'], dashboardHost: '0.0.0.0' });
     expect(onLan).toContain('  Dashboard → http://lan-host.local:9080');
+  });
+
+  it('uses https:// for the dashboard URL (both localhost and LAN) when dashboardTls is on, http:// when off', () => {
+    const http = print({ dashboardTls: false, lanAddresses: ['lan-host.local'], dashboardHost: '0.0.0.0' });
+    expect(http).toContain('Dashboard → http://localhost:9080');
+    expect(http).toContain('  Dashboard → http://lan-host.local:9080');
+
+    const https = print({ dashboardTls: true, lanAddresses: ['lan-host.local'], dashboardHost: '0.0.0.0' });
+    expect(https).toContain('Dashboard → https://localhost:9080');
+    expect(https).toContain('  Dashboard → https://lan-host.local:9080');
+  });
+
+  it('reports the dashboard transport right after its URL', () => {
+    expect(print({ dashboardTls: false })).toContain('Dashboard transport: HTTP (--dashboard-tls on to encrypt)');
+    expect(print({ dashboardTls: true })).toContain("Dashboard transport: HTTPS (Detour's CA)");
+  });
+
+  it('omits the transport line under --headless, same as the password line', () => {
+    expect(print({ dashboardPort: undefined })).not.toContain('Dashboard transport');
   });
 
   it('warns loudly when the dashboard is bound to every interface', () => {
