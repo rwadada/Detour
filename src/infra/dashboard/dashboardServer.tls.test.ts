@@ -44,17 +44,33 @@ describe('startDashboardServer — TLS (issue #159)', () => {
     timeoutMs = 5000,
   ): Promise<DashboardServerMessage> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Timed out waiting for a matching message')), timeoutMs);
+      // Detaches every listener this call added and clears its timer,
+      // whichever of resolve/reject/timeout fires first (Copilot review) —
+      // without this, a socket used across several `waitForMessage` calls
+      // (or one that errors early) accumulates 'message'/'error' listeners
+      // and leaves timers pending.
+      const cleanup = () => {
+        clearTimeout(timer);
+        socket.off('message', onMessage);
+        socket.off('error', onError);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('Timed out waiting for a matching message'));
+      }, timeoutMs);
       const onMessage = (raw: WebSocket.RawData) => {
         const message = JSON.parse(raw.toString()) as DashboardServerMessage;
         if (predicate(message)) {
-          clearTimeout(timer);
-          socket.off('message', onMessage);
+          cleanup();
           resolve(message);
         }
       };
+      const onError = (err: Error) => {
+        cleanup();
+        reject(err);
+      };
       socket.on('message', onMessage);
-      socket.on('error', reject);
+      socket.on('error', onError);
     });
   }
 

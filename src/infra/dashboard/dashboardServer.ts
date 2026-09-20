@@ -411,6 +411,17 @@ export async function startDashboardServer(
   const MAX_UNAUTHENTICATED_SOCKETS_PER_IP = 3;
   const LOGIN_BACKOFF_BASE_MS = 20;
   const LOGIN_BACKOFF_MAX_MS = 320;
+  // Bounds how many distinct IPs `loginFailuresByIp` tracks at once (Copilot
+  // review, PR #175) — unlike `unauthenticatedSocketCountByIp` (an entry is
+  // always removed on auth/close, so it can never outgrow the number of
+  // sockets actually open right now), a failure record has no such natural
+  // ceiling: it lives until that IP eventually logs in successfully, which
+  // an attacker has no reason to ever do. Enough distinct source IPs
+  // failing once would otherwise grow this map forever. `recordLoginFailure`
+  // evicts the oldest-inserted entry once at this cap, rather than refusing
+  // new ones — a memory ceiling matters more here than perfect fairness
+  // toward whichever IP happens to hit it first.
+  const MAX_TRACKED_LOGIN_FAILURE_IPS = 1000;
   const loginFailuresByIp = new Map<string, number>();
   const unauthenticatedSocketCountByIp = new Map<string, number>();
   // Which sockets currently hold a counted slot in
@@ -436,6 +447,17 @@ export async function startDashboardServer(
 
   function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /** Records one more login failure for `ip` and returns its new total, evicting the oldest-tracked IP first if `loginFailuresByIp` is already at its cap (see that map's own doc comment). */
+  function recordLoginFailure(ip: string): number {
+    const failures = (loginFailuresByIp.get(ip) ?? 0) + 1;
+    if (!loginFailuresByIp.has(ip) && loginFailuresByIp.size >= MAX_TRACKED_LOGIN_FAILURE_IPS) {
+      const oldestIp = loginFailuresByIp.keys().next().value;
+      if (oldestIp !== undefined) loginFailuresByIp.delete(oldestIp);
+    }
+    loginFailuresByIp.set(ip, failures);
+    return failures;
   }
 
   // Read fresh on every check (connect, login attempt, `setDashboardPassword`)
@@ -812,8 +834,7 @@ export async function startDashboardServer(
       // scrypt's own ~20ms+ per attempt — friction a plain
       // `Math.min`-capped delay adds cheaply, well before the hard cutoff
       // below ever kicks in.
-      const failures = (loginFailuresByIp.get(ip) ?? 0) + 1;
-      loginFailuresByIp.set(ip, failures);
+      const failures = recordLoginFailure(ip);
       await sleep(Math.min(LOGIN_BACKOFF_BASE_MS * 2 ** (failures - 1), LOGIN_BACKOFF_MAX_MS));
       // The socket (or the whole server) could have gone away during that
       // delay — nothing left to answer or disconnect.

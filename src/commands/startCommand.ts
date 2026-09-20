@@ -519,9 +519,19 @@ async function runStartBody({
     // disk read once it exists — see `resolveCertDir`'s doc comment), minted
     // into one leaf cert whose SAN covers every LAN address this dashboard
     // might be reached at, alongside localhost/127.0.0.1/::1 — matching
-    // `computeAllowedHostnames`'s own allowlist (issue #159).
+    // `computeAllowedHostnames`'s own allowlist (issue #159). LAN addresses
+    // are only actually reachable when `dashboardHost` is bound to every
+    // interface (`--lan`) — a `--dashboard-tls on` with no `--lan` still
+    // binds `localhost`-only, so including them there would pad the SAN
+    // with addresses this dashboard was never going to accept a connection
+    // on anyway (Copilot review, PR #175).
     const tlsKeyCert = dashboardTls
-      ? CertAuthority.load(resolveCertDir()).getMultiHostKeyCert(['localhost', '127.0.0.1', '::1', ...lanAddrs])
+      ? CertAuthority.load(resolveCertDir()).getMultiHostKeyCert([
+          'localhost',
+          '127.0.0.1',
+          '::1',
+          ...(dashboardHost === '0.0.0.0' ? lanAddrs : []),
+        ])
       : undefined;
     try {
       dashboardHandle = await startDashboardServer(
