@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import type http from 'node:http';
 import type { IncomingMessage } from 'node:http';
 import type { Socket } from 'node:net';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
@@ -140,13 +141,7 @@ function fakeConnectingSocket(connecting: boolean): Socket {
 /** Exposes `ProxyEngine`'s private DNS/TCP/TLS timing tracker (issue #140) for direct testing, without needing a real socket connection. */
 function timingInternals() {
   return new ProxyEngine() as unknown as {
-    trackSocketTiming(
-      socket: Socket,
-      isSSL: boolean,
-      timing: ExchangeTiming,
-      dispatchedAt: number,
-      onReady: (readyAt: number) => void,
-    ): void;
+    trackSocketTiming(socket: Socket, isSSL: boolean, timing: ExchangeTiming, onReady: (readyAt: number) => void): void;
   };
 }
 
@@ -155,7 +150,7 @@ describe('ProxyEngine.trackSocketTiming', () => {
     const socket = fakeConnectingSocket(true);
     const timing: ExchangeTiming = {};
     let readyAt: number | undefined;
-    timingInternals().trackSocketTiming(socket, false, timing, Date.now(), (at) => {
+    timingInternals().trackSocketTiming(socket, false, timing, (at) => {
       readyAt = at;
     });
 
@@ -172,7 +167,7 @@ describe('ProxyEngine.trackSocketTiming', () => {
     const socket = fakeConnectingSocket(true);
     const timing: ExchangeTiming = {};
     let readyAt: number | undefined;
-    timingInternals().trackSocketTiming(socket, true, timing, Date.now(), (at) => {
+    timingInternals().trackSocketTiming(socket, true, timing, (at) => {
       readyAt = at;
     });
 
@@ -188,7 +183,7 @@ describe('ProxyEngine.trackSocketTiming', () => {
   it('omits dnsMs when no lookup event fires (an IP-literal host)', () => {
     const socket = fakeConnectingSocket(true);
     const timing: ExchangeTiming = {};
-    timingInternals().trackSocketTiming(socket, false, timing, Date.now(), () => undefined);
+    timingInternals().trackSocketTiming(socket, false, timing, () => undefined);
 
     socket.emit('connect');
 
@@ -196,11 +191,11 @@ describe('ProxyEngine.trackSocketTiming', () => {
     expect(timing.tcpMs).toBeDefined();
   });
 
-  it('skips straight to ready with no phases measured for a socket that is not connecting (a reused keep-alive socket)', () => {
+  it('skips straight to ready with no phases measured and flags connectionReused for a socket that is not connecting (a reused keep-alive socket, issue #162)', () => {
     const socket = fakeConnectingSocket(false);
     const timing: ExchangeTiming = {};
     let readyAt: number | undefined;
-    timingInternals().trackSocketTiming(socket, true, timing, Date.now(), (at) => {
+    timingInternals().trackSocketTiming(socket, true, timing, (at) => {
       readyAt = at;
     });
 
@@ -208,6 +203,61 @@ describe('ProxyEngine.trackSocketTiming', () => {
     expect(timing.dnsMs).toBeUndefined();
     expect(timing.tcpMs).toBeUndefined();
     expect(timing.tlsMs).toBeUndefined();
+    expect(timing.connectionReused).toBe(true);
+  });
+
+  it('leaves connectionReused unset for a fresh (still-connecting) socket', () => {
+    const socket = fakeConnectingSocket(true);
+    const timing: ExchangeTiming = {};
+    timingInternals().trackSocketTiming(socket, false, timing, () => undefined);
+
+    socket.emit('lookup');
+    socket.emit('connect');
+
+    expect(timing.connectionReused).toBeUndefined();
+  });
+
+  it("measures dnsMs/tcpMs from when the socket was actually handed to it, not from an earlier caller timestamp (issue #162's own Copilot finding: a bounded maxSockets can now queue a request before a socket exists, and that queue wait must not leak into DNS/TCP)", () => {
+    // Fake timers (which vitest's default preset also applies to `Date`)
+    // make the "time elapsed before a socket existed" simulation below
+    // exact rather than a real setTimeout delay racing actual wall-clock
+    // jitter on a loaded CI runner — this test's whole point is measuring
+    // a handful of milliseconds precisely, so it can't tolerate that noise.
+    vi.useFakeTimers();
+    try {
+      const socket = fakeConnectingSocket(true);
+      const timing: ExchangeTiming = {};
+
+      // Simulates a request that sat in the Agent's queue for a while before
+      // a socket was even created — trackSocketTiming only runs once that
+      // happens (on the request's 'socket' event), so this advance is
+      // deliberately *before* the call below, unseen by it, the same way a
+      // real queue wait would be invisible to whatever timestamp
+      // trackSocketTiming captures.
+      vi.advanceTimersByTime(30);
+
+      timingInternals().trackSocketTiming(socket, false, timing, () => undefined);
+      socket.emit('lookup');
+
+      // If this were measured from a timestamp captured before the 30ms
+      // queue wait above, dnsMs would be 30; measured from when this
+      // actually started running, it's exactly 0 instead.
+      expect(timing.dnsMs).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('ProxyEngine upstream agents (issue #162)', () => {
+  it('configures both httpAgent and httpsAgent for keep-alive connection reuse', () => {
+    const engine = new ProxyEngine() as unknown as { httpAgent: http.Agent; httpsAgent: http.Agent };
+    const keepAliveOf = (agent: http.Agent) => (agent as unknown as { keepAlive: boolean }).keepAlive;
+
+    expect(keepAliveOf(engine.httpAgent)).toBe(true);
+    expect(keepAliveOf(engine.httpsAgent)).toBe(true);
+    expect(engine.httpAgent.maxSockets).toBe(128);
+    expect(engine.httpsAgent.maxSockets).toBe(128);
   });
 });
 

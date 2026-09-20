@@ -88,17 +88,14 @@ export function redactProxyUrlCredentials(url: string): string {
  */
 export function createUpstreamProxyAgents(upstreamProxyUrl: string): { httpAgent: http.Agent; httpsAgent: http.Agent } {
   const parsed = validateUpstreamProxyUrl(upstreamProxyUrl);
-  // `ProxyEngine`'s own default agents are `keepAlive: false` (see
-  // `proxyEngine.ts`) and every proxy→upstream response is sent with
-  // `Connection: close` on the strength of that — a socket can then only
-  // ever be in a fresh "connecting" state, which `trackSocketTiming` relies
-  // on to measure every timing phase on every request. These three
-  // constructors already default to `keepAlive: false` themselves (Node's
-  // own `http.Agent` default, which `agent-base` doesn't override), so this
-  // doesn't change current behavior — it's here so that invariant doesn't
-  // silently start depending on an undocumented default if one of these
-  // packages ever changes it.
-  const keepAlive = { keepAlive: false };
+  // Matches `ProxyEngine`'s own default agents (see `proxyEngine.ts`,
+  // issue #162): reusing the tunnel/connection to the upstream proxy across
+  // requests saves the same TCP(+TLS) handshake overhead here as it does on
+  // a direct connection, and `trackSocketTiming`'s `connectionReused` flag
+  // (set whenever `!socket.connecting`) already accounts for a reused
+  // socket skipping the dns/tcp/tls phases — nothing about routing through
+  // an upstream proxy makes that unsafe to rely on here too.
+  const keepAlive = { keepAlive: true, keepAliveMsecs: 1000, maxSockets: 128, maxFreeSockets: 32, timeout: 60_000 };
   if (SOCKS_SCHEMES.has(parsed.protocol)) {
     const agent = new SocksProxyAgent(parsed, keepAlive);
     return { httpAgent: agent, httpsAgent: agent };

@@ -8,13 +8,14 @@
 /** A Node-style headers object (values may be a string or multi-value string array, e.g. `set-cookie`). */
 export type HeaderMap = Record<string, string | string[] | undefined>;
 
-/** Mirrors `src/domain/exchange/types.ts`'s `ExchangeTiming` (issue #140). */
+/** Mirrors `src/domain/exchange/types.ts`'s `ExchangeTiming` (issues #140, #162). */
 export interface ExchangeTiming {
   dnsMs?: number;
   tcpMs?: number;
   tlsMs?: number;
   ttfbMs?: number;
   transferMs?: number;
+  connectionReused?: boolean;
 }
 
 /** Mirrors `src/domain/exchange/types.ts`'s `ClientProcessInfo` (issue #147). */

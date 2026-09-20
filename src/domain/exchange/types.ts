@@ -22,6 +22,19 @@ export interface ExchangeTiming {
   ttfbMs?: number;
   /** Response body transfer: from the response headers arriving to the body finishing (including any Throttle delay applied to it). */
   transferMs?: number;
+  /**
+   * Whether this exchange rode an already-open keep-alive socket to the
+   * same upstream host rather than opening a fresh one (issue #162) —
+   * exactly the case where `dnsMs`/`tcpMs`/`tlsMs` are absent not because
+   * they don't apply (a plain-IP host, an HTTP-not-HTTPS request) but
+   * because there was nothing left to measure. Distinguishing the two
+   * matters for the dashboard's Waterfall (issue #141): a first-ever
+   * request to a host and a reused-connection one both lack certain
+   * phases, but only the second one is actually representative of what a
+   * real client experiences on its 2nd+ request to the same host — the
+   * whole point `#162`'s `keepAlive` closes.
+   */
+  connectionReused?: boolean;
 }
 
 /** Identifies the local process that owned a captured exchange's client→proxy TCP connection (issue #147) — see `CapturedExchange.clientProcess`. */

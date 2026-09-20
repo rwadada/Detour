@@ -70,18 +70,15 @@ const REQUEST_TIMEOUT_MS = 15_000;
  *
  * These are tripwires for a change that makes the hot path multiples slower,
  * not targets to tune against, so each sits at roughly 2x its observed
- * maximum over repeated local runs (scenario 1: 14-21x, 2: 45-69x, 5:
- * 50-61x). The spread is that wide because the denominator is a sub-
- * millisecond loopback request: a 0.2 ms wobble in the baseline moves the
- * ratio by tens. A tighter bound would fail on noise and get ignored, which
- * is worse than a loose one that only fires on something real.
- *
- * The ratios themselves are high because the baseline reuses one keep-alive
- * connection while the proxy opens a fresh TCP+TLS connection upstream for
- * every single request (#162). Tighten these once that lands — the whole
- * point of having numbers is to be able to.
+ * maximum over repeated local runs (scenario 1: ~11x, 2: ~33x, 5: ~35x, after
+ * #162's upstream `keepAlive` roughly halved all three from their prior
+ * 14-21x/45-69x/50-61x — tightened accordingly rather than left loose). The
+ * spread is that wide because the denominator is a sub-millisecond loopback
+ * request: a 0.2 ms wobble in the baseline moves the ratio by tens. A
+ * tighter bound would fail on noise and get ignored, which is worse than a
+ * loose one that only fires on something real.
  */
-const GATE_MAX_P95_RATIO = { 1: 45, 2: 150, 5: 150 };
+const GATE_MAX_P95_RATIO = { 1: 30, 2: 80, 5: 80 };
 
 // ---------------------------------------------------------------------------
 // Scenario definitions

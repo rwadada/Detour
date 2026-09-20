@@ -88,7 +88,7 @@ During development, run `npm run dev` to watch and run the TypeScript sources di
 - Request/response bodies are captured up to 256 KB per exchange (larger bodies are still proxied in full — only the captured copy shown in the dashboard is truncated)
 - The body viewer renders a body by its `Content-Type` rather than dumping text at you: images are shown as images; HTML/CSS/JavaScript/XML/JSON get syntax highlighting (XML and JSON pretty-printed); `application/x-www-form-urlencoded` and `multipart/form-data` are broken out into their fields (a file part listed by filename/type rather than inlined). A `gzip`/`br`-compressed body is decompressed for display first, and anything unrecognized falls back to "pretty-print as JSON if it parses, raw text otherwise"
 - A gRPC (`application/grpc*`) exchange is decoded frame by frame in the body viewer when `detour start --proto <path>` loaded a schema — the descriptor is relayed to the browser on connect and decoded there. Without one, the viewer says which schema/RPC it was missing instead of showing raw bytes
-- The inspector's **Timing** tab breaks an exchange's total duration down into DNS, TCP, TLS, TTFB, and response-transfer phases as a waterfall (issue #140). Phases that don't apply are simply absent — no TLS for a plain-HTTP upstream, no DNS for a bare IP literal, and no timing at all for an exchange that never reached upstream (a `mock`/`block-hosts`/aborted-`breakpoint` response)
+- The inspector's **Timing** tab breaks an exchange's total duration down into DNS, TCP, TLS, TTFB, and response-transfer phases as a waterfall (issue #140). Phases that don't apply are simply absent — no TLS for a plain-HTTP upstream, no DNS for a bare IP literal, no DNS/TCP/TLS (with a "connection reused" note instead) when the request rode an existing keep-alive connection to the same upstream host ([issue #162](https://github.com/rwadada/Detour/issues/162)), and no timing at all for an exchange that never reached upstream (a `mock`/`block-hosts`/aborted-`breakpoint` response)
 - On macOS, an exchange captured from a client on *this* machine shows which local process sent it (issue #147) — handy when a simulator and a desktop app are both talking through the proxy at once. Not available on other platforms, or for a client connecting from another machine
 - A row handled by a `rules.json` rule is badged with that rule's name, so a mocked/rewritten response is obvious in the list without opening it
 - An exchange paused by a `breakpoint` rule (see below) shows up live with a "paused" indicator; opening it lets you edit its method/path/headers/body (or status/headers/body, for a paused response) and either resume it or abort it outright
@@ -322,20 +322,20 @@ Measured on a 2.10 GHz Intel Xeon cloud VM, Linux 6.18, Node 22.22, loopback ups
 
 | # | Scenario | req/s | p50 | p95 | p95 vs direct |
 |---|---|---|---|---|---|
-| 1 | HTTP passthrough | 1,567 | 4.9 ms | 6.4 ms | 15x |
-| 2 | HTTPS (MITM) passthrough | 300 | 25.1 ms | 36.9 ms | 60x |
-| 3 | HTTPS + 100 non-matching rules | 312 | 24.3 ms | 35.5 ms | 58x |
-| 4 | HTTPS + `rewrite` rule applied | 306 | 24.9 ms | 35.3 ms | 57x |
-| 5 | HTTPS + dashboard connected | 299 | 25.4 ms | 36.5 ms | 60x |
-| 6 | HTTPS streaming, 10 MB body | 30 | 264.7 ms | 316.7 ms | 2.2x |
-| 7 | HTTPS to 100 fresh hosts | 27 | 298.6 ms | 344.5 ms | 562x |
-| 8 | Direct, no proxy (the denominator) | 16,320 | 0.5 ms | 0.6 ms | — |
+| 1 | HTTP passthrough | 2,076 | 3.7 ms | 5.1 ms | 10x |
+| 2 | HTTPS (MITM) passthrough | 450 | 16.9 ms | 24.4 ms | 29x |
+| 3 | HTTPS + 100 non-matching rules | 462 | 16.5 ms | 23.6 ms | 28x |
+| 4 | HTTPS + `rewrite` rule applied | 456 | 16.5 ms | 24.0 ms | 28x |
+| 5 | HTTPS + dashboard connected | 450 | 16.9 ms | 24.5 ms | 29x |
+| 6 | HTTPS streaming, 10 MB body | 30 | 264.8 ms | 332.8 ms | 2.0x |
+| 7 | HTTPS to 100 fresh hosts | 25 | 315.8 ms | 359.3 ms | 422x |
+| 8 | Direct, no proxy (the denominator) | 23,166 | 0.3 ms | 0.5 ms | — |
 
 What this says, including the unflattering parts:
 
 - **Rules, rewriting, and the dashboard are free.** Scenarios 3, 4 and 5 are indistinguishable from plain MITM passthrough (2) — 100 rules evaluated per request, a body rewrite, and a live dashboard broadcasting every exchange all land inside the run-to-run noise. None of them is where the time goes.
-- **Streaming holds up.** A 10 MB body costs 2.2x, not 60x, because the pipeline streams chunk-by-chunk instead of buffering whole bodies (issue #42). Per-request overhead simply stops mattering when there's real data to move.
-- **Per-request connection setup dominates everything else.** Every proxied request currently opens a fresh TCP+TLS connection upstream — the proxy's agents are `keepAlive: false` ([issue #162](https://github.com/rwadada/Detour/issues/162)) — while the direct baseline reuses one connection for the whole run. That single difference is most of the 60x.
-- **A first-ever request to a host is expensive.** ~300 ms of it is issuing that host's leaf certificate with pure-JS RSA-2048 ([issue #164](https://github.com/rwadada/Detour/issues/164)). It's a once-per-host cost that the cache then absorbs, but it's the first thing a user feels.
+- **Streaming holds up.** A 10 MB body costs 2.0x, not 29x, because the pipeline streams chunk-by-chunk instead of buffering whole bodies (issue #42). Per-request overhead simply stops mattering when there's real data to move.
+- **Reusing the upstream connection roughly halved the overhead.** Scenario 2 was 60x direct when every proxied request opened a fresh TCP+TLS connection upstream; with the proxy's agents now `keepAlive: true` and holding a small per-host pool ([issue #162](https://github.com/rwadada/Detour/issues/162)), a 2nd+ request to the same host rides an existing connection instead, and it's down to 29x — a ~45% req/s / ~27% p95 improvement measured on the same machine seconds apart. Connection reuse is upstream-only for now: the downstream (client→proxy) leg still closes after every response, since reusing it needs its own pass on response-framing correctness under `rewrite`/`script`/gzip'd bodies.
+- **A first-ever request to a host is expensive.** ~300 ms of it is issuing that host's leaf certificate with pure-JS RSA-2048 ([issue #164](https://github.com/rwadada/Detour/issues/164)). It's a once-per-host cost that the cache then absorbs, but it's the first thing a user feels — and it dominates scenario 7, where every request is to a host never seen before, so there's no keep-alive connection to reuse either.
 
 `bench` is deliberately **not** part of `npm run verify` — it takes minutes and its numbers move with the machine, the same reason `knip` and `test:mutation` sit outside that gate. CI runs `--quick --gate` as its own job, failing only when a scenario's p95 blows past a generous per-scenario multiple of the direct baseline measured on the same runner.
