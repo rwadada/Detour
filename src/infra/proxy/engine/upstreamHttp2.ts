@@ -1,6 +1,7 @@
 import http from 'node:http';
 import http2 from 'node:http2';
 import tls from 'node:tls';
+import { findHeader } from '../../../domain/exchange/headers';
 import type { UpstreamCertificate } from '../../../domain/exchange/types';
 import type { UpstreamTlsOptions } from '../upstreamTlsOptions';
 import type { ProxyToServerRequestOptions } from './types';
@@ -19,6 +20,21 @@ import { captureUpstreamCertificate } from './upstreamCertificate';
  * distinct hosts.
  */
 const UPSTREAM_H2_IDLE_TIMEOUT_MS = 60_000;
+
+/**
+ * Connect/handshake timeout for the ALPN probe's own `tls.connect()`, in ms
+ * — matches `KEEP_ALIVE_AGENT_OPTIONS.timeout` (the same value `httpAgent`/
+ * `httpsAgent` give every socket they create) so this probe carries the same
+ * backstop those agents already provide, rather than a new, weaker one.
+ * Without this, an upstream that accepts the TCP connection but never
+ * completes (or never finishes) the TLS handshake — a stalled load
+ * balancer/firewall, or a server deliberately holding connections open —
+ * would leave `probe()`'s promise pending forever: `secureConnect` and
+ * `error` both never fire, so the exchange that triggered it (and, until it
+ * settles, every concurrent request to the same host riding `pending`) hangs
+ * with no timeout and no error surfaced.
+ */
+const UPSTREAM_PROBE_CONNECT_TIMEOUT_MS = 60_000;
 
 /** Per-phase connect timing for a fresh probe — same shape as `ExchangeTiming`'s own dns/tcp/tls fields, kept separate so this module doesn't depend on the exchange-facing type. */
 export interface ConnectTiming {
@@ -219,6 +235,11 @@ export class UpstreamHttp2Pool {
         ...tlsOptions,
       });
       this.pendingSockets.add(socket);
+      socket.setTimeout(UPSTREAM_PROBE_CONNECT_TIMEOUT_MS, () => {
+        socket.destroy(
+          new Error(`upstream connection to ${host}:${port} timed out before completing its TLS handshake`),
+        );
+      });
       socket.once('lookup', () => {
         lookupAt = Date.now();
       });
@@ -226,6 +247,11 @@ export class UpstreamHttp2Pool {
         connectedAt = Date.now();
       });
       socket.once('secureConnect', () => {
+        // The probe's own connect/handshake backstop no longer applies once
+        // secured — reuse for the h1 fallback request has its own throwaway
+        // `http.Agent` (single request, no idling), and a fresh h2 session
+        // gets its own idle timeout via `watchSession`.
+        socket.setTimeout(0);
         this.pendingSockets.delete(socket);
         const securedAt = Date.now();
         const timing: ConnectTiming = {
@@ -347,11 +373,23 @@ export function buildHttp2RequestHeaders(opts: ProxyToServerRequestOptions, isSS
 }
 
 function buildAuthority(opts: ProxyToServerRequestOptions, isSSL: boolean): string {
-  const explicitHost = opts.headers['host'];
-  if (explicitHost) return explicitHost;
+  // Case-insensitive, like `findHeader`'s every other caller: `opts.headers`
+  // (a `rewrite` rule's `hostHeader` override always writes lowercase
+  // `host`, but a `script` rule's `beforeRequest` hook can replace
+  // `opts.headers` outright with any hand-authored casing — the same
+  // "a script rule can carry any casing" fact `buildHttp2RequestHeaders`
+  // already accounts for above) can carry the override under any casing.
+  const explicitHost = findHeader(opts.headers, 'host');
+  if (typeof explicitHost === 'string' && explicitHost) return explicitHost;
   const port = typeof opts.port === 'number' ? opts.port : Number(opts.port);
   const defaultPort = isSSL ? 443 : 80;
-  return Number.isFinite(port) && port !== defaultPort ? `${opts.host}:${port}` : opts.host;
+  // `opts.host` is already bracket-stripped by `ProxyEngine.parseHost` for an
+  // IPv6 literal (e.g. `::1`), so re-bracket it here — RFC 3986 §3.2.2 /
+  // RFC 9113 §8.3.1 require a bracketed IPv6 literal in `:authority`,
+  // otherwise a trailing `:<port>` would be indistinguishable from more of
+  // the address itself.
+  const host = opts.host.includes(':') ? `[${opts.host}]` : opts.host;
+  return Number.isFinite(port) && port !== defaultPort ? `${host}:${port}` : host;
 }
 
 /**

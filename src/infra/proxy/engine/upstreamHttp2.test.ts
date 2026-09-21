@@ -36,6 +36,16 @@ describe('buildHttp2RequestHeaders', () => {
     expect(headers[':authority']).toBe('virtual-host.example');
   });
 
+  it('finds an explicit host header override case-insensitively (e.g. a script rule authored it as "Host")', () => {
+    const headers = buildHttp2RequestHeaders(opts({ headers: { Host: 'virtual-host.example' } }), true);
+    expect(headers[':authority']).toBe('virtual-host.example');
+  });
+
+  it('re-brackets an IPv6 literal host in :authority when no host header survives', () => {
+    expect(buildHttp2RequestHeaders(opts({ host: '::1', port: 8443 }), true)[':authority']).toBe('[::1]:8443');
+    expect(buildHttp2RequestHeaders(opts({ host: '::1', port: 443 }), true)[':authority']).toBe('[::1]');
+  });
+
   it('drops the host header itself and every other RFC 9113 §8.2.2 connection-specific header', () => {
     const headers = buildHttp2RequestHeaders(
       opts({
