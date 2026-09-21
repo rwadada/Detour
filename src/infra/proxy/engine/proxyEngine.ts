@@ -120,11 +120,19 @@ function flattenHeaderValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value.join(', ') : (value ?? '');
 }
 
-/** Flattens a `tls.PeerCertificate.subject`/`.issuer` object (e.g. `{ C: 'US', O: 'Example', CN: 'example.com' }`) to a single distinguished-name-style string, for display. */
+/**
+ * Flattens a `tls.PeerCertificate.subject`/`.issuer` object (e.g.
+ * `{ C: 'US', O: 'Example', CN: 'example.com' }`) to a single
+ * distinguished-name-style string, for display. Node types a repeated RDN
+ * attribute (e.g. two `OU` values) as a string array rather than a string —
+ * reuses `flattenHeaderValue`'s own array-join handling above rather than
+ * letting `${value}` stringify it via `Array.prototype.toString`'s bare
+ * comma join (no separating space, easy to misread as one long value).
+ */
 function formatDistinguishedName(name: PeerCertificate['subject'] | undefined): string {
   if (!name) return '';
   return Object.entries(name)
-    .map(([key, value]) => `${key}=${value}`)
+    .map(([key, value]) => `${key}=${flattenHeaderValue(value)}`)
     .join(', ');
 }
 
@@ -1100,7 +1108,13 @@ export class ProxyEngine {
 
   private connectUpstreamWebSocket(ctx: WsContext, clientWs: WebSocket): void {
     const { url, headers } = ctx.proxyToServerWebSocketOptions!;
-    const serverWs = new WebSocket(url, { headers });
+    // `ws` forwards any extra options straight into the underlying
+    // `https.request`/`tls.connect` for a `wss://` URL (verified against
+    // its own source) — the same per-request `upstreamTls` spread
+    // `forwardRequest` already applies to the HTTP(S) path, so
+    // `--upstream-ca`/`--insecure-upstream`/`--client-cert` reach a wss://
+    // upstream too instead of always using Node's default verification.
+    const serverWs = new WebSocket(url, { headers, ...(ctx.isSSL ? this.upstreamTls : undefined) });
     ctx.serverWs = serverWs;
 
     clientWs.on('message', (data, isBinary) => this.relayFrame(ctx, 'message', false, data, isBinary));

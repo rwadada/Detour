@@ -1,3 +1,4 @@
+import { describeUpstreamTlsError } from '../../../domain/exchange/tlsVerificationError';
 import type { CapturedWebSocketConnection, WebSocketFrameRecord } from '../../../domain/exchange/types';
 import { recordWebSocketFrame } from '../../../domain/exchange/webSocketCapture';
 import type { DetourEventBus } from '../../eventBus';
@@ -125,6 +126,12 @@ export function createWebSocketHandlers(deps: WebSocketHandlersDeps): {
   };
 
   const onError: OnWebSocketErrorParams = (ctx, err) => {
+    // A wss:// upstream TLS-verification failure (issue #160) gets the same
+    // specific, actionable message the HTTP(S) path already gets via
+    // `proxyErrorHandler.ts` — `describeUpstreamTlsError` recognizes it by
+    // `err.code` regardless of connection type — instead of a raw Node
+    // error message like "self-signed certificate".
+    const message = describeUpstreamTlsError(err) ?? err?.message ?? 'unknown websocket error';
     // A connection already closed (and thus already reported via `wsClose`
     // above) is removed from `wsConnections`, so a follow-up error on its
     // other leg — see ProxyEngine's own close/error cross-signaling in
@@ -132,7 +139,7 @@ export function createWebSocketHandlers(deps: WebSocketHandlersDeps): {
     // here rather than a second `wsClose` for the same connection.
     const connection = wsConnections.get(ctx.uuid);
     if (connection) {
-      connection.error = err?.message ?? 'unknown websocket error';
+      connection.error = message;
       connection.closedAt = Date.now();
       connection.durationMs = connection.closedAt - connection.openedAt;
       wsConnections.delete(ctx.uuid);
@@ -141,7 +148,7 @@ export function createWebSocketHandlers(deps: WebSocketHandlersDeps): {
     eventBus.emit('error', {
       id: ctx.uuid,
       errorKind: 'WEBSOCKET_ERROR',
-      message: err?.message ?? 'unknown websocket error',
+      message,
     });
   };
 

@@ -333,6 +333,36 @@ describe('ProxyEngine.trackSocketTiming', () => {
     expect(reusedCert).toEqual({ ...firstCert, fromReusedConnection: true });
   });
 
+  it('joins a repeated RDN attribute (e.g. two OU values) with ", " instead of Array.prototype.toString\'s bare comma', () => {
+    // Node types a repeated subject/issuer attribute as a string array, not
+    // a string — `${value}` on an array stringifies via a bare comma join
+    // with no separating space, garbling a multi-OU subject into something
+    // like "OU=Engineering,DevOps" that reads as one run-on value.
+    const peerCertificate = {
+      subject: { O: 'Example Corp', OU: ['Engineering', 'DevOps'], CN: 'example.com' },
+      issuer: { CN: 'Example CA' },
+      valid_from: 'Jan 1 00:00:00 2024 GMT',
+      valid_to: 'Jan 1 00:00:00 2025 GMT',
+      fingerprint256: 'AA:BB:CC',
+    };
+    const socket = fakeConnectingSocket(true, { peerCertificate, authorized: true });
+    let cert: UpstreamCertificate | undefined;
+    timingInternals().trackSocketTiming(
+      socket,
+      true,
+      {},
+      {
+        onReady: () => undefined,
+        onCertificate: (c) => {
+          cert = c;
+        },
+      },
+    );
+    socket.emit('secureConnect');
+
+    expect(cert?.subject).toBe('O=Example Corp, OU=Engineering, DevOps, CN=example.com');
+  });
+
   it('reports authorized: false with the reason when verification failed but the connection proceeded anyway (--insecure-upstream)', () => {
     const authorizationError = new Error('self signed certificate');
     const socket = fakeConnectingSocket(true, {

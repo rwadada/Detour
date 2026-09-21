@@ -436,6 +436,44 @@ function startHttpsUpstreamServer(): Promise<{ port: number; close: () => Promis
   });
 }
 
+/** Same shape as `startHttpsUpstreamServer`, but echoing over a `wss://` WebSocket instead of answering plain HTTP requests — for exercising `upstreamTls` on the WS upstream leg (issue #160). */
+function startWssEchoServer(): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const { key, cert } = generateSelfSignedCert('127.0.0.1');
+    const server = https.createServer({ key, cert });
+    const wss = new WebSocketServer({ server });
+    wss.on('connection', (socket) => {
+      socket.on('message', (data, isBinary) => socket.send(data, { binary: isBinary }));
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('failed to bind wss echo server'));
+      resolve({
+        port: address.port,
+        close: () => new Promise((res) => wss.close(() => server.close(() => res()))),
+      });
+    });
+  });
+}
+
+/**
+ * Opens a `wss://` connection to `127.0.0.1:targetPort` tunneled through the
+ * proxy at `proxyPort`, trusting Detour's own MITM CA for the client-facing
+ * leg — the `wss://` counterpart to `connectWebSocketThroughProxy`/
+ * `httpsRequestThroughProxy`. `ws` forwards `agent`/`ca`/`rejectUnauthorized`
+ * straight into the `https.request` it makes for the upgrade, the same way
+ * `HttpsProxyAgent` already works for a plain HTTPS request through the
+ * proxy's CONNECT tunnel.
+ */
+function connectWssThroughProxy(proxyPort: number, caCertPath: string, targetPort: number, wsPath: string): WebSocket {
+  const agent = new HttpsProxyAgent(`http://localhost:${proxyPort}`);
+  return new WebSocket(`wss://127.0.0.1:${targetPort}${wsPath}`, {
+    agent,
+    ca: fs.readFileSync(caCertPath, 'utf8'),
+  });
+}
+
 /**
  * Generates a CA + a leaf certificate it signs (issue #160) — distinct from
  * `generateSelfSignedCert`'s bare self-signed leaf, for testing
@@ -730,6 +768,40 @@ interface DashboardExchange {
     authorized: boolean;
     authorizationError?: string;
   };
+}
+
+/** The subset of a `CapturedWebSocketConnection` (domain/exchange/types.ts) these tests inspect. */
+interface DashboardWsConnection {
+  url: string;
+  error?: string;
+}
+
+/**
+ * Opens a dashboard `/ws` connection and resolves with the first `wsClose`
+ * broadcast (see dashboardServer.ts's `onWsClose`) whose connection matches
+ * `url` — the WS counterpart to `waitForExchange`, for inspecting what the
+ * dashboard captured about a proxied WebSocket connection (in particular
+ * `.error`, since a client-side WS 'error' event doesn't carry the specific
+ * upstream failure reason — only Detour's own captured connection does).
+ */
+function waitForWsClose(
+  dashboardPort: number,
+  url: string,
+): Promise<{ socket: WebSocket; connection: Promise<DashboardWsConnection> }> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+    const connection = new Promise<DashboardWsConnection>((resolveConnection) => {
+      socket.on('message', (raw) => {
+        const message = JSON.parse(raw.toString()) as { type: string; connection?: DashboardWsConnection };
+        if (message.type === 'wsClose' && message.connection?.url === url) {
+          socket.close();
+          resolveConnection(message.connection);
+        }
+      });
+    });
+    socket.on('open', () => resolve({ socket, connection }));
+    socket.on('error', reject);
+  });
 }
 
 /**
@@ -2851,6 +2923,46 @@ describe('detour start (CLI, end-to-end)', () => {
         const result = await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/hello');
         expect(result.status).toBe(504);
         expect(result.body).toContain('certificate required');
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('rejects a self-signed wss:// upstream by default, the same as the plain-HTTPS case', async () => {
+      const upstream = await startWssEchoServer();
+      cli = await startDetourCli();
+      try {
+        const url = `wss://127.0.0.1:${upstream.port}/chat`;
+        const { connection } = await waitForWsClose(cli.dashboardPort, url);
+        connectWssThroughProxy(cli.port, cli.caCertPath, upstream.port, '/chat').on('error', () => undefined);
+        const result = await connection;
+        // The client's own WS 'error' is just a generic upgrade failure —
+        // only the dashboard's captured connection (via `describeUpstreamTlsError`,
+        // wired into the WS error path the same way it already was for the
+        // HTTP(S) path) carries the specific reason.
+        expect(result.error).toContain('Upstream certificate verification failed');
+        expect(result.error).toMatch(/self.signed/i);
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('--insecure-upstream also reaches a self-signed wss:// upstream, not just plain HTTPS', async () => {
+      const upstream = await startWssEchoServer();
+      cli = await startDetourCli(['--insecure-upstream']);
+      try {
+        const socket = connectWssThroughProxy(cli.port, cli.caCertPath, upstream.port, '/chat');
+        await new Promise<void>((resolve, reject) => {
+          socket.once('open', resolve);
+          socket.once('error', reject);
+        });
+        const reply = await new Promise<string>((resolve, reject) => {
+          socket.once('message', (data: Buffer) => resolve(data.toString('utf8')));
+          socket.once('error', reject);
+          socket.send('hello');
+        });
+        expect(reply).toBe('hello');
+        socket.close(1000, 'done');
       } finally {
         await upstream.close();
       }
