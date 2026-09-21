@@ -118,6 +118,8 @@ interface StartOptions {
   clientCert?: string;
   /** `--client-key <path>` (issue #160): the private key for `clientCert`. Both or neither — `resolveUpstreamTlsOptions` rejects one without the other. */
   clientKey?: string;
+  /** `--no-http2-upstream` (issue #166): pin the proxy→upstream leg to HTTP/1.1, skipping the ALPN probe that otherwise negotiates h2 with a real upstream server that offers it. Independent of `--no-http2` above, which only ever governs the client-facing side. */
+  http2Upstream: boolean;
 }
 
 /**
@@ -441,6 +443,7 @@ async function runStartBody({
         host: PROXY_HOST,
         ruleEngine,
         http2Enabled: options.http2,
+        http2UpstreamEnabled: options.http2Upstream,
         upstreamProxyUrl: options.upstreamProxy,
         proxyAuth,
         upstreamTls,
@@ -639,6 +642,7 @@ async function runStartBody({
     ruleEngine,
     dumpDir,
     http2Enabled: options.http2,
+    http2UpstreamEnabled: options.http2Upstream,
     protoPaths: options.proto,
     dashboardPasswordSet: readDashboardPasswordSet(),
     proxyAuthSet: proxyAuth !== undefined,
@@ -846,7 +850,11 @@ export function registerStartCommand(program: Command): void {
     )
     .option(
       '--no-http2',
-      "Disable HTTP/2 (ALPN) on MITM'd HTTPS connections — every intercepted host falls back to HTTP/1.1 only, matching Detour's behavior before this flag existed. HTTP/2 is negotiated with the client by default; the connection to the real upstream server is always HTTP/1.1 either way.",
+      "Disable HTTP/2 (ALPN) on MITM'd HTTPS connections — every intercepted host falls back to HTTP/1.1 only, matching Detour's behavior before this flag existed. HTTP/2 is negotiated with the client by default; independent of --no-http2-upstream below, which controls the separate proxy→upstream leg.",
+    )
+    .option(
+      '--no-http2-upstream',
+      'Pin the proxy→upstream leg to HTTP/1.1 (issue #166), skipping the ALPN probe that otherwise negotiates HTTP/2 with a real upstream server that offers it. On by default: Detour ALPN-probes each upstream host on its first request and multiplexes further requests to it over that session once negotiated. Independent of --no-http2 above, which only affects the client-facing side; always effectively off when --upstream-proxy is set, regardless of this flag.',
     )
     .option(
       '--proto <path>',

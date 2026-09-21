@@ -74,6 +74,8 @@ export function printStartupBanner(info: {
   ruleEngine: RuleEngine | undefined;
   dumpDir: string | undefined;
   http2Enabled: boolean;
+  /** Whether the proxy→upstream leg attempts HTTP/2 at all (issue #166's `--no-http2-upstream`) — independent of `http2Enabled` above, which only ever governs the client-facing side. */
+  http2UpstreamEnabled: boolean;
   protoPaths: string[];
   /** Whether `detour config --dashboard-password`/the Settings panel currently requires one (issue #66) — only relevant when `dashboardPort` isn't undefined. */
   dashboardPasswordSet: boolean;
@@ -95,7 +97,7 @@ export function printStartupBanner(info: {
   clientCertSet: boolean;
 }): void {
   console.log(
-    `Detour proxy started → http://localhost:${info.proxyPort} (HTTP/2: ${info.http2Enabled ? 'on' : 'off'})`,
+    `Detour proxy started → http://localhost:${info.proxyPort} (HTTP/2: ${info.http2Enabled ? 'on' : 'off'}, upstream HTTP/2: ${info.http2UpstreamEnabled ? 'on' : 'off'})`,
   );
   console.log(`Proxy authentication: ${info.proxyAuthSet ? 'required (Basic)' : 'off (--proxy-auth <user:pass>)'}`);
   console.log(`Root CA certificate: ${info.caCertPath}`);

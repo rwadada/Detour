@@ -29,7 +29,8 @@ npm start -- start
 - `--dashboard-port <number>`: Port the web dashboard listens on (default: `--port` + `1000`, e.g. `9080` for the default proxy port `8080`)
 - `--rules <path>`: Path to a rules file. When given, mock/route/rewrite/script rules are applied to matching requests (see below). Changes to the file are detected and reloaded automatically. When omitted, `passthrough.rule.json` in the current directory is loaded automatically if present
 - `--dump <level>`: Verbosity of the request/response log (default: `summary`, one line per exchange, as today). `full` additionally prints each exchange's headers and body to the console; `file` skips the console spam and instead writes that same dump to its own file under `~/.detour/dumps`, one file per exchange (overwritten as it moves from request to response). Both `full` and `file` redact sensitive headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Auth-Token`) as `[REDACTED]`; a JSON body is pretty-printed, anything else is shown as raw text
-- `--no-http2`: Disables HTTP/2 (ALPN) on MITM'd HTTPS connections, falling back to HTTP/1.1 only. HTTP/2 is negotiated with the client by default — shown as `HTTP/2: on`/`off` in the startup banner, and tagged `[h2]` in the log/dashboard for exchanges that negotiated it. The connection to the real upstream server is always HTTP/1.1 either way
+- `--no-http2`: Disables HTTP/2 (ALPN) on MITM'd HTTPS connections, falling back to HTTP/1.1 only. HTTP/2 is negotiated with the client by default — shown as `HTTP/2: on`/`off` in the startup banner, and tagged `[h2]` in the log/dashboard for exchanges that negotiated it. Independent of `--no-http2-upstream` below, which controls the separate proxy→upstream leg (see [Upstream HTTP/2](#upstream-http2-issue-166))
+- `--no-http2-upstream`: Pins the proxy→upstream leg to HTTP/1.1, skipping the ALPN probe that otherwise negotiates HTTP/2 with a real upstream server that offers it (issue #166). See [Upstream HTTP/2](#upstream-http2-issue-166)
 - `--no-open`: skips auto-opening the dashboard in your default browser after startup (on by default; see [Web dashboard](#web-dashboard) below). Has no effect under `--headless`
 - `--proto <path>`: Path to a `.proto` file used to decode gRPC (`application/grpc*`) message bodies, pretty-printing them instead of showing the raw protobuf-encoded bytes. Repeatable for a schema split across multiple files sharing imports. Applies both to the console/file dump (`--dump full`/`file`) and to the dashboard's body viewer, which is handed the loaded schema on connect and decodes each frame client-side (gRPC-Web trailer frames included). Without a `--proto`, gRPC traffic is still *detected* either way — the body viewer then says why it can't decode it rather than silently showing bytes
 - `--allow-external-script-paths`: lets a rule's `script.path`/`mock.bodyFile` resolve outside the directory `rules.json` lives in (an absolute path included) instead of being rejected. Off by default — see the security note under [`action.type: "script"`](#rule-engine-rulesjson) for why
@@ -179,6 +180,22 @@ Both flags are required together. This applies to every upstream HTTPS request f
 
 **The upstream certificate itself is visible** in the dashboard's inspector: a new **Certificate** tab (alongside Headers/Body/Timing, shown for any HTTPS exchange) lists the real subject, issuer, validity period, SANs, and SHA-256 fingerprint, plus whether it actually verified. Since connection reuse (issue #162) means only the *first* request on a keep-alive connection re-handshakes, a reused connection's exchanges show the same certificate, cached from that original handshake, rather than nothing at all. Certificate data round-trips through both session-file export/import and HAR export (as a `_detour` extension field, same as the other Detour-specific fields HAR's own schema has no slot for).
 
+## Upstream HTTP/2 (issue #166)
+
+The proxy→upstream leg used to always speak HTTP/1.1, regardless of what the client negotiated with Detour — even against a real upstream server that itself speaks HTTP/2. That meant Detour's own view of the traffic (header compression, stream multiplexing) never matched what a direct client would actually see, and an upstream that only accepts HTTP/2 (h2-only gRPC servers, in particular — see [gRPC](#grpc-detection-and-decoding-issue-18)) couldn't be reached through Detour at all.
+
+Detour now ALPN-negotiates HTTP/2 with each upstream host on its first request, the same way a real browser does, and reuses that one session (multiplexed) for every later request to the same host — falling back to the existing HTTP/1.1 keep-alive path (issue #162) for a host that doesn't offer it, with no extra handshake paid either way:
+
+```bash
+detour start --no-http2-upstream   # pin the proxy→upstream leg to HTTP/1.1, as before this existed
+```
+
+On by default. Independent of `--no-http2` (which only ever governs the client-facing side) and of `--upstream-proxy` (issue #145) — an upstream proxy is always used with a plain HTTP/1.1 connection to it regardless of this flag, since ALPN-probing through a CONNECT tunnel is a larger, separate change.
+
+Every exchange's `upstreamProtocol` is independent of its client-facing `protocol` (issue #16) — the two can differ in either direction (an HTTP/1.1 client through an HTTP/2 upstream, or vice versa), and a mismatch is exactly the kind of thing worth being able to spot while debugging. The dashboard shows it two ways: a small `h2↑` badge next to any HTTP/2-upstream row in the log table (silent for the overwhelmingly common HTTP/1.1 case, same convention as the client-facing `[h2]` badge), and a line in the inspector's Timing tab. It also round-trips through HAR export as a `_detour` extension field, same as `certificate` above.
+
+gRPC's trailing `grpc-status`/`grpc-message` headers (sent after the response body, as a second HEADERS frame) are forwarded from an HTTP/2 upstream on to an HTTP/2 client — the combination gRPC itself requires on both legs.
+
 ## Daemon mode, CI, and automation (issue #20)
 
 A handful of `start` flags and top-level commands exist specifically for running Detour unattended — from a CI pipeline or test harness, or as a long-lived background process — rather than in an interactive terminal.
@@ -327,6 +344,7 @@ The repository ships two rules files for different purposes at its root:
 ### Known issues
 - WebSocket-over-HTTP/2 ([RFC 8441](https://datatracker.ietf.org/doc/html/rfc8441) extended CONNECT) isn't supported — a WebSocket connection to a host also using HTTP/2 for its regular traffic still works, but negotiates plain HTTP/1.1 for the WebSocket connection itself (as browsers typically do anyway).
 - Certificate pinning (an app's own defense, not something Detour or any other MITM proxy can see through from the network side) means some apps will never show decrypted traffic no matter how the CA cert is installed — see the Android cert-install note above for what that actually looks like and the app/device-side options.
+- Upstream HTTP/2 (issue #166) only negotiates over TLS (ALPN) — a cleartext `h2c` upstream always goes out as HTTP/1.1 — and doesn't compose with `--upstream-proxy` (issue #145), which always uses a plain HTTP/1.1 connection to the configured proxy regardless.
 
 ### Proxy core
 The MITM proxy engine (CONNECT tunneling, on-the-fly per-host TLS certs, HTTP/1.1 and HTTP/2 forwarding — [`src/infra/proxy/engine/`](./src/infra/proxy/engine/)) is a from-scratch implementation on top of Node's own `http`/`https`/`http2`/`tls`/`net` modules and `node-forge` for certificate signing, rather than a third-party MITM library (issue #42) — this avoids depending on a library patched for macOS support and HTTP/2, and allows the request/response pipeline to genuinely stream/throttle chunk-by-chunk instead of buffering whole bodies.
