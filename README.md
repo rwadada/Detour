@@ -27,11 +27,15 @@ npm start -- start
 
 - `--port <number>`: Port the proxy listens on (default: `8080`)
 - `--dashboard-port <number>`: Port the web dashboard listens on (default: `--port` + `1000`, e.g. `9080` for the default proxy port `8080`)
-- `--rules <path>`: Path to a rules file. When given, mock/route/rewrite rules are applied to matching requests (see below). Changes to the file are detected and reloaded automatically. When omitted, `passthrough.rule.json` in the current directory is loaded automatically if present
+- `--rules <path>`: Path to a rules file. When given, mock/route/rewrite/script rules are applied to matching requests (see below). Changes to the file are detected and reloaded automatically. When omitted, `passthrough.rule.json` in the current directory is loaded automatically if present
 - `--dump <level>`: Verbosity of the request/response log (default: `summary`, one line per exchange, as today). `full` additionally prints each exchange's headers and body to the console; `file` skips the console spam and instead writes that same dump to its own file under `~/.detour/dumps`, one file per exchange (overwritten as it moves from request to response). Both `full` and `file` redact sensitive headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Auth-Token`) as `[REDACTED]`; a JSON body is pretty-printed, anything else is shown as raw text
-- `--no-http2`: Disables HTTP/2 (ALPN) on MITM'd HTTPS connections, falling back to HTTP/1.1 only. HTTP/2 is negotiated with the client by default — shown as `HTTP/2: on`/`off` in the startup banner, and tagged `[h2]` in the log/dashboard for exchanges that negotiated it. The connection to the real upstream server is always HTTP/1.1 either way
+- `--no-http2`: Disables HTTP/2 (ALPN) on MITM'd HTTPS connections, falling back to HTTP/1.1 only. HTTP/2 is negotiated with the client by default — shown as `HTTP/2: on`/`off` in the startup banner, and tagged `[h2]` in the log/dashboard for exchanges that negotiated it. Independent of `--no-http2-upstream` below, which controls the separate proxy→upstream leg (see [Upstream HTTP/2](#upstream-http2-issue-166))
+- `--no-http2-upstream`: Pins the proxy→upstream leg to HTTP/1.1, skipping the ALPN probe that otherwise negotiates HTTP/2 with a real upstream server that offers it (issue #166). See [Upstream HTTP/2](#upstream-http2-issue-166)
 - `--no-open`: skips auto-opening the dashboard in your default browser after startup (on by default; see [Web dashboard](#web-dashboard) below). Has no effect under `--headless`
-- `--proto <path>`: Path to a `.proto` file used to decode gRPC (`application/grpc*`) message bodies in the console/file dump (`--dump full`/`file`), pretty-printing them instead of showing the raw protobuf-encoded bytes. Repeatable for a schema split across multiple files sharing imports. This is a CLI-dump-only feature for now — the web dashboard's body viewer doesn't decode gRPC yet and shows it as raw bytes there
+- `--proto <path>`: Path to a `.proto` file used to decode gRPC (`application/grpc*`) message bodies, pretty-printing them instead of showing the raw protobuf-encoded bytes. Repeatable for a schema split across multiple files sharing imports. Applies both to the console/file dump (`--dump full`/`file`) and to the dashboard's body viewer, which is handed the loaded schema on connect and decodes each frame client-side (gRPC-Web trailer frames included). Without a `--proto`, gRPC traffic is still *detected* either way — the body viewer then says why it can't decode it rather than silently showing bytes
+- `--allow-external-script-paths`: lets a rule's `script.path`/`mock.bodyFile` resolve outside the directory `rules.json` lives in (an absolute path included) instead of being rejected. Off by default — see the security note under [`action.type: "script"`](#rule-engine-rulesjson) for why
+- `--persist [path]`: persists every finished exchange to a SQLite database, so the dashboard's History feature can search traffic that has already fallen out of the live 500-item backlog. Opt-in and off by default; defaults to `~/.detour/history.db` when passed with no path. Requires Node 22.5+ (`node:sqlite`) — it deliberately adds no native npm dependency. The live backlog and the 256 KB per-body capture cap are unchanged: an exchange is persisted exactly as captured, truncated body and all
+- `--upstream-proxy <url>`: routes every proxy→upstream connection through another HTTP(S)/SOCKS proxy instead of connecting to the real destination directly — for a network (e.g. a corporate egress) only reachable that way. Accepts `http://`, `https://`, `socks://`, `socks4://`, `socks4a://`, `socks5://` and `socks5h://`, with optional `user:pass@` auth embedded in the URL (credentials are redacted from the startup banner and from any error it prints)
 
 On first run, a local CA root certificate is generated at `~/.detour/certs/certs/ca.pem`. To decrypt HTTPS traffic, install this certificate as a trusted root certificate on your target browser/OS/device. `detour cert export [path]` writes it to `<path>` (or stdout, if omitted) — generating it first if this is the very first time Detour has run on this machine — for scripting that install rather than digging into `~/.detour/certs` by hand.
 
@@ -54,7 +58,7 @@ Doing the above by hand for every target gets old fast, so `detour setup [--targ
 - **ios**: trusts the CA cert on every booted Simulator (`xcrun simctl keychain <udid> add-root-cert`) — the Simulator shares this Mac's network stack, so it picks up whatever proxy `--target mac` configures with no separate step. A physical device still needs the manual steps above; Apple's device CLI (`devicectl`) has no equivalent to `simctl keychain` or a way to set a device's Wi-Fi proxy.
 - **windows**: prints the manual steps above instead — no automation yet.
 
-Run it with no `--target` to do all five at once (printing manual steps for whatever a target's automation can't reach) and announce the CA cert's path along the way. `-p, --port <port>` picks which port to configure (matches `detour start --port`, default `8080`); `--host <host>` overrides the address advertised to the target if auto-detection (`localhost` for a target that's this machine, this machine's LAN IP for a separate device) guesses wrong.
+`detour setup` with no `--target` deliberately changes nothing: it walks all five targets and *reports* what each would need — the manual steps, plus the `detour setup --target <target>` to run for real — so a bare `detour setup` can't quietly rewrite this machine's own proxy settings or push a cert to an attached device. Naming a target is what opts into the automation above. (`doctor` and `cleanup` have no such guard — one only reads, the other only reverts what `setup` applied — so both sweep every target with no `--target`.) `-p, --port <port>` picks which port to configure (matches `detour start --port`, default `8080`); `--host <host>` overrides the address advertised to the target if auto-detection (`localhost` for a target that's this machine, this machine's LAN IP for a separate device) guesses wrong.
 
 `detour doctor [--target <target>]` checks the same things without changing anything — whether the cert is trusted, whether the proxy is actually pointed at `detour`, and so on — exiting non-zero if anything's off, so it's scriptable. `detour cleanup [--target <target>]` reverts the proxy configuration `setup` applied (so a target that isn't running `detour` right now doesn't get stuck routing everything through a proxy that's gone) — it leaves the CA cert's trust and `rules.json`/`detour config` alone.
 
@@ -67,7 +71,8 @@ During development, run `npm run dev` to watch and run the TypeScript sources di
 - `npm run lint`: ESLint (`typescript-eslint` + `eslint-plugin-sonarjs`, plus `@vitest/eslint-plugin` on test files — catches an assertion-free test or a `.skip`/`.only` left in) across `src/` and `web/src/`
 - `npm run dep-cruise`: dependency-cruiser — fails on circular imports (each package's own module graph, since they don't import across the `src`/`web` boundary)
 - `npm run dup-check`: jscpd — fails if duplicated code exceeds the configured threshold (see `.jscpd.json` for what's already accounted for, e.g. `ringBuffer.ts`'s intentional backend/frontend mirror)
-- `npm test` / `npm run test:coverage`: the CLI package's unit tests (Vitest, `src/**/*.test.ts` — pure rule-engine logic: matching, schema validation, mock/route/rewrite helpers). `test:coverage` additionally enforces branch (C1) coverage ≥85% on that same pure-logic surface (see `vitest.config.ts`'s `coverage.include`)
+- `npm test` / `npm run test:coverage`: the CLI package's unit tests (Vitest, `src/**/*.test.ts` — the rule engine and the rest of the pure domain/usecase logic, plus the adapters with behavior worth testing directly: the dashboard server, the fixture store, the assertion evaluator). `test:coverage` additionally enforces branch (C1) coverage ≥85% on the pure-logic surface `vitest.config.ts`'s `coverage.include` names
+- `npm run test:web`: the dashboard package's own unit tests (`web/src/**/*.test.ts` — its stores and pure helpers, run against fakes rather than a real WebSocket or DOM)
 - `npm run test:e2e`: spawns the real CLI (`tsx src/cli.ts start`, no build needed) against a real HTTP server and a real socket — catches the class of bug unit tests structurally can't (see `vitest.e2e.config.ts`)
 - `npm run knip`: finds unused files/exports/dependencies. Not part of `verify` — it's repo-wide and can surface pre-existing issues unrelated to the current change, so it's a periodic/manual check rather than a per-turn gate
 - `npm run test:mutation`: Stryker Mutator — checks whether the unit suite actually *catches* bugs (mutates a condition/operator/literal, expects a test to fail) rather than just executing lines. Also not part of `verify`: it re-runs the suite once per mutant, so it's minutes rather than seconds — run it periodically or in CI
@@ -82,6 +87,12 @@ During development, run `npm run dev` to watch and run the TypeScript sources di
 - The table is virtualized (`@tanstack/react-virtual`), so it stays smooth with thousands of rows
 - Filter by method, status class, or a URL substring; click a row to inspect its request/response headers, query params, and body (pretty-printed JSON where applicable) in the resizable side panel
 - Request/response bodies are captured up to 256 KB per exchange (larger bodies are still proxied in full — only the captured copy shown in the dashboard is truncated)
+- The body viewer renders a body by its `Content-Type` rather than dumping text at you: images are shown as images; HTML/CSS/JavaScript/XML/JSON get syntax highlighting (XML and JSON pretty-printed); `application/x-www-form-urlencoded` and `multipart/form-data` are broken out into their fields (a file part listed by filename/type rather than inlined). A `gzip`/`br`-compressed body is decompressed for display first, and anything unrecognized falls back to "pretty-print as JSON if it parses, raw text otherwise"
+- A gRPC (`application/grpc*`) exchange is decoded frame by frame in the body viewer when `detour start --proto <path>` loaded a schema — the descriptor is relayed to the browser on connect and decoded there. Without one, the viewer says which schema/RPC it was missing instead of showing raw bytes
+- The inspector's **Timing** tab breaks an exchange's total duration down into DNS, TCP, TLS, TTFB, and response-transfer phases as a waterfall (issue #140). Phases that don't apply are simply absent — no TLS for a plain-HTTP upstream, no DNS for a bare IP literal, no DNS/TCP/TLS (with a "connection reused" note instead) when the request rode an existing keep-alive connection to the same upstream host ([issue #162](https://github.com/rwadada/Detour/issues/162)), and no timing at all for an exchange that never reached upstream (a `mock`/`block-hosts`/aborted-`breakpoint` response)
+- The inspector's **Certificate** tab (HTTPS exchanges only) shows the real upstream server's certificate — subject, issuer, validity, SANs, SHA-256 fingerprint, and whether it actually verified ([issue #160](https://github.com/rwadada/Detour/issues/160)) — the one thing the client-facing side can never show, since it only ever sees Detour's own substituted leaf cert. See "Upstream TLS trust, mTLS, and certificate visibility" below.
+- On macOS, an exchange captured from a client on *this* machine shows which local process sent it (issue #147) — handy when a simulator and a desktop app are both talking through the proxy at once. Not available on other platforms, or for a client connecting from another machine
+- A row handled by a `rules.json` rule is badged with that rule's name, so a mocked/rewritten response is obvious in the list without opening it
 - An exchange paused by a `breakpoint` rule (see below) shows up live with a "paused" indicator; opening it lets you edit its method/path/headers/body (or status/headers/body, for a paused response) and either resume it or abort it outright
 - The "Intercept On/Off" toggle in the header is a master switch for the rule engine, live for the whole proxy (every connected dashboard tab stays in sync). Turning it off drops the proxy to a plain relay: HTTPS becomes a raw TLS passthrough (no MITM decryption — traffic isn't observable and a `mock`/`rewrite`/`breakpoint` rule can't touch it), and on plain HTTP those same rule types are skipped. A `route` rule keeps redirecting the destination host either way
 - The "Focus" control in the header narrows interception down to a host allowlist instead of an all-or-nothing switch: with one or more `*`/`?` glob patterns added (e.g. `*.example.com`, or `localhost:3000` to target a non-default port), only a matching host is MITM-decrypted/intercepted — every other host gets exactly the "Intercept Off" treatment described above, scoped to just that host. Empty (the default) means unrestricted, identical to Focus not existing. Also live for the whole proxy and synced across every connected tab
@@ -92,17 +103,98 @@ During development, run `npm run dev` to watch and run the TypeScript sources di
 - Ctrl/Cmd-click two rows to mark them for Compare, then diff their headers/bodies side by side
 - Copy any request as a ready-to-run `curl` command, or replay it as-is back through the proxy
 - Rule Profiles (in the sidebar) save the active `rules.json` as a named, switchable ruleset — handy for flipping between e.g. a `staging` and `production` rule set without hand-editing the file each time
+- The inspector's "Create rule" button turns the exchange you're looking at into a new mock/route/rewrite/breakpoint rule matching its exact method and URL — queued into the Rules editor, which opens with it selected, for review before it's saved (disabled with no rules file configured for the session)
+- History (in the toolbar, only shown when `detour start --persist` is on) searches the SQLite-persisted traffic by method, exact host, and a URL substring — for the exchange that already scrolled out of the live 500-item backlog. Results load into the same table and inspector as live traffic, a page at a time
+- The Settings panel (the sidebar's gear) does everything `detour config` does from the terminal — LAN access, dashboard password, run-detached-by-default — plus the theme and the traffic controls, for anyone who'd rather not touch the CLI
+- The sidebar's Proxy URL has a "Show QR code" button next to it, for pointing a phone's Wi-Fi proxy settings at Detour by scanning instead of typing
 - "Group by host" collapses the log table into per-host sections; the "Tail" toggle pauses auto-scroll so new traffic doesn't yank you away from a row you're reading
 
 The dashboard's source lives in [`web/`](./web) (React 19 + Vite + Tailwind CSS + Zustand) and is built to `web-dist/`, which `npm run build` produces alongside the CLI's `dist/`. To iterate on the UI with `npm run dev:dashboard` (Vite's dev server with hot reload) instead of rebuilding, run `detour start` in one terminal and `npm run dev:dashboard` in another — Vite proxies `/ws` through to the default dashboard port.
 
-## LAN access and the dashboard password (issue #66)
+## LAN access, proxy authentication, and the dashboard password (issues #66, #158, #159)
 
-By default the proxy and dashboard only bind to `localhost` — nothing else on your network can reach them. `detour start --lan` (or `detour config --lan on` to make it the default for every future `start`) binds both to every network interface (`0.0.0.0`) instead, so another device on the same Wi-Fi/LAN — a phone, say — can point its proxy settings or a browser at this machine.
+The **dashboard** binds to `localhost` only by default — nothing else on your network can reach it. `detour start --lan` (or `detour config --lan on` to make it the default for every future `start`) binds it to every network interface (`0.0.0.0`) instead, so another device on the same Wi-Fi/LAN can open it in a browser.
+
+The **proxy** always binds to every interface, with or without `--lan` — a proxy no other device can point its Wi-Fi settings at defeats the main use case, and unlike the dashboard it has no traffic-viewing or rule-editing surface of its own: reaching it usefully still means having this machine's CA cert installed and trusted.
 
 Once bound to the network, both the terminal's startup banner and the dashboard's sidebar ("LAN Access" section, only shown while `--lan` is active) list every reachable address, so you don't have to go find this machine's IP yourself — copy the URL straight from either place.
 
-**LAN access has no authentication of its own** — anyone on the network can reach the dashboard (and, from there, decrypted HTTPS traffic and rule edits) or use the proxy. If that's a concern, `detour config --dashboard-password <value>` (or the dashboard's Settings panel) requires a password before the dashboard will send any traffic, rules, or accept any control message over its connection — takes effect for new connections immediately, no restart needed. Pass `--dashboard-password off` (or clear it from the Settings panel) to remove it. This only protects the dashboard itself; the proxy remains open to anything that's configured to use it.
+**Out of the box, neither the proxy nor the dashboard authenticates anyone.** Anyone who can reach this machine can use the proxy — which means *their* HTTPS traffic gets decrypted with your CA and recorded into your dumps and dashboard, and your machine becomes their egress hop — and, with `--lan`, can also open the dashboard and read that traffic or edit rules. There are two independent locks for that.
+
+### `--proxy-auth`: credentials for the proxy itself
+
+```bash
+detour start --proxy-auth me:s3cret     # this run only
+detour config --proxy-auth me:s3cret    # persisted — applies to every later `detour start`
+detour config --proxy-auth off          # remove it again
+```
+
+Every client must then send `Proxy-Authorization: Basic <base64 of user:pass>` — exactly what a browser's proxy-credentials prompt, `curl -x http://me:s3cret@host:8080`, or a phone's "proxy requires authentication" setting already produces. Anything else gets `407 Proxy Authentication Required` with a `Proxy-Authenticate: Basic realm="Detour"` challenge.
+
+- Enforced on both `CONNECT` (HTTPS) and plain HTTP requests, **before** Block Hosts, Focus and the rule engine — an unauthenticated client never reaches any of them, and never shows up in the dashboard or in a dump.
+- **No exception for loopback.** `127.0.0.1` is asked for credentials too: another user or process on the same machine isn't automatically you.
+- The password is stored only as an scrypt hash (in `~/.detour/config.json`, mode `0600`), never in plaintext, and comparison is timing-safe. `Proxy-Authorization` is never forwarded upstream and never captured or dumped in plaintext — it shows up as `[REDACTED]`.
+- Read at startup, so changing it needs a restart (it gates a connection handshake, not a message) — unlike the dashboard password below.
+- A value passed on the command line is visible in this machine's process list; `detour config --proxy-auth` avoids that for a long-running session.
+
+### `--dashboard-password`: a password for the dashboard
+
+`detour config --dashboard-password <value>` (or the dashboard's Settings panel) requires a password before the dashboard will send any traffic, rules, or accept any control message over its connection — takes effect for new connections immediately, no restart needed. Pass `--dashboard-password off` (or clear it from the Settings panel) to remove it. This protects the dashboard only; the proxy port needs `--proxy-auth`.
+
+A failed `login` doesn't get unlimited retries: five wrong guesses (counted per IP, so reconnecting doesn't reset it) closes the socket, each guess backs off a little longer than the last, and an IP can't hold more than a few unauthenticated connections open at once — closing the door `scrypt`'s own thread-pool cost alone doesn't (issue #159).
+
+### `--dashboard-tls`: HTTPS for the dashboard
+
+`--lan` serves the dashboard over HTTPS by default now (issue #159) — plain HTTP meant the `login` password, and everything sent after it (the full decrypted-HTTPS backlog, cookies and `Authorization` headers included), crossed a shared network in the clear. The leaf cert is minted by Detour's own CA and covers every LAN address shown in the startup banner, so a device that's already trusted that CA (which decrypting HTTPS through the proxy requires anyway) opens the dashboard with no separate certificate warning.
+
+```bash
+detour start --lan                        # HTTPS by default
+detour start --lan --dashboard-tls off    # force plain HTTP back on
+detour start --dashboard-tls on           # force HTTPS even for a localhost-only dashboard
+```
+
+A `localhost`-only dashboard (no `--lan`) stays plain HTTP by default — TLS buys nothing over loopback.
+
+Neither password is a hardened auth system — both are scrypt-hashed and compared in constant time, but they exist to keep a shared network's other occupants out, not to withstand a determined attacker. The dashboard password has the per-IP backoff/disconnect described above (issue #159); `--proxy-auth` doesn't, and (outside `--dashboard-tls`) the dashboard connection can still be plain HTTP.
+
+## Upstream TLS trust, mTLS, and certificate visibility (issue #160)
+
+By default Detour verifies every upstream HTTPS server's certificate against Node's own bundled root CA store — exactly what a real client does — and, because it's MITM'ing the connection, can show you that real certificate even though the client only ever sees Detour's own substituted one.
+
+**A dev/staging server with a self-signed or private-CA cert fails that verification**, same as it would for any other client, and previously Detour could only report a generic connection error for it. Two flags fix that:
+
+```bash
+detour start --upstream-ca ./internal-ca.pem     # trust one more CA, on top of the system root store
+detour start --insecure-upstream                 # skip verification entirely for this session
+```
+
+Prefer `--upstream-ca` — it lets you reach a server signed by a CA you actually trust without weakening verification for anything else. `--insecure-upstream` is the last resort: it accepts *any* certificate from *any* upstream server for the whole session, self-signed, expired, or otherwise, and is flagged loudly wherever it applies — the startup banner, a persistent (not a toast) "⚠ Upstream TLS unverified" indicator in the dashboard's status bar for as long as a client stays connected, and a badge on every affected row. A verification failure without either flag now shows a specific message (e.g. "the server presented a self-signed certificate") instead of a raw connection error.
+
+**mTLS-requiring upstreams** (internal APIs, financial/IoT backends) need a client certificate Detour didn't have a way to present:
+
+```bash
+detour start --client-cert ./client.pem --client-key ./client.key
+```
+
+Both flags are required together. This applies to every upstream HTTPS request for the session — there's no per-host override yet.
+
+**The upstream certificate itself is visible** in the dashboard's inspector: a new **Certificate** tab (alongside Headers/Body/Timing, shown for any HTTPS exchange) lists the real subject, issuer, validity period, SANs, and SHA-256 fingerprint, plus whether it actually verified. Since connection reuse (issue #162) means only the *first* request on a keep-alive connection re-handshakes, a reused connection's exchanges show the same certificate, cached from that original handshake, rather than nothing at all. Certificate data round-trips through both session-file export/import and HAR export (as a `_detour` extension field, same as the other Detour-specific fields HAR's own schema has no slot for).
+
+## Upstream HTTP/2 (issue #166)
+
+The proxy→upstream leg used to always speak HTTP/1.1, regardless of what the client negotiated with Detour — even against a real upstream server that itself speaks HTTP/2. That meant Detour's own view of the traffic (header compression, stream multiplexing) never matched what a direct client would actually see, and an upstream that only accepts HTTP/2 (h2-only gRPC servers, in particular — see [gRPC](#grpc-detection-and-decoding-issue-18)) couldn't be reached through Detour at all.
+
+Detour now ALPN-negotiates HTTP/2 with each upstream host on its first request, the same way a real browser does, and reuses that one session (multiplexed) for every later request to the same host — falling back to the existing HTTP/1.1 keep-alive path (issue #162) for a host that doesn't offer it, with no extra handshake paid either way:
+
+```bash
+detour start --no-http2-upstream   # pin the proxy→upstream leg to HTTP/1.1, as before this existed
+```
+
+On by default. Independent of `--no-http2` (which only ever governs the client-facing side) and of `--upstream-proxy` (issue #145) — an upstream proxy is always used with a plain HTTP/1.1 connection to it regardless of this flag, since ALPN-probing through a CONNECT tunnel is a larger, separate change.
+
+Every exchange's `upstreamProtocol` is independent of its client-facing `protocol` (issue #16) — the two can differ in either direction (an HTTP/1.1 client through an HTTP/2 upstream, or vice versa), and a mismatch is exactly the kind of thing worth being able to spot while debugging. The dashboard shows it two ways: a small `h2↑` badge next to any HTTP/2-upstream row in the log table (silent for the overwhelmingly common HTTP/1.1 case, same convention as the client-facing `[h2]` badge), and a line in the inspector's Timing tab. It also round-trips through HAR export as a `_detour` extension field, same as `certificate` above.
+
+gRPC's trailing `grpc-status`/`grpc-message` headers (sent after the response body, as a second HEADERS frame) are forwarded from an HTTP/2 upstream on to an HTTP/2 client — the combination gRPC itself requires on both legs.
 
 ## Daemon mode, CI, and automation (issue #20)
 
@@ -252,6 +344,40 @@ The repository ships two rules files for different purposes at its root:
 ### Known issues
 - WebSocket-over-HTTP/2 ([RFC 8441](https://datatracker.ietf.org/doc/html/rfc8441) extended CONNECT) isn't supported — a WebSocket connection to a host also using HTTP/2 for its regular traffic still works, but negotiates plain HTTP/1.1 for the WebSocket connection itself (as browsers typically do anyway).
 - Certificate pinning (an app's own defense, not something Detour or any other MITM proxy can see through from the network side) means some apps will never show decrypted traffic no matter how the CA cert is installed — see the Android cert-install note above for what that actually looks like and the app/device-side options.
+- Upstream HTTP/2 (issue #166) only negotiates over TLS (ALPN) — a cleartext `h2c` upstream always goes out as HTTP/1.1 — and doesn't compose with `--upstream-proxy` (issue #145), which always uses a plain HTTP/1.1 connection to the configured proxy regardless.
 
 ### Proxy core
 The MITM proxy engine (CONNECT tunneling, on-the-fly per-host TLS certs, HTTP/1.1 and HTTP/2 forwarding — [`src/infra/proxy/engine/`](./src/infra/proxy/engine/)) is a from-scratch implementation on top of Node's own `http`/`https`/`http2`/`tls`/`net` modules and `node-forge` for certificate signing, rather than a third-party MITM library (issue #42) — this avoids depending on a library patched for macOS support and HTTP/2, and allows the request/response pipeline to genuinely stream/throttle chunk-by-chunk instead of buffering whole bodies.
+
+## Performance (`npm run bench`, issue #163)
+
+```bash
+npm run bench                            # all scenarios
+npm run bench -- --quick                 # the three short ones CI runs
+npm run bench -- --json new.json         # save a run
+npm run bench -- --compare old.json new.json   # diff two runs
+```
+
+[`scripts/bench.mjs`](./scripts/bench.mjs) starts a local upstream, runs load through a real `detour start`, and — this is the part that matters — measures the **same request with no proxy in the middle** as the denominator. Absolute req/s mostly describes the machine; the ratio against a direct request measured on that same machine seconds apart is what survives being run somewhere else.
+
+Measured on a 2.10 GHz Intel Xeon cloud VM, Linux 6.18, Node 22.22, loopback upstream, 8 connections, 10 s per scenario, client-side keep-alive on throughout. **Your absolute numbers will differ; the ratios are the point.**
+
+| # | Scenario | req/s | p50 | p95 | p95 vs direct |
+|---|---|---|---|---|---|
+| 1 | HTTP passthrough | 2,076 | 3.7 ms | 5.1 ms | 10x |
+| 2 | HTTPS (MITM) passthrough | 450 | 16.9 ms | 24.4 ms | 29x |
+| 3 | HTTPS + 100 non-matching rules | 462 | 16.5 ms | 23.6 ms | 28x |
+| 4 | HTTPS + `rewrite` rule applied | 456 | 16.5 ms | 24.0 ms | 28x |
+| 5 | HTTPS + dashboard connected | 450 | 16.9 ms | 24.5 ms | 29x |
+| 6 | HTTPS streaming, 10 MB body | 30 | 264.8 ms | 332.8 ms | 2.0x |
+| 7 | HTTPS to 100 fresh hosts | 25 | 315.8 ms | 359.3 ms | 422x |
+| 8 | Direct, no proxy (the denominator) | 23,166 | 0.3 ms | 0.5 ms | — |
+
+What this says, including the unflattering parts:
+
+- **Rules, rewriting, and the dashboard are free.** Scenarios 3, 4 and 5 are indistinguishable from plain MITM passthrough (2) — 100 rules evaluated per request, a body rewrite, and a live dashboard broadcasting every exchange all land inside the run-to-run noise. None of them is where the time goes.
+- **Streaming holds up.** A 10 MB body costs 2.0x, not 29x, because the pipeline streams chunk-by-chunk instead of buffering whole bodies (issue #42). Per-request overhead simply stops mattering when there's real data to move.
+- **Reusing the upstream connection roughly halved the overhead.** Scenario 2 was 60x direct when every proxied request opened a fresh TCP+TLS connection upstream; with the proxy's agents now `keepAlive: true` and holding a small per-host pool ([issue #162](https://github.com/rwadada/Detour/issues/162)), a 2nd+ request to the same host rides an existing connection instead, and it's down to 29x — a ~45% req/s / ~27% p95 improvement measured on the same machine seconds apart. Connection reuse is upstream-only for now: the downstream (client→proxy) leg still closes after every response, since reusing it needs its own pass on response-framing correctness under `rewrite`/`script`/gzip'd bodies.
+- **A first-ever request to a host is expensive.** ~300 ms of it is issuing that host's leaf certificate with pure-JS RSA-2048 ([issue #164](https://github.com/rwadada/Detour/issues/164)). It's a once-per-host cost that the cache then absorbs, but it's the first thing a user feels — and it dominates scenario 7, where every request is to a host never seen before, so there's no keep-alive connection to reuse either.
+
+`bench` is deliberately **not** part of `npm run verify` — it takes minutes and its numbers move with the machine, the same reason `knip` and `test:mutation` sit outside that gate. CI runs `--quick --gate` as its own job, failing only when a scenario's p95 blows past a generous per-scenario multiple of the direct baseline measured on the same runner.

@@ -75,18 +75,18 @@ describe('createUpstreamProxyAgents', () => {
     expect(() => createUpstreamProxyAgents('ftp://proxy.example.com')).toThrowError(/unsupported scheme/);
   });
 
-  it("builds every agent kind with keepAlive: false, matching ProxyEngine's own default agents", () => {
+  it("builds every agent kind with keepAlive: true, matching ProxyEngine's own default agents (issue #162)", () => {
     // `keepAlive` is a real runtime property on every `http.Agent` instance
     // (set from the constructor's `AgentOptions`), just not one `@types/node`
     // exposes on the class's public type.
     const keepAliveOf = (agent: http.Agent) => (agent as unknown as { keepAlive: boolean }).keepAlive;
 
     const httpUpstream = createUpstreamProxyAgents('http://proxy.example.com:8080');
-    expect(keepAliveOf(httpUpstream.httpAgent)).toBe(false);
-    expect(keepAliveOf(httpUpstream.httpsAgent)).toBe(false);
+    expect(keepAliveOf(httpUpstream.httpAgent)).toBe(true);
+    expect(keepAliveOf(httpUpstream.httpsAgent)).toBe(true);
 
     const socksUpstream = createUpstreamProxyAgents('socks5://127.0.0.1:1080');
-    expect(keepAliveOf(socksUpstream.httpAgent)).toBe(false);
+    expect(keepAliveOf(socksUpstream.httpAgent)).toBe(true);
   });
 });
 

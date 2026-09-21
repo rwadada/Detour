@@ -6,10 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DashboardServerMessage } from '../../domain/dashboard/protocol';
 import { DetourEventBus } from '../eventBus';
 import { startDashboardServer, type DashboardServerHandle } from './dashboardServer';
-import * as dashboardPasswordHash from './dashboardPasswordHash';
+import * as passwordHash from '../../domain/auth/passwordHash';
 
 // A syntactically well-formed `dashboardPasswordHash` fixture (matches the
-// exact `<32-hex-char salt>:<128-hex-char hash>` shape `hashDashboardPassword`
+// exact `<32-hex-char salt>:<128-hex-char hash>` shape `hashPassword`
 // produces — see `userConfigStore.ts`'s validation, which now enforces this
 // shape) — used wherever a test hand-writes a config file directly rather
 // than going through `setDashboardPassword`. Content is irrelevant to these
@@ -195,7 +195,7 @@ describe('startDashboardServer — dashboard password (issue #66)', () => {
     await expectNoMessage(socket, (m) => m.type === 'backlog');
   });
 
-  // Regression coverage for a review-caught race: `verifyDashboardPassword`
+  // Regression coverage for a review-caught race: `verifyPassword`
   // is async (see its own doc comment on why), so two `login` frames sent
   // back-to-back — before the first one's `await` has resolved — could
   // otherwise both pass the "not authenticated yet" check and race each
@@ -213,7 +213,7 @@ describe('startDashboardServer — dashboard password (issue #66)', () => {
     const socket = connect();
     await waitForMessage(socket, (m) => m.type === 'authRequired');
     // Sent synchronously, one after the other — both land before either's
-    // `verifyDashboardPassword` (real scrypt work) has a chance to resolve.
+    // `verifyPassword` (real scrypt work) has a chance to resolve.
     socket.send(JSON.stringify({ type: 'login', password: 'hunter2' }));
     // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a deliberately-wrong test fixture, not a real credential.
     socket.send(JSON.stringify({ type: 'login', password: 'wrong-guess' }));
@@ -226,13 +226,13 @@ describe('startDashboardServer — dashboard password (issue #66)', () => {
   });
 
   // Regression coverage for a review-caught gap: a crypto failure inside
-  // `verifyDashboardPassword` (not a wrong password — an actual thrown
+  // `verifyPassword` (not a wrong password — an actual thrown
   // error) must still resolve to `authFailed`, not silently strand the
   // socket with no response at all (the outer message handler's own
   // catch-and-ignore would otherwise swallow it).
-  it('replies with authFailed rather than stranding the socket when verifyDashboardPassword itself throws', async () => {
+  it('replies with authFailed rather than stranding the socket when verifyPassword itself throws', async () => {
     const verifySpy = vi
-      .spyOn(dashboardPasswordHash, 'verifyDashboardPassword')
+      .spyOn(passwordHash, 'verifyPassword')
       .mockRejectedValueOnce(new Error('simulated crypto failure'));
     try {
       handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);

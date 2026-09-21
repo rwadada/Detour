@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { isValidDashboardPasswordHash } from '../dashboard/dashboardPasswordHash';
+import { isValidPasswordHash } from '../../domain/auth/passwordHash';
+import { isValidProxyAuthCredentials, type ProxyAuthCredentials } from '../../domain/auth/proxyAuth';
 
 /**
  * Persistent user preferences for `detour start`, distinct from a run's
@@ -19,7 +20,7 @@ export interface UserConfig {
   /** When `true`, `detour start` binds the *dashboard* to every network interface (`0.0.0.0`) instead of just `localhost`, unless overridden by `--lan`/`--no-lan` on that invocation. Undefined means "off" — `localhost`-only stays the out-of-the-box default for the dashboard, since LAN access has no authentication of its own. Never affects the proxy, which always binds to every interface regardless — see cli.ts's `PROXY_HOST`. */
   lanAccess?: boolean;
   /**
-   * A hashed password (see `dashboardPasswordHash.ts`'s `hashDashboardPassword`)
+   * A hashed password (see `domain/auth/passwordHash.ts`'s `hashPassword`)
    * that a browser must submit (over the `/ws` connection's `login` message —
    * see `dashboardServer.ts`) before the dashboard server will send it any
    * live traffic, rules, or accept any control message. `null`/undefined
@@ -31,6 +32,22 @@ export interface UserConfig {
    * it gates a WebSocket message, not a TCP bind fixed at process spawn.
    */
   dashboardPasswordHash?: string | null;
+  /**
+   * Credentials every client must present (`Proxy-Authorization: Basic …`)
+   * before the *proxy* will serve it — issue #158, the proxy-side
+   * counterpart to `dashboardPasswordHash` above. `null`/undefined means no
+   * authentication, the out-of-the-box default: an open forward proxy
+   * anything on the network can point itself at, which is exactly what this
+   * exists to let you close.
+   *
+   * Set via `detour config --proxy-auth <user:pass>` (`"off"` clears it);
+   * the password is stored only as the scrypt hash `hashPassword` produces,
+   * never in plaintext. Unlike the dashboard password, this is read once at
+   * `detour start` (it gates a TCP-level handshake, not a WebSocket
+   * message), so changing it needs a restart to take effect — and
+   * `--proxy-auth` on `detour start` overrides it for that one run.
+   */
+  proxyAuth?: ProxyAuthCredentials | null;
   /** Keys this version of detour doesn't know about (an older config written by a future version, hand-edited extras, …) — kept around so `writeUserConfig`'s read-modify-write merge doesn't drop them. */
   [key: string]: unknown;
 }
@@ -50,7 +67,9 @@ export function resolveUserConfigPath(): string {
  * can't actually catch a typo'd field name the way `keyof
  * KnownUserConfigFields` (no index signature to collapse into) can.
  */
-type KnownUserConfigFields = Required<Pick<UserConfig, 'defaultDetach' | 'lanAccess' | 'dashboardPasswordHash'>>;
+type KnownUserConfigFields = Required<
+  Pick<UserConfig, 'defaultDetach' | 'lanAccess' | 'dashboardPasswordHash' | 'proxyAuth'>
+>;
 
 /**
  * Every field `writeUserConfig` will actually apply from a `patch` — see
@@ -61,6 +80,7 @@ const WRITABLE_KEYS = [
   'defaultDetach',
   'lanAccess',
   'dashboardPasswordHash',
+  'proxyAuth',
 ] as const satisfies readonly (keyof KnownUserConfigFields)[];
 
 /**
@@ -84,7 +104,7 @@ function validateUserConfig(config: UserConfig, configPath: string): void {
     config.dashboardPasswordHash !== undefined &&
     config.dashboardPasswordHash !== null &&
     // Validates the *whole* `<saltHex>:<hashHex>` shape, not just "is a
-    // non-empty string" — `verifyDashboardPassword` uses this exact same
+    // non-empty string" — `verifyPassword` uses this exact same
     // check (see its own doc comment), so anything that fails it can never
     // actually verify a password either way. Left unchecked here, such a
     // value would still leave `dashboardServer.ts`'s `dashboardPasswordSet`
@@ -92,10 +112,19 @@ function validateUserConfig(config: UserConfig, configPath: string): void {
     // unrecoverable lockout with no way out except editing the config file
     // or `detour config --dashboard-password off` by hand, rather than
     // failing loudly right here where it was written.
-    (typeof config.dashboardPasswordHash !== 'string' || !isValidDashboardPasswordHash(config.dashboardPasswordHash))
+    (typeof config.dashboardPasswordHash !== 'string' || !isValidPasswordHash(config.dashboardPasswordHash))
   ) {
     throw new Error(
-      `${configPath}: "dashboardPasswordHash" must be a valid hash produced by hashDashboardPassword, or null (got: ${JSON.stringify(config.dashboardPasswordHash)})`,
+      `${configPath}: "dashboardPasswordHash" must be a valid hash produced by hashPassword, or null (got: ${JSON.stringify(config.dashboardPasswordHash)})`,
+    );
+  }
+  // Same reasoning as `dashboardPasswordHash` above, one step worse in
+  // consequence: a malformed `proxyAuth` (issue #158) would make
+  // `detour start` demand credentials that nothing can ever satisfy, so
+  // every single request through the proxy would 407 with no hint as to why.
+  if (config.proxyAuth !== undefined && config.proxyAuth !== null && !isValidProxyAuthCredentials(config.proxyAuth)) {
+    throw new Error(
+      `${configPath}: "proxyAuth" must be { "username": <non-empty string>, "passwordHash": <a hash produced by hashPassword> }, or null (got: ${JSON.stringify(config.proxyAuth)})`,
     );
   }
 }
@@ -161,7 +190,8 @@ export function writeUserConfig(patch: UserConfig, configPath: string = resolveU
   for (const key of WRITABLE_KEYS) copyIfDefined(merged, patch, key);
   validateUserConfig(merged, configPath);
   const configDir = path.dirname(configPath);
-  // 0o700 (owner-only): this file can carry `dashboardPasswordHash`, and
+  // 0o700 (owner-only): this file can carry `dashboardPasswordHash`/
+  // `proxyAuth.passwordHash`, and
   // `recursive: true` applies `mode` to every directory mkdirSync creates in
   // the chain, so a first-ever write also locks down `~/.detour` itself in
   // this one call (issue #96). Meaningless on Windows (no POSIX permission
@@ -172,8 +202,9 @@ export function writeUserConfig(patch: UserConfig, configPath: string = resolveU
   // is untouched by the call above, so re-assert the invariant explicitly on
   // every write. No-op on Windows.
   if (process.platform !== 'win32') fs.chmodSync(configDir, 0o700);
-  // 0o600 (owner read/write only): the file may hold `dashboardPasswordHash`,
-  // a value someone with read access could otherwise brute-force offline.
+  // 0o600 (owner read/write only): the file may hold `dashboardPasswordHash`
+  // or `proxyAuth.passwordHash`, values someone with read access could
+  // otherwise brute-force offline.
   // `writeFileSync`'s `mode` only takes effect when it creates the file, so
   // an existing config.json left world-readable by a version predating this
   // fix needs an explicit chmod too (issue #96) — done *before* the write,

@@ -62,7 +62,17 @@ describe('startDashboardServer — proxyInfo (issue #24)', () => {
     const socket = connect();
 
     const message = await waitForMessage(socket, (m) => m.type === 'proxyInfo');
-    expect(message).toEqual({ type: 'proxyInfo', proxyPort: 8080 });
+    expect(message).toEqual({ type: 'proxyInfo', proxyPort: 8080, insecureUpstream: false });
+  });
+
+  it('broadcasts insecureUpstream: true when the session was started with --insecure-upstream (issue #160)', async () => {
+    const eventBus = new DetourEventBus();
+    handle = await startDashboardServer({ port: 0, proxyPort: 8080, insecureUpstream: true }, eventBus);
+    sockets = [];
+    const socket = connect();
+
+    const message = await waitForMessage(socket, (m) => m.type === 'proxyInfo');
+    expect(message).toEqual({ type: 'proxyInfo', proxyPort: 8080, insecureUpstream: true });
   });
 
   it('sends nothing proxyInfo-shaped when proxyPort is omitted (e.g. dashboard-only tests)', async () => {

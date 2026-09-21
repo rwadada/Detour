@@ -12,7 +12,7 @@ describe('createProxyInfoStore', () => {
   it('sets proxyPort on a proxyInfo message', () => {
     const fake = fakeDashboardConnection();
     const store = createProxyInfoStore(fake.connection);
-    fake.emit({ type: 'proxyInfo', proxyPort: 8080 });
+    fake.emit({ type: 'proxyInfo', proxyPort: 8080, insecureUpstream: false });
     expect(store.getState().proxyPort).toBe(8080);
   });
 
@@ -65,5 +65,25 @@ describe('createProxyInfoStore', () => {
     const store = createProxyInfoStore(fake.connection);
     fake.emit({ type: 'lanInfo', addresses: [] });
     expect(store.getState().dashboardOnLan).toBe(false);
+  });
+
+  it('starts with insecureUpstream false before any message arrives', () => {
+    const fake = fakeDashboardConnection();
+    const store = createProxyInfoStore(fake.connection);
+    expect(store.getState().insecureUpstream).toBe(false);
+  });
+
+  it('sets insecureUpstream: true from a proxyInfo message (issue #160)', () => {
+    const fake = fakeDashboardConnection();
+    const store = createProxyInfoStore(fake.connection);
+    fake.emit({ type: 'proxyInfo', proxyPort: 8080, insecureUpstream: true });
+    expect(store.getState().insecureUpstream).toBe(true);
+  });
+
+  it('falls back to insecureUpstream: false for an older server that predates the field', () => {
+    const fake = fakeDashboardConnection();
+    const store = createProxyInfoStore(fake.connection);
+    fake.emit({ type: 'proxyInfo', proxyPort: 8080 });
+    expect(store.getState().insecureUpstream).toBe(false);
   });
 });

@@ -35,6 +35,36 @@ describe('exchangesToHar / harToExchanges', () => {
     expect(restored).toEqual(original);
   });
 
+  it('round-trips the upstream certificate (issue #160) via the _detour extension, which HAR has no standard field for', () => {
+    const original = makeExchange({
+      certificate: {
+        subject: 'CN=example.com',
+        issuer: 'CN=Example CA',
+        validFrom: 'Jan 1 00:00:00 2024 GMT',
+        validTo: 'Jan 1 00:00:00 2025 GMT',
+        subjectAltName: 'DNS:example.com',
+        fingerprint256: 'AA:BB:CC',
+        authorized: false,
+        authorizationError: 'self signed certificate',
+      },
+    });
+    const har = exchangesToHar([original]);
+    const [restored] = harToExchanges(har);
+
+    expect(restored?.certificate).toEqual(original.certificate);
+    expect(har.log.entries[0]?._detour?.certificate).toEqual(original.certificate);
+  });
+
+  it('round-trips upstreamProtocol (issue #166) via the _detour extension, independent of the client-facing protocol', () => {
+    const original = makeExchange({ protocol: 'HTTP/1.1', upstreamProtocol: 'HTTP/2' });
+    const har = exchangesToHar([original]);
+    const [restored] = harToExchanges(har);
+
+    expect(restored?.upstreamProtocol).toBe('HTTP/2');
+    expect(restored?.protocol).toBe('HTTP/1.1');
+    expect(har.log.entries[0]?._detour?.upstreamProtocol).toBe('HTTP/2');
+  });
+
   it('produces standard HAR fields readable without the _detour extension', () => {
     const har = exchangesToHar([makeExchange()]);
     const entry = har.log.entries[0];

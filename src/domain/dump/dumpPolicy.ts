@@ -23,7 +23,8 @@ export function isDumpLevel(value: string): value is DumpLevel {
   return (DUMP_LEVELS as readonly string[]).includes(value);
 }
 
-const REDACTED = '[REDACTED]';
+/** The placeholder a redacted header value is replaced with. Exported so `infra/proxy/pipeline/requestHandler.ts` can redact `Proxy-Authorization` at *capture* time (issue #158) with the same marker a dump would have used. */
+export const REDACTED = '[REDACTED]';
 
 /**
  * Header names (lowercase) whose values are replaced with `[REDACTED]` in

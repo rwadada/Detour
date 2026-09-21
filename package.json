@@ -1,6 +1,6 @@
 {
   "name": "detour",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "A terminal-first, lightweight HTTP debugging proxy for mobile and web, with a real-time web dashboard.",
   "license": "Apache-2.0",
   "type": "commonjs",
@@ -33,6 +33,7 @@
     "test:web": "npm run test --workspace web",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "bench": "npm run build:cli && node scripts/bench.mjs",
     "dep-cruise": "depcruise --config .dependency-cruiser.cjs --output-type err src bin && cd web && depcruise --config ../.dependency-cruiser.cjs --ts-config tsconfig.app.json --output-type err src",
     "lint:fsd": "npm run lint:fsd --workspace web",
     "dup-check": "jscpd",

@@ -4,9 +4,17 @@ import http2 from 'node:http2';
 import https from 'node:https';
 import net from 'node:net';
 import type { Duplex } from 'node:stream';
+import type { TLSSocket } from 'node:tls';
 import WebSocket, { WebSocketServer } from 'ws';
-import type { ExchangeTiming } from '../../../domain/exchange/types';
+import {
+  PROXY_AUTHENTICATE_CHALLENGE,
+  PROXY_AUTHORIZATION_HEADER,
+  verifyProxyCredentials,
+  type ProxyAuthCredentials,
+} from '../../../domain/auth/proxyAuth';
+import type { ExchangeTiming, UpstreamCertificate } from '../../../domain/exchange/types';
 import { createUpstreamProxyAgents } from '../upstreamProxyAgent';
+import type { UpstreamTlsOptions } from '../upstreamTlsOptions';
 import { CertAuthority } from './certAuthority';
 import type {
   ErrorCallback,
@@ -21,7 +29,19 @@ import type {
   OnWebSocketErrorParams,
   OnWebSocketFrameParams,
   OnWebsocketRequestParams,
+  ProxyToServerRequestOptions,
+  UpstreamRequest,
+  UpstreamResponse,
 } from './types';
+import { UPSTREAM_KEEP_ALIVE_TIMEOUT_MS } from './keepAliveTiming';
+import { captureUpstreamCertificate } from './upstreamCertificate';
+import {
+  adaptHttp2Response,
+  buildHttp2RequestHeaders,
+  requestOverSecuredSocket,
+  UpstreamHttp2Pool,
+  type AcquiredConnection,
+} from './upstreamHttp2';
 
 export interface ProxyEngineOptions {
   port: number;
@@ -38,7 +58,54 @@ export interface ProxyEngineOptions {
    * Omit for direct connections (the default).
    */
   upstreamProxyUrl?: string;
+  /**
+   * Requires every client to present these credentials (as
+   * `Proxy-Authorization: Basic …`) before the proxy will do anything for
+   * it — issue #158's `--proxy-auth`. Omit (the default) to accept every
+   * client, which is what Detour did before this existed.
+   */
+  proxyAuth?: ProxyAuthCredentials;
+  /**
+   * Upstream TLS verification/mTLS overrides (issue #160) — `--upstream-ca`/
+   * `--insecure-upstream`/`--client-cert`+`--client-key`. Applied as
+   * per-request options in `forwardRequest` (see that method's own doc
+   * comment for why it can't be baked into `httpsAgent`'s constructor
+   * instead), so this applies identically whether or not `upstreamProxyUrl`
+   * is also given. Omit for Node's own default verification behavior
+   * against its bundled root store, with no client certificate — what
+   * Detour did before this existed.
+   */
+  upstreamTls?: UpstreamTlsOptions;
+  /**
+   * Whether the proxy→upstream leg attempts HTTP/2 at all (issue #166's
+   * `--no-http2-upstream`) — separate from `http2` above, which only ever
+   * governs the client-facing MITM'd side. `false` pins every upstream
+   * request to HTTP/1.1, matching Detour's behavior before this existed.
+   * Also implicitly `false` (regardless of this setting) once
+   * `upstreamProxyUrl` is given — see `UpstreamHttp2Pool`'s own doc comment
+   * for why the two don't compose yet.
+   * @default true
+   */
+  http2Upstream?: boolean;
 }
+
+/**
+ * `httpAgent`/`httpsAgent`'s shared keep-alive tuning (issue #162) — pulled
+ * out to a constant so both agents' constructors, and `listen()`'s own
+ * rebuild of them via `createUpstreamProxyAgents` when `--upstream-proxy`
+ * is set, share identical values without duplicating (or accidentally
+ * drifting from) them. Unrelated to issue #160's `upstreamTls`: those
+ * options are threaded per-request rather than baked into either agent's
+ * constructor — see `ProxyEngineOptions.upstreamTls`'s own doc comment for
+ * why.
+ */
+const KEEP_ALIVE_AGENT_OPTIONS = {
+  keepAlive: true,
+  keepAliveMsecs: 1000,
+  maxSockets: 128,
+  maxFreeSockets: 32,
+  timeout: UPSTREAM_KEEP_ALIVE_TIMEOUT_MS,
+} as const;
 
 /** A request/response pair's actual mutable hook lists — `IContext`'s public surface plus the bookkeeping `ProxyEngine` needs internally, never exposed to consumers. */
 interface Context extends IContext {
@@ -46,6 +113,15 @@ interface Context extends IContext {
   onRequestEndHandlers: OnRequestParams[];
   onResponseDataHandlers: OnRequestDataParams[];
   onResponseEndHandlers: OnRequestParams[];
+  /**
+   * An h2 upstream response's trailing headers (issue #166) — e.g. gRPC's
+   * `grpc-status`/`grpc-message`, sent as a second HEADERS frame after the
+   * body rather than up front. Forwarded to the client only when it's also
+   * h2 (`pumpResponseBody`'s `finish`) — purely internal bookkeeping, not
+   * part of `IContext`'s public surface, since no pipeline handler needs to
+   * read or set it itself.
+   */
+  upstreamTrailers?: IncomingHttpHeaders;
 }
 
 interface WsContext extends IWebSocketContext {
@@ -74,6 +150,30 @@ function underlyingSocket(ws: WebSocket): net.Socket | undefined {
 
 function flattenHeaderValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value.join(', ') : (value ?? '');
+}
+
+/**
+ * Reads the client's `Proxy-Authorization` header (issue #158). Anything
+ * other than a single string value — absent, or the array Node produces for
+ * a header sent more than once — is treated as "no credentials": an
+ * ambiguous pair of values is exactly the sort of request smuggling that
+ * shouldn't get a second chance at guessing.
+ */
+function readProxyAuthorization(req: IncomingMessage): string | undefined {
+  const value = req.headers[PROXY_AUTHORIZATION_HEADER];
+  return typeof value === 'string' ? value : undefined;
+}
+
+/** The `407` sent down a raw CONNECT socket, which (unlike the request path) has no `ServerResponse` to write through — hand-built and closed immediately, so no tunnel is ever established. */
+function rejectUnauthenticatedConnect(socket: Duplex): void {
+  if (socket.destroyed) return;
+  socket.end(
+    'HTTP/1.1 407 Proxy Authentication Required\r\n' +
+      `Proxy-Authenticate: ${PROXY_AUTHENTICATE_CHALLENGE}\r\n` +
+      'Content-Length: 0\r\n' +
+      'Connection: close\r\n' +
+      '\r\n',
+  );
 }
 
 /** Runs `handlers` in series against `ctx`, short-circuiting on the first error — the `async.forEach`-with-one-registration-in-practice pattern `http-mitm-proxy` used, minus the parallel-execution semantics that never actually mattered here (see proxyEngine.ts's module doc comment). */
@@ -154,11 +254,53 @@ export class ProxyEngine {
   // `createUpstreamProxyAgents`'s doc comment for why that matters once
   // `--upstream-proxy` (issue #145) replaces these with a proxy-routing
   // agent that isn't literally an `https.Agent` instance.
-  private httpAgent: http.Agent = new http.Agent({ keepAlive: false });
-  private httpsAgent: http.Agent = new https.Agent({ keepAlive: false });
+  //
+  // `keepAlive: true` (issue #162): every proxied request used to pay a
+  // fresh TCP+TLS handshake to the upstream host, even the 2nd+ request to
+  // the exact same one in the same session — 2 round trips of pure overhead
+  // a real (non-proxied) client never pays past its first request. Bounded
+  // rather than left at the default `Infinity`: an HTTP/2 client fanning
+  // many concurrent streams out to the same upstream host (Detour always
+  // downgrades to HTTP/1.1 on that leg) would otherwise open one socket per
+  // stream with no ceiling, which is both a local fd-exhaustion risk and a
+  // good way to trip an upstream server's own per-client connection limit.
+  // Once `maxSockets` is reached, Node's own `Agent` queues further
+  // requests to that host rather than rejecting them — the "queueing"
+  // acceptance criterion falls out of the built-in behavior, not something
+  // this needs to implement itself. `keepAliveMsecs`/`timeout` are the
+  // values Node's own docs suggest as sane defaults for a keep-alive pool
+  // this size; `maxFreeSockets` caps how many idle-but-reusable sockets
+  // stick around per host once traffic quiets down.
+  private httpAgent: http.Agent = new http.Agent(KEEP_ALIVE_AGENT_OPTIONS);
+  private httpsAgent: http.Agent = new https.Agent(KEEP_ALIVE_AGENT_OPTIONS);
 
   private httpServer: http.Server | undefined;
   private tlsServer: https.Server | http2.Http2SecureServer | undefined;
+
+  /** `ProxyEngineOptions.proxyAuth` (issue #158), captured on `listen` — `undefined` leaves the proxy open to every client, as it was before that flag existed. */
+  private proxyAuth: ProxyAuthCredentials | undefined;
+
+  /** `ProxyEngineOptions.upstreamTls` (issue #160), captured on `listen` — `undefined` leaves every HTTPS upstream request at Node's own default verification, no client certificate, as it was before this flag existed. */
+  private upstreamTls: UpstreamTlsOptions | undefined;
+
+  /**
+   * Caches each fresh socket's real upstream TLS certificate (issue #160),
+   * keyed by the socket itself — a `WeakMap` so an entry is reclaimed
+   * automatically once its socket closes and is garbage-collected, with no
+   * eviction logic to write or bound to pick. Populated once, in
+   * `trackSocketTiming`'s fresh-connection branch (on `secureConnect`), and
+   * read back in its reused-connection branch: a keep-alive socket
+   * (`keepAlive: true`, issue #162) only ever re-handshakes on its first
+   * use, so every later request riding the same socket needs this cache to
+   * still report a certificate at all.
+   */
+  private certificatesBySocket = new WeakMap<net.Socket, UpstreamCertificate>();
+
+  /** `ProxyEngineOptions.http2Upstream` (issue #166) folded together with `!upstreamProxyUrl` — see `UpstreamHttp2Pool`'s doc comment for why an upstream proxy disables this regardless of the flag. `false` skips `http2Pool.acquire` entirely and dispatches every HTTPS request as HTTP/1.1, exactly as `ProxyEngine` did before this existed. */
+  private http2UpstreamEnabled = true;
+
+  /** One h2 session (or "HTTP/1.1-only") per upstream host, for the proxy→upstream leg (issue #166) — see `UpstreamHttp2Pool`'s own doc comment. */
+  private readonly http2Pool = new UpstreamHttp2Pool();
 
   ca!: CertAuthority;
   httpPort = 0;
@@ -249,6 +391,12 @@ export class ProxyEngine {
       // keygen: `warmUp` is async, while `getSecureContext` — called from
       // inside the handshake — has to stay synchronous (issue #164).
       await this.ca.warmUp();
+      this.proxyAuth = options.proxyAuth;
+      this.upstreamTls = options.upstreamTls;
+      // See `UpstreamHttp2Pool`'s doc comment for why an upstream proxy
+      // disables this regardless of `http2Upstream` — ALPN-probing over a
+      // CONNECT tunnel through it is out of scope for issue #166.
+      this.http2UpstreamEnabled = (options.http2Upstream ?? true) && !options.upstreamProxyUrl;
 
       if (options.upstreamProxyUrl) {
         const agents = createUpstreamProxyAgents(options.upstreamProxyUrl);
@@ -279,6 +427,7 @@ export class ProxyEngine {
   close(): void {
     this.httpServer?.close();
     this.tlsServer?.close();
+    this.http2Pool.closeAll();
   }
 
   private createInternalTlsServer(http2Enabled: boolean): https.Server | http2.Http2SecureServer {
@@ -310,10 +459,46 @@ export class ProxyEngine {
     return server;
   }
 
-  /** Runs the registered `onConnect` handlers (Block Hosts / Focus / passthrough dispatch — see `proxyServer.ts`); if every one calls back without handling the tunnel itself, MITMs it by bridging the raw client socket into the internal TLS/HTTP2 server. */
+  /**
+   * Gates `req` on `--proxy-auth` (issue #158), calling `onAllowed` when the
+   * client presented valid credentials (or when no credentials are
+   * configured at all) and `onDenied` when it didn't.
+   *
+   * Called at the very top of every client-facing entry point *before* any
+   * registered hook runs — which is what puts it ahead of Block Hosts,
+   * Focus, and the rule engine as a whole (all of them live in
+   * `proxyServer.ts`'s `onConnect`/`onRequest` handlers): an unauthenticated
+   * client never reaches any of that, and never produces a captured
+   * exchange, a dashboard broadcast or a dump file.
+   *
+   * A rejected verification promise denies rather than propagating: there's
+   * no failure mode of the KDF that should be answered by letting the client
+   * through, and an unhandled rejection here would take the process down.
+   */
+  private guardProxyAuth(req: IncomingMessage, onDenied: () => void, onAllowed: () => void): void {
+    const credentials = this.proxyAuth;
+    if (!credentials) {
+      onAllowed();
+      return;
+    }
+    verifyProxyCredentials(credentials, readProxyAuthorization(req)).then(
+      (authenticated) => (authenticated ? onAllowed() : onDenied()),
+      () => onDenied(),
+    );
+  }
+
+  /** Authenticates the CONNECT itself (issue #158) before anything else sees it — a client that can't authenticate gets a `407` and no tunnel, so it never even reaches the `onConnect` handlers below. */
   private handleConnect(req: IncomingMessage, socket: Duplex, head: Buffer, internalPort: number): void {
     socket.on('error', (err) => this.onSocketError('CLIENT_TO_PROXY_SOCKET', err));
+    this.guardProxyAuth(
+      req,
+      () => rejectUnauthenticatedConnect(socket),
+      () => this.runConnectHandlers(req, socket, head, internalPort),
+    );
+  }
 
+  /** Runs the registered `onConnect` handlers (Block Hosts / Focus / passthrough dispatch — see `proxyServer.ts`); if every one calls back without handling the tunnel itself, MITMs it by bridging the raw client socket into the internal TLS/HTTP2 server. */
+  private runConnectHandlers(req: IncomingMessage, socket: Duplex, head: Buffer, internalPort: number): void {
     let i = 0;
     const next = (err?: MaybeError): void => {
       if (err) {
@@ -382,12 +567,51 @@ export class ProxyEngine {
     };
   }
 
+  /**
+   * Entry point for every request the client sends *to the proxy itself*
+   * (`isSSL: false`) and for every request inside an already-established
+   * MITM tunnel (`isSSL: true`).
+   *
+   * Only the former is gated on `--proxy-auth` (issue #158): a tunnelled
+   * request arrives on a connection whose own CONNECT already authenticated
+   * (`handleConnect`), and no client re-sends `Proxy-Authorization` inside
+   * the tunnel — it's a hop-by-hop header addressed to the proxy, and the
+   * proxy's hop ended at the CONNECT. Re-checking here would reject every
+   * HTTPS request in existence.
+   */
   private handleRequest(req: IncomingMessage, res: ServerResponse, isSSL: boolean): void {
     const ctx = this.buildContext(req, res, isSSL);
     req.on('error', (err) => this.emitError('CLIENT_TO_PROXY_REQUEST_ERROR', ctx, err));
     res.on('error', (err) => this.emitError('PROXY_TO_CLIENT_RESPONSE_ERROR', ctx, err));
     req.pause();
 
+    if (isSSL) {
+      this.forwardRequest(ctx);
+      return;
+    }
+    this.guardProxyAuth(
+      req,
+      () => this.rejectUnauthenticatedRequest(ctx),
+      () => this.forwardRequest(ctx),
+    );
+  }
+
+  /** Answers a request that failed `--proxy-auth` (issue #158) with the `407` challenge, draining whatever body it carried first so the client reads the response instead of an abruptly-reset socket. Only ever reached on the plain HTTP/1.1 proxy port, so the HTTP/1-only `Connection` header is always legal here. */
+  private rejectUnauthenticatedRequest(ctx: Context): void {
+    ctx.clientToProxyRequest.resume();
+    const res = ctx.proxyToClientResponse;
+    res.writeHead(407, {
+      'Proxy-Authenticate': PROXY_AUTHENTICATE_CHALLENGE,
+      'Content-Type': 'text/plain; charset=utf-8',
+      Connection: 'close',
+    });
+    res.end('Proxy authentication required', 'utf-8');
+  }
+
+  private forwardRequest(ctx: Context): void {
+    const req = ctx.clientToProxyRequest;
+    const res = ctx.proxyToClientResponse;
+    const isSSL = ctx.isSSL;
     const hostPort = ProxyEngine.parseHostAndPort(req, isSSL ? 443 : 80);
     if (!hostPort) {
       req.resume();
@@ -412,6 +636,10 @@ export class ProxyEngine {
       port: hostPort.port,
       headers,
       agent: isSSL ? this.httpsAgent : this.httpAgent,
+      // Per-request, not baked into `httpsAgent` — see this field's own doc
+      // comment in `engine/types.ts` for why (issue #160). Only meaningful
+      // for `isSSL`; harmless (and ignored by `http.request`) otherwise.
+      ...(isSSL ? this.upstreamTls : undefined),
     };
 
     runChain(this.onRequestHandlers, ctx, (err) => {
@@ -423,26 +651,164 @@ export class ProxyEngine {
     });
   }
 
+  /**
+   * Entry point for dispatching the actual proxy→upstream request (issue
+   * #166 branches this three ways): a plain HTTP request always goes out
+   * as HTTP/1.1 (h2c is out of scope — see `UpstreamHttp2Pool`'s doc
+   * comment), same for HTTPS once `http2UpstreamEnabled` is off; otherwise
+   * `http2Pool.acquire` decides per-host whether this goes out over h2 or
+   * falls back to h1, ALPN-probing on the host's first-ever request.
+   */
   private makeProxyToServerRequest(ctx: Context): void {
     const opts = ctx.proxyToServerRequestOptions!;
-    const transport = ctx.isSSL ? https : http;
     const timing: ExchangeTiming = {};
     ctx.timing = timing;
-    const dispatchedAt = Date.now();
-    let connectionReadyAt = dispatchedAt;
-    const upstreamReq = transport.request(opts, (upstreamRes) => {
+
+    if (!ctx.isSSL || !this.http2UpstreamEnabled) {
+      this.dispatchHttp1Request(ctx, opts, timing, undefined);
+      return;
+    }
+
+    const port = typeof opts.port === 'number' ? opts.port : Number(opts.port ?? 443);
+    this.http2Pool.acquire(opts.host, port, this.upstreamTls).then(
+      (acquired) => this.dispatchWithAcquiredConnection(ctx, opts, timing, acquired),
+      (err) =>
+        this.emitError('PROXY_TO_SERVER_REQUEST_ERROR', ctx, err instanceof Error ? err : new Error(String(err))),
+    );
+  }
+
+  /** Routes an `UpstreamHttp2Pool.acquire` result (issue #166) to the h1 or h2 dispatch path, attaching whatever the pool already learned (certificate, connect timing/reuse) along the way. */
+  private dispatchWithAcquiredConnection(
+    ctx: Context,
+    opts: ProxyToServerRequestOptions,
+    timing: ExchangeTiming,
+    acquired: AcquiredConnection,
+  ): void {
+    if (acquired.certificate) ctx.certificate = acquired.certificate;
+
+    if (acquired.protocol === 'HTTP/2') {
+      if (acquired.reused) timing.connectionReused = true;
+      else Object.assign(timing, acquired.timing);
+      this.dispatchHttp2Request(ctx, opts, timing, acquired.session);
+      return;
+    }
+
+    if (acquired.socket) Object.assign(timing, acquired.timing);
+    this.dispatchHttp1Request(ctx, opts, timing, acquired.socket);
+  }
+
+  /**
+   * The HTTP/1.1 upstream path — unchanged from before issue #166 except
+   * for `presetSocket`: when `UpstreamHttp2Pool.acquire` already probed
+   * this host and found it HTTP/1.1-only, the exact socket that probe
+   * secured is handed straight to `requestOverSecuredSocket` instead of
+   * going through `this.httpsAgent` (which would otherwise open a second,
+   * entirely redundant connection for this one request) — see that
+   * function's own doc comment for why a plain `http.Agent`, not
+   * `https.request`, is what makes reusing an already-secured socket work.
+   * Every request after this one goes through the ordinary agent exactly
+   * as before, once the host is cached as HTTP/1.1-only.
+   */
+  private dispatchHttp1Request(
+    ctx: Context,
+    opts: ProxyToServerRequestOptions,
+    timing: ExchangeTiming,
+    presetSocket: TLSSocket | undefined,
+  ): void {
+    ctx.upstreamProtocol = 'HTTP/1.1';
+    let connectionReadyAt = Date.now();
+    const onResponse = (upstreamRes: IncomingMessage): void => {
       const headersAt = Date.now();
       timing.ttfbMs = headersAt - connectionReadyAt;
       ctx.responseHeadersAt = headersAt;
       this.onUpstreamResponse(ctx, upstreamRes);
-    });
+    };
+
+    let upstreamReq: UpstreamRequest;
+    if (presetSocket) {
+      upstreamReq = requestOverSecuredSocket(opts, presetSocket, onResponse);
+    } else {
+      const transport = ctx.isSSL ? https : http;
+      upstreamReq = transport.request(opts, onResponse);
+    }
     ctx.proxyToServerRequest = upstreamReq;
-    upstreamReq.on('socket', (socket) =>
-      this.trackSocketTiming(socket, ctx.isSSL, timing, dispatchedAt, (readyAt) => {
-        connectionReadyAt = readyAt;
-      }),
-    );
+
+    if (!presetSocket) {
+      upstreamReq.on('socket', (socket) =>
+        this.trackSocketTiming(socket, ctx.isSSL, timing, {
+          onReady: (readyAt) => {
+            connectionReadyAt = readyAt;
+          },
+          onCertificate: (cert) => {
+            ctx.certificate = cert;
+          },
+        }),
+      );
+    }
+    // `presetSocket` is already past `secureConnect` by the time this ever
+    // runs (issue #166's ALPN probe already measured its dns/tcp/tls
+    // phases — see `dispatchWithAcquiredConnection`) — `connectionReadyAt`
+    // is just "now", with nothing left for `trackSocketTiming` to do.
     upstreamReq.on('error', (err) => this.emitError('PROXY_TO_SERVER_REQUEST_ERROR', ctx, err));
+    this.pumpRequestBody(ctx);
+  }
+
+  /**
+   * The HTTP/2 upstream path (issue #166): builds pseudo-headers via
+   * `buildHttp2RequestHeaders` and opens a new multiplexed stream on the
+   * shared session `UpstreamHttp2Pool` already established for this host.
+   * `endStream: false` because the request body (if any) is still to come,
+   * streamed by `pumpRequestBody` exactly like the h1 path.
+   */
+  private dispatchHttp2Request(
+    ctx: Context,
+    opts: ProxyToServerRequestOptions,
+    timing: ExchangeTiming,
+    session: http2.ClientHttp2Session,
+  ): void {
+    const headers = buildHttp2RequestHeaders(opts, ctx.isSSL);
+    const connectionReadyAt = Date.now();
+    let stream: http2.ClientHttp2Stream;
+    try {
+      stream = session.request(headers, { endStream: false });
+    } catch (err) {
+      this.emitError('PROXY_TO_SERVER_REQUEST_ERROR', ctx, err instanceof Error ? err : new Error(String(err)));
+      return;
+    }
+    // Only after `session.request()` actually succeeds — tagging the
+    // exchange `'HTTP/2'` before that point would mislabel a request that
+    // never went out over HTTP/2 at all (e.g. a session destroyed/GOAWAY'd
+    // in the brief window between `acquire()` resolving and this call).
+    ctx.upstreamProtocol = 'HTTP/2';
+    ctx.proxyToServerRequest = stream;
+
+    // Only for a failure *before* the response arrives (send failure,
+    // connection reset pre-headers) — removed the instant `onUpstreamResponse`
+    // takes over below. `adaptHttp2Response` mutates and returns this exact
+    // same `stream` object (unlike the h1 path, where the request and
+    // response are two separate objects), so `onUpstreamResponse`'s own
+    // `.on('error', ...)` would otherwise stack a second, permanent listener
+    // on it: a post-headers failure would then fire both, double-reporting
+    // one failure as two different (and conflicting) error kinds.
+    const onPreResponseError = (err: Error): void => this.emitError('PROXY_TO_SERVER_REQUEST_ERROR', ctx, err);
+    stream.on('error', onPreResponseError);
+
+    stream.on('response', (responseHeaders) => {
+      stream.off('error', onPreResponseError);
+      const headersAt = Date.now();
+      timing.ttfbMs = headersAt - connectionReadyAt;
+      ctx.responseHeadersAt = headersAt;
+      this.onUpstreamResponse(ctx, adaptHttp2Response(stream, responseHeaders));
+    });
+    // gRPC's trailing `grpc-status`/`grpc-message` (and any other h2
+    // trailers) arrive as a second HEADERS frame after the body — captured
+    // here so `pumpResponseBody`'s `finish` can forward them on to an h2
+    // client (see that method's own doc comment; deliberately scoped to
+    // h2-client-to-h2-upstream, matching gRPC's own requirement that both
+    // legs speak h2).
+    stream.on('trailers', (trailers) => {
+      ctx.upstreamTrailers = trailers;
+    });
     this.pumpRequestBody(ctx);
   }
 
@@ -452,36 +818,74 @@ export class ProxyEngine {
    * `timing` as each stage completes and reporting via `onReady` once the
    * connection is actually usable — the point `ttfbMs` is measured from. A
    * reused keep-alive socket (`!socket.connecting`) skips straight to
-   * `onReady` with no phases measured; `httpAgent`/`httpsAgent` are both
-   * `keepAlive: false` so this never happens today, but a socket can only
-   * be trusted to still be connecting via this flag, not assumed.
+   * `onReady` with no phases measured, flagging `timing.connectionReused`
+   * (issue #162) so the dashboard's Waterfall can tell "genuinely nothing to
+   * measure" apart from "this exchange rode an existing connection" — a
+   * socket can only be trusted to still be connecting via this flag, not
+   * assumed, which is exactly what makes this branch reachable at all now
+   * that `httpAgent`/`httpsAgent` are `keepAlive: true`.
+   *
+   * The DNS/TCP baseline is `Date.now()` taken right here, at the moment
+   * this actually runs (the request's `'socket'` event) — not the caller's
+   * pre-dispatch timestamp. Those used to be indistinguishable: `keepAlive:
+   * false` paired with an unbounded default `maxSockets` meant the Agent
+   * always created (or, now, reused) a socket and fired `'socket'`
+   * essentially synchronously with `transport.request()`. Now that
+   * `httpAgent`/`httpsAgent` cap `maxSockets` (issue #162), a request past
+   * that cap sits in the Agent's own internal queue until a socket frees up
+   * — an unbounded wait that has nothing to do with DNS or TCP. Measuring
+   * from the caller's timestamp would silently fold that queue wait into
+   * `dnsMs`/`tcpMs`, inflating them for a reason that has nothing to do
+   * with the network; measuring from here instead means those phases only
+   * ever cover what actually happens once a socket exists.
+   *
+   * `onCertificate` (issue #160) reports the upstream's real TLS
+   * certificate once known: for a fresh HTTPS socket, captured off
+   * `secureConnect` and cached in `certificatesBySocket` (keyed by the
+   * socket itself) for any later request that reuses it; for a reused one,
+   * read straight back out of that cache — a keep-alive socket only ever
+   * re-handshakes on its first use, so this is the only way a 2nd+ request
+   * on it still gets a certificate at all. Grouped with `onReady` into one
+   * options object (rather than a 5th positional parameter) to keep this
+   * method's own parameter count from creeping back up.
    */
   private trackSocketTiming(
     socket: net.Socket,
     isSSL: boolean,
     timing: ExchangeTiming,
-    dispatchedAt: number,
-    onReady: (readyAt: number) => void,
+    callbacks: { onReady: (readyAt: number) => void; onCertificate: (cert: UpstreamCertificate) => void },
   ): void {
+    const { onReady, onCertificate } = callbacks;
+    const socketAssignedAt = Date.now();
     if (!socket.connecting) {
-      onReady(Date.now());
+      timing.connectionReused = true;
+      onReady(socketAssignedAt);
+      if (isSSL) {
+        const cached = this.certificatesBySocket.get(socket);
+        if (cached) onCertificate({ ...cached, fromReusedConnection: true });
+      }
       return;
     }
     let lookupDoneAt: number | undefined;
     let connectedAt: number | undefined;
     socket.once('lookup', () => {
       lookupDoneAt = Date.now();
-      timing.dnsMs = lookupDoneAt - dispatchedAt;
+      timing.dnsMs = lookupDoneAt - socketAssignedAt;
     });
     socket.once('connect', () => {
       connectedAt = Date.now();
-      timing.tcpMs = connectedAt - (lookupDoneAt ?? dispatchedAt);
+      timing.tcpMs = connectedAt - (lookupDoneAt ?? socketAssignedAt);
       if (!isSSL) onReady(connectedAt);
     });
     if (isSSL) {
       socket.once('secureConnect', () => {
         const securedAt = Date.now();
-        timing.tlsMs = securedAt - (connectedAt ?? dispatchedAt);
+        timing.tlsMs = securedAt - (connectedAt ?? socketAssignedAt);
+        const cert = captureUpstreamCertificate(socket as TLSSocket);
+        if (cert) {
+          this.certificatesBySocket.set(socket, cert);
+          onCertificate(cert);
+        }
         onReady(securedAt);
       });
     }
@@ -564,7 +968,7 @@ export class ProxyEngine {
    */
   private pumpChunks(opts: {
     ctx: Context;
-    source: IncomingMessage;
+    source: IncomingMessage | UpstreamResponse;
     handlers: OnRequestDataParams[];
     dataErrorKind: string;
     write: (chunk: Buffer) => boolean;
@@ -624,7 +1028,7 @@ export class ProxyEngine {
     });
   }
 
-  private onUpstreamResponse(ctx: Context, upstreamRes: IncomingMessage): void {
+  private onUpstreamResponse(ctx: Context, upstreamRes: UpstreamResponse): void {
     upstreamRes.on('error', (err) => this.emitError('SERVER_TO_PROXY_RESPONSE_ERROR', ctx, err));
     upstreamRes.pause();
     ctx.serverToProxyResponse = upstreamRes;
@@ -652,9 +1056,13 @@ export class ProxyEngine {
         delete res.headers['content-length'];
         if (!clientIsHttp2) res.headers['transfer-encoding'] = 'chunked';
       }
-      // Detour never keeps upstream/downstream connections alive across
-      // requests (`keepAlive: false` on both agents above) — telling an
-      // HTTP/1.1 client to close matches what actually happens.
+      // The client→proxy leg is still always closed after one response,
+      // regardless of whether the proxy→upstream leg above just reused a
+      // keep-alive socket (issue #162) — reusing the *downstream* connection
+      // too needs its own careful pass (response-framing correctness under
+      // a `rewrite`/`script`/gzip'd body first — see issue #162's own
+      // writeup) and is deliberately out of scope here. Telling an HTTP/1.1
+      // client to close still matches what actually happens on this leg.
       if (!clientIsHttp2) res.headers['connection'] = 'close';
 
       runChain(this.onResponseHeadersHandlers, ctx, (err2) => {
@@ -695,6 +1103,26 @@ export class ProxyEngine {
           if (err) {
             this.emitError('ON_RESPONSE_END_ERROR', ctx, err);
             return;
+          }
+          // Forwards an h2 upstream's trailing headers (issue #166) — e.g.
+          // gRPC's `grpc-status`/`grpc-message` — on to the client, but
+          // only when it's also h2: gRPC itself requires h2 on both legs,
+          // and HTTP/1.1 trailers need a `Trailer` header declared ahead of
+          // the body (before any of it is known to exist here), which is a
+          // separate, currently out-of-scope problem this doesn't attempt.
+          if (ctx.upstreamTrailers && isHttp2(ctx.clientToProxyRequest) && !client.writableEnded) {
+            try {
+              client.addTrailers(ctx.upstreamTrailers);
+            } catch (trailerErr) {
+              // Best-effort — a client that already went away shouldn't
+              // stop the response from ending; see emitError's own
+              // similar reasoning for a write against a dead h2 stream.
+              this.emitError(
+                'RESPONSE_TRAILERS_WRITE_FAILED',
+                null,
+                trailerErr instanceof Error ? trailerErr : new Error(String(trailerErr)),
+              );
+            }
           }
           client.end();
         });
@@ -751,8 +1179,36 @@ export class ProxyEngine {
 
   // ---- WebSocket relay (issue #17) ----
 
+  /**
+   * `--proxy-auth` (issue #158) has to be enforced here too, not just in
+   * `handleConnect`/`handleRequest`: a `ws://` upgrade sent to the proxy
+   * port is consumed by this `WebSocketServer`'s own `'upgrade'` listener
+   * and never reaches `handleRequest` at all, so without this gate an
+   * unauthenticated client could still relay arbitrary traffic through
+   * Detour over a WebSocket. `verifyClient`'s callback form runs *before*
+   * the handshake completes, so a denial is a plain `407` with the same
+   * challenge every other rejection carries — not a socket that opens and
+   * then closes.
+   *
+   * Only for the plain proxy port (`isSSL: false`) — a `wss://` upgrade
+   * inside a MITM tunnel was already authenticated by its CONNECT, same
+   * reasoning as `handleRequest`'s.
+   */
   private attachWebSocketServer(server: http.Server | https.Server | http2.Http2SecureServer, isSSL: boolean): void {
-    const wss = new WebSocketServer({ server: server as http.Server });
+    const wss = new WebSocketServer({
+      server: server as http.Server,
+      verifyClient: isSSL
+        ? undefined
+        : (info, callback) =>
+            this.guardProxyAuth(
+              info.req,
+              () =>
+                callback(false, 407, 'Proxy Authentication Required', {
+                  'Proxy-Authenticate': PROXY_AUTHENTICATE_CHALLENGE,
+                }),
+              () => callback(true),
+            ),
+    });
     wss.on('error', (err) => this.emitError('HTTP_SERVER_ERROR', null, err));
     wss.on('connection', (ws, upgradeReq) => this.handleWebSocketConnection(ws, upgradeReq, isSSL));
   }
@@ -777,7 +1233,17 @@ export class ProxyEngine {
     }
     const headers: Record<string, string> = {};
     for (const key in upgradeReq.headers) {
-      if (!key.toLowerCase().startsWith('sec-websocket')) headers[key] = flattenHeaderValue(upgradeReq.headers[key]);
+      const lower = key.toLowerCase();
+      // `sec-websocket-*` belongs to this hop's handshake (`ws` mints its
+      // own for the upstream leg), and `proxy-*` is addressed to the proxy
+      // rather than the origin — `Proxy-Authorization` above all, which
+      // carries Detour's own credentials (issue #158) and must never be
+      // relayed onward or land in this connection's captured
+      // `requestHeaders` (see `proxyServer.ts`'s `onWebSocketConnection`,
+      // which copies this object verbatim). Mirrors the identical
+      // `/^proxy-/i` filter on the plain-request path in `forwardRequest`.
+      if (lower.startsWith('sec-websocket') || lower.startsWith('proxy-')) continue;
+      headers[key] = flattenHeaderValue(upgradeReq.headers[key]);
     }
     ctx.proxyToServerWebSocketOptions = { url, headers };
 
@@ -797,7 +1263,13 @@ export class ProxyEngine {
 
   private connectUpstreamWebSocket(ctx: WsContext, clientWs: WebSocket): void {
     const { url, headers } = ctx.proxyToServerWebSocketOptions!;
-    const serverWs = new WebSocket(url, { headers });
+    // `ws` forwards any extra options straight into the underlying
+    // `https.request`/`tls.connect` for a `wss://` URL (verified against
+    // its own source) — the same per-request `upstreamTls` spread
+    // `forwardRequest` already applies to the HTTP(S) path, so
+    // `--upstream-ca`/`--insecure-upstream`/`--client-cert` reach a wss://
+    // upstream too instead of always using Node's default verification.
+    const serverWs = new WebSocket(url, { headers, ...(ctx.isSSL ? this.upstreamTls : undefined) });
     ctx.serverWs = serverWs;
 
     clientWs.on('message', (data, isBinary) => this.relayFrame(ctx, 'message', false, data, isBinary));

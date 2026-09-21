@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadUserConfig, writeUserConfig } from './userConfigStore';
 
 // A syntactically well-formed `dashboardPasswordHash` fixture (matches the
-// exact `<32-hex-char salt>:<128-hex-char hash>` shape `hashDashboardPassword`
+// exact `<32-hex-char salt>:<128-hex-char hash>` shape `hashPassword`
 // produces) — content is irrelevant to `userConfigStore`, only the shape is
 // validated here, so this doesn't need to be a real hash of anything.
 const VALID_HASH_FIXTURE = `${'a'.repeat(32)}:${'b'.repeat(128)}`;
@@ -60,7 +60,7 @@ describe('userConfigStore (fs-backed)', () => {
     expect(() => loadUserConfig(configPath)).toThrow(/must be a valid hash/);
   });
 
-  // A real hash from `hashDashboardPassword` is never empty — this can only
+  // A real hash from `hashPassword` is never empty — this can only
   // be a hand-edit, and left unchecked would leave `dashboardPasswordSet`
   // reporting "on" while no password could ever actually verify against it.
   it('throws when dashboardPasswordHash is an empty string', () => {
@@ -72,13 +72,39 @@ describe('userConfigStore (fs-backed)', () => {
   // Same "would leave dashboardPasswordSet: true with no password ever
   // able to verify" concern as an empty string, but for a non-empty value
   // that's still the wrong shape (no colon, or the wrong hex lengths) —
-  // `verifyDashboardPassword` uses the exact same shape check, so anything
+  // `verifyPassword` uses the exact same shape check, so anything
   // that fails it here could never verify a password either way.
   it('throws when dashboardPasswordHash is a non-empty string with the wrong shape', () => {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a malformed-shape test fixture, not a real credential.
     fs.writeFileSync(configPath, JSON.stringify({ dashboardPasswordHash: 'not-a-valid-hash' }));
     expect(() => loadUserConfig(configPath)).toThrow(/must be a valid hash/);
+  });
+
+  // Issue #158: same failure mode as a malformed `dashboardPasswordHash`,
+  // one step worse — a `proxyAuth` nothing can verify against makes every
+  // request through the proxy 407 with no hint as to why.
+  it('writes and reads proxyAuth back unchanged', () => {
+    const proxyAuth = { username: 'agent', passwordHash: VALID_HASH_FIXTURE };
+    writeUserConfig({ proxyAuth }, configPath);
+    expect(loadUserConfig(configPath).proxyAuth).toEqual(proxyAuth);
+  });
+
+  it('clears proxyAuth when written as null', () => {
+    writeUserConfig({ proxyAuth: { username: 'agent', passwordHash: VALID_HASH_FIXTURE } }, configPath);
+    writeUserConfig({ proxyAuth: null }, configPath);
+    expect(loadUserConfig(configPath).proxyAuth).toBeNull();
+  });
+
+  it.each([
+    ['a bare string', 'agent:hunter2'],
+    ['a missing username', { passwordHash: VALID_HASH_FIXTURE }],
+    ['an empty username', { username: '', passwordHash: VALID_HASH_FIXTURE }],
+    ['a plaintext password in place of the hash', { username: 'agent', passwordHash: 'hunter2' }],
+  ])('throws when proxyAuth is %s', (_label, proxyAuth) => {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ proxyAuth }));
+    expect(() => loadUserConfig(configPath)).toThrow(/"proxyAuth" must be/);
   });
 
   it('creates ~/.detour itself on first write', () => {

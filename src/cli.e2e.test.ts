@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
 import { execa, type Options } from 'execa';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import forge from 'node-forge';
 import protobuf from 'protobufjs';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -65,6 +66,40 @@ function startEchoServer(): Promise<{ port: number; close: () => Promise<void> }
       if (!address || typeof address === 'string') return reject(new Error('failed to bind echo server'));
       resolve({
         port: address.port,
+        close: () => new Promise((res) => server.close(() => res())),
+      });
+    });
+  });
+}
+
+/**
+ * Starts a plain HTTP server that echoes back the exact request headers it
+ * received, as JSON — the only way to prove from the outside that a header
+ * the client sent to the *proxy* (`Proxy-Authorization`, issue #158) never
+ * made it onto the proxy→upstream leg. Also counts the requests that
+ * actually arrived, so a test can assert an unauthenticated request was
+ * stopped at the proxy rather than merely answered oddly.
+ */
+function startHeaderEchoServer(): Promise<{
+  port: number;
+  requestCount: () => number;
+  close: () => Promise<void>;
+}> {
+  return new Promise((resolve, reject) => {
+    let requestCount = 0;
+    const server = http.createServer((req, res) => {
+      requestCount++;
+      req.resume();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ headers: req.headers }));
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('failed to bind header echo server'));
+      resolve({
+        port: address.port,
+        requestCount: () => requestCount,
         close: () => new Promise((res) => server.close(() => res())),
       });
     });
@@ -327,10 +362,19 @@ function connectWebSocketThroughProxy(
  * established (after the `200` response header) — any tunnel bytes that
  * arrived in the same packet are pushed back for the next read.
  */
-function connectTunnel(proxyPort: number, targetHost: string, targetPort: number): Promise<net.Socket> {
+function connectTunnel(
+  proxyPort: number,
+  targetHost: string,
+  targetPort: number,
+  /** Extra request headers for the CONNECT itself — `Proxy-Authorization` for the `--proxy-auth` tests (issue #158). */
+  headers: Record<string, string> = {},
+): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
+    const extra = Object.entries(headers)
+      .map(([name, value]) => `${name}: ${value}\r\n`)
+      .join('');
     const socket = net.connect({ host: 'localhost', port: proxyPort }, () => {
-      socket.write(`CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\n\r\n`);
+      socket.write(`CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\n${extra}\r\n`);
     });
     let buffered = Buffer.alloc(0);
     const onData = (chunk: Buffer) => {
@@ -389,6 +433,256 @@ function startHttpsUpstreamServer(): Promise<{ port: number; close: () => Promis
       if (!address || typeof address === 'string') return reject(new Error('failed to bind https upstream server'));
       resolve({ port: address.port, close: () => new Promise((res) => server.close(() => res())) });
     });
+  });
+}
+
+/** Same shape as `startHttpsUpstreamServer`, but echoing over a `wss://` WebSocket instead of answering plain HTTP requests — for exercising `upstreamTls` on the WS upstream leg (issue #160). */
+function startWssEchoServer(): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const { key, cert } = generateSelfSignedCert('127.0.0.1');
+    const server = https.createServer({ key, cert });
+    const wss = new WebSocketServer({ server });
+    wss.on('connection', (socket) => {
+      socket.on('message', (data, isBinary) => socket.send(data, { binary: isBinary }));
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('failed to bind wss echo server'));
+      resolve({
+        port: address.port,
+        close: () => new Promise((res) => wss.close(() => server.close(() => res()))),
+      });
+    });
+  });
+}
+
+/**
+ * Opens a `wss://` connection to `127.0.0.1:targetPort` tunneled through the
+ * proxy at `proxyPort`, trusting Detour's own MITM CA for the client-facing
+ * leg — the `wss://` counterpart to `connectWebSocketThroughProxy`/
+ * `httpsRequestThroughProxy`. `ws` forwards `agent`/`ca`/`rejectUnauthorized`
+ * straight into the `https.request` it makes for the upgrade, the same way
+ * `HttpsProxyAgent` already works for a plain HTTPS request through the
+ * proxy's CONNECT tunnel.
+ */
+function connectWssThroughProxy(proxyPort: number, caCertPath: string, targetPort: number, wsPath: string): WebSocket {
+  const agent = new HttpsProxyAgent(`http://localhost:${proxyPort}`);
+  return new WebSocket(`wss://127.0.0.1:${targetPort}${wsPath}`, {
+    agent,
+    ca: fs.readFileSync(caCertPath, 'utf8'),
+  });
+}
+
+/**
+ * Starts a real HTTP/2-only upstream server (issue #166) — `allowHTTP1:
+ * false`, so this only ever exercises Detour's own ALPN probe actually
+ * negotiating h2 with a real server, not silently falling back and still
+ * happening to work over h1. `onTrailers`, when given, is called with the
+ * request path and returns trailers to send after the response body — for
+ * exercising the gRPC-style `grpc-status`/`grpc-message` trailer forwarding
+ * this issue's own acceptance criteria calls out.
+ */
+function startHttp2UpstreamServer(
+  onTrailers?: (path: string) => http2.OutgoingHttpHeaders,
+): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const { key, cert } = generateSelfSignedCert('127.0.0.1');
+    const server = http2.createSecureServer({ key, cert, allowHTTP1: false });
+    // Detour's own `UpstreamHttp2Pool` deliberately keeps its session to
+    // this server open indefinitely for reuse (issue #166's whole point) —
+    // `server.close()` alone would then hang forever waiting for that
+    // still-open session, same reasoning (and same fix) as the
+    // `slowUpstream` helper above for a still-open HTTP/1.1 connection.
+    const sockets = new Set<import('node:stream').Duplex>();
+    server.on('connection', (socket) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+    });
+    server.on('stream', (stream, headers) => {
+      const reqPath = String(headers[':path'] ?? '/');
+      const trailers = onTrailers?.(reqPath);
+      stream.respond(
+        { ':status': 200, 'content-type': 'application/json' },
+        { waitForTrailers: trailers !== undefined },
+      );
+      if (trailers) stream.once('wantTrailers', () => stream.sendTrailers(trailers));
+      stream.end(JSON.stringify({ method: headers[':method'], path: reqPath }));
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('failed to bind http2 upstream server'));
+      resolve({
+        port: address.port,
+        close: () =>
+          new Promise((res) => {
+            for (const socket of sockets) socket.destroy();
+            server.close(() => res());
+          }),
+      });
+    });
+  });
+}
+
+/**
+ * Starts an upstream server that offers *both* protocols via ALPN
+ * (`allowHTTP1: true`, mirroring exactly how `ProxyEngine`'s own internal
+ * MITM'd server is built) and answers either one identically — for testing
+ * `--no-http2-upstream` (issue #166): unlike `startHttp2UpstreamServer`'s
+ * h2-*only* server (which simply wouldn't accept an HTTP/1.1 connection at
+ * all, too blunt an instrument for proving the flag skips the ALPN probe
+ * specifically), this lets the same successful request be checked either
+ * way — h2 when Detour's probe offers it, h1 when `--no-http2-upstream`
+ * means it never does.
+ */
+function startDualProtocolUpstreamServer(): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const { key, cert } = generateSelfSignedCert('127.0.0.1');
+    const server = http2.createSecureServer({ key, cert, allowHTTP1: true });
+    // Same still-open-connection reasoning as `startHttp2UpstreamServer`
+    // above — Detour's `httpsAgent` (issue #162's keep-alive) or
+    // `UpstreamHttp2Pool` (issue #166) can each just as easily be the one
+    // keeping a connection to this server open when `close()` runs.
+    const sockets = new Set<import('node:stream').Duplex>();
+    server.on('connection', (socket) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+    });
+    server.on('request', (req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ method: req.method, path: req.url }));
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('failed to bind dual-protocol upstream'));
+      resolve({
+        port: address.port,
+        close: () =>
+          new Promise((res) => {
+            for (const socket of sockets) socket.destroy();
+            server.close(() => res());
+          }),
+      });
+    });
+  });
+}
+
+/**
+ * Generates a CA + a leaf certificate it signs (issue #160) — distinct from
+ * `generateSelfSignedCert`'s bare self-signed leaf, for testing
+ * `--upstream-ca` trusting a private CA (the case a self-signed leaf can't
+ * exercise, since there's no separate CA cert for the flag to point at).
+ */
+function generateCaAndLeaf(leafCommonName: string): { caPem: string; key: string; cert: string } {
+  const caKeys = forge.pki.rsa.generateKeyPair(2048);
+  const caCert = forge.pki.createCertificate();
+  caCert.publicKey = caKeys.publicKey;
+  caCert.serialNumber = '01';
+  caCert.validity.notBefore = new Date();
+  caCert.validity.notAfter = new Date();
+  caCert.validity.notAfter.setFullYear(caCert.validity.notBefore.getFullYear() + 1);
+  const caAttrs = [{ name: 'commonName', value: 'e2e-test-ca' }];
+  caCert.setSubject(caAttrs);
+  caCert.setIssuer(caAttrs);
+  caCert.setExtensions([
+    { name: 'basicConstraints', cA: true },
+    { name: 'keyUsage', keyCertSign: true },
+  ]);
+  caCert.sign(caKeys.privateKey, forge.md.sha256.create());
+
+  const leafKeys = forge.pki.rsa.generateKeyPair(2048);
+  const leafCert = forge.pki.createCertificate();
+  leafCert.publicKey = leafKeys.publicKey;
+  leafCert.serialNumber = '02';
+  leafCert.validity.notBefore = new Date();
+  leafCert.validity.notAfter = new Date();
+  leafCert.validity.notAfter.setFullYear(leafCert.validity.notBefore.getFullYear() + 1);
+  leafCert.setSubject([{ name: 'commonName', value: leafCommonName }]);
+  leafCert.setIssuer(caAttrs);
+  leafCert.sign(caKeys.privateKey, forge.md.sha256.create());
+
+  return {
+    caPem: forge.pki.certificateToPem(caCert),
+    key: forge.pki.privateKeyToPem(leafKeys.privateKey),
+    cert: forge.pki.certificateToPem(leafCert),
+  };
+}
+
+/**
+ * Starts an HTTPS server with `serverCert` for its own identity, requiring
+ * (and verifying against `clientCaPem`) a client certificate — for testing
+ * `--client-cert`/`--client-key` (issue #160's mTLS support). Rejects the
+ * TLS handshake outright (never reaching the request handler) for a client
+ * that doesn't present a cert signed by `clientCaPem`.
+ */
+function startMtlsUpstreamServer(
+  serverCert: { key: string; cert: string },
+  clientCaPem: string,
+): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const server = https.createServer(
+      { key: serverCert.key, cert: serverCert.cert, ca: clientCaPem, requestCert: true, rejectUnauthorized: true },
+      (req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ method: req.method, path: req.url }));
+      },
+    );
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('failed to bind mTLS upstream server'));
+      resolve({ port: address.port, close: () => new Promise((res) => server.close(() => res())) });
+    });
+  });
+}
+
+/**
+ * Sends one HTTPS request through the proxy's CONNECT tunnel using a real
+ * `HttpsProxyAgent` (issue #160) — trusting Detour's own CA (`caCertPath`)
+ * for the client↔proxy leg, exactly as a real device configured with it
+ * would. Resolves with the response on success, rejects with the
+ * connection error on failure (a TLS handshake failure on the upstream leg
+ * surfaces to this client as the tunnel dying mid-request, not a clean HTTP
+ * error response — there's no status line to send once the CONNECT already
+ * answered 200).
+ */
+function httpsRequestThroughProxy(
+  proxyPort: number,
+  caCertPath: string,
+  targetPort: number,
+  reqPath: string,
+  clientCert?: { cert: string; key: string },
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    // `ca` has to be a per-request option, not the agent's own constructor
+    // option — `HttpsProxyAgent`'s constructor-level TLS options only ever
+    // apply to its own connection to the (plain-HTTP, in this test) proxy
+    // itself, never to the CONNECT-tunneled destination behind it, which
+    // reads its TLS options from this per-request `opts` object instead
+    // (the exact same distinction `ProxyEngine.forwardRequest`'s own
+    // `upstreamTls` threading — issue #160 — has to account for).
+    const agent = new HttpsProxyAgent(`http://localhost:${proxyPort}`);
+    const req = https.request(
+      {
+        host: 'localhost',
+        port: targetPort,
+        path: reqPath,
+        method: 'GET',
+        agent,
+        ca: fs.readFileSync(caCertPath, 'utf8'),
+        rejectUnauthorized: true,
+        ...clientCert,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+      },
+    );
+    req.on('error', reject);
+    req.end();
   });
 }
 
@@ -561,6 +855,52 @@ interface DashboardExchange {
   ruleName?: string;
   passthrough?: boolean;
   error?: string;
+  /** Issue #160. */
+  certificate?: {
+    subject: string;
+    issuer: string;
+    fingerprint256: string;
+    authorized: boolean;
+    authorizationError?: string;
+  };
+  /** Issue #166. */
+  upstreamProtocol?: 'HTTP/1.1' | 'HTTP/2';
+  /** Issue #140/#162. */
+  timing?: { connectionReused?: boolean };
+}
+
+/** The subset of a `CapturedWebSocketConnection` (domain/exchange/types.ts) these tests inspect. */
+interface DashboardWsConnection {
+  url: string;
+  error?: string;
+}
+
+/**
+ * Opens a dashboard `/ws` connection and resolves with the first `wsClose`
+ * broadcast (see dashboardServer.ts's `onWsClose`) whose connection matches
+ * `url` — the WS counterpart to `waitForExchange`, for inspecting what the
+ * dashboard captured about a proxied WebSocket connection (in particular
+ * `.error`, since a client-side WS 'error' event doesn't carry the specific
+ * upstream failure reason — only Detour's own captured connection does).
+ */
+function waitForWsClose(
+  dashboardPort: number,
+  url: string,
+): Promise<{ socket: WebSocket; connection: Promise<DashboardWsConnection> }> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+    const connection = new Promise<DashboardWsConnection>((resolveConnection) => {
+      socket.on('message', (raw) => {
+        const message = JSON.parse(raw.toString()) as { type: string; connection?: DashboardWsConnection };
+        if (message.type === 'wsClose' && message.connection?.url === url) {
+          socket.close();
+          resolveConnection(message.connection);
+        }
+      });
+    });
+    socket.on('open', () => resolve({ socket, connection }));
+    socket.on('error', reject);
+  });
 }
 
 /**
@@ -735,7 +1075,9 @@ async function startDetourCli(
 
   const portMatch = stdout.match(/Detour proxy started .*http:\/\/localhost:(\d+)/);
   if (!portMatch) throw new Error(`could not parse proxy port from stdout: ${stdout}`);
-  const dashboardMatch = stdout.match(/Dashboard → http:\/\/localhost:(\d+)/);
+  // https:// once --lan defaults the dashboard to TLS (issue #159) — either
+  // scheme is a valid "the dashboard bound to this port" signal here.
+  const dashboardMatch = stdout.match(/Dashboard → https?:\/\/localhost:(\d+)/);
   if (!dashboardMatch) throw new Error(`could not parse dashboard port from stdout: ${stdout}`);
   const caCertMatch = stdout.match(/Root CA certificate: (.+)/);
   if (!caCertMatch) throw new Error(`could not parse CA cert path from stdout: ${stdout}`);
@@ -2246,6 +2588,486 @@ describe('detour start (CLI, end-to-end)', () => {
     });
   });
 
+  /**
+   * `--proxy-auth` (issue #158). Everything here drives the real CLI over
+   * real sockets from `127.0.0.1`/`localhost`, which is also the point of
+   * the "loopback isn't exempt" cases: the credentials are demanded of every
+   * client, including one on this very machine, because "same host" is not
+   * the same thing as "same user".
+   */
+  describe('proxy authentication (issue #158)', () => {
+    const CREDENTIALS = 'agent:hunter2';
+    const AUTH_HEADER = `Basic ${Buffer.from(CREDENTIALS, 'utf8').toString('base64')}`;
+    const WRONG_AUTH_HEADER = `Basic ${Buffer.from('agent:wrong-guess', 'utf8').toString('base64')}`;
+
+    let headerEcho: Awaited<ReturnType<typeof startHeaderEchoServer>> | undefined;
+    let marker: Awaited<ReturnType<typeof startMarkerEchoServer>> | undefined;
+    let home: string | undefined;
+
+    afterEach(async () => {
+      await headerEcho?.close();
+      await marker?.close();
+      if (home) fs.rmSync(home, { recursive: true, force: true });
+      headerEcho = undefined;
+      marker = undefined;
+      home = undefined;
+    });
+
+    /** Issues a request through the proxy and resolves with its status plus the `Proxy-Authenticate` challenge, which `requestThroughProxy` doesn't surface. */
+    function requestWithChallenge(
+      proxyPort: number,
+      targetPort: number,
+      headers?: http.OutgoingHttpHeaders,
+    ): Promise<{ status: number; challenge: string | undefined }> {
+      return new Promise((resolve, reject) => {
+        const req = http.request(
+          {
+            host: 'localhost',
+            port: proxyPort,
+            path: `http://127.0.0.1:${targetPort}/guarded`,
+            method: 'GET',
+            headers,
+          },
+          (res) => {
+            res.resume();
+            res.on('end', () =>
+              resolve({
+                status: res.statusCode ?? 0,
+                challenge: res.headers['proxy-authenticate'] as string | undefined,
+              }),
+            );
+          },
+        );
+        req.on('error', reject);
+        req.end();
+      });
+    }
+
+    it('answers an HTTP request with no credentials with 407 and a Basic challenge, without reaching upstream', async () => {
+      headerEcho = await startHeaderEchoServer();
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS]);
+
+      const result = await requestWithChallenge(cli.port, headerEcho.port);
+      expect(result.status).toBe(407);
+      expect(result.challenge).toBe('Basic realm="Detour"');
+      expect(headerEcho.requestCount()).toBe(0);
+    });
+
+    it('answers an HTTP request with the wrong credentials with 407 too', async () => {
+      headerEcho = await startHeaderEchoServer();
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS]);
+
+      const result = await requestWithChallenge(cli.port, headerEcho.port, {
+        'Proxy-Authorization': WRONG_AUTH_HEADER,
+      });
+      expect(result.status).toBe(407);
+      expect(headerEcho.requestCount()).toBe(0);
+    });
+
+    it('proxies an HTTP request normally once the right credentials are presented', async () => {
+      echo = await startEchoServer();
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS]);
+
+      const result = await requestThroughProxy(cli.port, echo.port, '/hello', { 'Proxy-Authorization': AUTH_HEADER });
+      expect(result.status).toBe(200);
+      expect(JSON.parse(result.body)).toEqual({ method: 'GET', path: '/hello', body: '' });
+    });
+
+    it('never forwards Proxy-Authorization to the upstream server', async () => {
+      headerEcho = await startHeaderEchoServer();
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS]);
+
+      const result = await requestThroughProxy(cli.port, headerEcho.port, '/guarded', {
+        'Proxy-Authorization': AUTH_HEADER,
+      });
+      expect(result.status).toBe(200);
+      const { headers } = JSON.parse(result.body) as { headers: Record<string, string> };
+      expect(headers['proxy-authorization']).toBeUndefined();
+      expect(JSON.stringify(headers)).not.toContain(AUTH_HEADER.split(' ')[1]);
+    });
+
+    it('refuses a CONNECT with no credentials with 407, establishing no tunnel', async () => {
+      marker = await startMarkerEchoServer('upstream');
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS]);
+
+      await expect(connectTunnel(cli.port, '127.0.0.1', marker.port)).rejects.toThrow(/407/);
+    });
+
+    it('establishes a CONNECT tunnel once the right credentials are presented', async () => {
+      marker = await startMarkerEchoServer('upstream');
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS]);
+      // Intercept off, so the tunnel stays a raw byte-level passthrough the
+      // marker echo server can answer — a MITM'd tunnel would try to
+      // TLS-terminate it instead (see the passthrough tests above).
+      await setIntercept(cli.dashboardPort, false);
+
+      const socket = await connectTunnel(cli.port, '127.0.0.1', marker.port, {
+        'Proxy-Authorization': AUTH_HEADER,
+      });
+      try {
+        expect(await writeAndRead(socket, 'ping')).toBe('upstream:ping');
+      } finally {
+        socket.destroy();
+      }
+    });
+
+    // A `ws://` upgrade is consumed by ProxyEngine's own WebSocketServer and
+    // never reaches its request handler — without a gate of its own it would
+    // be a way to relay traffic through an otherwise-authenticated proxy.
+    it('rejects an unauthenticated ws:// upgrade through the proxy port', async () => {
+      const wsEcho = await startWsEchoServer();
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS]);
+      try {
+        const socket = connectWebSocketThroughProxy(cli.port, wsEcho.port, '/echo');
+        const error = await new Promise<Error>((resolve, reject) => {
+          socket.on('error', resolve);
+          socket.on('open', () => reject(new Error('the upgrade succeeded without credentials')));
+        });
+        expect(error.message).toContain('407');
+      } finally {
+        await wsEcho.close();
+      }
+    });
+
+    // Authentication runs inside ProxyEngine, ahead of every handler
+    // proxyServer.ts registers — so an unauthenticated client gets 407 even
+    // for a host Block Hosts would otherwise have rejected first, which is
+    // what "before Block Hosts, before Focus" actually looks like from
+    // outside.
+    it('answers 407 before Block Hosts (and the rest of the rule engine) ever runs', async () => {
+      headerEcho = await startHeaderEchoServer();
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS]);
+      await setBlockHosts(cli.dashboardPort, { hosts: ['127.0.0.1'], mode: 'forbidden' });
+
+      const result = await requestWithChallenge(cli.port, headerEcho.port);
+      expect(result.status).toBe(407);
+      expect(result.challenge).toBe('Basic realm="Detour"');
+    });
+
+    it('keeps Proxy-Authorization out of the dashboard capture and out of --dump full output', async () => {
+      echo = await startEchoServer();
+      cli = await startDetourCli(['--proxy-auth', CREDENTIALS, '--dump', 'full']);
+      const url = `http://127.0.0.1:${echo.port}/redacted`;
+      const { exchange } = await waitForExchange(cli.dashboardPort, 'request', url);
+
+      await requestThroughProxy(cli.port, echo.port, '/redacted', { 'Proxy-Authorization': AUTH_HEADER });
+
+      const captured = await exchange;
+      expect(captured.requestHeaders?.['proxy-authorization']).toBe('[REDACTED]');
+      await waitForStdout(cli, /Request headers:/);
+      expect(cli.stdout()).toContain('proxy-authorization: [REDACTED]');
+      expect(cli.stdout()).not.toContain(AUTH_HEADER.split(' ')[1]);
+    });
+
+    it('warns at startup when --lan is on but no credentials are configured, and stops warning once they are', async () => {
+      cli = await startDetourCli(['--lan']);
+      expect(cli.stdout()).toContain('the proxy requires no credentials');
+      expect(cli.stdout()).toContain('Proxy authentication: off');
+      await cli.kill();
+
+      cli = await startDetourCli(['--lan', '--proxy-auth', CREDENTIALS]);
+      expect(cli.stdout()).not.toContain('the proxy requires no credentials');
+      expect(cli.stdout()).toContain('Proxy authentication: required');
+    });
+
+    it('rejects a malformed --proxy-auth value without starting the proxy', async () => {
+      const result = await runTsx(
+        ['src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', '--proxy-auth', 'no-colon-here'],
+        { cwd: REPO_ROOT, reject: false },
+      );
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain('--proxy-auth must be in the form <user>:<pass>');
+    });
+
+    it('persists credentials via `detour config --proxy-auth` (hashed) and applies them to a later start', async () => {
+      home = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-proxy-auth-e2e-'));
+      const env = { HOME: home, USERPROFILE: home };
+      headerEcho = await startHeaderEchoServer();
+
+      const configured = await runTsx(['src/cli.ts', 'config', '--proxy-auth', CREDENTIALS], {
+        cwd: REPO_ROOT,
+        reject: false,
+        env,
+      });
+      expect(configured.exitCode).toBe(0);
+      expect(configured.stdout).toContain('proxyAuth = on (user agent)');
+      const stored = JSON.parse(fs.readFileSync(path.join(home, '.detour', 'config.json'), 'utf8')) as {
+        proxyAuth: { username: string; passwordHash: string };
+      };
+      expect(stored.proxyAuth.username).toBe('agent');
+      expect(JSON.stringify(stored)).not.toContain('hunter2');
+
+      // No `--proxy-auth` on this start at all — it has to come from the
+      // config file written just above.
+      cli = await startDetourCli([], env);
+      expect(cli.stdout()).toContain('Proxy authentication: required');
+      expect((await requestWithChallenge(cli.port, headerEcho.port)).status).toBe(407);
+      const allowed = await requestThroughProxy(cli.port, headerEcho.port, '/guarded', {
+        'Proxy-Authorization': AUTH_HEADER,
+      });
+      expect(allowed.status).toBe(200);
+    }, 40_000);
+  });
+
+  /**
+   * Dashboard HTTPS (issue #159). `dashboardServer.rateLimit.test.ts` and
+   * `dashboardServer.tls.test.ts` already cover the login rate limiting and
+   * the TLS mechanics themselves against `startDashboardServer` directly —
+   * these focus on what only a real spawned CLI process can prove: that
+   * `--lan` actually flips the default, `--dashboard-tls off` actually
+   * overrides it, and the cert a real client receives really is CA-signed
+   * (not just "some TLS handshake succeeded").
+   */
+  describe('dashboard HTTPS (issue #159)', () => {
+    /** The dashboard cert is CA-signed but the CA itself isn't in this test process's trust store — same as a real one until a user installs it. */
+    function connectDashboardTls(port: number): Promise<tls.PeerCertificate> {
+      return new Promise((resolve, reject) => {
+        const socket = tls.connect({ host: 'localhost', port, rejectUnauthorized: false }, () => {
+          resolve(socket.getPeerCertificate());
+          socket.destroy();
+        });
+        socket.on('error', reject);
+      });
+    }
+
+    function connectDashboardWs(scheme: 'ws' | 'wss', port: number): Promise<unknown> {
+      return new Promise((resolve, reject) => {
+        const socket = new WebSocket(`${scheme}://localhost:${port}/ws`, { rejectUnauthorized: false });
+        const onMessage = (raw: WebSocket.RawData) => {
+          const message = JSON.parse(raw.toString()) as { type: string };
+          if (message.type !== 'backlog') return;
+          socket.off('message', onMessage);
+          resolve(message);
+          socket.close();
+        };
+        socket.on('message', onMessage);
+        socket.once('error', reject);
+      });
+    }
+
+    it('defaults the dashboard to HTTPS once --lan is on, with a CA-signed cert and real traffic over it', async () => {
+      const cli = await startDetourCliReady(['--port', '0', '--dashboard-port', '0', '--lan']);
+      try {
+        expect(cli.stdout()).toContain("Dashboard transport: HTTPS (Detour's CA)");
+        expect(cli.stdout()).toMatch(new RegExp(`Dashboard → https://localhost:${cli.dashboardPort}\\b`));
+
+        const cert = await connectDashboardTls(cli.dashboardPort!);
+        expect(cert.subjectaltname).toMatch(/DNS:\s*localhost\b/);
+        expect(cert.subjectaltname).toMatch(/IP Address:\s*127\.0\.0\.1\b/);
+
+        const message = await connectDashboardWs('wss', cli.dashboardPort!);
+        expect(message).toMatchObject({ type: 'backlog' });
+      } finally {
+        await cli.kill();
+      }
+    }, 20_000);
+
+    it('stays on plain HTTP for a localhost-only dashboard (no --lan)', async () => {
+      const cli = await startDetourCliReady(['--port', '0', '--dashboard-port', '0']);
+      try {
+        expect(cli.stdout()).toContain('Dashboard transport: HTTP (--dashboard-tls on to encrypt)');
+        expect(cli.stdout()).toMatch(new RegExp(`Dashboard → http://localhost:${cli.dashboardPort}\\b`));
+        const message = await connectDashboardWs('ws', cli.dashboardPort!);
+        expect(message).toMatchObject({ type: 'backlog' });
+      } finally {
+        await cli.kill();
+      }
+    }, 20_000);
+
+    it('--dashboard-tls off overrides the --lan default back to plain HTTP', async () => {
+      const cli = await startDetourCliReady([
+        '--port',
+        '0',
+        '--dashboard-port',
+        '0',
+        '--lan',
+        '--dashboard-tls',
+        'off',
+      ]);
+      try {
+        expect(cli.stdout()).toContain('Dashboard transport: HTTP (--dashboard-tls on to encrypt)');
+        expect(cli.stdout()).toMatch(new RegExp(`Dashboard → http://localhost:${cli.dashboardPort}\\b`));
+        const message = await connectDashboardWs('ws', cli.dashboardPort!);
+        expect(message).toMatchObject({ type: 'backlog' });
+      } finally {
+        await cli.kill();
+      }
+    }, 20_000);
+
+    it('--dashboard-tls on forces HTTPS even without --lan', async () => {
+      const cli = await startDetourCliReady(['--port', '0', '--dashboard-port', '0', '--dashboard-tls', 'on']);
+      try {
+        expect(cli.stdout()).toContain("Dashboard transport: HTTPS (Detour's CA)");
+        const message = await connectDashboardWs('wss', cli.dashboardPort!);
+        expect(message).toMatchObject({ type: 'backlog' });
+      } finally {
+        await cli.kill();
+      }
+    }, 20_000);
+  });
+
+  describe('upstream TLS verification and mTLS (issue #160)', () => {
+    it('reports a specific "certificate verification failed" message (not a generic error) against an untrusted self-signed upstream by default', async () => {
+      const upstream = await startHttpsUpstreamServer();
+      cli = await startDetourCli();
+      try {
+        const url = `https://localhost:${upstream.port}/hello`;
+        const { exchange } = await waitForExchange(cli.dashboardPort, 'response', url);
+        await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/hello').catch(() => undefined);
+        const result = await exchange;
+        expect(result.error).toContain('Upstream certificate verification failed');
+        expect(result.error).toMatch(/self.signed/i);
+        expect(result.error).toContain('--upstream-ca');
+        expect(result.error).toContain('--insecure-upstream');
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('--upstream-ca <path> reaches a private-CA-signed upstream, and the dashboard shows its real certificate', async () => {
+      const { caPem, key, cert } = generateCaAndLeaf('localhost');
+      const upstream = await new Promise<{ port: number; close: () => Promise<void> }>((resolve, reject) => {
+        const server = https.createServer({ key, cert }, (req, res) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ method: req.method, path: req.url }));
+        });
+        server.on('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+          const address = server.address();
+          if (!address || typeof address === 'string') return reject(new Error('failed to bind'));
+          resolve({ port: address.port, close: () => new Promise((res) => server.close(() => res())) });
+        });
+      });
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+      const caPath = path.join(tmpDir, 'upstream-ca.pem');
+      fs.writeFileSync(caPath, caPem);
+      cli = await startDetourCli(['--upstream-ca', caPath]);
+      try {
+        const url = `https://localhost:${upstream.port}/hello`;
+        const { exchange } = await waitForExchange(cli.dashboardPort, 'response', url);
+        const result = await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/hello');
+        expect(result.status).toBe(200);
+
+        const captured = await exchange;
+        expect(captured.certificate?.authorized).toBe(true);
+        expect(captured.certificate?.subject).toContain('localhost');
+        expect(captured.certificate?.issuer).toContain('e2e-test-ca');
+        expect(captured.certificate?.fingerprint256).toBeTruthy();
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('--insecure-upstream reaches a self-signed upstream, and flags the exchange as unverified', async () => {
+      const upstream = await startHttpsUpstreamServer();
+      cli = await startDetourCli(['--insecure-upstream']);
+      try {
+        // Waits for the banner's very last line rather than asserting on
+        // `cli.stdout()` immediately: `startDetourCli`'s own ready-wait only
+        // waits for the earlier "Dashboard →" line, and this warning is
+        // printed several lines after it in the same (synchronous) banner —
+        // late enough that it can still be in flight over the child
+        // process's stdout pipe by the time this assertion would otherwise
+        // run, an intermittent race unrelated to whether the flag actually
+        // took effect.
+        await waitForStdout(cli, /Press Ctrl\+C to stop\./);
+        expect(cli.stdout()).toContain('upstream TLS certificate verification is OFF for this entire session');
+
+        const url = `https://localhost:${upstream.port}/hello`;
+        const { exchange } = await waitForExchange(cli.dashboardPort, 'response', url);
+        const result = await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/hello');
+        expect(result.status).toBe(200);
+
+        const captured = await exchange;
+        expect(captured.certificate?.authorized).toBe(false);
+        expect(captured.certificate?.authorizationError).toBeTruthy();
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('--client-cert/--client-key present a client certificate an mTLS-requiring upstream accepts, where a plain --insecure-upstream request is rejected', async () => {
+      const server = generateCaAndLeaf('localhost');
+      const client = generateCaAndLeaf('e2e-client');
+      const upstream = await startMtlsUpstreamServer({ key: server.key, cert: server.cert }, client.caPem);
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+      const clientCertPath = path.join(tmpDir, 'client.crt');
+      const clientKeyPath = path.join(tmpDir, 'client.key');
+      fs.writeFileSync(clientCertPath, client.cert);
+      fs.writeFileSync(clientKeyPath, client.key);
+      // `--insecure-upstream` here is only about trusting the *server's* own
+      // cert (self-signed from this test's perspective) — orthogonal to
+      // mTLS, which is the server separately demanding a client cert.
+      cli = await startDetourCli([
+        '--insecure-upstream',
+        '--client-cert',
+        clientCertPath,
+        '--client-key',
+        clientKeyPath,
+      ]);
+      try {
+        const result = await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/hello');
+        expect(result.status).toBe(200);
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('rejects the mTLS-requiring upstream without --client-cert (proving the previous test actually needed it)', async () => {
+      const server = generateCaAndLeaf('localhost');
+      const client = generateCaAndLeaf('e2e-client');
+      const upstream = await startMtlsUpstreamServer({ key: server.key, cert: server.cert }, client.caPem);
+      cli = await startDetourCli(['--insecure-upstream']);
+      try {
+        const result = await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/hello');
+        expect(result.status).toBe(504);
+        expect(result.body).toContain('certificate required');
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('rejects a self-signed wss:// upstream by default, the same as the plain-HTTPS case', async () => {
+      const upstream = await startWssEchoServer();
+      cli = await startDetourCli();
+      try {
+        const url = `wss://127.0.0.1:${upstream.port}/chat`;
+        const { connection } = await waitForWsClose(cli.dashboardPort, url);
+        connectWssThroughProxy(cli.port, cli.caCertPath, upstream.port, '/chat').on('error', () => undefined);
+        const result = await connection;
+        // The client's own WS 'error' is just a generic upgrade failure —
+        // only the dashboard's captured connection (via `describeUpstreamTlsError`,
+        // wired into the WS error path the same way it already was for the
+        // HTTP(S) path) carries the specific reason.
+        expect(result.error).toContain('Upstream certificate verification failed');
+        expect(result.error).toMatch(/self.signed/i);
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('--insecure-upstream also reaches a self-signed wss:// upstream, not just plain HTTPS', async () => {
+      const upstream = await startWssEchoServer();
+      cli = await startDetourCli(['--insecure-upstream']);
+      try {
+        const socket = connectWssThroughProxy(cli.port, cli.caCertPath, upstream.port, '/chat');
+        await new Promise<void>((resolve, reject) => {
+          socket.once('open', resolve);
+          socket.once('error', reject);
+        });
+        const reply = await new Promise<string>((resolve, reject) => {
+          socket.once('message', (data: Buffer) => resolve(data.toString('utf8')));
+          socket.once('error', reject);
+          socket.send('hello');
+        });
+        expect(reply).toBe('hello');
+        socket.close(1000, 'done');
+      } finally {
+        await upstream.close();
+      }
+    });
+  });
+
   describe('HTTP/2 (issue #16)', () => {
     // Detour's outbound request to the fake upstream server below hits its
     // throwaway self-signed cert — the same trust problem a real dev
@@ -2487,6 +3309,137 @@ describe('detour start (CLI, end-to-end)', () => {
         await slowUpstream.close();
       }
     }, 15_000);
+  });
+
+  describe('upstream HTTP/2 (issue #166)', () => {
+    const insecureUpstreamEnv = { NODE_TLS_REJECT_UNAUTHORIZED: '0' };
+
+    it('ALPN-negotiates HTTP/2 with a real h2-only upstream server (h1 client) and reports upstreamProtocol', async () => {
+      const upstream = await startHttp2UpstreamServer();
+      cli = await startDetourCli([], insecureUpstreamEnv);
+      try {
+        const { exchange } = await waitForExchange(
+          cli.dashboardPort,
+          'response',
+          `https://localhost:${upstream.port}/hello`,
+        );
+        const result = await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/hello');
+        expect(result.status).toBe(200);
+        expect(JSON.parse(result.body)).toEqual({ method: 'GET', path: '/hello' });
+        expect((await exchange).upstreamProtocol).toBe('HTTP/2');
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('an h2 client through an h2-only upstream stays h2 on both legs', async () => {
+      const upstream = await startHttp2UpstreamServer();
+      cli = await startDetourCli([], insecureUpstreamEnv);
+      let session: http2.ClientHttp2Session | undefined;
+      let tlsSocket: tls.TLSSocket | undefined;
+      try {
+        const { exchange } = await waitForExchange(
+          cli.dashboardPort,
+          'response',
+          `https://localhost:${upstream.port}/hello`,
+        );
+        const connected = await connectHttp2ThroughProxy(cli.port, 'localhost', upstream.port, cli.caCertPath);
+        session = connected.session;
+        tlsSocket = connected.tlsSocket;
+        expect(connected.tlsSocket.alpnProtocol).toBe('h2');
+
+        const result = await h2Get(session, `localhost:${upstream.port}`, '/hello');
+        expect(result.status).toBe(200);
+        expect(JSON.parse(result.body)).toEqual({ method: 'GET', path: '/hello' });
+        expect((await exchange).upstreamProtocol).toBe('HTTP/2');
+      } finally {
+        session?.close();
+        tlsSocket?.destroy();
+        await upstream.close();
+      }
+    });
+
+    it('multiplexes a second request to the same h2 upstream host onto the already-established session', async () => {
+      const upstream = await startHttp2UpstreamServer();
+      cli = await startDetourCli([], insecureUpstreamEnv);
+      try {
+        const first = await waitForExchange(cli.dashboardPort, 'response', `https://localhost:${upstream.port}/one`);
+        await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/one');
+        const firstExchange = await first.exchange;
+        expect(firstExchange.upstreamProtocol).toBe('HTTP/2');
+        // The session-establishing request itself is never "reused" — only
+        // the second+ one riding the already-open session is (issue #162's
+        // same distinction for the HTTP/1.1 keep-alive pool).
+        expect(firstExchange.timing?.connectionReused).not.toBe(true);
+
+        const second = await waitForExchange(cli.dashboardPort, 'response', `https://localhost:${upstream.port}/two`);
+        await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/two');
+        const secondExchange = await second.exchange;
+        expect(secondExchange.upstreamProtocol).toBe('HTTP/2');
+        // The actual multiplexing claim this test exists to verify: without
+        // it, a regression that silently re-probed/opened a brand-new h2
+        // session per request would still pass every other assertion here
+        // unchanged, since the h2-only test server accepts h2 on every
+        // fresh connection too.
+        expect(secondExchange.timing?.connectionReused).toBe(true);
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('--no-http2-upstream pins the proxy→upstream leg to HTTP/1.1 even though the upstream offers h2', async () => {
+      // A dual-protocol upstream (h1 *and* h2 via ALPN), not the h2-only
+      // one above: proves specifically that `--no-http2-upstream` skips the
+      // ALPN probe (this server would happily negotiate h2 if it were
+      // offered), rather than merely that an h2-only server was
+      // unreachable for some other reason.
+      const upstream = await startDualProtocolUpstreamServer();
+      cli = await startDetourCli(['--no-http2-upstream'], insecureUpstreamEnv);
+      try {
+        const { exchange } = await waitForExchange(
+          cli.dashboardPort,
+          'response',
+          `https://localhost:${upstream.port}/hello`,
+        );
+        const result = await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/hello');
+        expect(result.status).toBe(200);
+        expect(JSON.parse(result.body)).toEqual({ method: 'GET', path: '/hello' });
+        expect((await exchange).upstreamProtocol).toBe('HTTP/1.1');
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('forwards an h2 upstream response’s gRPC-style trailers on to an h2 client (issue #166’s gRPC acceptance criterion)', async () => {
+      const upstream = await startHttp2UpstreamServer(() => ({ 'grpc-status': '0', 'grpc-message': 'OK' }));
+      cli = await startDetourCli([], insecureUpstreamEnv);
+      let session: http2.ClientHttp2Session | undefined;
+      let tlsSocket: tls.TLSSocket | undefined;
+      try {
+        const connected = await connectHttp2ThroughProxy(cli.port, 'localhost', upstream.port, cli.caCertPath);
+        session = connected.session;
+        tlsSocket = connected.tlsSocket;
+
+        const trailers = await new Promise<http2.IncomingHttpHeaders>((resolve, reject) => {
+          const req = session!.request({
+            ':path': '/hello',
+            ':method': 'GET',
+            ':authority': `localhost:${upstream.port}`,
+            te: 'trailers',
+          });
+          req.on('trailers', resolve);
+          req.on('error', reject);
+          req.resume();
+          req.end();
+        });
+        expect(trailers['grpc-status']).toBe('0');
+        expect(trailers['grpc-message']).toBe('OK');
+      } finally {
+        session?.close();
+        tlsSocket?.destroy();
+        await upstream.close();
+      }
+    });
   });
 
   describe('gRPC detection and decoding (issue #18)', () => {
@@ -3116,8 +4069,11 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
         if (
           Object.values(os.networkInterfaces()).some((iface) => iface?.some((i) => i.family === 'IPv4' && !i.internal))
         ) {
+          // The dashboard's own scheme is https:// by default under --lan
+          // now (issue #159) — the proxy's stays http:// either way (it has
+          // no TLS listener of its own; `--proxy-auth` is its equivalent).
           expect(cli.stdout()).toMatch(
-            /Reachable on your network at:\n {2}Proxy\s+→ http:\/\/\d+\.\d+\.\d+\.\d+:\d+\n {2}Dashboard → http:\/\/\d+\.\d+\.\d+\.\d+:\d+/,
+            /Reachable on your network at:\n {2}Proxy\s+→ http:\/\/\d+\.\d+\.\d+\.\d+:\d+\n {2}Dashboard → https:\/\/\d+\.\d+\.\d+\.\d+:\d+/,
           );
         }
       } finally {

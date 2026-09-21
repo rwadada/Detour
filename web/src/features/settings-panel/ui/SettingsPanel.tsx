@@ -191,9 +191,10 @@ function BlockHostsSection() {
  * guessing a value that might immediately flip.
  *
  * The LAN warning text below is hand-matched to the CLI's own
- * `LAN_ACCESS_WARNING` constant (`src/cli.ts`) — this is a separate,
- * standalone-built package with no access to that constant, so update both
- * together if the wording (or the security posture it describes) changes.
+ * `LAN_ACCESS_WARNING` constant (`src/presentation/banner.ts`) — this is a
+ * separate, standalone-built package with no access to that constant, so
+ * update both together if the wording (or the security posture it
+ * describes) changes.
  */
 function StartupDefaultsSection() {
   const userConfig = useUserConfigStore((s) => s.userConfig);
@@ -245,8 +246,9 @@ function StartupDefaultsSection() {
         >
           ⚠ LAN access has no login of any kind — anyone on your network could reach the dashboard, view decrypted HTTPS
           traffic through it, or edit rules. (The proxy itself is always reachable from your network regardless of this
-          setting — a proxy nothing else on the network can reach isn't much of a proxy.) Only turn this on if you trust
-          every device on your network.
+          setting, and unauthenticated too unless you set <code className="font-mono-ui">--proxy-auth</code> — a proxy
+          nothing else on the network can reach isn't much of a proxy.) Only turn this on if you trust every device on
+          your network.
         </p>
         {toggle('lanAccess', 'Allow LAN access', true)}
       </div>

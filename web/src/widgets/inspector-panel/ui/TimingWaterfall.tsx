@@ -19,12 +19,23 @@ const PHASES: ReadonlyArray<{ key: keyof ExchangeTiming; label: string; color: s
  * HTTP, or every field when the exchange never reached upstream) is simply
  * absent — its color never appears in the bar or the legend.
  */
-export function TimingWaterfall({ timing }: { timing: ExchangeTiming | undefined }) {
+export function TimingWaterfall({
+  timing,
+  upstreamProtocol,
+}: {
+  timing: ExchangeTiming | undefined;
+  /** Which protocol the proxy→upstream leg actually spoke (issue #166) — surfaced here since it's a connection-level fact, same as `connectionReused` below. */
+  upstreamProtocol?: 'HTTP/1.1' | 'HTTP/2';
+}) {
   const measured = PHASES.map((phase) => ({ ...phase, ms: timing?.[phase.key] })).filter(
     (phase): phase is { key: keyof ExchangeTiming; label: string; color: string; ms: number } => phase.ms !== undefined,
   );
 
   if (measured.length === 0) {
+    // `timing.connectionReused` (issue #162) never coincides with an empty
+    // `measured` here: `attachTiming` only ever attaches a `timing` object
+    // once at least one of these same five phases is set, so a `timing`
+    // that reaches this component at all always has something to show.
     return (
       <p className="p-3 text-xs text-[var(--muted)]">
         No timing breakdown available — this request never reached an upstream server (e.g. a mock, a blocked host, or a
@@ -37,6 +48,19 @@ export function TimingWaterfall({ timing }: { timing: ExchangeTiming | undefined
 
   return (
     <div className="p-3">
+      {timing?.connectionReused && (
+        <p className="mb-2 text-xs text-[var(--muted)]">
+          Connection reused (keep-alive) — DNS/TCP/TLS were not repeated for this request.
+        </p>
+      )}
+      {upstreamProtocol === 'HTTP/2' && (
+        <p className="mb-2 text-xs text-[var(--muted)]">
+          {/* "(multiplexed)" only once this exchange actually rode an already-established session
+              (`timing.connectionReused`, set for the h2 case too) — the request that establishes the
+              session isn't multiplexed with anything yet. */}
+          Upstream connection: HTTP/2{timing?.connectionReused ? ' (multiplexed onto an existing session)' : ''}.
+        </p>
+      )}
       <div
         className="flex h-4 w-full overflow-hidden rounded-sm border border-[var(--border)]"
         role="img"

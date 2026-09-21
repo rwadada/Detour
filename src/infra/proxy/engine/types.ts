@@ -1,5 +1,6 @@
 import type http from 'node:http';
-import type { ExchangeTiming } from '../../../domain/exchange/types';
+import type http2 from 'node:http2';
+import type { ExchangeTiming, UpstreamCertificate } from '../../../domain/exchange/types';
 
 /**
  * Type surface for `ProxyEngine` (issue #42's replacement for
@@ -44,23 +45,69 @@ export type OnWebSocketCloseParams = (
 ) => void;
 export type OnWebSocketErrorParams = (ctx: IWebSocketContext, err: MaybeError) => void;
 
+/**
+ * Every proxy→upstream request object the pipeline writes to (issue #166):
+ * a genuine `http.ClientRequest` for an HTTP/1.1 upstream, or a raw h2
+ * `ClientHttp2Stream` when the upstream negotiated HTTP/2 — both are
+ * `Duplex`es with the same `write()`/`end()`/`on('error')` surface every
+ * consumer (`actionsRuntime.ts`, `requestBreakpoint.ts`, `scriptRequestHook.ts`)
+ * actually uses.
+ */
+export type UpstreamRequest = http.ClientRequest | http2.ClientHttp2Stream;
+
+/**
+ * Every proxy→upstream response object the pipeline reads generically
+ * (issue #166): a genuine `http.IncomingMessage` for an HTTP/1.1 upstream,
+ * or an h2 `ClientHttp2Stream` carrying its response's `:status`/headers
+ * copied onto it as plain `statusCode`/`statusMessage`/`headers`
+ * properties (see `upstreamHttp2.ts`'s `adaptHttp2Response`) — both support
+ * the same `pause`/`resume`/`on('data')`/`once('end'|'aborted'|'close')`/
+ * `readableEnded` every consumer reads structurally, and both allow
+ * reassigning `statusCode`/`statusMessage`/`headers` directly (a
+ * `breakpoint`/`script` rule edits a response in place before it's flushed
+ * to the client).
+ */
+export type UpstreamResponse =
+  | http.IncomingMessage
+  | (http2.ClientHttp2Stream & { statusCode?: number; statusMessage?: string; headers: http.IncomingHttpHeaders });
+
+export interface ProxyToServerRequestOptions {
+  method: string;
+  path: string;
+  host: string;
+  port: string | number | null | undefined;
+  headers: Record<string, string>;
+  agent: http.Agent;
+  /**
+   * `ProxyEngineOptions.upstreamTls` (issue #160), set only for an SSL
+   * request — a per-request option rather than baked into `agent`'s own
+   * constructor, since `HttpsProxyAgent`/`SocksProxyAgent` (the
+   * `--upstream-proxy` case) only ever apply a *constructor*-level
+   * `ca`/`rejectUnauthorized`/`cert`/`key` to their own connection to
+   * the upstream proxy itself, never to the CONNECT-tunneled
+   * destination behind it — verified empirically. A per-request option
+   * reaches both of those classes' own `connect()` methods (which use
+   * it directly for the destination's `tls.connect()`) and a plain
+   * `https.Agent`'s direct connection identically, so this applies the
+   * same way whether or not `--upstream-proxy` is also in play. The same
+   * options also seed `UpstreamHttp2Pool`'s own ALPN probe (issue #166),
+   * so this applies identically whichever protocol the upstream turns
+   * out to speak.
+   */
+  ca?: string[];
+  rejectUnauthorized?: boolean;
+  cert?: string;
+  key?: string;
+}
+
 export interface IContext {
   readonly uuid: string;
   readonly isSSL: boolean;
   readonly clientToProxyRequest: http.IncomingMessage;
   readonly proxyToClientResponse: http.ServerResponse;
-  proxyToServerRequest: http.ClientRequest | undefined;
-  serverToProxyResponse: http.IncomingMessage | undefined;
-  proxyToServerRequestOptions:
-    | undefined
-    | {
-        method: string;
-        path: string;
-        host: string;
-        port: string | number | null | undefined;
-        headers: Record<string, string>;
-        agent: http.Agent;
-      };
+  proxyToServerRequest: UpstreamRequest | undefined;
+  serverToProxyResponse: UpstreamResponse | undefined;
+  proxyToServerRequestOptions: undefined | ProxyToServerRequestOptions;
   responseContentPotentiallyModified: boolean;
   /**
    * DNS/TCP/TLS/TTFB timing for this exchange's proxy→upstream connection
@@ -72,6 +119,26 @@ export interface IContext {
    * — actually finishes.
    */
   timing?: ExchangeTiming;
+  /**
+   * The upstream server's real TLS certificate (issue #160), filled in by
+   * `ProxyEngine.trackSocketTiming` once the socket's handshake completes
+   * (or, for a reused keep-alive socket, from that connection's cached
+   * value). Undefined for plain HTTP, and for HTTPS whose handshake never
+   * completed at all.
+   */
+  certificate?: UpstreamCertificate;
+  /**
+   * Which protocol the proxy→upstream leg actually spoke for this exchange
+   * (issue #166) — `'HTTP/2'` once `UpstreamHttp2Pool.acquire` ALPN-negotiates
+   * h2 with the real upstream server, `'HTTP/1.1'` otherwise (including
+   * every plain-HTTP request, which never attempts h2 upstream at all — see
+   * `UpstreamHttp2Pool`'s own doc comment for why). Set right before
+   * dispatch, same as `timing`; undefined for an exchange that never
+   * reached upstream. Independent of `CapturedExchange.protocol`, which is
+   * the *client*-facing side (issue #16) — the two can differ in either
+   * direction (an h1 client through an h2 upstream, or vice versa).
+   */
+  upstreamProtocol?: 'HTTP/1.1' | 'HTTP/2';
   /**
    * Absolute timestamp (ms since epoch) the response headers arrived, i.e.
    * right after `timing.ttfbMs` elapsed. Kept separate from `timing` (whose

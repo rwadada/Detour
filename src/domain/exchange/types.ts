@@ -22,6 +22,63 @@ export interface ExchangeTiming {
   ttfbMs?: number;
   /** Response body transfer: from the response headers arriving to the body finishing (including any Throttle delay applied to it). */
   transferMs?: number;
+  /**
+   * Whether this exchange rode an already-open keep-alive socket to the
+   * same upstream host rather than opening a fresh one (issue #162) —
+   * exactly the case where `dnsMs`/`tcpMs`/`tlsMs` are absent not because
+   * they don't apply (a plain-IP host, an HTTP-not-HTTPS request) but
+   * because there was nothing left to measure. Distinguishing the two
+   * matters for the dashboard's Waterfall (issue #141): a first-ever
+   * request to a host and a reused-connection one both lack certain
+   * phases, but only the second one is actually representative of what a
+   * real client experiences on its 2nd+ request to the same host — the
+   * whole point `#162`'s `keepAlive` closes.
+   */
+  connectionReused?: boolean;
+}
+
+/**
+ * The upstream server's real TLS certificate (issue #160), captured off the
+ * proxy→upstream socket's handshake — the one piece of the real connection
+ * a client can never see for itself once Detour is MITM'ing it, since the
+ * client only ever sees Detour's own substituted leaf cert. Undefined for a
+ * plain-HTTP exchange, and for an HTTPS one whose handshake never completed
+ * (verification failed outright with the default `rejectUnauthorized: true`
+ * — see the exchange's own `error` for that case instead).
+ */
+export interface UpstreamCertificate {
+  /** The leaf certificate's subject, as `tls.PeerCertificate.subject`'s parsed fields flattened to one string (e.g. `CN=example.com`). */
+  subject: string;
+  /** The issuing CA's subject, same format as `subject`. */
+  issuer: string;
+  /** Validity start, as the certificate itself encodes it (`tls.PeerCertificate.valid_from`). */
+  validFrom: string;
+  /** Validity end, as the certificate itself encodes it (`tls.PeerCertificate.valid_to`). */
+  validTo: string;
+  /** Subject Alternative Names, comma-separated exactly as `tls.PeerCertificate.subjectaltname` reports them (e.g. `DNS:example.com, DNS:*.example.com`). Undefined if the certificate has none. */
+  subjectAltName?: string;
+  /** SHA-256 fingerprint of the DER-encoded certificate, colon-separated hex (`tls.PeerCertificate.fingerprint256`) — a stable identity check independent of subject/issuer text. */
+  fingerprint256: string;
+  /**
+   * Whether Node's own TLS stack considers this certificate chain valid
+   * (`tls.TLSSocket.authorized`) — `false` whenever verification failed but
+   * the connection was still allowed to proceed, which only happens under
+   * `--insecure-upstream`. A verification failure that instead *aborted*
+   * the handshake (the default, `rejectUnauthorized: true`) never reaches
+   * this far at all — see this exchange's own `error` for that case.
+   */
+  authorized: boolean;
+  /** Why `authorized` is `false` (`tls.TLSSocket.authorizationError`'s message) — e.g. "self signed certificate". Undefined when `authorized` is `true`. */
+  authorizationError?: string;
+  /**
+   * Whether this exchange's cert info came from the connection's original
+   * handshake rather than this exchange's own (a reused keep-alive socket,
+   * issue #162, never re-handshakes) — mirrors `ExchangeTiming.connectionReused`
+   * for the same underlying reason: the cert is real and accurate either
+   * way, this just says which request actually paid for the handshake that
+   * produced it.
+   */
+  fromReusedConnection?: boolean;
 }
 
 /** Identifies the local process that owned a captured exchange's client→proxy TCP connection (issue #147) — see `CapturedExchange.clientProcess`. */
@@ -48,11 +105,26 @@ export interface CapturedExchange {
    * The protocol version negotiated with the client for this exchange
    * (issue #16) — `'HTTP/2'` when the client ALPN-negotiated h2 against the
    * MITM'd TLS server (only possible when `listen.http2` is enabled; see
-   * `ProxyServerOptions.http2Enabled`), `'HTTP/1.1'` otherwise. The
-   * proxy→upstream leg is always HTTP/1.1 regardless of this value — only
-   * the client-facing side can differ.
+   * `ProxyServerOptions.http2Enabled`), `'HTTP/1.1'` otherwise. Independent
+   * of `upstreamProtocol` below (issue #166) — the two legs can differ in
+   * either direction.
    */
   protocol: 'HTTP/1.1' | 'HTTP/2';
+  /**
+   * The protocol version the proxy→upstream leg actually spoke for this
+   * exchange (issue #166) — `'HTTP/2'` once the real upstream server
+   * ALPN-negotiates h2 (an internal per-host decision; see
+   * `UpstreamHttp2Pool`), `'HTTP/1.1'` otherwise, including every
+   * plain-HTTP request (h2c is out of scope — see that same doc comment).
+   * Undefined for an exchange that never reached upstream (a `mock`/
+   * blocked/request-phase-aborted response). Before this existed, this leg
+   * was always HTTP/1.1 with no way to tell — now it's worth surfacing on
+   * its own, since it can differ from `protocol` above in either direction
+   * (an h1 client through an h2 upstream, or vice versa), which is exactly
+   * the mismatch this issue's own gRPC-over-h2-only-upstream scenario cares
+   * about being able to see.
+   */
+  upstreamProtocol?: 'HTTP/1.1' | 'HTTP/2';
   requestHeaders: IncomingHttpHeaders;
   requestBodySize: number;
   /**
@@ -77,6 +149,8 @@ export interface CapturedExchange {
   durationMs?: number;
   /** DNS/TCP/TLS/TTFB/transfer breakdown of `durationMs` (issue #140) — see `ExchangeTiming`. Undefined for an exchange that never reached upstream. */
   timing?: ExchangeTiming;
+  /** The upstream server's real TLS certificate (issue #160) — see `UpstreamCertificate`. Undefined for plain HTTP, and for HTTPS whose handshake never completed. */
+  certificate?: UpstreamCertificate;
   /**
    * The local process that opened the client→proxy TCP connection this
    * exchange arrived on (issue #147, macOS-only) — identifies which app on

@@ -1,22 +1,15 @@
 import { BookOpen, Check, ChevronLeft, ChevronRight, Copy, QrCode as QrCodeIcon } from 'lucide-react';
 import { useState } from 'react';
+import { useProxyInfoStore } from '@/entities/proxy-config';
 import { RulesEditorButton } from '@/features/rules-editor';
 import { RuleProfilesControl } from '@/features/rules-profiles';
 import { SettingsButton } from '@/features/settings-panel';
-import { getDashboardConnection, useConnectionStatus } from '@/shared/api';
+import { useConnectionStatus } from '@/shared/api';
 import { useCopyToClipboard } from '@/shared/lib/useCopyToClipboard';
 import { cn } from '@/shared/lib/utils';
 import { DetourLogo } from '@/shared/ui';
-import { createProxyInfoStore } from '../model/createProxyInfoStore';
 import { COLLAPSED_WIDTH, EXPANDED_WIDTH, useSidebarStore } from '../model/createSidebarStore';
 import { QrCode } from './QrCode';
-
-// The app's real proxy-info store, wired to the real dashboard connection.
-// Defined here (rather than in `model/createProxyInfoStore.ts`) so that
-// module stays a pure factory with no import-time side effect — importing
-// it in a test never opens a real WebSocket. See the factory's own doc
-// comment.
-const useProxyInfoStore = createProxyInfoStore(getDashboardConnection());
 
 const STATUS_LABEL: Record<string, string> = {
   connecting: 'Connecting…',
