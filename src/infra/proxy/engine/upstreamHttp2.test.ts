@@ -68,6 +68,11 @@ describe('buildHttp2RequestHeaders', () => {
     expect(headers['content-type']).toBe('application/json');
     expect(headers['Content-Type']).toBeUndefined();
   });
+
+  it('merges (rather than silently drops one of) a header name a script rule authored in two different casings', () => {
+    const headers = buildHttp2RequestHeaders(opts({ headers: { 'x-debug-id': 'a', 'X-Debug-Id': 'b' } }), true);
+    expect(headers['x-debug-id']).toBe('a, b');
+  });
 });
 
 describe('adaptHttp2Response', () => {

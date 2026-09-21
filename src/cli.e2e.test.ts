@@ -827,6 +827,8 @@ interface DashboardExchange {
   };
   /** Issue #166. */
   upstreamProtocol?: 'HTTP/1.1' | 'HTTP/2';
+  /** Issue #140/#162. */
+  timing?: { connectionReused?: boolean };
 }
 
 /**
@@ -3251,11 +3253,23 @@ describe('detour start (CLI, end-to-end)', () => {
       try {
         const first = await waitForExchange(cli.dashboardPort, 'response', `https://localhost:${upstream.port}/one`);
         await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/one');
-        expect((await first.exchange).upstreamProtocol).toBe('HTTP/2');
+        const firstExchange = await first.exchange;
+        expect(firstExchange.upstreamProtocol).toBe('HTTP/2');
+        // The session-establishing request itself is never "reused" — only
+        // the second+ one riding the already-open session is (issue #162's
+        // same distinction for the HTTP/1.1 keep-alive pool).
+        expect(firstExchange.timing?.connectionReused).not.toBe(true);
 
         const second = await waitForExchange(cli.dashboardPort, 'response', `https://localhost:${upstream.port}/two`);
         await httpsRequestThroughProxy(cli.port, cli.caCertPath, upstream.port, '/two');
-        expect((await second.exchange).upstreamProtocol).toBe('HTTP/2');
+        const secondExchange = await second.exchange;
+        expect(secondExchange.upstreamProtocol).toBe('HTTP/2');
+        // The actual multiplexing claim this test exists to verify: without
+        // it, a regression that silently re-probed/opened a brand-new h2
+        // session per request would still pass every other assertion here
+        // unchanged, since the h2-only test server accepts h2 on every
+        // fresh connection too.
+        expect(secondExchange.timing?.connectionReused).toBe(true);
       } finally {
         await upstream.close();
       }

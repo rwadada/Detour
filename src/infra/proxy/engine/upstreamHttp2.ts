@@ -6,6 +6,20 @@ import type { UpstreamTlsOptions } from '../upstreamTlsOptions';
 import type { ProxyToServerRequestOptions } from './types';
 import { captureUpstreamCertificate } from './upstreamCertificate';
 
+/**
+ * Idle timeout for a pooled h2 session, in ms — mirrors `ProxyEngine`'s own
+ * `KEEP_ALIVE_AGENT_OPTIONS.timeout` for the HTTP/1.1 keep-alive pool
+ * (issue #162), which this file can't import directly (`proxyEngine.ts`
+ * already imports from here, and that constant isn't exported). Without
+ * this, a session to a host that's gone quiet — the ordinary case once a
+ * long-running Detour session moves on to debugging a different host —
+ * would stay open forever: unlike `httpsAgent`, `UpstreamHttp2Pool` has no
+ * `maxSockets`/`maxFreeSockets` cap either, so idle sessions are the only
+ * thing bounding how many stay open across a session that's touched many
+ * distinct hosts.
+ */
+const UPSTREAM_H2_IDLE_TIMEOUT_MS = 60_000;
+
 /** Per-phase connect timing for a fresh probe — same shape as `ExchangeTiming`'s own dns/tcp/tls fields, kept separate so this module doesn't depend on the exchange-facing type. */
 export interface ConnectTiming {
   dnsMs?: number;
@@ -236,11 +250,22 @@ export class UpstreamHttp2Pool {
     });
   }
 
-  /** Evicts a session once it goes away, so the next `acquire()` for that host re-probes instead of trying to multiplex onto a dead session forever. Also the session's own `'error'` listener — without one, Node treats an unhandled `'error'` on any EventEmitter as fatal. */
+  /**
+   * Evicts a session once it goes away, so the next `acquire()` for that
+   * host re-probes instead of trying to multiplex onto a dead session
+   * forever. Also the session's own `'error'` listener — without one, Node
+   * treats an unhandled `'error'` on any EventEmitter as fatal — and its
+   * idle-timeout: `UPSTREAM_H2_IDLE_TIMEOUT_MS` of no activity closes the
+   * session itself, which then reaches this same `evict` via the `'close'`
+   * listener just below (`session.close()` is a graceful GOAWAY, not an
+   * abrupt `destroy()`, so any request that raced in just before the
+   * timeout still gets to finish).
+   */
   private watchSession(key: string, session: http2.ClientHttp2Session): void {
     const evict = () => {
       if (this.sessions.get(key)?.session === session) this.sessions.delete(key);
     };
+    session.setTimeout(UPSTREAM_H2_IDLE_TIMEOUT_MS, () => session.close());
     session.once('close', evict);
     session.once('error', evict);
     session.once('goaway', evict);
@@ -301,8 +326,18 @@ export function buildHttp2RequestHeaders(opts: ProxyToServerRequestOptions, isSS
     // HTTP/2 field names must be lowercase (RFC 9113 §8.2) — normally
     // already true (Node lowercases every header name it parses off the
     // wire, on both the h1 and h2 client-facing paths), but a `rewrite`
-    // rule's `headers` config is hand-authored and can carry any casing.
-    headers[lower] = opts.headers[key];
+    // rule's `headers` config, or a `script` rule's `beforeRequest` hook
+    // (which can replace `opts.headers` outright), is hand-authored and can
+    // carry the same header name in more than one casing — ordinary JS
+    // object keys, so e.g. `x-debug-id` and `X-Debug-Id` both survive as
+    // distinct properties on `opts.headers` even though they name the same
+    // header. Lowercasing collapses them onto the same key here; merged
+    // (comma-joined, the standard way a repeated header is interpreted —
+    // RFC 9110 §5.3) rather than one silently overwriting the other by
+    // object-key enumeration order.
+    const value = opts.headers[key];
+    const existing = headers[lower];
+    headers[lower] = typeof existing === 'string' ? `${existing}, ${value}` : value;
   }
   headers[':method'] = opts.method;
   headers[':path'] = opts.path;
