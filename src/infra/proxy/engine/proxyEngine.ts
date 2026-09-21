@@ -756,7 +756,6 @@ export class ProxyEngine {
     timing: ExchangeTiming,
     session: http2.ClientHttp2Session,
   ): void {
-    ctx.upstreamProtocol = 'HTTP/2';
     const headers = buildHttp2RequestHeaders(opts, ctx.isSSL);
     const connectionReadyAt = Date.now();
     let stream: http2.ClientHttp2Stream;
@@ -766,6 +765,11 @@ export class ProxyEngine {
       this.emitError('PROXY_TO_SERVER_REQUEST_ERROR', ctx, err instanceof Error ? err : new Error(String(err)));
       return;
     }
+    // Only after `session.request()` actually succeeds — tagging the
+    // exchange `'HTTP/2'` before that point would mislabel a request that
+    // never went out over HTTP/2 at all (e.g. a session destroyed/GOAWAY'd
+    // in the brief window between `acquire()` resolving and this call).
+    ctx.upstreamProtocol = 'HTTP/2';
     ctx.proxyToServerRequest = stream;
 
     // Only for a failure *before* the response arrives (send failure,
