@@ -122,8 +122,6 @@
 
   @media (max-width: 780px) {
     .shell { grid-template-columns: minmax(0, 1fr); }
-    .sidebar { display: none; }
-    .sidebar.open { display: flex; }
   }
 
   /* ---------- top bar ---------- */
@@ -229,7 +227,18 @@
   }
 
   @media (max-width: 780px) {
+    /* This block's `.sidebar` used to be the *only* one at this breakpoint
+       — `display: none`/`.sidebar.open { display: flex }` lived in the
+       earlier `.shell` media block above instead. Same selector, same
+       specificity, but that earlier block came *before* the unconditional
+       `display: flex` in the base `.sidebar` rule below in source order —
+       so at any width, the base rule's `display: flex` won the cascade
+       and the sidebar never actually hid on mobile, overlapping the page
+       content edge-to-edge instead of collapsing behind the menu button.
+       Keeping the whole mobile `.sidebar` treatment in one block, below
+       the base rule, is what actually makes `display: none` win now. */
     .sidebar {
+      display: none;
       position: fixed;
       top: 56px;
       left: 0;
@@ -238,6 +247,7 @@
       z-index: 25;
       box-shadow: var(--shadow);
     }
+    .sidebar.open { display: flex; }
   }
 
   .nav-group-label {
