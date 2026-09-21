@@ -4,7 +4,7 @@ import type { BreakpointResponsePayload, CapturedExchange } from '../../../domai
 import type { Rule } from '../../../domain/rules/types';
 import type { BreakpointCoordinator } from '../../../usecase/breakpointCoordinator';
 import type { DetourEventBus } from '../../eventBus';
-import { attachTiming } from '../attachTiming';
+import { attachCertificate, attachTiming, attachUpstreamProtocol } from '../attachTiming';
 import type { ErrorCallback, IContext } from '../engine/types';
 
 export interface ResponseBreakpointDeps {
@@ -98,6 +98,8 @@ export function createResponseBreakpointHandler(deps: ResponseBreakpointDeps) {
           exchange.finishedAt = Date.now();
           exchange.durationMs = exchange.finishedAt - exchange.startedAt;
           attachTiming(exchange, ctx);
+          attachCertificate(exchange, ctx);
+          attachUpstreamProtocol(exchange, ctx);
           eventBus.emit('response', exchange);
           ctx.proxyToClientResponse.destroy();
           // Deliberately never calls `callback`: leaving it uncalled stops
@@ -126,6 +128,8 @@ export function createResponseBreakpointHandler(deps: ResponseBreakpointDeps) {
         exchange.finishedAt = Date.now();
         exchange.durationMs = exchange.finishedAt - exchange.startedAt;
         attachTiming(exchange, ctx);
+        attachCertificate(exchange, ctx);
+        attachUpstreamProtocol(exchange, ctx);
 
         ctx.onResponseData((_dataCtx, _chunk, cb) => cb(undefined, Buffer.alloc(0)));
         ctx.onResponseEnd((_endCtx, cb) => {
@@ -141,7 +145,10 @@ export function createResponseBreakpointHandler(deps: ResponseBreakpointDeps) {
       });
     };
 
-    if (res.complete) pause();
+    // `readableEnded`, not `.complete` (h2 upstream responses — issue #166
+    // — have no such property at all; see `ProxyEngine.pumpChunks`'s own
+    // doc comment for why this is the more precise check anyway).
+    if (res.readableEnded) pause();
     else res.once('end', pause);
   };
 }

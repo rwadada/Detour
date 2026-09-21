@@ -38,6 +38,7 @@ describe('printStartupBanner', () => {
       ruleEngine: undefined,
       dumpDir: undefined,
       http2Enabled: true,
+      http2UpstreamEnabled: true,
       protoPaths: [],
       dashboardPasswordSet: false,
       // Defaults to authenticated so the pre-existing tests below (which
@@ -49,14 +50,18 @@ describe('printStartupBanner', () => {
       upstreamProxyUrl: undefined,
       dashboardBuilt: true,
       lanAddresses: [],
+      insecureUpstream: false,
+      upstreamCaCount: 0,
+      clientCertSet: false,
       ...overrides,
     });
     return logged.join('\n');
   }
 
   it('reports the proxy port and HTTP/2 state', () => {
-    expect(print()).toContain('Detour proxy started → http://localhost:8080 (HTTP/2: on)');
-    expect(print({ http2Enabled: false })).toContain('HTTP/2: off');
+    expect(print()).toContain('Detour proxy started → http://localhost:8080 (HTTP/2: on, upstream HTTP/2: on)');
+    expect(print({ http2Enabled: false })).toContain('HTTP/2: off, upstream HTTP/2: on');
+    expect(print({ http2UpstreamEnabled: false })).toContain('HTTP/2: on, upstream HTTP/2: off');
   });
 
   it('says the dashboard is disabled under --headless rather than printing a URL', () => {

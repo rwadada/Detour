@@ -44,6 +44,17 @@ const PROXY_OPEN_WARNING =
   'the proxy requires no credentials — anyone on your network who points a device at it has their HTTPS decrypted into this session (and can use this machine as an egress hop). Require credentials with `--proxy-auth <user:pass>`, or persist them with `detour config --proxy-auth <user:pass>`';
 
 /**
+ * The startup banner's callout for `--insecure-upstream` (issue #160) —
+ * loud and unconditional (unlike `PROXY_OPEN_WARNING`, which only fires for
+ * a specific risky combination) because this flag disables a safety check
+ * for the *entire session*, silently: nothing about a normal request
+ * signals that its upstream's certificate went unverified apart from this
+ * one line at startup and the dashboard's own persistent header indicator.
+ */
+const INSECURE_UPSTREAM_WARNING =
+  'upstream TLS certificate verification is OFF for this entire session — every proxied HTTPS request accepts whatever certificate the upstream server presents, self-signed, expired, or otherwise. Only use this against a server you trust on a network you trust; prefer `--upstream-ca <path>` to trust a specific CA instead of disabling verification outright';
+
+/**
  * Formats `detour start`'s banner. Everything it reports is passed in
  * already resolved — whether the dashboard SPA is built, this machine's LAN
  * addresses, the upstream proxy URL with its credentials already redacted —
@@ -63,6 +74,8 @@ export function printStartupBanner(info: {
   ruleEngine: RuleEngine | undefined;
   dumpDir: string | undefined;
   http2Enabled: boolean;
+  /** Whether the proxy→upstream leg attempts HTTP/2 at all (issue #166's `--no-http2-upstream`) — independent of `http2Enabled` above, which only ever governs the client-facing side. */
+  http2UpstreamEnabled: boolean;
   protoPaths: string[];
   /** Whether `detour config --dashboard-password`/the Settings panel currently requires one (issue #66) — only relevant when `dashboardPort` isn't undefined. */
   dashboardPasswordSet: boolean;
@@ -76,9 +89,15 @@ export function printStartupBanner(info: {
   dashboardBuilt: boolean;
   /** This machine's LAN addresses, for the "reachable on your network at" list. */
   lanAddresses: string[];
+  /** Whether `--insecure-upstream` (issue #160) is disabling upstream TLS certificate verification for this session. */
+  insecureUpstream: boolean;
+  /** How many `--upstream-ca <path>` CAs were loaded (issue #160), 0 when none. */
+  upstreamCaCount: number;
+  /** Whether `--client-cert`/`--client-key` (issue #160) are configured for mTLS. */
+  clientCertSet: boolean;
 }): void {
   console.log(
-    `Detour proxy started → http://localhost:${info.proxyPort} (HTTP/2: ${info.http2Enabled ? 'on' : 'off'})`,
+    `Detour proxy started → http://localhost:${info.proxyPort} (HTTP/2: ${info.http2Enabled ? 'on' : 'off'}, upstream HTTP/2: ${info.http2UpstreamEnabled ? 'on' : 'off'})`,
   );
   console.log(`Proxy authentication: ${info.proxyAuthSet ? 'required (Basic)' : 'off (--proxy-auth <user:pass>)'}`);
   console.log(`Root CA certificate: ${info.caCertPath}`);
@@ -168,6 +187,18 @@ export function printStartupBanner(info: {
   }
   if (info.upstreamProxyUrl) {
     console.log(`Upstream proxy → ${info.upstreamProxyUrl}`);
+  }
+  if (info.upstreamCaCount > 0) {
+    console.log(`Upstream CA trust → ${info.upstreamCaCount} additional CA(s) loaded (--upstream-ca)`);
+  }
+  if (info.clientCertSet) {
+    console.log('Upstream client certificate → configured (--client-cert/--client-key)');
+  }
+  // Loud and unconditional (issue #160) — see `INSECURE_UPSTREAM_WARNING`'s
+  // own doc comment for why this doesn't get the same "only for a specific
+  // risky combination" treatment as `PROXY_OPEN_WARNING` above.
+  if (info.insecureUpstream) {
+    console.log(`⚠ SECURITY: ${INSECURE_UPSTREAM_WARNING}.`);
   }
   console.log('Press Ctrl+C to stop.');
 }

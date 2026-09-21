@@ -36,3 +36,28 @@ export function attachTiming(exchange: CapturedExchange, ctx: IContext): void {
   if (!hasMeasuredPhase) return;
   exchange.timing = ctx.timing;
 }
+
+/**
+ * Copies `ctx.certificate` (the upstream server's real TLS certificate,
+ * captured by `ProxyEngine.trackSocketTiming` once the socket's handshake
+ * completes — issue #160) onto the exchange. Unlike `ctx.timing`, `ctx.
+ * certificate` is never pre-set to an empty placeholder before anything is
+ * known — it only exists at all once a real certificate was actually
+ * captured — so there's no "everything undefined" case to guard against
+ * here the way `attachTiming` has to.
+ */
+export function attachCertificate(exchange: CapturedExchange, ctx: IContext): void {
+  if (ctx.certificate) exchange.certificate = ctx.certificate;
+}
+
+/**
+ * Copies `ctx.upstreamProtocol` (which protocol the proxy→upstream leg
+ * actually spoke, set by `ProxyEngine.dispatchHttp1Request`/
+ * `dispatchHttp2Request` right before dispatch — issue #166) onto the
+ * exchange. Same shape as `attachCertificate`: only ever set once an
+ * upstream request was actually dispatched, so no placeholder to guard
+ * against.
+ */
+export function attachUpstreamProtocol(exchange: CapturedExchange, ctx: IContext): void {
+  if (ctx.upstreamProtocol) exchange.upstreamProtocol = ctx.upstreamProtocol;
+}

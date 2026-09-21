@@ -7,7 +7,19 @@ export const Tabs = TabsPrimitive.Root;
 export function TabsList({ className, ...props }: React.ComponentProps<typeof TabsPrimitive.List>) {
   return (
     <TabsPrimitive.List
-      className={cn('inline-flex h-8 items-center gap-1 border-b border-[var(--border)]', className)}
+      className={cn(
+        // `overflow-x-auto` (issue #160): once there are enough tabs to not
+        // fit the panel's width (the Certificate tab was the one that first
+        // pushed this over), a `<Tabs>` root left as the *implicit* scroll
+        // container (via its own `overflow-hidden` — still a valid target
+        // for the browser's focus-driven "scroll into view", even with no
+        // visible scrollbar) shifts the whole panel, tab content included,
+        // left when a tab near the edge is clicked/focused — not just the
+        // tab strip. Giving the list its own scroll container instead
+        // contains that scroll to the tab strip alone.
+        'inline-flex h-8 items-center gap-1 overflow-x-auto border-b border-[var(--border)]',
+        className,
+      )}
       {...props}
     />
   );

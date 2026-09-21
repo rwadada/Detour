@@ -38,8 +38,8 @@ export function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Accumulates repeated `--proto <path>` flags into an array (commander's convention for a repeatable option). */
-export function collectProtoPath(value: string, previous: string[]): string[] {
+/** Accumulates a repeatable flag's values into an array (commander's convention for a repeatable option) — shared by `--proto <path>` and `--upstream-ca <path>` (issue #160) so the two can't drift apart despite being logically identical. */
+export function collectRepeatable(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 

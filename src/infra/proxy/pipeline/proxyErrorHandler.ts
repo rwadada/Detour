@@ -1,9 +1,10 @@
+import { describeUpstreamTlsError } from '../../../domain/exchange/tlsVerificationError';
 import type { CapturedExchange } from '../../../domain/exchange/types';
 import type { ScriptModule } from '../../../domain/rules/scriptAction';
 import type { Rule } from '../../../domain/rules/types';
 import type { BreakpointCoordinator } from '../../../usecase/breakpointCoordinator';
 import type { DetourEventBus } from '../../eventBus';
-import { attachTiming } from '../attachTiming';
+import { attachCertificate, attachTiming, attachUpstreamProtocol } from '../attachTiming';
 import type { OnErrorParams } from '../engine/types';
 
 export interface ProxyErrorHandlerDeps {
@@ -37,10 +38,18 @@ export function createProxyErrorHandler(deps: ProxyErrorHandlerDeps): OnErrorPar
       // was already emitted) doesn't overwrite it.
       const exchange = inFlight.get(ctx.uuid);
       if (exchange && exchange.finishedAt === undefined) {
-        exchange.error = `${errorKind ?? 'UNKNOWN'}: ${err?.message ?? 'unknown proxy error'}`;
+        // A TLS certificate-verification failure (issue #160) gets a
+        // specific, actionable message instead of the generic one below —
+        // `describeUpstreamTlsError` recognizes it by `err.code` regardless
+        // of which `errorKind` reported it, since only the proxy→upstream
+        // leg can ever produce one of these codes in the first place.
+        const tlsMessage = describeUpstreamTlsError(err);
+        exchange.error = tlsMessage ?? `${errorKind ?? 'UNKNOWN'}: ${err?.message ?? 'unknown proxy error'}`;
         exchange.finishedAt = Date.now();
         exchange.durationMs = exchange.finishedAt - exchange.startedAt;
         attachTiming(exchange, ctx);
+        attachCertificate(exchange, ctx);
+        attachUpstreamProtocol(exchange, ctx);
         eventBus.emit('response', exchange);
       }
       inFlight.delete(ctx.uuid);

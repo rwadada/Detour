@@ -1,4 +1,4 @@
-import { Tag } from 'lucide-react';
+import { ShieldAlert, Tag } from 'lucide-react';
 import { Badge } from '@/shared/ui';
 import { cn } from '@/shared/lib/utils';
 
@@ -90,6 +90,33 @@ export function ProtocolBadge({ protocol }: { protocol: 'HTTP/1.1' | 'HTTP/2' })
 }
 
 /**
+ * Shown next to `ProtocolBadge` for an exchange whose proxy→upstream leg
+ * negotiated HTTP/2 (issue #166) — same "silent for the common case"
+ * convention as `ProtocolBadge` itself, and a distinct label (`h2↑`, not a
+ * second plain `h2`) so it's never mistaken for the client-facing badge:
+ * the two are independent, and a client-h1/upstream-h2 or
+ * client-h2/upstream-h1 mismatch is exactly the case worth being able to
+ * spot at a glance — it's the whole reason `upstreamProtocol` exists
+ * separately from `protocol` at all.
+ */
+export function UpstreamProtocolBadge({ upstreamProtocol }: { upstreamProtocol?: 'HTTP/1.1' | 'HTTP/2' }) {
+  if (upstreamProtocol !== 'HTTP/2') return null;
+  return (
+    <Badge
+      className="min-w-[2.5rem] justify-center border"
+      style={{
+        color: 'var(--accent)',
+        borderColor: 'var(--accent)',
+        backgroundColor: 'color-mix(in oklch, var(--accent) 14%, transparent)',
+      }}
+      title="The real upstream server negotiated HTTP/2 for this request"
+    >
+      h2↑
+    </Badge>
+  );
+}
+
+/**
  * Which rule (if any) matched this exchange — previously only visible in
  * `InspectorPanel`'s detail view, one exchange at a time, which made it
  * impossible to tell at a glance which of several rules applied across a
@@ -115,6 +142,31 @@ export function RuleBadge({ ruleName }: { ruleName: string }) {
       title={label}
     >
       <Tag className="h-3 w-3" aria-hidden="true" />
+    </span>
+  );
+}
+
+/**
+ * Shown next to an exchange whose upstream TLS certificate didn't actually
+ * verify (issue #160) — only reachable at all under `--insecure-upstream`,
+ * since the default (`rejectUnauthorized: true`) aborts the connection
+ * outright instead of completing it with an unverified certificate. Mirrors
+ * `RuleBadge`'s fixed-size-icon-over-text-badge choice for the same reason:
+ * the row is already tight on width, and the full reason is always
+ * available as the accessible name/tooltip here and on `InspectorPanel`'s
+ * own Certificate tab once the row is selected.
+ */
+export function UnverifiedCertBadge({ reason }: { reason?: string }) {
+  const label = reason ? `Upstream certificate not verified: ${reason}` : 'Upstream certificate not verified';
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      className="inline-flex shrink-0 items-center"
+      style={{ color: 'var(--status-4xx)' }}
+      title={label}
+    >
+      <ShieldAlert className="h-3 w-3" aria-hidden="true" />
     </span>
   );
 }

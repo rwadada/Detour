@@ -150,6 +150,13 @@ export interface DashboardServerOptions {
    * nothing over loopback.
    */
   tlsKeyCert?: { key: string; cert: string };
+  /**
+   * Whether this session was started with `--insecure-upstream` (issue
+   * #160) — sent to every connecting client as `proxyInfo`'s own field, for
+   * the dashboard's persistent header indicator. Defaults to `false`
+   * (verification on, Detour's behavior before this flag existed).
+   */
+  insecureUpstream?: boolean;
 }
 
 export interface DashboardServerHandle {
@@ -612,7 +619,11 @@ export async function startDashboardServer(
   // client relies on it, but no reason to shuffle it either).
   const sendInitialPayload = (socket: WebSocket) => {
     if (options.proxyPort !== undefined) {
-      const proxyInfoMessage: DashboardServerMessage = { type: 'proxyInfo', proxyPort: options.proxyPort };
+      const proxyInfoMessage: DashboardServerMessage = {
+        type: 'proxyInfo',
+        proxyPort: options.proxyPort,
+        insecureUpstream: options.insecureUpstream ?? false,
+      };
       socket.send(JSON.stringify(proxyInfoMessage));
     }
     const lanInfoMessage: DashboardServerMessage = {

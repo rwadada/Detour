@@ -23,6 +23,7 @@ import { CertAuthority } from '../infra/proxy/engine/certAuthority';
 import { startIdleWatcher } from '../infra/proxy/idleWatcher';
 import { startProxyServer } from '../infra/proxy/proxyServer';
 import { redactProxyUrlCredentials, validateUpstreamProxyUrl } from '../infra/proxy/upstreamProxyAgent';
+import { resolveUpstreamTlsOptions } from '../infra/proxy/upstreamTlsOptions';
 import { LAN_ACCESS_WARNING, printStartupBanner } from '../presentation/banner';
 import {
   logExchange,
@@ -34,7 +35,7 @@ import {
   logWebSocketFull,
 } from '../presentation/logger';
 import { RuleEngine } from '../usecase/ruleEngine';
-import { collectProtoPath, describeError, parseDumpLevel, parseIdleMs, parseOnOff, parsePort } from './optionParsers';
+import { collectRepeatable, describeError, parseDumpLevel, parseIdleMs, parseOnOff, parsePort } from './optionParsers';
 
 /** Auto-loaded when `--rules` isn't given and this file exists in the current directory. */
 const DEFAULT_RULES_FILENAME = 'passthrough.rule.json';
@@ -109,6 +110,16 @@ interface StartOptions {
    * `proxyAuth`, same shape as `--lan`/`lanAccess`.
    */
   proxyAuth?: string;
+  /** `--upstream-ca <path>` (issue #160), repeatable: extra CA cert(s) to trust for upstream TLS verification, e.g. an internal/private CA a dev or staging server's cert chains up to. */
+  upstreamCa: string[];
+  /** `--insecure-upstream` (issue #160): skip upstream TLS certificate verification entirely for this session. Off by default — see its own CLI help text for why. */
+  insecureUpstream?: boolean;
+  /** `--client-cert <path>` (issue #160), paired with `clientKey`: a client certificate to present for upstream servers requiring mTLS. */
+  clientCert?: string;
+  /** `--client-key <path>` (issue #160): the private key for `clientCert`. Both or neither — `resolveUpstreamTlsOptions` rejects one without the other. */
+  clientKey?: string;
+  /** `--no-http2-upstream` (issue #166): pin the proxy→upstream leg to HTTP/1.1, skipping the ALPN probe that otherwise negotiates h2 with a real upstream server that offers it. Independent of `--no-http2` above, which only ever governs the client-facing side. */
+  http2Upstream: boolean;
 }
 
 /**
@@ -329,6 +340,19 @@ async function runStartBody({
   // every proxied request thereafter silently failing to connect.
   if (options.upstreamProxy) validateUpstreamProxyUrl(options.upstreamProxy);
 
+  // Reads (and validates) every `--upstream-ca`/`--client-cert`/
+  // `--client-key` file eagerly, same reasoning as `--upstream-proxy` above
+  // (issue #160) — a missing/unreadable file, or a lone `--client-cert`
+  // without its `--client-key`, fails CLI startup loudly instead of every
+  // HTTPS request thereafter silently not getting the trust/identity it was
+  // told to have.
+  const upstreamTls = resolveUpstreamTlsOptions({
+    upstreamCaPaths: options.upstreamCa,
+    insecureUpstream: options.insecureUpstream,
+    clientCertPath: options.clientCert,
+    clientKeyPath: options.clientKey,
+  });
+
   // Resolved (and validated) eagerly for the same reason: a malformed
   // `--proxy-auth` value should fail CLI startup loudly rather than start a
   // proxy nobody — including its owner — can authenticate against.
@@ -419,8 +443,10 @@ async function runStartBody({
         host: PROXY_HOST,
         ruleEngine,
         http2Enabled: options.http2,
+        http2UpstreamEnabled: options.http2Upstream,
         upstreamProxyUrl: options.upstreamProxy,
         proxyAuth,
+        upstreamTls,
       },
       eventBus,
     );
@@ -556,6 +582,7 @@ async function runStartBody({
           // are always worth knowing. See `DashboardServerOptions.lanAddresses`'s
           // doc comment (issue #66).
           lanAddresses: lanAddrs,
+          insecureUpstream: options.insecureUpstream ?? false,
         },
         eventBus,
       );
@@ -615,6 +642,7 @@ async function runStartBody({
     ruleEngine,
     dumpDir,
     http2Enabled: options.http2,
+    http2UpstreamEnabled: options.http2Upstream,
     protoPaths: options.proto,
     dashboardPasswordSet: readDashboardPasswordSet(),
     proxyAuthSet: proxyAuth !== undefined,
@@ -625,6 +653,9 @@ async function runStartBody({
     upstreamProxyUrl: options.upstreamProxy ? redactProxyUrlCredentials(options.upstreamProxy) : undefined,
     dashboardBuilt: isDashboardBuilt(),
     lanAddresses: lanAddrs,
+    insecureUpstream: options.insecureUpstream ?? false,
+    upstreamCaCount: options.upstreamCa.length,
+    clientCertSet: !!upstreamTls?.cert,
   });
 
   // DETOUR_READY (issue #20): a stable, greppable line a CI script can wait
@@ -819,12 +850,16 @@ export function registerStartCommand(program: Command): void {
     )
     .option(
       '--no-http2',
-      "Disable HTTP/2 (ALPN) on MITM'd HTTPS connections — every intercepted host falls back to HTTP/1.1 only, matching Detour's behavior before this flag existed. HTTP/2 is negotiated with the client by default; the connection to the real upstream server is always HTTP/1.1 either way.",
+      "Disable HTTP/2 (ALPN) on MITM'd HTTPS connections — every intercepted host falls back to HTTP/1.1 only, matching Detour's behavior before this flag existed. HTTP/2 is negotiated with the client by default; independent of --no-http2-upstream below, which controls the separate proxy→upstream leg.",
+    )
+    .option(
+      '--no-http2-upstream',
+      'Pin the proxy→upstream leg to HTTP/1.1 (issue #166), skipping the ALPN probe that otherwise negotiates HTTP/2 with a real upstream server that offers it. On by default: Detour ALPN-probes each upstream host on its first request and multiplexes further requests to it over that session once negotiated. Independent of --no-http2 above, which only affects the client-facing side; always effectively off when --upstream-proxy is set, regardless of this flag.',
     )
     .option(
       '--proto <path>',
       'Path to a .proto file used to decode gRPC (application/grpc*) message bodies. Repeatable for a schema split across multiple files sharing imports. Detection of gRPC traffic itself always happens, with or without this flag.',
-      collectProtoPath,
+      collectRepeatable,
       [],
     )
     .option('--headless', 'Skip starting the web dashboard entirely — proxy-only, for CI/scripted use (issue #20).')
@@ -872,6 +907,21 @@ export function registerStartCommand(program: Command): void {
       '--proxy-auth <user:pass>',
       "Require these credentials (HTTP Basic, via Proxy-Authorization) from every client before the proxy will serve it — without them the proxy is open to anything on your network that points itself at it (issue #158). Checked on both CONNECT and plain HTTP, before Block Hosts/Focus/rules, with no exception for localhost. Overrides `proxyAuth` from `detour config` for this invocation; the password is never stored or logged in plaintext (note that the value itself is visible in this machine's process list — `detour config --proxy-auth` avoids that).",
     )
+    .option(
+      '--upstream-ca <path>',
+      'Trust an additional CA certificate (PEM) for upstream TLS verification, alongside the system root store (issue #160) — for an internal/private-CA-signed dev or staging server, without disabling verification outright. Repeatable for more than one CA.',
+      collectRepeatable,
+      [],
+    )
+    .option(
+      '--insecure-upstream',
+      'Skip upstream TLS certificate verification entirely for this session (issue #160) — every proxied HTTPS request accepts whatever certificate the upstream server presents. SECURITY: off by default; prefer --upstream-ca <path> to trust a specific CA instead. Loudly flagged in this banner, the dashboard header, and a per-row badge on every affected exchange.',
+    )
+    .option(
+      '--client-cert <path>',
+      'A client certificate (PEM) to present for upstream servers requiring mTLS (issue #160). Requires --client-key alongside it.',
+    )
+    .option('--client-key <path>', 'The private key (PEM) for --client-cert.')
     .action(async (options: StartOptions) => {
       try {
         if (resolveShouldDetach(options)) {
