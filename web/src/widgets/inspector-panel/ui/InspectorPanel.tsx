@@ -202,7 +202,7 @@ export function InspectorPanel() {
         </TabsContent>
 
         <TabsContent value="timing" className="overflow-auto">
-          <TimingWaterfall timing={exchange.timing} />
+          <TimingWaterfall timing={exchange.timing} upstreamProtocol={exchange.upstreamProtocol} />
         </TabsContent>
 
         {exchange.isSSL && (

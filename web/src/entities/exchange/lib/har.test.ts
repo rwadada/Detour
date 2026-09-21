@@ -55,6 +55,16 @@ describe('exchangesToHar / harToExchanges', () => {
     expect(har.log.entries[0]?._detour?.certificate).toEqual(original.certificate);
   });
 
+  it('round-trips upstreamProtocol (issue #166) via the _detour extension, independent of the client-facing protocol', () => {
+    const original = makeExchange({ protocol: 'HTTP/1.1', upstreamProtocol: 'HTTP/2' });
+    const har = exchangesToHar([original]);
+    const [restored] = harToExchanges(har);
+
+    expect(restored?.upstreamProtocol).toBe('HTTP/2');
+    expect(restored?.protocol).toBe('HTTP/1.1');
+    expect(har.log.entries[0]?._detour?.upstreamProtocol).toBe('HTTP/2');
+  });
+
   it('produces standard HAR fields readable without the _detour extension', () => {
     const har = exchangesToHar([makeExchange()]);
     const entry = har.log.entries[0];

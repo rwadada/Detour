@@ -10,6 +10,7 @@ import {
   RuleBadge,
   StatusBadge,
   UnverifiedCertBadge,
+  UpstreamProtocolBadge,
   useExchangeStore,
 } from '@/entities/exchange';
 import {
@@ -358,6 +359,11 @@ function LogRow({
         {exchange.protocol === 'HTTP/2' && (
           <>
             <ProtocolBadge protocol={exchange.protocol} />{' '}
+          </>
+        )}
+        {exchange.upstreamProtocol === 'HTTP/2' && (
+          <>
+            <UpstreamProtocolBadge upstreamProtocol={exchange.upstreamProtocol} />{' '}
           </>
         )}
         {exchange.ruleName && (

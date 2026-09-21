@@ -19,7 +19,14 @@ const PHASES: ReadonlyArray<{ key: keyof ExchangeTiming; label: string; color: s
  * HTTP, or every field when the exchange never reached upstream) is simply
  * absent — its color never appears in the bar or the legend.
  */
-export function TimingWaterfall({ timing }: { timing: ExchangeTiming | undefined }) {
+export function TimingWaterfall({
+  timing,
+  upstreamProtocol,
+}: {
+  timing: ExchangeTiming | undefined;
+  /** Which protocol the proxy→upstream leg actually spoke (issue #166) — surfaced here since it's a connection-level fact, same as `connectionReused` below. */
+  upstreamProtocol?: 'HTTP/1.1' | 'HTTP/2';
+}) {
   const measured = PHASES.map((phase) => ({ ...phase, ms: timing?.[phase.key] })).filter(
     (phase): phase is { key: keyof ExchangeTiming; label: string; color: string; ms: number } => phase.ms !== undefined,
   );
@@ -44,6 +51,14 @@ export function TimingWaterfall({ timing }: { timing: ExchangeTiming | undefined
       {timing?.connectionReused && (
         <p className="mb-2 text-xs text-[var(--muted)]">
           Connection reused (keep-alive) — DNS/TCP/TLS were not repeated for this request.
+        </p>
+      )}
+      {upstreamProtocol === 'HTTP/2' && (
+        <p className="mb-2 text-xs text-[var(--muted)]">
+          {/* "(multiplexed)" only once this exchange actually rode an already-established session
+              (`timing.connectionReused`, set for the h2 case too) — the request that establishes the
+              session isn't multiplexed with anything yet. */}
+          Upstream connection: HTTP/2{timing?.connectionReused ? ' (multiplexed onto an existing session)' : ''}.
         </p>
       )}
       <div

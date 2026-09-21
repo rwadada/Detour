@@ -45,6 +45,8 @@ export interface CapturedExchange {
   isSSL: boolean;
   /** See `src/domain/exchange/types.ts`'s `CapturedExchange.protocol` (issue #16). */
   protocol: 'HTTP/1.1' | 'HTTP/2';
+  /** Which protocol the proxy→upstream leg actually spoke (issue #166) — see `src/domain/exchange/types.ts`'s `CapturedExchange.upstreamProtocol`. Independent of `protocol` above. */
+  upstreamProtocol?: 'HTTP/1.1' | 'HTTP/2';
   requestHeaders: HeaderMap;
   requestBodySize: number;
   requestBody?: string;

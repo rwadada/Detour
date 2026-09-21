@@ -16,6 +16,7 @@ export {
   RuleBadge,
   StatusBadge,
   UnverifiedCertBadge,
+  UpstreamProtocolBadge,
 } from './ui/StatusBadge';
 export { exchangesToHar, harToExchanges, parseImportedLog, type HarLog } from './lib/har';
 

@@ -49,3 +49,15 @@ export function attachTiming(exchange: CapturedExchange, ctx: IContext): void {
 export function attachCertificate(exchange: CapturedExchange, ctx: IContext): void {
   if (ctx.certificate) exchange.certificate = ctx.certificate;
 }
+
+/**
+ * Copies `ctx.upstreamProtocol` (which protocol the proxy→upstream leg
+ * actually spoke, set by `ProxyEngine.dispatchHttp1Request`/
+ * `dispatchHttp2Request` right before dispatch — issue #166) onto the
+ * exchange. Same shape as `attachCertificate`: only ever set once an
+ * upstream request was actually dispatched, so no placeholder to guard
+ * against.
+ */
+export function attachUpstreamProtocol(exchange: CapturedExchange, ctx: IContext): void {
+  if (ctx.upstreamProtocol) exchange.upstreamProtocol = ctx.upstreamProtocol;
+}
