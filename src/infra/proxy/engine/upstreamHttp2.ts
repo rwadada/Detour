@@ -34,6 +34,18 @@ const UPSTREAM_H2_IDLE_TIMEOUT_MS = UPSTREAM_KEEP_ALIVE_TIMEOUT_MS;
  */
 const UPSTREAM_PROBE_CONNECT_TIMEOUT_MS = UPSTREAM_KEEP_ALIVE_TIMEOUT_MS;
 
+/**
+ * Wraps a bare IPv6 literal (e.g. `::1`, already bracket-stripped by
+ * `ProxyEngine.parseHost`) in `[...]` for use in a URL authority/`:authority`
+ * position — RFC 3986 §3.2.2 / RFC 9113 §8.3.1 require it, since a trailing
+ * `:<port>` on an unbracketed literal is otherwise indistinguishable from
+ * more of the address itself. A no-op for an IPv4 literal or hostname
+ * (neither ever contains `:`).
+ */
+function bracketIpv6Host(host: string): string {
+  return host.includes(':') ? `[${host}]` : host;
+}
+
 /** Per-phase connect timing for a fresh probe — same shape as `ExchangeTiming`'s own dns/tcp/tls fields, kept separate so this module doesn't depend on the exchange-facing type. */
 export interface ConnectTiming {
   dnsMs?: number;
@@ -109,12 +121,20 @@ interface PendingProbe {
  * own bundled roots, regardless of what the real handshake already
  * verified). A plain `http.Agent` never wraps its socket in TLS at all, so
  * handing it one that's already secured just works: the HTTP/1.1 framing
- * goes straight over it. Every request after that first one — once the
- * host is cached as HTTP/1.1-only — is completely unaffected, using
- * `ProxyEngine`'s own pooled `httpsAgent` exactly as before this existed.
- * Net effect: probing for h2 costs nothing extra, ever — the probe *is*
- * the first real request's own connection, whichever protocol it turns out
- * to speak.
+ * goes straight over it — the request that triggered the probe costs
+ * nothing extra, the probe *is* its own connection, whichever protocol it
+ * turns out to speak. `requestOverSecuredSocket`'s throwaway `http.Agent`
+ * (`keepAlive: false`, deliberately — see its own doc comment) closes that
+ * socket once the exchange finishes rather than handing it back to
+ * `ProxyEngine`'s pooled `httpsAgent`, which Node's `Agent` gives no public
+ * way to inject an externally-connected socket into; so for an HTTP/1.1-only
+ * host, exactly one request per Detour session (the *second* one to that
+ * host, once the first is done with the probe's own connection) pays for a
+ * fresh handshake `httpsAgent` would otherwise not have needed — every
+ * request after that reuses it normally. A small, one-time-per-host cost
+ * against the alternative (reimplementing `http.Agent`'s private
+ * socket-pool bookkeeping to splice an external socket into it), not a
+ * per-request one.
  *
  * Deliberately doesn't compose with `--upstream-proxy` (issue #145): that
  * would mean ALPN-probing over a CONNECT tunnel through the upstream proxy
@@ -260,7 +280,29 @@ export class UpstreamHttp2Pool {
         const certificate = captureUpstreamCertificate(socket);
 
         if (socket.alpnProtocol === 'h2') {
-          const session = http2.connect(`https://${host}:${port}`, { createConnection: () => socket });
+          // `new URL()` (which `http2.connect()` parses its first argument
+          // with) rejects a bare IPv6 literal in the authority position —
+          // `https://::1:8443` throws `Invalid URL` — so bracket it (see
+          // `bracketIpv6Host`). And unlike a rejected/resolved `Promise`, a
+          // throw from inside this `secureConnect` listener (an event
+          // callback, not this executor's own synchronous body) would
+          // otherwise be an *uncaught* exception rather than a rejection of
+          // this probe: the `try`/`catch` turns it into one, the same way
+          // `dispatchHttp2Request`'s own `session.request()` call does for
+          // a synchronous h2 throw.
+          const authority = `https://${bracketIpv6Host(host)}:${port}`;
+          let session: http2.ClientHttp2Session;
+          try {
+            session = http2.connect(authority, { createConnection: () => socket });
+          } catch (err) {
+            // The socket itself secured fine — only building the session
+            // failed — so it won't otherwise close on its own; destroy it
+            // rather than leaking an open upstream connection nothing will
+            // ever use.
+            socket.destroy();
+            reject(err instanceof Error ? err : new Error(String(err)));
+            return;
+          }
           this.watchSession(`${host}:${port}`, session);
           resolve({ kind: 'h2', session, timing, certificate });
         } else {
@@ -401,12 +443,7 @@ function buildAuthority(opts: ProxyToServerRequestOptions, isSSL: boolean): stri
   // below) already does.
   const port = typeof opts.port === 'number' ? opts.port : Number(opts.port ?? NaN);
   const defaultPort = isSSL ? 443 : 80;
-  // `opts.host` is already bracket-stripped by `ProxyEngine.parseHost` for an
-  // IPv6 literal (e.g. `::1`), so re-bracket it here — RFC 3986 §3.2.2 /
-  // RFC 9113 §8.3.1 require a bracketed IPv6 literal in `:authority`,
-  // otherwise a trailing `:<port>` would be indistinguishable from more of
-  // the address itself.
-  const host = opts.host.includes(':') ? `[${opts.host}]` : opts.host;
+  const host = bracketIpv6Host(opts.host);
   return Number.isFinite(port) && port !== defaultPort ? `${host}:${port}` : host;
 }
 
