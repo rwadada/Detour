@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import tls from 'node:tls';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resolveUpstreamTlsOptions } from './upstreamTlsOptions';
 
@@ -25,11 +26,21 @@ describe('resolveUpstreamTlsOptions', () => {
     expect(resolveUpstreamTlsOptions({ upstreamCaPaths: [] })).toBeUndefined();
   });
 
-  it('reads and returns --upstream-ca file contents, one entry per repeated flag', () => {
+  it('reads and returns --upstream-ca file contents, one entry per repeated flag, appended after the default trust store', () => {
     const ca1 = writeFile('ca1.pem', '-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\n');
     const ca2 = writeFile('ca2.pem', '-----BEGIN CERTIFICATE-----\nBBB\n-----END CERTIFICATE-----\n');
     const options = resolveUpstreamTlsOptions({ upstreamCaPaths: [ca1, ca2] });
-    expect(options?.ca).toEqual([fs.readFileSync(ca1, 'utf8'), fs.readFileSync(ca2, 'utf8')]);
+    expect(options?.ca).toEqual([...tls.rootCertificates, fs.readFileSync(ca1, 'utf8'), fs.readFileSync(ca2, 'utf8')]);
+  });
+
+  it('extends the default trust store rather than replacing it, so other publicly-trusted hosts stay reachable', () => {
+    // Node's `ca` option *replaces* its default trusted roots when given —
+    // regressing to `options.ca = flags.upstreamCaPaths.map(...)` (with no
+    // `tls.rootCertificates` spread) would pass this if `ca` were merely
+    // non-empty, so assert every default root is actually present too.
+    const ca = writeFile('ca.pem', '-----BEGIN CERTIFICATE-----\nCCC\n-----END CERTIFICATE-----\n');
+    const options = resolveUpstreamTlsOptions({ upstreamCaPaths: [ca] });
+    for (const root of tls.rootCertificates) expect(options?.ca).toContain(root);
   });
 
   it('throws a clear error naming --upstream-ca when the file cannot be read', () => {
@@ -87,7 +98,7 @@ describe('resolveUpstreamTlsOptions', () => {
       clientKeyPath: key,
     });
     expect(options).toEqual({
-      ca: ['CA-CONTENT'],
+      ca: [...tls.rootCertificates, 'CA-CONTENT'],
       rejectUnauthorized: false,
       cert: 'CERT-CONTENT',
       key: 'KEY-CONTENT',

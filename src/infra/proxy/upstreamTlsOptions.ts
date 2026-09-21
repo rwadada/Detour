@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import tls from 'node:tls';
 
 /**
  * Upstream TLS behavior for every proxy→upstream HTTPS request (issue
@@ -69,7 +70,15 @@ export function resolveUpstreamTlsOptions(flags: {
   }
   const options: UpstreamTlsOptions = {};
   if (flags.upstreamCaPaths.length > 0) {
-    options.ca = flags.upstreamCaPaths.map((path) => readPemFile(path, '--upstream-ca'));
+    // Node's `ca` option *replaces* the default trusted-root store rather
+    // than extending it (verified empirically: a `ca` of just one unrelated
+    // custom CA fails a request to a normal, publicly-trusted host with
+    // "self-signed certificate in certificate chain") — so every
+    // `--upstream-ca` PEM has to be added alongside `tls.rootCertificates`,
+    // not instead of it, to actually deliver on this flag's own promise
+    // (trust one more CA "alongside the system root store") rather than
+    // breaking every other HTTPS host in the same session.
+    options.ca = [...tls.rootCertificates, ...flags.upstreamCaPaths.map((path) => readPemFile(path, '--upstream-ca'))];
   }
   if (flags.insecureUpstream) options.rejectUnauthorized = false;
   if (flags.clientCertPath && flags.clientKeyPath) {
