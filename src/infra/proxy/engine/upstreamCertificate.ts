@@ -1,11 +1,19 @@
 import type { PeerCertificate, TLSSocket } from 'node:tls';
 import type { UpstreamCertificate } from '../../../domain/exchange/types';
 
-/** Flattens a `tls.PeerCertificate.subject`/`.issuer` object (e.g. `{ C: 'US', O: 'Example', CN: 'example.com' }`) to a single distinguished-name-style string, for display. */
+/**
+ * Flattens a `tls.PeerCertificate.subject`/`.issuer` object (e.g.
+ * `{ C: 'US', O: 'Example', CN: 'example.com' }`) to a single
+ * distinguished-name-style string, for display. Node types a repeated RDN
+ * attribute (e.g. two `OU` values) as a string array rather than a string —
+ * joined with ", " rather than letting `${value}` stringify it via
+ * `Array.prototype.toString`'s bare comma join (no separating space, easy
+ * to misread as one long value).
+ */
 export function formatDistinguishedName(name: PeerCertificate['subject'] | undefined): string {
   if (!name) return '';
   return Object.entries(name)
-    .map(([key, value]) => `${key}=${value}`)
+    .map(([key, value]) => `${key}=${Array.isArray(value) ? value.join(', ') : value}`)
     .join(', ');
 }
 
