@@ -768,7 +768,19 @@ export class ProxyEngine {
     }
     ctx.proxyToServerRequest = stream;
 
+    // Only for a failure *before* the response arrives (send failure,
+    // connection reset pre-headers) — removed the instant `onUpstreamResponse`
+    // takes over below. `adaptHttp2Response` mutates and returns this exact
+    // same `stream` object (unlike the h1 path, where the request and
+    // response are two separate objects), so `onUpstreamResponse`'s own
+    // `.on('error', ...)` would otherwise stack a second, permanent listener
+    // on it: a post-headers failure would then fire both, double-reporting
+    // one failure as two different (and conflicting) error kinds.
+    const onPreResponseError = (err: Error): void => this.emitError('PROXY_TO_SERVER_REQUEST_ERROR', ctx, err);
+    stream.on('error', onPreResponseError);
+
     stream.on('response', (responseHeaders) => {
+      stream.off('error', onPreResponseError);
       const headersAt = Date.now();
       timing.ttfbMs = headersAt - connectionReadyAt;
       ctx.responseHeadersAt = headersAt;
@@ -783,7 +795,6 @@ export class ProxyEngine {
     stream.on('trailers', (trailers) => {
       ctx.upstreamTrailers = trailers;
     });
-    stream.on('error', (err) => this.emitError('PROXY_TO_SERVER_REQUEST_ERROR', ctx, err));
     this.pumpRequestBody(ctx);
   }
 

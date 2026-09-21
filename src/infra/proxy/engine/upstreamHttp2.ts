@@ -102,6 +102,8 @@ export class UpstreamHttp2Pool {
   >();
   private readonly knownHttp1Hosts = new Set<string>();
   private readonly pending = new Map<string, PendingProbe>();
+  /** Every probe's own `tls.connect()` socket, from creation until its probe settles (resolved or rejected) — so `closeAll()` can destroy one still mid-handshake instead of leaking it past proxy shutdown. */
+  private readonly pendingSockets = new Set<tls.TLSSocket>();
 
   /**
    * Resolves how to reach `host:port` for one HTTPS request: an existing
@@ -160,6 +162,15 @@ export class UpstreamHttp2Pool {
     }
 
     this.knownHttp1Hosts.add(key);
+    // `result.socket` is not destroyed here for a losing (`!isFirstClaim`)
+    // caller: it's the exact same object the winning caller's own copy of
+    // `result` points to, and `dispatchWithAcquiredConnection` unconditionally
+    // hands it off to `dispatchHttp1Request`/`requestOverSecuredSocket` for
+    // real use — destroying it here would race that legitimate use and abort
+    // the winner's own request. Nothing is actually leaked: exactly one
+    // caller ever receives a `socket` in its own returned `AcquiredConnection`
+    // (below), and that request's own `http.Agent` (`keepAlive: false`)
+    // closes it normally once the exchange finishes.
     return {
       protocol: 'HTTP/1.1',
       socket: isFirstClaim ? result.socket : undefined,
@@ -193,6 +204,7 @@ export class UpstreamHttp2Pool {
         // : undefined)`.
         ...tlsOptions,
       });
+      this.pendingSockets.add(socket);
       socket.once('lookup', () => {
         lookupAt = Date.now();
       });
@@ -200,6 +212,7 @@ export class UpstreamHttp2Pool {
         connectedAt = Date.now();
       });
       socket.once('secureConnect', () => {
+        this.pendingSockets.delete(socket);
         const securedAt = Date.now();
         const timing: ConnectTiming = {
           dnsMs: lookupAt !== undefined ? lookupAt - startedAt : undefined,
@@ -216,7 +229,10 @@ export class UpstreamHttp2Pool {
           resolve({ kind: 'h1', socket, timing, certificate });
         }
       });
-      socket.once('error', (err) => reject(err));
+      socket.once('error', (err) => {
+        this.pendingSockets.delete(socket);
+        reject(err);
+      });
     });
   }
 
@@ -230,11 +246,13 @@ export class UpstreamHttp2Pool {
     session.once('goaway', evict);
   }
 
-  /** Closes every live h2 session (`ProxyEngine.close`) so a proxy shutdown doesn't leave upstream connections dangling. */
+  /** Closes every live h2 session and any still-mid-handshake probe socket (`ProxyEngine.close`) so a proxy shutdown doesn't leave upstream connections dangling — without this, a probe still in flight when `detour stop` runs would keep its raw `tls.connect()` socket open indefinitely, potentially delaying process exit. */
   closeAll(): void {
     for (const { session } of this.sessions.values()) {
       if (!session.closed && !session.destroyed) session.close();
     }
+    for (const socket of this.pendingSockets) socket.destroy();
+    this.pendingSockets.clear();
     this.sessions.clear();
     this.knownHttp1Hosts.clear();
   }
