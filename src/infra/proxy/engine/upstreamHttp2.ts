@@ -327,7 +327,22 @@ export function requestOverSecuredSocket(
   return http.request({ ...opts, agent }, callback);
 }
 
-const H2_ILLEGAL_REQUEST_HEADERS = new Set(['connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'host']);
+// RFC 9113 §8.2.2's own list of connection-specific fields an HTTP/2 message
+// must never carry: `Connection` itself, plus every field HTTP/1.1's
+// `Connection` header can name (`Keep-Alive`, `Proxy-Connection`,
+// `Transfer-Encoding`, `Upgrade`) — `proxy-connection` is easy to miss since
+// it's the one of the five that never appears in a normal HTTP/1.1 request,
+// but a `rewrite`/`breakpoint`/`script` rule can still set it by hand, and
+// Node's h2 client throws `ERR_HTTP2_INVALID_CONNECTION_HEADERS`
+// synchronously (verified empirically) if it survives to `session.request()`.
+const H2_ILLEGAL_REQUEST_HEADERS = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-connection',
+  'transfer-encoding',
+  'upgrade',
+  'host',
+]);
 
 /**
  * Builds an h2 `session.request()` headers object from the same
@@ -381,7 +396,12 @@ function buildAuthority(opts: ProxyToServerRequestOptions, isSSL: boolean): stri
   // already accounts for above) can carry the override under any casing.
   const explicitHost = findHeader(opts.headers, 'host');
   if (typeof explicitHost === 'string' && explicitHost) return explicitHost;
-  const port = typeof opts.port === 'number' ? opts.port : Number(opts.port);
+  // `opts.port` is typed `string | number | null | undefined` — `Number(null)`
+  // is `0` (finite, and never the scheme default), which would otherwise
+  // produce a wrong `:authority` like `host:0` instead of omitting the port
+  // the same way `undefined` (`Number(undefined)` is `NaN`, already handled
+  // below) already does.
+  const port = typeof opts.port === 'number' ? opts.port : Number(opts.port ?? NaN);
   const defaultPort = isSSL ? 443 : 80;
   // `opts.host` is already bracket-stripped by `ProxyEngine.parseHost` for an
   // IPv6 literal (e.g. `::1`), so re-bracket it here — RFC 3986 §3.2.2 /

@@ -54,7 +54,12 @@ export function TimingWaterfall({
         </p>
       )}
       {upstreamProtocol === 'HTTP/2' && (
-        <p className="mb-2 text-xs text-[var(--muted)]">Upstream connection: HTTP/2 (multiplexed).</p>
+        <p className="mb-2 text-xs text-[var(--muted)]">
+          {/* "(multiplexed)" only once this exchange actually rode an already-established session
+              (`timing.connectionReused`, set for the h2 case too) — the request that establishes the
+              session isn't multiplexed with anything yet. */}
+          Upstream connection: HTTP/2{timing?.connectionReused ? ' (multiplexed onto an existing session)' : ''}.
+        </p>
       )}
       <div
         className="flex h-4 w-full overflow-hidden rounded-sm border border-[var(--border)]"

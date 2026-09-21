@@ -68,6 +68,15 @@ describe('buildHttp2RequestHeaders', () => {
     expect(headers['x-custom']).toBe('kept');
   });
 
+  it('drops a "Proxy-Connection" header too — RFC 9113 §8.2.2 forbids it same as "Connection", and Node throws ERR_HTTP2_INVALID_CONNECTION_HEADERS if it survives', () => {
+    const headers = buildHttp2RequestHeaders(opts({ headers: { 'proxy-connection': 'keep-alive' } }), true);
+    expect(headers['proxy-connection']).toBeUndefined();
+  });
+
+  it('omits the port from :authority when opts.port is null, instead of Number(null) producing ":0"', () => {
+    expect(buildHttp2RequestHeaders(opts({ port: null }), true)[':authority']).toBe('example.com');
+  });
+
   it('passes a gRPC-style "te: trailers" header through unchanged', () => {
     const headers = buildHttp2RequestHeaders(opts({ headers: { te: 'trailers' } }), true);
     expect(headers.te).toBe('trailers');
