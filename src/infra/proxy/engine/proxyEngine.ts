@@ -243,7 +243,12 @@ export class ProxyEngine {
 
   async listen(options: ProxyEngineOptions, callback: ErrorCallback = () => undefined): Promise<void> {
     try {
-      this.ca = CertAuthority.load(options.sslCaDir);
+      this.ca = await CertAuthority.load(options.sslCaDir);
+      // Mints the shared leaf keypair before the internal TLS server (and
+      // therefore its SNICallback) exists, so no handshake ever waits on a
+      // keygen: `warmUp` is async, while `getSecureContext` — called from
+      // inside the handshake — has to stay synchronous (issue #164).
+      await this.ca.warmUp();
 
       if (options.upstreamProxyUrl) {
         const agents = createUpstreamProxyAgents(options.upstreamProxyUrl);

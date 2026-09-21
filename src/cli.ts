@@ -4,6 +4,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { Command } from 'commander';
+import { caExpiryWarning, type CaValidityReport, caValidityReport } from './domain/cert/caValidity';
 import { CliExitError } from './domain/daemon/errors';
 import { isDumpLevel } from './domain/dump/dumpPolicy';
 import type { DumpLevel } from './domain/dump/dumpPolicy';
@@ -40,7 +41,7 @@ import { isHistoryPersistenceSupported, openHistoryStore, type HistoryStore } fr
 import { isDaemonChild, signalDaemonError, signalDaemonReady, spawnDaemonChild } from './infra/process/daemonize';
 import { nodeCommandRunner } from './infra/process/nodeCommandRunner';
 import { openBrowser } from './infra/process/openBrowser';
-import { caCertPath, ensureCaCert } from './infra/proxy/certExport';
+import { caCertPath, ensureCaCert, readCaValidity, regenerateCaCert } from './infra/proxy/certExport';
 import { startIdleWatcher } from './infra/proxy/idleWatcher';
 import { nodeCertPairingServer } from './infra/proxy/nodeCertPairingServer';
 import { readlineDevicePicker } from './infra/process/readlineDevicePicker';
@@ -260,6 +261,29 @@ function parseSetupTarget(value: string | undefined): SetupTarget | undefined {
  * (`doctor`/`cleanup`, which must never have the side effect of generating
  * one just by asking a readiness question).
  */
+/**
+ * Prints `detour doctor`'s CA-expiry line, returning false only when the CA
+ * has actually expired (an expiry that's merely close is a `⚠`, not a
+ * failure — see `caValidityReport`). An unreadable/corrupt `ca.pem` is
+ * reported as a failure too: `doctor`'s job is saying so, not guessing.
+ */
+function printCaValidityCheck(certPath: string): boolean {
+  let report: ReturnType<typeof caValidityReport>;
+  try {
+    const validity = readCaValidity(certPath);
+    if (!validity) return true; // Already reported as missing by the caller.
+    report = caValidityReport(validity);
+  } catch (err) {
+    console.log(`✖ Could not read the CA certificate at ${certPath}: ${err instanceof Error ? err.message : err}`);
+    return false;
+  }
+  // Same three icons the per-target steps use (see `stepIcon`), mapped from
+  // the domain's severity so this line reads as one more check in the list.
+  const icons: Record<CaValidityReport['severity'], string> = { ok: '✔', warning: '⚠', error: '✖' };
+  console.log(`${icons[report.severity]} ${report.message}`);
+  return report.severity !== 'error';
+}
+
 async function runSetupCommand(mode: SetupMode, options: SetupCommandOptions): Promise<void> {
   try {
     const target = parseSetupTarget(options.target);
@@ -291,6 +315,11 @@ async function runSetupCommand(mode: SetupMode, options: SetupCommandOptions): P
       }
     }
 
+    // Nothing downstream can work once the root has lapsed, however well
+    // every target is configured — so `doctor` reports on it alongside the
+    // trust checks it already does (issue #164).
+    const caExpired = mode === 'doctor' && !certMissing && !printCaValidityCheck(certPath);
+
     const reports = await runTargets(mode, target ? [target] : undefined, {
       hostOverride: options.host,
       certPath,
@@ -304,7 +333,7 @@ async function runSetupCommand(mode: SetupMode, options: SetupCommandOptions): P
       onProgress: printStep,
     });
     await printTargetReports(mode, reports);
-    if (hasFailedStep(reports) || (mode === 'doctor' && certMissing)) process.exitCode = 1;
+    if (hasFailedStep(reports) || caExpired || (mode === 'doctor' && certMissing)) process.exitCode = 1;
   } catch (err) {
     console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
     process.exitCode = 1;
@@ -854,6 +883,22 @@ function readDashboardPasswordSet(): boolean {
   }
 }
 
+/**
+ * The startup banner's CA-expiry warning, or undefined when there's nothing
+ * to warn about. Reading `ca.pem` can fail (deleted between startup and
+ * banner, unreadable, corrupt) — that's not worth crashing a proxy that's
+ * already up and serving over, so it degrades to no warning, the same
+ * posture as `readDashboardPasswordSet` above.
+ */
+function caExpiryWarningLine(certPath: string): string | undefined {
+  try {
+    const validity = readCaValidity(certPath);
+    return validity && caExpiryWarning(validity);
+  } catch {
+    return undefined;
+  }
+}
+
 function printStartupBanner(info: {
   /** The dashboard's own bind host (`localhost` or `0.0.0.0`) — the proxy's is always `PROXY_HOST` ('0.0.0.0'), not passed in since this function never needs to branch on it. */
   dashboardHost: string;
@@ -877,6 +922,13 @@ function printStartupBanner(info: {
   );
   console.log(`Root CA certificate: ${info.caCertPath}`);
   console.log('  To decrypt HTTPS traffic, install this CA certificate as trusted on your target device/browser.');
+  // Only printed inside the last 30 days of the CA's life (issue #164) —
+  // renewing means re-trusting it on every device, which is worth a heads-up
+  // well before the day everything starts failing at once. An already-
+  // expired CA never gets this far: `CertAuthority.load` refuses it, so
+  // `detour start` fails before printing any banner at all.
+  const caWarning = caExpiryWarningLine(info.caCertPath);
+  if (caWarning) console.log(`⚠ ${caWarning}`);
   if (info.dashboardPort === undefined) {
     console.log('Dashboard → disabled (--headless)');
   } else if (isDashboardBuilt()) {
@@ -1663,6 +1715,24 @@ export function createCli(): Command {
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         fs.writeFileSync(dest, pem);
         console.log(`✔ Exported CA certificate to ${dest}`);
+      } catch (err) {
+        console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  cert
+    .command('regenerate')
+    .description(
+      'Replaces the local root CA with a freshly generated one, valid for 3 years (issue #164) — needed when the current CA has expired, since detour never silently re-signs it. Every device that trusted the old certificate must trust the new one (`detour setup`).',
+    )
+    .action(async () => {
+      try {
+        const certPath = await regenerateCaCert();
+        console.log(`✔ Generated a new CA certificate at ${certPath}`);
+        console.log(
+          '  The previous CA is gone: re-install this one on every device/browser that was trusting it (`detour setup`), and restart any running `detour start`.',
+        );
       } catch (err) {
         console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
