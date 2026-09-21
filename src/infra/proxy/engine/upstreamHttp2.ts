@@ -4,14 +4,13 @@ import tls from 'node:tls';
 import { findHeader } from '../../../domain/exchange/headers';
 import type { UpstreamCertificate } from '../../../domain/exchange/types';
 import type { UpstreamTlsOptions } from '../upstreamTlsOptions';
+import { UPSTREAM_KEEP_ALIVE_TIMEOUT_MS } from './keepAliveTiming';
 import type { ProxyToServerRequestOptions } from './types';
 import { captureUpstreamCertificate } from './upstreamCertificate';
 
 /**
- * Idle timeout for a pooled h2 session, in ms — mirrors `ProxyEngine`'s own
- * `KEEP_ALIVE_AGENT_OPTIONS.timeout` for the HTTP/1.1 keep-alive pool
- * (issue #162), which this file can't import directly (`proxyEngine.ts`
- * already imports from here, and that constant isn't exported). Without
+ * Idle timeout for a pooled h2 session — the same `UPSTREAM_KEEP_ALIVE_TIMEOUT_MS`
+ * `ProxyEngine`'s own HTTP/1.1 keep-alive agents use (issue #162). Without
  * this, a session to a host that's gone quiet — the ordinary case once a
  * long-running Detour session moves on to debugging a different host —
  * would stay open forever: unlike `httpsAgent`, `UpstreamHttp2Pool` has no
@@ -19,22 +18,21 @@ import { captureUpstreamCertificate } from './upstreamCertificate';
  * thing bounding how many stay open across a session that's touched many
  * distinct hosts.
  */
-const UPSTREAM_H2_IDLE_TIMEOUT_MS = 60_000;
+const UPSTREAM_H2_IDLE_TIMEOUT_MS = UPSTREAM_KEEP_ALIVE_TIMEOUT_MS;
 
 /**
- * Connect/handshake timeout for the ALPN probe's own `tls.connect()`, in ms
- * — matches `KEEP_ALIVE_AGENT_OPTIONS.timeout` (the same value `httpAgent`/
- * `httpsAgent` give every socket they create) so this probe carries the same
- * backstop those agents already provide, rather than a new, weaker one.
- * Without this, an upstream that accepts the TCP connection but never
- * completes (or never finishes) the TLS handshake — a stalled load
- * balancer/firewall, or a server deliberately holding connections open —
- * would leave `probe()`'s promise pending forever: `secureConnect` and
- * `error` both never fire, so the exchange that triggered it (and, until it
- * settles, every concurrent request to the same host riding `pending`) hangs
- * with no timeout and no error surfaced.
+ * Connect/handshake timeout for the ALPN probe's own `tls.connect()` — the
+ * same value `httpAgent`/`httpsAgent` give every socket they create, so this
+ * probe carries the same backstop those agents already provide, rather than
+ * a new, weaker one. Without this, an upstream that accepts the TCP
+ * connection but never completes (or never finishes) the TLS handshake — a
+ * stalled load balancer/firewall, or a server deliberately holding
+ * connections open — would leave `probe()`'s promise pending forever:
+ * `secureConnect` and `error` both never fire, so the exchange that
+ * triggered it (and, until it settles, every concurrent request to the same
+ * host riding `pending`) hangs with no timeout and no error surfaced.
  */
-const UPSTREAM_PROBE_CONNECT_TIMEOUT_MS = 60_000;
+const UPSTREAM_PROBE_CONNECT_TIMEOUT_MS = UPSTREAM_KEEP_ALIVE_TIMEOUT_MS;
 
 /** Per-phase connect timing for a fresh probe — same shape as `ExchangeTiming`'s own dns/tcp/tls fields, kept separate so this module doesn't depend on the exchange-facing type. */
 export interface ConnectTiming {

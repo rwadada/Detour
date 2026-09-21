@@ -33,6 +33,7 @@ import type {
   UpstreamRequest,
   UpstreamResponse,
 } from './types';
+import { UPSTREAM_KEEP_ALIVE_TIMEOUT_MS } from './keepAliveTiming';
 import { captureUpstreamCertificate } from './upstreamCertificate';
 import {
   adaptHttp2Response,
@@ -99,7 +100,7 @@ const KEEP_ALIVE_AGENT_OPTIONS = {
   keepAliveMsecs: 1000,
   maxSockets: 128,
   maxFreeSockets: 32,
-  timeout: 60_000,
+  timeout: UPSTREAM_KEEP_ALIVE_TIMEOUT_MS,
 } as const;
 
 /** A request/response pair's actual mutable hook lists — `IContext`'s public surface plus the bookkeeping `ProxyEngine` needs internally, never exposed to consumers. */
