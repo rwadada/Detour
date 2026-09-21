@@ -68,9 +68,13 @@ export interface ProxyEngineOptions {
 
 /**
  * `httpAgent`/`httpsAgent`'s shared keep-alive tuning (issue #162) — pulled
- * out to a constant so `listen()` can rebuild `httpsAgent` with different
- * TLS options (issue #160's `upstreamTls`) without duplicating (or
- * accidentally drifting from) these values.
+ * out to a constant so both agents' constructors, and `listen()`'s own
+ * rebuild of them via `createUpstreamProxyAgents` when `--upstream-proxy`
+ * is set, share identical values without duplicating (or accidentally
+ * drifting from) them. Unrelated to issue #160's `upstreamTls`: those
+ * options are threaded per-request rather than baked into either agent's
+ * constructor — see `ProxyEngineOptions.upstreamTls`'s own doc comment for
+ * why.
  */
 const KEEP_ALIVE_AGENT_OPTIONS = {
   keepAlive: true,

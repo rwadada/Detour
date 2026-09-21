@@ -35,15 +35,7 @@ import {
   logWebSocketFull,
 } from '../presentation/logger';
 import { RuleEngine } from '../usecase/ruleEngine';
-import {
-  collectProtoPath,
-  collectUpstreamCaPath,
-  describeError,
-  parseDumpLevel,
-  parseIdleMs,
-  parseOnOff,
-  parsePort,
-} from './optionParsers';
+import { collectRepeatable, describeError, parseDumpLevel, parseIdleMs, parseOnOff, parsePort } from './optionParsers';
 
 /** Auto-loaded when `--rules` isn't given and this file exists in the current directory. */
 const DEFAULT_RULES_FILENAME = 'passthrough.rule.json';
@@ -859,7 +851,7 @@ export function registerStartCommand(program: Command): void {
     .option(
       '--proto <path>',
       'Path to a .proto file used to decode gRPC (application/grpc*) message bodies. Repeatable for a schema split across multiple files sharing imports. Detection of gRPC traffic itself always happens, with or without this flag.',
-      collectProtoPath,
+      collectRepeatable,
       [],
     )
     .option('--headless', 'Skip starting the web dashboard entirely — proxy-only, for CI/scripted use (issue #20).')
@@ -910,7 +902,7 @@ export function registerStartCommand(program: Command): void {
     .option(
       '--upstream-ca <path>',
       'Trust an additional CA certificate (PEM) for upstream TLS verification, alongside the system root store (issue #160) — for an internal/private-CA-signed dev or staging server, without disabling verification outright. Repeatable for more than one CA.',
-      collectUpstreamCaPath,
+      collectRepeatable,
       [],
     )
     .option(
