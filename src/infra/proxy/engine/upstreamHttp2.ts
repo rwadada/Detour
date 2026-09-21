@@ -342,7 +342,16 @@ export class UpstreamHttp2Pool {
     for (const { session } of this.sessions.values()) {
       if (!session.closed && !session.destroyed) session.close();
     }
-    for (const socket of this.pendingSockets) socket.destroy();
+    for (const socket of this.pendingSockets) {
+      // `socket.destroy()` with no argument only emits `'close'`, never
+      // `'error'` (verified empirically) — but `probe()`'s own promise for
+      // this socket only settles on `'secureConnect'` or `'error'`, so
+      // destroying it silently here would leave that promise (and every
+      // `acquire()` caller awaiting it) pending forever. Passing an error
+      // makes it reject cleanly instead, the same way any other probe
+      // failure does.
+      socket.destroy(new Error('upstream connection closed: proxy is shutting down'));
+    }
     this.pendingSockets.clear();
     this.sessions.clear();
     this.knownHttp1Hosts.clear();
