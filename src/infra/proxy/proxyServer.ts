@@ -364,7 +364,19 @@ export async function startProxyServer(
           proxyAuth: options.proxyAuth,
           upstreamTls: options.upstreamTls,
         },
-        () => {
+        (err) => {
+          // `listen()` itself reports a failure (e.g. issue #164's expired-CA
+          // refusal) through this same callback, not by throwing synchronously
+          // — this used to ignore `err` and resolve unconditionally, which
+          // then threw *inside* `listen()`'s own catch block (`proxy.ca` is
+          // never assigned on this path) as an unhandled rejection on a
+          // promise nothing awaits, leaving this function's own Promise
+          // neither resolved nor rejected. `detour start` just hung instead
+          // of ever printing the intended error message.
+          if (err) {
+            reject(err);
+            return;
+          }
           clientProcessDirectory?.start();
           resolve({
             port: proxy.httpPort,

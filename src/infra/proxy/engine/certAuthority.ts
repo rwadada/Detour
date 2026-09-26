@@ -267,7 +267,17 @@ export class CertAuthority {
    * call concurrently.
    */
   async warmUp(): Promise<void> {
-    this.leafKeysPromise ??= generateRsaKeyPair();
+    // On failure, clear `leafKeysPromise` back to undefined rather than
+    // leaving it holding a permanently-rejected promise: `??=` only checks
+    // for null/undefined, so without this a transient keygen failure (e.g.
+    // momentary OS entropy/resource pressure) would otherwise poison this
+    // instance for the rest of the process's life — every later `warmUp()`
+    // call re-awaiting the same rejection instead of retrying once the
+    // transient condition clears.
+    this.leafKeysPromise ??= generateRsaKeyPair().catch((err: unknown) => {
+      this.leafKeysPromise = undefined;
+      throw err;
+    });
     this.leafKeys = await this.leafKeysPromise;
   }
 

@@ -553,24 +553,27 @@ async function runStartBody({
     // binds `localhost`-only, so including them there would pad the SAN
     // with addresses this dashboard was never going to accept a connection
     // on anyway (Copilot review, PR #175).
-    let tlsKeyCert: { key: string; cert: string } | undefined;
-    if (dashboardTls) {
-      const dashboardCa = await CertAuthority.load(resolveCertDir());
-      // A separate `CertAuthority` instance from the proxy's own — its leaf
-      // keypair isn't shared, so it needs its own `warmUp()` before minting
-      // (issue #164's `getLeafKeys()` throws otherwise). Pre-existing
-      // one-keypair-per-instance behavior, unchanged by that issue: async
-      // `node:crypto` generation just means this no longer blocks the event
-      // loop while it happens.
-      await dashboardCa.warmUp();
-      tlsKeyCert = dashboardCa.getMultiHostKeyCert([
-        'localhost',
-        '127.0.0.1',
-        '::1',
-        ...(dashboardHost === '0.0.0.0' ? lanAddrs : []),
-      ]);
-    }
     try {
+      let tlsKeyCert: { key: string; cert: string } | undefined;
+      if (dashboardTls) {
+        const dashboardCa = await CertAuthority.load(resolveCertDir());
+        // A separate `CertAuthority` instance from the proxy's own — its leaf
+        // keypair isn't shared, so it needs its own `warmUp()` before minting
+        // (issue #164's `getLeafKeys()` throws otherwise). Pre-existing
+        // one-keypair-per-instance behavior, unchanged by that issue: async
+        // `node:crypto` generation just means this no longer blocks the event
+        // loop while it happens. Inside this `try` (not before it) so a
+        // failure here — the CA load or the leaf keygen — hits the same
+        // "proxy's already up, don't leave it running" cleanup below as a
+        // `startDashboardServer` failure does, instead of leaking the proxy.
+        await dashboardCa.warmUp();
+        tlsKeyCert = dashboardCa.getMultiHostKeyCert([
+          'localhost',
+          '127.0.0.1',
+          '::1',
+          ...(dashboardHost === '0.0.0.0' ? lanAddrs : []),
+        ]);
+      }
       dashboardHandle = await startDashboardServer(
         {
           port: requestedDashboardPort,
