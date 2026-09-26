@@ -312,6 +312,19 @@ Since a `mock`/`route`/`breakpoint`/`script` rule can shadow another rule positi
 
 - `match.url`: a wildcard pattern supporting `*` (any run of characters) and `?` (any single character). `match.urlRegex` (with optional `urlRegexFlags`) matches with a regular expression instead (specify exactly one of `url`/`urlRegex`). `method` matches any method if omitted
 - `action.type: "mock"`: responds immediately with the given status/headers/body — without ever contacting the real server (`body` is JSON-serialized for objects/arrays, sent verbatim for strings; `bodyFile` returns a file's contents instead, resolved relative to rules.json — see the security note under `action.type: "script"` below for the restriction on where it may point). `delayMs` adds an artificial delay before responding. `simulate: "close"`/`"timeout"` drops the connection instead of ever sending a response — `close` resets it immediately, `timeout` just leaves it hanging until the client's own timeout fires — and takes precedence over `status`/`headers`/`body`/`bodyFile` when set
+  - `responses`: an array of overrides, consumed one per match of this rule — the 1st matching request gets `responses[0]`, the 2nd gets `responses[1]`, and so on; once exhausted, every further match keeps reusing the last entry. Lets a stateful multi-screen scenario (issue #181 — a mobile CI test where a list endpoint must reflect an item a prior request "added") be declared upfront instead of rewriting rules.json between requests. Each entry only needs to set what's *different* from this action's own top-level fields — anything it omits falls back to those:
+    ```json
+    {
+      "name": "items-after-add",
+      "match": { "method": "GET", "url": "https://api.example.com/items" },
+      "action": {
+        "type": "mock",
+        "status": 200,
+        "responses": [{ "body": { "items": ["A"] } }, { "body": { "items": ["A", "B"] } }]
+      }
+    }
+    ```
+    The call count is kept in memory only (per rule, per running `detour start`) and resets to 0 on the next rules.json reload, so a fresh reload always restarts the scenario at `responses[0]`
 - `action.type: "route"`: redirects the request's destination host/port (`preserveHostHeader: false` also rewrites the Host header)
 - `action.type: "rewrite"`: for `request`/`response` independently, adds/removes headers (`headers.set`/`headers.remove`) and rewrites the body (`body.set` replaces it wholesale; `body.replace` does sequential string/regex substitution; `body.merge` applies a JSON Merge Patch, RFC 7396 — a `null` value deletes a key, everything else deep-merges). `request.path` (`path.set` replaces the pathname outright; `path.replace` does the same sequential string/regex substitution as `body.replace`, so a path parameter can be rewritten with e.g. `find: "/users/(\\d+)"`, `replacement: "/people/$1"`, `regex: true`) and `request.query` (`query.set`/`query.remove`) additionally rewrite the request URL's path and query string, respectively — there's no `response.path`/`response.query` since a response has no URL
 - `action.type: "breakpoint"`: pauses a matching exchange instead of letting it flow straight through, so it can be inspected and edited live from the dashboard before continuing (or aborting it outright). `request`/`response` (both default `true`) independently control which phase(s) pause — a request-phase pause exposes method/path/headers/body for editing before it's sent upstream; a response-phase pause exposes status/headers/body for editing before it's returned to the client. A pause waits indefinitely for the dashboard (there's no timeout), so only enable it on rules you're actively debugging with the dashboard open

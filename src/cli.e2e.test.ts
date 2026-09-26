@@ -1153,6 +1153,42 @@ describe('detour start (CLI, end-to-end)', () => {
   });
 
   /**
+   * Issue #181: a mobile CI scenario test needs the same endpoint to
+   * reflect state across a multi-screen journey (e.g. a list that must
+   * include an item a prior request "added") without rewriting rules.json
+   * between requests. `responses` declares that sequence upfront instead.
+   */
+  it("serves a mock rule's `responses` in order, then keeps reusing the last one (issue #181)", async () => {
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-mock-sequence',
+            match: { url: `http://127.0.0.1:${echo.port}/items` },
+            action: {
+              type: 'mock',
+              status: 200,
+              responses: [{ body: { items: ['A'] } }, { body: { items: ['A', 'B'] } }],
+            },
+          },
+        ],
+      }),
+    );
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const first = await requestThroughProxy(cli.port, echo.port, '/items');
+    const second = await requestThroughProxy(cli.port, echo.port, '/items');
+    const third = await requestThroughProxy(cli.port, echo.port, '/items');
+    expect(JSON.parse(first.body)).toEqual({ items: ['A'] });
+    expect(JSON.parse(second.body)).toEqual({ items: ['A', 'B'] });
+    expect(JSON.parse(third.body)).toEqual({ items: ['A', 'B'] });
+  });
+
+  /**
    * Copilot review, PR #123: applying a Rule Profile with no `ruleEngine`
    * configured lazily bootstraps `passthrough.rule.json` — this covers the
    * race that finding called out, where something *other* than this

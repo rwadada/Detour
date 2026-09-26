@@ -224,7 +224,25 @@ export interface MockAction {
   bodyFile?: string;
   delayMs?: number;
   simulate?: 'timeout' | 'close';
+  /**
+   * A sequence of response overrides consumed one per match of this rule
+   * (issue #181). Not editable from `ActionFields`' form yet — round-trips
+   * unchanged through it either way (its `patch()` spreads onto the full
+   * existing action), and is fully editable via the "Edit as JSON" escape
+   * hatch. See `MockAction.responses`'s doc comment in
+   * `src/domain/rules/types.ts` for the full semantics.
+   */
+  responses?: MockStep[];
 }
+
+/**
+ * One entry in a `mock` action's `responses` sequence — see
+ * `MockAction.responses`'s doc comment. Not exported: nothing outside this
+ * file needs it yet (see `responses`'s own comment on why), unlike its
+ * domain-side counterpart in `src/domain/rules/types.ts`, which
+ * `mockSequence.ts` does import.
+ */
+type MockStep = Omit<MockAction, 'type' | 'responses'>;
 
 export interface RouteAction {
   type: 'route';

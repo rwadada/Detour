@@ -308,14 +308,24 @@ export function createRequestHandler(deps: RequestHandlerDeps): OnRequestParams 
 
       if (terminal?.action.type === 'mock') {
         const ruleEngine = getRuleEngine();
-        const mockAction = terminal.action;
+        // Resolves `responses` (issue #181's sequential mock responses),
+        // if the rule declares any — the 1st match gets `responses[0]`,
+        // the 2nd `responses[1]`, and so on, per-rule and per-`RuleEngine`
+        // (see its own doc comment). A plain rule with no `responses` gets
+        // `terminal.action` back unchanged.
+        const mockAction = ruleEngine!.resolveMockStep(terminal);
         const simulate = mockAction.simulate;
         let mockError: string | undefined;
         const mock = simulate
           ? undefined
-          : tryResolveMock(terminal, ruleEngine!.basePath, ruleEngine!.allowExternalScriptPaths, (message) => {
-              mockError = message;
-            });
+          : tryResolveMock(
+              { ...terminal, action: mockAction },
+              ruleEngine!.basePath,
+              ruleEngine!.allowExternalScriptPaths,
+              (message) => {
+                mockError = message;
+              },
+            );
 
         // A mock's response never passes through onResponseHeaders/onResponse
         // (it's synthesized here, not streamed from upstream), so a matching

@@ -109,7 +109,41 @@ export interface MockAction {
    * client hangs until it hits its own read/request timeout.
    */
   simulate?: 'timeout' | 'close';
+  /**
+   * A sequence of response overrides, consumed one per match of this rule —
+   * the 1st matching request gets `responses[0]`, the 2nd gets
+   * `responses[1]`, and so on; once exhausted, every further match keeps
+   * reusing the last entry. Lets a stateful multi-step scenario (issue
+   * #181 — e.g. a list endpoint that must reflect an item a prior request
+   * just "added") be declared upfront instead of requiring the test
+   * harness to rewrite rules.json at exactly the right moment between
+   * requests.
+   *
+   * Each step overrides only the fields it sets; anything it omits falls
+   * back to this action's own top-level `status`/`statusMessage`/
+   * `headers`/`body`/`bodyFile`/`delayMs`/`simulate` — so a step that only
+   * varies the body doesn't need to repeat the rest. Two groups are each
+   * cleared wholesale rather than inherited field-by-field, so they can
+   * never mix between the base action and a step (or leak an unintended
+   * field from one into the other): a step setting any of `status`/
+   * `statusMessage`/`headers`/`body`/`bodyFile` clears an inherited
+   * `simulate` (otherwise it would silently keep winning downstream —
+   * `simulate` always wins over a response when both are set — and the
+   * step's override would never take effect), and a step setting
+   * `simulate` clears all five of those. Within the response side,
+   * `body`/`bodyFile` are themselves such a pair (`bodyFile` wins over
+   * `body`), cleared the same way. `delayMs` sits outside both groups —
+   * it composes with either. See `pickMockAction`.
+   *
+   * The call count is kept in memory only (per `Rule` object — see
+   * `RuleEngine`) and always resets to 0 on the next `rules.json` reload,
+   * so a fresh reload restarts the scenario at `responses[0]`.
+   */
+  responses?: MockStep[];
 }
+
+/** One entry in a `mock` action's `responses` sequence — see `MockAction.responses`'s doc comment. */
+export type MockStep = Omit<MockAction, 'type' | 'responses'>;
 
 export interface RouteAction {
   type: 'route';
