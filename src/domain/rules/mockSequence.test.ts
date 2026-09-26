@@ -134,13 +134,54 @@ describe('pickMockAction', () => {
     expect(picked.bodyFile).toBeUndefined();
   });
 
-  it("a step that sets neither body/bodyFile nor simulate inherits the base action's simulate untouched", () => {
+  // agy code review, second pass: the same silent-defeat bug applied to
+  // status/statusMessage/headers too, not just body/bodyFile — a step
+  // setting any response-describing field must clear an inherited
+  // `simulate`, or that `simulate` keeps winning downstream regardless of
+  // what the step asked for.
+  it("a step's own status wins over the base action's simulate, clearing it", () => {
+    const action: MockAction = {
+      type: 'mock',
+      simulate: 'timeout',
+      responses: [{ status: 500 }],
+    };
+    const picked = pickMockAction(action, 0);
+    expect(picked.status).toBe(500);
+    expect(picked.simulate).toBeUndefined();
+  });
+
+  it("a step's own headers win over the base action's simulate, clearing it", () => {
     const action: MockAction = {
       type: 'mock',
       simulate: 'close',
-      responses: [{ status: 201 }],
+      responses: [{ headers: { 'X-Step': '1' } }],
+    };
+    const picked = pickMockAction(action, 0);
+    expect(picked.headers).toEqual({ 'X-Step': '1' });
+    expect(picked.simulate).toBeUndefined();
+  });
+
+  it("a step's own simulate clears an inherited status/headers, not just body", () => {
+    const action: MockAction = {
+      type: 'mock',
+      status: 200,
+      headers: { 'X-Base': '1' },
+      responses: [{ simulate: 'close' }],
     };
     const picked = pickMockAction(action, 0);
     expect(picked.simulate).toBe('close');
+    expect(picked.status).toBeUndefined();
+    expect(picked.headers).toBeUndefined();
+  });
+
+  it('a step that sets only delayMs leaves both an inherited simulate and inherited response fields untouched', () => {
+    const action: MockAction = {
+      type: 'mock',
+      simulate: 'timeout',
+      responses: [{ delayMs: 500 }],
+    };
+    const picked = pickMockAction(action, 0);
+    expect(picked.delayMs).toBe(500);
+    expect(picked.simulate).toBe('timeout');
   });
 });
