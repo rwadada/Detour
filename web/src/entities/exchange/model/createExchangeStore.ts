@@ -2,8 +2,23 @@ import { create } from 'zustand';
 import { RingBuffer } from '@/shared/lib/ringBuffer';
 import type { CapturedExchange, DashboardConnection } from '@/shared/api';
 
-/** Bounds memory: with a ~1KB average exchange, this store's array itself never exceeds a few MB regardless of session length. */
+/** Bounds memory by count alone — see `MAX_CAPTURE_MEMORY_BYTES` below for the byte cap that actually matters once bodies aren't trivial (issue #165): 5000 exchanges each carrying a couple of base64'd 256 KB bodies would be well over a gigabyte before this count is ever reached. */
 const MAX_EXCHANGES = 5000;
+
+/**
+ * Caps this store's *total* captured-body memory (issue #165), independent
+ * of `MAX_EXCHANGES`'s count cap — mirrors the backend backlog's own
+ * `--max-capture-memory` default (`dashboardServer.ts`'s
+ * `capturedExchangeByteSize`/`DashboardServerOptions.maxCaptureMemoryBytes`)
+ * so a session that would already be evicted server-side doesn't keep
+ * piling up in this tab's own memory regardless.
+ */
+const MAX_CAPTURE_MEMORY_BYTES = 64 * 1024 * 1024;
+
+/** Mirrors the backend's own `capturedExchangeByteSize` (`dashboardServer.ts`) — see its doc comment for why only the bodies are counted. */
+function capturedExchangeByteSize(exchange: CapturedExchange): number {
+  return (exchange.requestBody?.length ?? 0) + (exchange.responseBody?.length ?? 0);
+}
 
 export interface Filters {
   /** 'ALL' or an exact HTTP method. */
@@ -80,7 +95,10 @@ export interface ExchangeState {
 export function createExchangeStore(connection: DashboardConnection) {
   // Scoped per store instance (not module-level) so independent instances —
   // e.g. one per test — never share state.
-  const buffer = new RingBuffer<CapturedExchange>(MAX_EXCHANGES, (item) => item.id);
+  const buffer = new RingBuffer<CapturedExchange>(MAX_EXCHANGES, (item) => item.id, {
+    maxTotalBytes: MAX_CAPTURE_MEMORY_BYTES,
+    sizeOf: capturedExchangeByteSize,
+  });
   let pendingUpserts: CapturedExchange[] = [];
   let flushHandle: number | undefined;
   // Non-null while in imported mode: the live buffer above keeps being

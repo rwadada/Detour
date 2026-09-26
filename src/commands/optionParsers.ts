@@ -43,6 +43,15 @@ export function parseScriptTimeoutMs(value: string): number {
   return ms;
 }
 
+/** Validates `--max-capture-memory <MB>` (issue #165) and converts it to bytes, the unit `DashboardServerOptions.maxCaptureMemoryBytes` actually takes — a positive integer count of megabytes. */
+export function parseMaxCaptureMemoryBytes(value: string): number {
+  const mb = Number(value);
+  if (!Number.isInteger(mb) || mb <= 0) {
+    throw new Error(`--max-capture-memory must be a positive integer of megabytes (got: ${value})`);
+  }
+  return mb * 1024 * 1024;
+}
+
 export function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
