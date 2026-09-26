@@ -44,6 +44,7 @@ import {
   describeError,
   parseDumpLevel,
   parseIdleMs,
+  parseMaxCaptureMemoryBytes,
   parseOnOff,
   parsePort,
   parseScriptTimeoutMs,
@@ -136,6 +137,8 @@ interface StartOptions {
   clientKey?: string;
   /** `--no-http2-upstream` (issue #166): pin the proxy→upstream leg to HTTP/1.1, skipping the ALPN probe that otherwise negotiates h2 with a real upstream server that offers it. Independent of `--no-http2` above, which only ever governs the client-facing side. */
   http2Upstream: boolean;
+  /** `--max-capture-memory <MB>` (issue #165), unparsed: caps the live backlog's *total* captured-body memory, independent of (and typically the tighter of the two, once bodies are non-trivial) its 500-item count cap. Always present (commander default). */
+  maxCaptureMemory: string;
 }
 
 /**
@@ -618,6 +621,7 @@ async function runStartBody({
           // doc comment (issue #66).
           lanAddresses: lanAddrs,
           insecureUpstream: options.insecureUpstream ?? false,
+          maxCaptureMemoryBytes: parseMaxCaptureMemoryBytes(options.maxCaptureMemory),
         },
         eventBus,
       );
@@ -958,7 +962,12 @@ export function registerStartCommand(program: Command): void {
     )
     .option(
       '--persist [path]',
-      "Persist every finished exchange to a SQLite database (opt-in; default off), queryable from the dashboard's History feature once it falls out of the live 500-item backlog — the backlog itself, and the 256KB per-body capture cap, are unchanged. Defaults to ~/.detour/history.db when passed with no path. Requires Node 22.5+ (node:sqlite).",
+      "Persist every finished exchange to a SQLite database (opt-in; default off), queryable from the dashboard's History feature once it falls out of the live backlog — the 256KB per-body capture cap is unchanged, but see --max-capture-memory below for the backlog's own eviction. Defaults to ~/.detour/history.db when passed with no path. Requires Node 22.5+ (node:sqlite).",
+    )
+    .option(
+      '--max-capture-memory <MB>',
+      "Caps the live backlog's total captured-body memory (issue #165), independent of its 500-item count cap — a handful of large bodies can otherwise account for hundreds of MB well before that count is reached. Evicts the oldest exchange(s) once exceeded, same as hitting the count cap; --persist above still has them, if it's on.",
+      '64',
     )
     .option(
       '--upstream-proxy <url>',

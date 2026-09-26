@@ -37,6 +37,19 @@ import { serveStatic } from './staticServer';
  */
 const DEFAULT_BACKLOG_SIZE = 500;
 
+/**
+ * `backlog`'s `RingBuffer.byteLimit.sizeOf` (issue #165): the base64
+ * request/response bodies are what actually balloons — 500 exchanges each
+ * carrying a couple of 256 KB (pre-base64) bodies is easily a couple
+ * hundred MB, well before the 500-item count cap alone would ever evict
+ * anything. Headers/URLs/etc. are comparatively negligible and deliberately
+ * not counted — this only needs to be a cheap, representative proxy for
+ * "how much does this exchange cost to hold onto", not an exact byte count.
+ */
+function capturedExchangeByteSize(exchange: CapturedExchange): number {
+  return (exchange.requestBody?.length ?? 0) + (exchange.responseBody?.length ?? 0);
+}
+
 // Built dashboard SPA (see web/), copied here as `web-dist/` by `npm run
 // build`. Three directories up from this file in both dev (src/infra/dashboard
 // → repo root) and prod (dist/infra/dashboard → package root) layouts —
@@ -158,6 +171,19 @@ export interface DashboardServerOptions {
    * (verification on, Detour's behavior before this flag existed).
    */
   insecureUpstream?: boolean;
+  /**
+   * Caps the live backlog's *total* captured-body memory (issue #165),
+   * independent of (and typically the tighter of the two, once bodies are
+   * non-trivial) `backlogSize`'s item-count cap — 500 exchanges each
+   * carrying a couple of base64'd 256 KB bodies is a very different memory
+   * footprint from 500 carrying none at all. Evicts the oldest exchange(s)
+   * once exceeded, same mechanism (and same "still in `historyStore` if
+   * `--persist` is on") as hitting the count cap. `undefined` disables
+   * this cap entirely (count-only, the pre-#165 behavior) — `cli.ts`
+   * itself always passes a value (`--max-capture-memory`, default 64 MB);
+   * this is only really `undefined` from a test double that doesn't care.
+   */
+  maxCaptureMemoryBytes?: number;
 }
 
 export interface DashboardServerHandle {
@@ -243,7 +269,13 @@ export async function startDashboardServer(
   let boundPort = options.port;
   await assertPortAvailable(options.port, host);
 
-  const backlog = new RingBuffer<CapturedExchange>(options.backlogSize ?? DEFAULT_BACKLOG_SIZE, (item) => item.id);
+  const backlog = new RingBuffer<CapturedExchange>(
+    options.backlogSize ?? DEFAULT_BACKLOG_SIZE,
+    (item) => item.id,
+    options.maxCaptureMemoryBytes !== undefined
+      ? { maxTotalBytes: options.maxCaptureMemoryBytes, sizeOf: capturedExchangeByteSize }
+      : undefined,
+  );
   // Mirrors `backlog` above, but for WebSocket connections (issue #17) —
   // kept in its own buffer/message type since a connection's shape (a
   // stream of frames rather than one request/response pair) doesn't fit

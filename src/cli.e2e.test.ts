@@ -3872,6 +3872,75 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
     });
   });
 
+  describe('--max-capture-memory (issue #165)', () => {
+    it('rejects a non-positive value without starting the proxy', async () => {
+      const result = await runTsx(
+        ['src/cli.ts', 'start', '--port', '0', '--dashboard-port', '0', '--max-capture-memory', '0'],
+        { cwd: REPO_ROOT, reject: false },
+      );
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain('--max-capture-memory must be a positive integer');
+    });
+
+    it("caps the dashboard's backlog by total body size, evicting the oldest exchange once exceeded — independent of the 500-item count cap", async () => {
+      const upstream = await startEchoServer();
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-max-capture-memory-'));
+      const rulesPath = path.join(tmpDir, 'rules.json');
+      // 500KB, comfortably over MAX_CAPTURED_BODY_BYTES (256KB) — captured
+      // (and thus counted toward the backlog's total) at exactly that cap,
+      // ~341KB once base64-encoded. Four of these (~1.36MB) exceeds the 1MB
+      // --max-capture-memory budget below well before the 500-item count
+      // cap ever would.
+      fs.writeFileSync(
+        rulesPath,
+        JSON.stringify({
+          rules: [
+            {
+              name: 'big',
+              match: { url: `http://127.0.0.1:${upstream.port}/big` },
+              action: { type: 'mock', status: 200, body: 'x'.repeat(500_000) },
+            },
+          ],
+        }),
+      );
+
+      try {
+        cli = await startDetourCliReady([
+          '--port',
+          '0',
+          '--dashboard-port',
+          '0',
+          '--rules',
+          rulesPath,
+          '--max-capture-memory',
+          '1',
+        ]);
+        for (let i = 0; i < 4; i++) {
+          await requestThroughProxy(cli.proxyPort, upstream.port, '/big');
+        }
+
+        const socket = new WebSocket(`ws://localhost:${cli.dashboardPort}/ws`);
+        const backlog = await new Promise<{ items: unknown[] }>((resolve, reject) => {
+          socket.on('message', (raw) => {
+            const message = JSON.parse(raw.toString()) as { type: string; items?: unknown[] };
+            if (message.type === 'backlog' && message.items) {
+              socket.close();
+              resolve({ items: message.items });
+            }
+          });
+          socket.on('error', reject);
+        });
+        // What matters here is only that *something* got evicted well short
+        // of 4 entries, proving the byte cap (not just the 500-item count
+        // cap) actually fired.
+        expect(backlog.items.length).toBeLessThan(4);
+      } finally {
+        await upstream.close();
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('--fail-on-running', () => {
     it('exits with code 3 when another instance is already tracked as running on the same --port', async () => {
       const port = await findFreePort();
