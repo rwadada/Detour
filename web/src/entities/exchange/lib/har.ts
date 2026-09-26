@@ -1,4 +1,4 @@
-import type { CapturedExchange, HeaderMap, UpstreamCertificate } from '@/shared/api';
+import type { CapturedExchange, ExchangeTiming, HeaderMap, UpstreamCertificate } from '@/shared/api';
 
 /**
  * HAR 1.2 export/import (issue #19). HAR is a lossy format relative to
@@ -48,6 +48,16 @@ export interface DetourHarExtension {
   certificate?: UpstreamCertificate;
   /** Which protocol the proxy→upstream leg actually spoke (issue #166) — independent of `protocol` above (the client-facing side); no standard HAR field distinguishes the two. */
   upstreamProtocol?: CapturedExchange['upstreamProtocol'];
+  /**
+   * The exact DNS/TCP/TLS/TTFB/transfer breakdown (issue #140), including
+   * `connectionReused` — no standard HAR field for the last one, and the
+   * standard `timings` object below is lossy for the rest (its `connect`
+   * folds TCP+TLS together per the HAR 1.2 spec, and it has no field at
+   * all for "no connection was made because this rode a reused socket").
+   * Re-importing a Detour-authored HAR reads this instead of deriving from
+   * `timings`, for an exact round-trip.
+   */
+  timing?: ExchangeTiming;
 }
 
 export interface HarEntry {
@@ -76,7 +86,14 @@ export interface HarEntry {
     bodySize: number;
   };
   cache: Record<string, never>;
-  timings: { send: number; wait: number; receive: number };
+  /**
+   * HAR 1.2's standard timing breakdown. `dns`/`connect`/`ssl` are omitted
+   * by us on export in favor of the `_detour.timing` extension above (see
+   * its own doc comment on why they'd be lossy); a foreign HAR (e.g. from
+   * Chrome DevTools) does set them, and `-1` means "not measured" per the
+   * spec, same as absent.
+   */
+  timings: { dns?: number; connect?: number; ssl?: number; send: number; wait: number; receive: number };
   _detour?: DetourHarExtension;
 }
 
@@ -174,6 +191,31 @@ function harResponseContentText(
   return { text: responseBody, encoding: 'base64' };
 }
 
+/**
+ * Builds the standard HAR `timings` object from Detour's own DNS/TCP/TLS/
+ * TTFB/transfer breakdown (issue #140/#167) — `dns`/`ssl` map directly,
+ * `connect` folds TCP+TLS together (HAR 1.2: "If [ssl] is defined then the
+ * time is also included in the connect field"), and `wait` takes `ttfbMs`
+ * (which, like HAR's `wait`, covers request upload too — see
+ * `ExchangeTiming.ttfbMs`'s own doc comment) with `receive` from
+ * `transferMs`. `-1` is HAR's own "not measured" sentinel. Falls back to
+ * the pre-#167 behavior (everything folded into `wait`) when there's no
+ * `timing` at all — an exchange that never reached upstream, or one
+ * without a granular breakdown to begin with.
+ */
+function harTimingsOf(timing: ExchangeTiming | undefined, durationMs: number | undefined): HarEntry['timings'] {
+  if (!timing) return { dns: -1, connect: -1, ssl: -1, send: 0, wait: durationMs ?? 0, receive: 0 };
+  const hasConnect = timing.tcpMs !== undefined || timing.tlsMs !== undefined;
+  return {
+    dns: timing.dnsMs ?? -1,
+    connect: hasConnect ? (timing.tcpMs ?? 0) + (timing.tlsMs ?? 0) : -1,
+    ssl: timing.tlsMs ?? -1,
+    send: 0,
+    wait: timing.ttfbMs ?? durationMs ?? 0,
+    receive: timing.transferMs ?? 0,
+  };
+}
+
 function exchangeToHarEntry(exchange: CapturedExchange): HarEntry {
   const requestText = exchange.requestBody ? tryDecodeBase64Text(exchange.requestBody) : undefined;
   const responseText = exchange.responseBody ? tryDecodeBase64Text(exchange.responseBody) : undefined;
@@ -210,7 +252,7 @@ function exchangeToHarEntry(exchange: CapturedExchange): HarEntry {
       bodySize: exchange.responseBodySize,
     },
     cache: {},
-    timings: { send: 0, wait: exchange.durationMs ?? 0, receive: 0 },
+    timings: harTimingsOf(exchange.timing, exchange.durationMs),
     _detour: {
       id: exchange.id,
       host: exchange.host,
@@ -225,6 +267,7 @@ function exchangeToHarEntry(exchange: CapturedExchange): HarEntry {
       error: exchange.error,
       certificate: exchange.certificate,
       upstreamProtocol: exchange.upstreamProtocol,
+      timing: exchange.timing,
     },
   };
 }
@@ -251,6 +294,48 @@ function decodeHarResponseBody(content: HarContent): string | undefined {
 function nextImportedId(fallbackIndex: number): string {
   importCounter += 1;
   return `imported-${fallbackIndex}-${importCounter}`;
+}
+
+/**
+ * The inverse of `harTimingsOf`, for a foreign HAR with no `_detour.timing`
+ * to read exactly instead (see `harEntryToExchange`). `-1` means "not
+ * measured" per the HAR 1.2 spec; `connect` folds TCP+TLS together there,
+ * so `tcpMs` is recovered by subtracting `ssl` back out when both are
+ * present. `send`+`wait` are summed into `ttfbMs`, which covers request
+ * upload too (see `ExchangeTiming.ttfbMs`'s own doc comment) — so does the
+ * HAR pair together. `connectionReused` has no standard HAR field and is
+ * never derived here. Returns `undefined` when every field is absent/`-1`
+ * (no timing data at all — most real-world HAR exports only fill in a
+ * subset, if any) rather than an all-fields-undefined `{}` that would
+ * render identically in the Waterfall but isn't quite the same claim.
+ *
+ * `timings` is only *typed* as having every field required — nothing here
+ * runtime-validates a parsed JSON file against that shape, so a foreign
+ * HAR omitting one is read the same as it being `-1`.
+ */
+function deriveTimingFromHar(timings: HarEntry['timings'] | undefined): ExchangeTiming | undefined {
+  const t = timings as Partial<HarEntry['timings']> | undefined;
+  if (!t) return undefined;
+
+  const dnsMs = t.dns !== undefined && t.dns >= 0 ? t.dns : undefined;
+  const sslMs = t.ssl !== undefined && t.ssl >= 0 ? t.ssl : undefined;
+  const connectMs = t.connect !== undefined && t.connect >= 0 ? t.connect : undefined;
+  const tcpMs = connectMs !== undefined ? Math.max(connectMs - (sslMs ?? 0), 0) : undefined;
+  const sendMs = t.send !== undefined && t.send >= 0 ? t.send : undefined;
+  const waitMs = t.wait !== undefined && t.wait >= 0 ? t.wait : undefined;
+  const ttfbMs = sendMs !== undefined || waitMs !== undefined ? (sendMs ?? 0) + (waitMs ?? 0) : undefined;
+  const transferMs = t.receive !== undefined && t.receive >= 0 ? t.receive : undefined;
+
+  if (
+    dnsMs === undefined &&
+    tcpMs === undefined &&
+    sslMs === undefined &&
+    ttfbMs === undefined &&
+    transferMs === undefined
+  ) {
+    return undefined;
+  }
+  return { dnsMs, tcpMs, tlsMs: sslMs, ttfbMs, transferMs };
 }
 
 function harEntryToExchange(entry: HarEntry, fallbackIndex: number): CapturedExchange {
@@ -282,6 +367,14 @@ function harEntryToExchange(entry: HarEntry, fallbackIndex: number): CapturedExc
     responseBodyTruncated: ext?.responseBodyTruncated,
     finishedAt: durationMs !== undefined ? startedAt + durationMs : undefined,
     durationMs,
+    // Not `ext?.timing ?? deriveTimingFromHar(...)`: a Detour-authored HAR
+    // (`ext` present) whose exchange genuinely had no `timing` at all
+    // would otherwise have one fabricated here from the approximated
+    // standard `timings` fields `harTimingsOf` still writes for other
+    // tools' benefit — `ext.timing` being undefined in that case means
+    // exactly that, not "fall back to deriving it". Only derive at all for
+    // a genuinely foreign HAR, which has no `_detour` extension to trust instead.
+    timing: ext ? ext.timing : deriveTimingFromHar(entry.timings),
     error: ext?.error,
     ruleName: ext?.ruleName,
     certificate: ext?.certificate,

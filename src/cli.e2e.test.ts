@@ -4727,6 +4727,113 @@ describe('detour record / detour serve (issue #149, CLI end-to-end)', () => {
     }
   });
 
+  it('converts a HAR 1.2 file into fixtures with --from-har, replayable by `detour serve` (issue #167)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-record-har-e2e-'));
+    const outDir = path.join(tmpDir, 'fixtures');
+    const harPath = path.join(tmpDir, 'sample.har');
+    fs.writeFileSync(
+      harPath,
+      JSON.stringify({
+        log: {
+          version: '1.2',
+          creator: { name: 'Chrome DevTools', version: '1' },
+          entries: [
+            {
+              startedDateTime: '2024-01-01T00:00:00.000Z',
+              time: 42,
+              request: {
+                method: 'GET',
+                url: 'https://api.example.com/orders/1?expand=items',
+                httpVersion: 'HTTP/1.1',
+                cookies: [],
+                headers: [],
+                queryString: [{ name: 'expand', value: 'items' }],
+                headersSize: -1,
+                bodySize: 0,
+              },
+              response: {
+                status: 200,
+                statusText: 'OK',
+                httpVersion: 'HTTP/1.1',
+                cookies: [],
+                headers: [{ name: 'Content-Type', value: 'application/json' }],
+                content: { size: 21, mimeType: 'application/json', text: '{"id":1,"items":[]}' },
+                redirectURL: '',
+                headersSize: -1,
+                bodySize: 21,
+              },
+              cache: {},
+              timings: { send: 0, wait: 42, receive: 0 },
+            },
+          ],
+        },
+      }),
+    );
+
+    try {
+      const result = await runTsx(['src/cli.ts', 'record', '--from-har', harPath, '--out', outDir], {
+        cwd: REPO_ROOT,
+        reject: false,
+        timeout: 10_000,
+      });
+      expect(result.exitCode).toBe(0);
+
+      const files = fs.readdirSync(outDir).filter((name) => name.endsWith('.json'));
+      expect(files).toHaveLength(1);
+      const fixture = JSON.parse(fs.readFileSync(path.join(outDir, files[0]!), 'utf8'));
+      expect(fixture.method).toBe('GET');
+      expect(fixture.path).toBe('/orders/1?expand=items');
+      expect(fixture.status).toBe(200);
+      expect(fixture.responseBody).toBe('{"id":1,"items":[]}');
+
+      // The point of --from-har: the converted fixture actually replays.
+      const serve = await startDetourServe(outDir);
+      try {
+        const response = await directGet(serve.port, '/orders/1?expand=items');
+        expect(response.status).toBe(200);
+        expect(JSON.parse(response.body)).toEqual({ id: 1, items: [] });
+      } finally {
+        await serve.kill();
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects --from-har combined with a command', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-record-har-e2e-'));
+    const harPath = path.join(tmpDir, 'sample.har');
+    fs.writeFileSync(harPath, JSON.stringify({ log: { version: '1.2', creator: {}, entries: [] } }));
+    try {
+      const result = await runTsx(['src/cli.ts', 'record', '--from-har', harPath, '--', process.execPath, '-e', ''], {
+        cwd: REPO_ROOT,
+        reject: false,
+        timeout: 10_000,
+      });
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toMatch(/--from-har.*takes no command/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a friendly error, not a bare exception, for a malformed --from-har file', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-record-har-e2e-'));
+    const harPath = path.join(tmpDir, 'not-a-har.txt');
+    fs.writeFileSync(harPath, 'this is not JSON at all');
+    try {
+      const result = await runTsx(['src/cli.ts', 'record', '--from-har', harPath], {
+        cwd: REPO_ROOT,
+        reject: false,
+        timeout: 10_000,
+      });
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toMatch(/Couldn't parse as JSON/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('survives a fixture write failure instead of crashing the recording run (issue #149 review)', async () => {
     const upstream = await startEchoServer();
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-record-e2e-'));

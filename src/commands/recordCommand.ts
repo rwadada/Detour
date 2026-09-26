@@ -1,5 +1,7 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import type { Command } from 'commander';
+import { parseHarLog } from '../domain/exchange/harImport';
 import { buildFixtureFromExchange } from '../domain/record/buildFixture';
 import { writeFixtureFile } from '../infra/fs/fixtureFileSource';
 import { runCommandUnderProxy } from '../infra/process/commandUnderProxy';
@@ -14,6 +16,42 @@ export interface RecordOptions {
   rules?: string;
   allowExternalScriptPaths?: boolean;
   port: string;
+  /** `--from-har <path>` (issue #167): converts an existing HAR 1.2 file into fixtures instead of recording live traffic — see `runRecordFromHar`. */
+  fromHar?: string;
+}
+
+/**
+ * `detour record --from-har <path>` (issue #167): converts a HAR 1.2 file
+ * — someone else's tool's recording, or Detour's own dashboard export —
+ * straight into fixtures, with no live proxy run at all. Reuses
+ * `buildFixtureFromExchange`, the exact same conversion a live `detour
+ * record` run's `response` listener already calls, so a HAR-derived
+ * fixture behaves identically to one recorded live. An entry with no
+ * response `status` (shouldn't happen for a spec-conformant HAR, but
+ * `parseHarLog` doesn't itself require a *meaningful* one) is skipped,
+ * matching the live path's "no response at all" skip.
+ */
+function runRecordFromHar(harPath: string, out: string): void {
+  const outDir = path.resolve(out);
+  const resolvedHarPath = path.resolve(harPath);
+  let text: string;
+  try {
+    text = fs.readFileSync(resolvedHarPath, 'utf8');
+  } catch (err) {
+    throw new Error(`Could not read HAR file: ${resolvedHarPath}\n  ${describeError(err)}`, { cause: err });
+  }
+  const exchanges = parseHarLog(text);
+
+  let sequence = 0;
+  let recordedCount = 0;
+  for (const exchange of exchanges) {
+    if (exchange.statusCode === undefined) continue;
+    sequence += 1;
+    const { fixture, filename } = buildFixtureFromExchange(exchange, sequence);
+    writeFixtureFile(outDir, filename, fixture);
+    recordedCount += 1;
+  }
+  console.log(`✔ Converted ${recordedCount} HAR entr${recordedCount === 1 ? 'y' : 'ies'} to fixtures in ${outDir}`);
 }
 
 /**
@@ -24,8 +62,17 @@ export interface RecordOptions {
  * at all. A passthrough exchange (Intercept off, or a host outside Focus)
  * has nothing decrypted to replay and is skipped, as is one that never got
  * a response at all (errored before headers arrived).
+ *
+ * `--from-har <path>` (issue #167) takes over entirely instead — see
+ * `runRecordFromHar` — and is mutually exclusive with a `command`.
  */
 export async function runRecordCommand(command: string[], options: RecordOptions): Promise<void> {
+  if (options.fromHar) {
+    if (command.length > 0) {
+      throw new Error('detour record --from-har converts a HAR file directly and takes no command to run');
+    }
+    return runRecordFromHar(options.fromHar, options.out);
+  }
   if (command.length === 0) {
     throw new Error(
       'detour record requires a command to run traffic through the proxy, e.g. `detour record -- npm run e2e`',
@@ -78,11 +125,18 @@ export function registerRecordCommand(program: Command): void {
     .description(
       `Runs a command with HTTP_PROXY/HTTPS_PROXY pointed at a fresh proxy instance and records every captured exchange as a fixture file, for \`detour serve\` to replay later without a proxy at all (issue #149)`,
     )
-    .argument('<command...>', 'Command to run under the proxy, e.g. `detour record -- npm run e2e`')
+    // Optional (not `<command...>`): `--from-har` replaces the command
+    // entirely (see `runRecordCommand`'s doc comment) — `[]` when omitted,
+    // which `runRecordCommand` itself then requires one or the other of.
+    .argument('[command...]', 'Command to run under the proxy, e.g. `detour record -- npm run e2e`')
     .option(
       '--out <dir>',
       `Directory to write fixture files to (default: ${DEFAULT_FIXTURES_DIR})`,
       DEFAULT_FIXTURES_DIR,
+    )
+    .option(
+      '--from-har <path>',
+      'Converts a HAR 1.2 file (issue #167) directly into fixtures instead of recording live traffic — no command, proxy, or --rules involved. Mutually exclusive with a command.',
     )
     .option(
       '--rules <path>',
