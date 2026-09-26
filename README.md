@@ -1,10 +1,84 @@
 # Detour
+
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Homebrew](https://img.shields.io/badge/homebrew-rwadada%2Fdetour-orange.svg)](https://github.com/rwadada/homebrew-detour)
+[![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](package.json)
+[![CI](https://github.com/rwadada/Detour/actions/workflows/pr.yml/badge.svg)](https://github.com/rwadada/Detour/actions/workflows/pr.yml)
+
 A terminal-first, lightweight HTTP debugging proxy for mobile and web, with a real-time web dashboard.
 
-- **Website & Docs**: [detour.rwadada.com](https://detour.rwadada.com/)
+- **Website & Documentation**: [detour.rwadada.com](https://detour.rwadada.com/)
 - **Technical Article**: [rwadada.com - Detour Network Debug Tool](https://rwadada.com/#Route.TechArticle/DetourNetworkDebugTool202609)
+- **Release Notes**: [CHANGELOG.md](CHANGELOG.md)
 
-See [CHANGELOG.md](CHANGELOG.md) for release notes.
+<p align="center">
+  <img src="docs/assets/dashboard-preview.png" alt="Detour Real-Time Web Dashboard" width="100%" />
+</p>
+
+---
+
+## ✨ Features at a Glance
+
+- ⚡ **Terminal-First & Ultra-Lightweight** — Boots in milliseconds with zero native C/C++ dependencies. Streamlined CLI with a zero-config real-time web dashboard.
+- 📱 **Automated Environment Setup (`detour setup`)** — Trust CA certs and configure proxies on macOS, iOS Simulators, Android devices (ADB or camera QR code), and Linux with a single command.
+- 🌐 **Modern Protocols: HTTP/2 & gRPC** — Full HTTP/2 ALPN negotiation across client and upstream legs. Native gRPC (`application/grpc*`) frame decoding with custom `.proto` schemas.
+- 🧪 **CI & Communication Contract Tests (`detour test`)** — Assert against real captured traffic in CI pipelines: verify headers, detect PII leaks (email, credit card, SSN), and validate P95 latency budgets.
+- 📼 **Record & Mock Server (`detour record` / `detour serve`)** — Capture live API traffic as portable JSON fixtures and replay them as a deterministic standalone HTTP mock server.
+- 🎛 **Declarative Rule Engine** — Mock endpoints, redirect routes, rewrite headers/bodies (with JSON Merge Patch support), pause at breakpoints, or extend via CommonJS scripts.
+- ⏱ **Network Condition Simulation** — Simulate Slow 3G / Fast 3G, custom bandwidth limits, latency, packet loss, host blocklists, and host focus allowlists.
+- 🔒 **Security-Minded** — LAN mode with scrypt-hashed proxy credentials and dashboard passwords, automatic local HTTPS dashboard certificates, mTLS client certs, and upstream TLS certificate inspection.
+
+---
+
+## 🥊 Comparison
+
+| Feature | **Detour** | **Proxyman** | **Charles** | **mitmproxy** |
+| :--- | :---: | :---: | :---: | :---: |
+| **License** | **Free & Open Source** (Apache-2.0) | Proprietary (Paid) | Proprietary (Paid) | Free & Open Source (MIT) |
+| **Interface** | **Terminal CLI + Real-time Web UI** | Native Desktop GUI | Java Desktop GUI | Terminal UI + Web UI |
+| **Setup Automation** | **`detour setup`** (macOS, iOS, Android, Linux) | Native GUI helpers | Manual | Manual / scripts |
+| **CI & Contract Testing** | **Built-in** (`detour test`, `record`/`serve`) | Separate headless CLI | Limited | Python scripts |
+| **HTTP/2 & gRPC** | **Full** (both legs, `.proto` decoding) | Supported | Partial | Supported |
+| **Memory / Footprint** | **Minimal** (pure Node.js streaming) | Moderate | Heavy (JVM) | Moderate (Python) |
+
+---
+
+## 📑 Table of Contents
+
+- [Quick Start](#quick-start)
+- [Getting Started](#getting-started)
+  - [Homebrew (Recommended)](#homebrew-recommended)
+  - [From source](#from-source)
+- [`detour setup` / `doctor` / `cleanup`](#detour-setup--doctor--cleanup-issue-65)
+- [Web Dashboard](#web-dashboard)
+- [LAN Access, Proxy Authentication & Dashboard Security](#lan-access-proxy-authentication-and-the-dashboard-password-issues-66-158-159)
+- [Upstream TLS Trust, mTLS, and Certificate Visibility](#upstream-tls-trust-mtls-and-certificate-visibility-issue-160)
+- [Upstream HTTP/2](#upstream-http2-issue-166)
+- [Daemon Mode, CI, and Automation](#daemon-mode-ci-and-automation-issue-20)
+- [Communication Contract Tests (`detour test`)](#communication-contract-tests-detour-test-issue-148)
+- [Recording and Replaying Fixtures (`detour record` / `detour serve`)](#recording-and-replaying-fixtures-detour-record--detour-serve-issue-149)
+- [Rule Engine (`rules.json`)](#rule-engine-rulesjson)
+- [Performance Benchmarks](#performance-npm-run-bench-issue-163)
+- [Development Checks](#checks)
+
+---
+
+## Quick Start
+
+```bash
+# 1. Install via Homebrew
+brew tap rwadada/detour && brew install detour
+
+# 2. Start proxy on :8080 and web dashboard on :9080 (auto-opens in browser)
+detour start
+
+# 3. In another terminal, configure your target environment automatically
+detour setup --target mac        # Trusts CA in Keychain and points system proxy
+# or: detour setup --target ios       # Trusts CA on all booted iOS Simulators
+# or: detour setup --target android   # Pushes cert via ADB or serves QR code for camera scan
+```
+
+---
 
 ## Getting Started
 
