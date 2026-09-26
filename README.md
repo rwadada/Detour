@@ -1,6 +1,9 @@
 # Detour
 A terminal-first, lightweight HTTP debugging proxy for mobile and web, with a real-time web dashboard.
 
+- **Website & Docs**: [detour.rwadada.com](https://detour.rwadada.com/)
+- **Technical Article**: [rwadada.com - Detour Network Debug Tool](https://rwadada.com/#Route.TechArticle/DetourNetworkDebugTool202609)
+
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Getting Started
