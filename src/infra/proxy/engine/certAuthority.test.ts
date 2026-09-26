@@ -3,10 +3,44 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import forge from 'node-forge';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CA_VALIDITY_MS } from '../../../domain/cert/caValidity';
 import { LruMap } from '../../../domain/shared/lruMap';
 import { CertAuthority } from './certAuthority';
+
+/** Toggle from inside a test to make the next `generateKeyPair` call fail — see the mock below. */
+const cryptoMockState = vi.hoisted(() => ({ failNextKeygen: false }));
+
+// Only `generateKeyPair` is overridden, and only for one call at a time
+// (`failNextKeygen` resets itself the moment it fires): every other test in
+// this file still exercises real OpenSSL keygen, and `X509Certificate` above
+// is imported straight from the real module, unaffected by this mock.
+//
+// certAuthority.ts calls `promisify(generateKeyPair)`, not the callback form
+// directly — and Node's real `generateKeyPair` carries a custom
+// `util.promisify.custom` implementation that resolves to the named
+// `{ publicKey, privateKey }` object, not the generic promisify fallback's
+// positional array. A plain replacement function without that same symbol
+// would silently corrupt every (non-failing) keygen in this file too, so it
+// has to be attached here explicitly.
+vi.mock('node:crypto', async (importOriginal) => {
+  const { promisify } = await import('node:util');
+  const actual = await importOriginal<typeof import('node:crypto')>();
+  const actualGenerateKeyPairAsync = promisify(actual.generateKeyPair);
+  function generateKeyPair(...args: Parameters<typeof actual.generateKeyPair>): void {
+    (actual.generateKeyPair as (...a: Parameters<typeof actual.generateKeyPair>) => void)(...args);
+  }
+  Object.defineProperty(generateKeyPair, promisify.custom, {
+    value: async (...args: Parameters<typeof actualGenerateKeyPairAsync>) => {
+      if (cryptoMockState.failNextKeygen) {
+        cryptoMockState.failNextKeygen = false;
+        throw new Error('simulated transient keygen failure');
+      }
+      return actualGenerateKeyPairAsync(...args);
+    },
+  });
+  return { ...actual, generateKeyPair };
+});
 
 /** A CA that's ready to mint leaves — `load` deliberately stops short of generating the leaf keypair (see `CertAuthority.warmUp`). */
 async function loadWarm(dir: string): Promise<CertAuthority> {
@@ -235,6 +269,17 @@ describe('CertAuthority', () => {
       await ca.warmUp();
       const internals = ca as unknown as { getLeafPem(hostname: string): { key: string; cert: string } };
       expect(internals.getLeafPem('a.example.com').key).toBe(internals.getLeafPem('b.example.com').key);
+    });
+
+    it('lets a later warmUp() call retry after a transient keygen failure, instead of re-awaiting the same rejection forever', async () => {
+      const ca = await CertAuthority.load(dir);
+      cryptoMockState.failNextKeygen = true;
+      await expect(ca.warmUp()).rejects.toThrow('simulated transient keygen failure');
+      // The transient condition has "cleared" (the mock only fails once) —
+      // without the fix, this second call would just re-await the same
+      // permanently-rejected promise instead of generating a fresh keypair.
+      await expect(ca.warmUp()).resolves.toBeUndefined();
+      expect(() => ca.getSecureContext('example.com')).not.toThrow();
     });
 
     it('bounds both per-host caches rather than growing one entry per hostname forever', async () => {

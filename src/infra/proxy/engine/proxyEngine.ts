@@ -420,6 +420,15 @@ export class ProxyEngine {
       this.httpPort = (this.httpServer.address() as net.AddressInfo).port;
       callback();
     } catch (err) {
+      // `this.tlsServer` (and, further along, `this.httpServer`) can already
+      // be bound and listening by the time a later step in this try block
+      // throws — e.g. the public port losing a bind race against another
+      // process after the internal TLS server's ephemeral-port bind already
+      // succeeded. Without this, that socket stays open and keeps the event
+      // loop alive even though `callback(err)` reports failure, so the
+      // process (a `--detach` daemon child in particular) never actually
+      // exits after "reporting" the error it just rejected with.
+      this.close();
       callback(err instanceof Error ? err : new Error(String(err)));
     }
   }
