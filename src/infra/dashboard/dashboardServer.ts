@@ -955,7 +955,21 @@ export async function startDashboardServer(
         // and the dashboard looking stuck rather than told why.
         const engine = ensureRuleEngine();
         if (!engine) return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
-        engine.write(ruleProfileStore.read(message.name).rules, { activeProfile: message.name });
+        const profileRules = ruleProfileStore.read(message.name).rules;
+        // Same reasoning as `setRules`'s own check above (issue #161):
+        // `applyRuleProfile` is an equally network-reachable way to change
+        // what's active, so it has to be gated the same way — a saved
+        // profile can (validly, and without any check of its own) carry a
+        // `script` rule from a time it was legitimately active, e.g. via
+        // `saveActiveRulesAsProfile` or a profile saved before this gate
+        // existed. Applying it back must not resurrect a `script` rule (or
+        // change its path) that isn't already active right now, exactly as
+        // `setRules` itself can't.
+        const scriptViolations = findRejectedScriptWrites(engine.getRules(), profileRules);
+        if (scriptViolations.length > 0) {
+          return broadcastError('RULE_PROFILE_ERROR', scriptViolations.join('; '));
+        }
+        engine.write(profileRules, { activeProfile: message.name });
       } catch (err) {
         broadcastError('RULE_PROFILE_ERROR', describeError(err));
       }

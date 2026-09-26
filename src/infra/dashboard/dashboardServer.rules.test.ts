@@ -336,6 +336,83 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
     });
   });
 
+  it('applyRuleProfile rejects a saved profile that would introduce a new script rule, without writing it to disk (issue #161)', async () => {
+    writeRuleProfile(
+      'has-script',
+      { rules: [{ name: 's', match: { url: 'https://api.example.com/*' }, action: { type: 'script', path: 'x.js' } }] },
+      profilesDir,
+    );
+    await startWithRuleEngine();
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'rules');
+    const before = fs.readFileSync(rulesPath, 'utf8');
+
+    socket.send(JSON.stringify({ type: 'applyRuleProfile', name: 'has-script' }));
+    const error = await waitForMessage(socket, (m) => m.type === 'error');
+
+    expect(error).toMatchObject({
+      type: 'error',
+      event: { errorKind: 'RULE_PROFILE_ERROR', message: expect.stringContaining('adding a new') },
+    });
+    expect(fs.readFileSync(rulesPath, 'utf8')).toBe(before);
+  });
+
+  it("applyRuleProfile rejects a saved profile that would repoint an already-active script rule's path (issue #161)", async () => {
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [{ name: 's', match: { url: 'https://api.example.com/*' }, action: { type: 'script', path: 'old.js' } }],
+      }),
+    );
+    writeRuleProfile(
+      'repointed-script',
+      {
+        rules: [{ name: 's', match: { url: 'https://api.example.com/*' }, action: { type: 'script', path: 'new.js' } }],
+      },
+      profilesDir,
+    );
+    await startWithRuleEngine();
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'rules');
+    const before = fs.readFileSync(rulesPath, 'utf8');
+
+    socket.send(JSON.stringify({ type: 'applyRuleProfile', name: 'repointed-script' }));
+    const error = await waitForMessage(socket, (m) => m.type === 'error');
+
+    expect(error).toMatchObject({
+      type: 'error',
+      event: { errorKind: 'RULE_PROFILE_ERROR', message: expect.stringContaining('changing') },
+    });
+    expect(fs.readFileSync(rulesPath, 'utf8')).toBe(before);
+  });
+
+  it('applyRuleProfile still allows a saved profile whose script rule exactly matches what is already active (issue #161)', async () => {
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          { name: 's', match: { url: 'https://api.example.com/*' }, action: { type: 'script', path: 'hook.js' } },
+        ],
+      }),
+    );
+    writeRuleProfile(
+      'same-script',
+      {
+        rules: [
+          { name: 's', match: { url: 'https://api.example.com/*' }, action: { type: 'script', path: 'hook.js' } },
+        ],
+      },
+      profilesDir,
+    );
+    await startWithRuleEngine();
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'rules');
+
+    socket.send(JSON.stringify({ type: 'applyRuleProfile', name: 'same-script' }));
+    const updated = await waitForMessage(socket, (m) => m.type === 'rules' && m.data?.$activeProfile === 'same-script');
+    expect(updated.type).toBe('rules');
+  });
+
   it('setRules clears $activeProfile even when a profile was applied just before it', async () => {
     writeRuleProfile('two-rules', { rules: [routeRule('a'), routeRule('b')] }, profilesDir);
     await startWithRuleEngine();
