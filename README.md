@@ -17,33 +17,20 @@ A terminal-first, lightweight HTTP debugging proxy for mobile and web, with a re
 
 ---
 
-## ✨ Features at a Glance
+## Features at a Glance
 
-- ⚡ **Terminal-First & Ultra-Lightweight** — Boots in milliseconds with zero native C/C++ dependencies. Streamlined CLI with a zero-config real-time web dashboard.
-- 📱 **Automated Environment Setup (`detour setup`)** — Trust CA certs and configure proxies on macOS, iOS Simulators, Android devices (ADB or camera QR code), and Linux with a single command.
-- 🌐 **Modern Protocols: HTTP/2 & gRPC** — Full HTTP/2 ALPN negotiation across client and upstream legs. Native gRPC (`application/grpc*`) frame decoding with custom `.proto` schemas.
-- 🧪 **CI & Communication Contract Tests (`detour test`)** — Assert against real captured traffic in CI pipelines: verify headers, detect PII leaks (email, credit card, SSN), and validate P95 latency budgets.
-- 📼 **Record & Mock Server (`detour record` / `detour serve`)** — Capture live API traffic as portable JSON fixtures and replay them as a deterministic standalone HTTP mock server.
-- 🎛 **Declarative Rule Engine** — Mock endpoints, redirect routes, rewrite headers/bodies (with JSON Merge Patch support), pause at breakpoints, or extend via CommonJS scripts.
-- ⏱ **Network Condition Simulation** — Simulate Slow 3G / Fast 3G, custom bandwidth limits, latency, packet loss, host blocklists, and host focus allowlists.
-- 🔒 **Security-Minded** — LAN mode with scrypt-hashed proxy credentials and dashboard passwords, automatic local HTTPS dashboard certificates, mTLS client certs, and upstream TLS certificate inspection.
-
----
-
-## 🥊 Comparison
-
-| Feature | **Detour** | **Proxyman** | **Charles** | **mitmproxy** |
-| :--- | :---: | :---: | :---: | :---: |
-| **License** | **Free & Open Source** (Apache-2.0) | Proprietary (Paid) | Proprietary (Paid) | Free & Open Source (MIT) |
-| **Interface** | **Terminal CLI + Real-time Web UI** | Native Desktop GUI | Java Desktop GUI | Terminal UI + Web UI |
-| **Setup Automation** | **`detour setup`** (macOS, iOS, Android, Linux) | Native GUI helpers | Manual | Manual / scripts |
-| **CI & Contract Testing** | **Built-in** (`detour test`, `record`/`serve`) | Separate headless CLI | Limited | Python scripts |
-| **HTTP/2 & gRPC** | **Full** (both legs, `.proto` decoding) | Supported | Partial | Supported |
-| **Memory / Footprint** | **Minimal** (pure Node.js streaming) | Moderate | Heavy (JVM) | Moderate (Python) |
+- **Terminal-First & Ultra-Lightweight** — Boots in milliseconds with zero native C/C++ dependencies. Streamlined CLI with a zero-config real-time web dashboard.
+- **Automated Environment Setup (`detour setup`)** — Trust CA certs and configure proxies on macOS, iOS Simulators, Android devices (ADB or camera QR code), and Linux with a single command.
+- **Modern Protocols: HTTP/2 & gRPC** — Full HTTP/2 ALPN negotiation across client and upstream legs. Native gRPC (`application/grpc*`) frame decoding with custom `.proto` schemas.
+- **CI & Communication Contract Tests (`detour test`)** — Assert against real captured traffic in CI pipelines: verify headers, detect PII leaks (email, credit card, SSN), and validate P95 latency budgets.
+- **Record & Mock Server (`detour record` / `detour serve`)** — Capture live API traffic as portable JSON fixtures and replay them as a deterministic standalone HTTP mock server.
+- **Declarative Rule Engine** — Mock endpoints, redirect routes, rewrite headers/bodies (with JSON Merge Patch support), pause at breakpoints, or extend via CommonJS scripts.
+- **Network Condition Simulation** — Simulate Slow 3G / Fast 3G, custom bandwidth limits, latency, packet loss, host blocklists, and host focus allowlists.
+- **Security-Minded** — LAN mode with scrypt-hashed proxy credentials and dashboard passwords, automatic local HTTPS dashboard certificates, mTLS client certs, and upstream TLS certificate inspection.
 
 ---
 
-## 📑 Table of Contents
+## Table of Contents
 
 - [Quick Start](#quick-start)
 - [Getting Started](#getting-started)
