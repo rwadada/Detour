@@ -313,18 +313,32 @@ function nextImportedId(fallbackIndex: number): string {
  * runtime-validates a parsed JSON file against that shape, so a foreign
  * HAR omitting one is read the same as it being `-1`.
  */
+/**
+ * `typeof value === 'number'`, not `value !== undefined` — a malformed
+ * HAR's numeric field can just as easily be `null` (JSON has no
+ * `undefined`), and `null >= 0` evaluates to `true` in JavaScript
+ * (relational comparisons coerce `null` to `0`), so a naive `value !==
+ * undefined && value >= 0` check would let a `null` field through
+ * disguised as a real, non-negative measurement (agy code review).
+ * Returns `undefined` for anything that isn't actually a non-negative
+ * number, `-1` (HAR's own "not measured" sentinel) included.
+ */
+function nonNegativeNumberOrUndefined(value: unknown): number | undefined {
+  return typeof value === 'number' && value >= 0 ? value : undefined;
+}
+
 function deriveTimingFromHar(timings: HarEntry['timings'] | undefined): ExchangeTiming | undefined {
   const t = timings as Partial<HarEntry['timings']> | undefined;
   if (!t) return undefined;
 
-  const dnsMs = t.dns !== undefined && t.dns >= 0 ? t.dns : undefined;
-  const sslMs = t.ssl !== undefined && t.ssl >= 0 ? t.ssl : undefined;
-  const connectMs = t.connect !== undefined && t.connect >= 0 ? t.connect : undefined;
+  const dnsMs = nonNegativeNumberOrUndefined(t.dns);
+  const sslMs = nonNegativeNumberOrUndefined(t.ssl);
+  const connectMs = nonNegativeNumberOrUndefined(t.connect);
   const tcpMs = connectMs !== undefined ? Math.max(connectMs - (sslMs ?? 0), 0) : undefined;
-  const sendMs = t.send !== undefined && t.send >= 0 ? t.send : undefined;
-  const waitMs = t.wait !== undefined && t.wait >= 0 ? t.wait : undefined;
+  const sendMs = nonNegativeNumberOrUndefined(t.send);
+  const waitMs = nonNegativeNumberOrUndefined(t.wait);
   const ttfbMs = sendMs !== undefined || waitMs !== undefined ? (sendMs ?? 0) + (waitMs ?? 0) : undefined;
-  const transferMs = t.receive !== undefined && t.receive >= 0 ? t.receive : undefined;
+  const transferMs = nonNegativeNumberOrUndefined(t.receive);
 
   if (
     dnsMs === undefined &&
@@ -341,7 +355,7 @@ function deriveTimingFromHar(timings: HarEntry['timings'] | undefined): Exchange
 function harEntryToExchange(entry: HarEntry, fallbackIndex: number): CapturedExchange {
   const ext = entry._detour;
   const startedAt = Date.parse(entry.startedDateTime) || Date.now();
-  const durationMs = entry.time >= 0 ? entry.time : undefined;
+  const durationMs = nonNegativeNumberOrUndefined(entry.time);
 
   const requestBody =
     ext?.requestBodyBase64 ?? (entry.request.postData ? utf8ToBase64(entry.request.postData.text) : undefined);
@@ -355,14 +369,14 @@ function harEntryToExchange(entry: HarEntry, fallbackIndex: number): CapturedExc
     isSSL: ext?.isSSL ?? entry.request.url.startsWith('https:'),
     protocol: ext?.protocol ?? (entry.request.httpVersion === 'HTTP/2' ? 'HTTP/2' : 'HTTP/1.1'),
     requestHeaders: harListToHeaders(entry.request.headers),
-    requestBodySize: entry.request.bodySize >= 0 ? entry.request.bodySize : (requestBody?.length ?? 0),
+    requestBodySize: nonNegativeNumberOrUndefined(entry.request.bodySize) ?? requestBody?.length ?? 0,
     requestBody,
     requestBodyTruncated: ext?.requestBodyTruncated,
     startedAt,
     statusCode: entry.response.status || undefined,
     statusMessage: ext?.statusMessage ?? entry.response.statusText,
     responseHeaders: harListToHeaders(entry.response.headers),
-    responseBodySize: entry.response.bodySize >= 0 ? entry.response.bodySize : (responseBody?.length ?? 0),
+    responseBodySize: nonNegativeNumberOrUndefined(entry.response.bodySize) ?? responseBody?.length ?? 0,
     responseBody,
     responseBodyTruncated: ext?.responseBodyTruncated,
     finishedAt: durationMs !== undefined ? startedAt + durationMs : undefined,

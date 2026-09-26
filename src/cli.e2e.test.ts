@@ -4817,6 +4817,25 @@ describe('detour record / detour serve (issue #149, CLI end-to-end)', () => {
     }
   });
 
+  it('rejects --from-har combined with --rules (agy code review: no proxy ever runs on this path, so --rules would silently do nothing)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-record-har-e2e-'));
+    const harPath = path.join(tmpDir, 'sample.har');
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(harPath, JSON.stringify({ log: { version: '1.2', creator: {}, entries: [] } }));
+    fs.writeFileSync(rulesPath, JSON.stringify({ rules: [] }));
+    try {
+      const result = await runTsx(['src/cli.ts', 'record', '--from-har', harPath, '--rules', rulesPath], {
+        cwd: REPO_ROOT,
+        reject: false,
+        timeout: 10_000,
+      });
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toMatch(/--from-har.*--rules has no effect/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('reports a friendly error, not a bare exception, for a malformed --from-har file', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-record-har-e2e-'));
     const harPath = path.join(tmpDir, 'not-a-har.txt');

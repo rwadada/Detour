@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CapturedExchange } from '@/shared/api';
-import { exchangesToHar, harToExchanges, parseImportedLog } from './har';
+import { exchangesToHar, type HarLog, harToExchanges, parseImportedLog } from './har';
 
 function makeExchange(overrides: Partial<CapturedExchange> = {}): CapturedExchange {
   return {
@@ -184,6 +184,59 @@ describe('exchangesToHar / harToExchanges', () => {
     const exchange = harToExchanges(har)[0];
     expect(exchange?.timing).toBeUndefined();
     expect(exchange?.durationMs).toBeUndefined();
+  });
+
+  // agy code review: `null` (JSON has no `undefined`) passes a naive
+  // `value !== undefined && value >= 0` check, since `null >= 0` is `true`
+  // in JavaScript — a malformed foreign HAR using `null` instead of `-1`
+  // for "not measured" would otherwise leak `null` into a field typed as
+  // `number | undefined`.
+  it('treats a null timing/time/bodySize field the same as absent, not as a real 0-ish value', () => {
+    const har = {
+      log: {
+        version: '1.2' as const,
+        creator: { name: 'Some Other Tool', version: '1' },
+        entries: [
+          {
+            startedDateTime: '2024-01-01T00:00:00.000Z',
+            time: null,
+            request: {
+              method: 'GET',
+              url: 'https://example.com/foo',
+              httpVersion: 'HTTP/1.1',
+              cookies: [],
+              headers: [],
+              queryString: [],
+              headersSize: -1 as const,
+              bodySize: null,
+            },
+            response: {
+              status: 200,
+              statusText: 'OK',
+              httpVersion: 'HTTP/1.1',
+              cookies: [],
+              headers: [],
+              content: { size: 0, mimeType: 'text/plain', text: 'hello' },
+              redirectURL: '',
+              headersSize: -1 as const,
+              bodySize: null,
+            },
+            cache: {},
+            timings: { dns: null, connect: null, ssl: null, send: null, wait: null, receive: null },
+          },
+        ],
+      },
+    };
+
+    const exchange = harToExchanges(har as unknown as HarLog)[0];
+    expect(exchange?.timing).toBeUndefined();
+    expect(exchange?.durationMs).toBeUndefined();
+    expect(exchange?.requestBodySize).toBe(0);
+    // Falls back to the captured (base64) body's length instead of a
+    // `null` bodySize being mistaken for a real (falsely zero-ish) value —
+    // pre-existing behavior this test isn't about, just confirming the
+    // fallback still runs at all once `null` is correctly treated as absent.
+    expect(exchange?.responseBodySize).toBe(8);
   });
 
   it('produces standard HAR fields readable without the _detour extension', () => {

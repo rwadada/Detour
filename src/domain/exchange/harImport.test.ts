@@ -120,6 +120,66 @@ describe('parseHarLog', () => {
     expect(Buffer.from(exchange?.responseBody ?? '', 'base64').toString('utf8')).toBe('exact bytes');
   });
 
+  // agy code review: `null` (JSON has no `undefined`) passes a naive
+  // `value !== undefined && value >= 0` check, since `null >= 0` is `true`
+  // in JavaScript — leaking `null` into a field typed as `number |
+  // undefined` instead of being treated as "not measured".
+  it('treats a null time/bodySize the same as absent, falling back to the decoded body size', () => {
+    const [exchange] = parseHarLog(
+      harLog([
+        foreignEntry({
+          time: null,
+          response: {
+            status: 200,
+            content: { text: '{"id":1}', mimeType: 'application/json' },
+            bodySize: null,
+          },
+        }),
+      ]),
+    );
+    expect(exchange?.durationMs).toBeUndefined();
+    expect(exchange?.finishedAt).toBeUndefined();
+    // Falls back to the actual decoded body's byte length instead of a
+    // `null` bodySize being mistaken for a real (falsely zero-ish) value.
+    expect(exchange?.responseBodySize).toBe(8);
+  });
+
+  it('does not crash on a non-array headers field, treating it as no headers', () => {
+    const [exchange] = parseHarLog(
+      harLog([foreignEntry({ response: { status: 200, headers: { notAnArray: true } } })]),
+    );
+    expect(exchange?.responseHeaders).toEqual({});
+  });
+
+  it('skips a malformed header element instead of failing the whole entry', () => {
+    const [exchange] = parseHarLog(
+      harLog([
+        foreignEntry({
+          response: { status: 200, headers: [null, { name: 'X-Ok' }, { name: 'X-Good', value: 'yes' }] },
+        }),
+      ]),
+    );
+    expect(exchange?.responseHeaders).toEqual({ 'x-good': 'yes' });
+  });
+
+  it('does not crash when response.content.text is not a string', () => {
+    const [exchange] = parseHarLog(
+      harLog([foreignEntry({ response: { status: 200, content: { text: { nested: true } } } })]),
+    );
+    expect(exchange?.responseBody).toBeUndefined();
+  });
+
+  it('does not crash when request.postData.text is not a string', () => {
+    const [exchange] = parseHarLog(
+      harLog([
+        foreignEntry({
+          request: { method: 'POST', url: 'https://api.example.com/x', postData: { text: 123 } },
+        }),
+      ]),
+    );
+    expect(exchange?.requestBody).toBeUndefined();
+  });
+
   it('generates unique ids for entries without a _detour extension', () => {
     const exchanges = parseHarLog(harLog([foreignEntry(), foreignEntry()]));
     expect(exchanges[0]?.id).not.toBe(exchanges[1]?.id);

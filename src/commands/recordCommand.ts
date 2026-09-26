@@ -71,6 +71,21 @@ export async function runRecordCommand(command: string[], options: RecordOptions
     if (command.length > 0) {
       throw new Error('detour record --from-har converts a HAR file directly and takes no command to run');
     }
+    // Neither flag does anything on this path — no proxy runs, so no rule
+    // ever gets a chance to apply. Rejecting outright (agy code review)
+    // rather than silently ignoring them: without this, a `--from-har`
+    // invocation that also passed `--rules` would look like it mocked/
+    // rewrote the imported traffic when it never touched it at all.
+    if (options.rules !== undefined) {
+      throw new Error(
+        'detour record --from-har converts a HAR file directly — --rules has no effect and is not allowed here',
+      );
+    }
+    if (options.allowExternalScriptPaths) {
+      throw new Error(
+        'detour record --from-har converts a HAR file directly — --allow-external-script-paths has no effect and is not allowed here',
+      );
+    }
     return runRecordFromHar(options.fromHar, options.out);
   }
   if (command.length === 0) {

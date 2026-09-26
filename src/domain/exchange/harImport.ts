@@ -78,9 +78,20 @@ function isHarLog(value: unknown): value is HarLog {
   return typeof log === 'object' && log !== null && Array.isArray((log as { entries?: unknown }).entries);
 }
 
-function headersToMap(list: HarNameValue[] | undefined): IncomingHttpHeaders {
+/**
+ * Skips (rather than throws on) a malformed entry in `list` — a non-array
+ * `list` itself, or an element missing a string `name`/`value` — instead
+ * of letting one bad header line fail an otherwise-parseable HAR entry
+ * outright (agy code review flagged the un-guarded version crashing with
+ * a bare `TypeError` on either).
+ */
+function headersToMap(list: unknown): IncomingHttpHeaders {
   const headers: IncomingHttpHeaders = {};
-  for (const { name, value } of list ?? []) {
+  if (!Array.isArray(list)) return headers;
+  for (const item of list) {
+    if (typeof item !== 'object' || item === null) continue;
+    const { name, value } = item as Partial<HarNameValue>;
+    if (typeof name !== 'string' || typeof value !== 'string') continue;
     const key = name.toLowerCase();
     const existing = headers[key];
     if (existing === undefined) {
@@ -102,16 +113,16 @@ function safeHostOf(url: string): string {
   }
 }
 
-/** Re-encodes a foreign entry's `response.content` back to base64, respecting its `encoding` field when the source already gave us base64 — same logic as the dashboard's own `decodeHarResponseBody`. */
+/** Re-encodes a foreign entry's `response.content` back to base64, respecting its `encoding` field when the source already gave us base64 — same logic as the dashboard's own `decodeHarResponseBody`. `content.text` isn't necessarily a string on a malformed HAR (agy code review) — treated the same as absent rather than crashing `Buffer.from` with an unhelpful type error. */
 function decodeResponseBody(content: HarContent | undefined): string | undefined {
-  if (!content?.text) return undefined;
+  if (typeof content?.text !== 'string' || content.text === '') return undefined;
   if (content.encoding === 'base64') return content.text;
   return Buffer.from(content.text, 'utf8').toString('base64');
 }
 
-/** HAR's `postData` has no `encoding` field (unlike `response.content`) — a request body is always assumed to be the UTF-8 text as-is, same assumption the dashboard's importer makes for a foreign HAR. */
+/** HAR's `postData` has no `encoding` field (unlike `response.content`) — a request body is always assumed to be the UTF-8 text as-is, same assumption the dashboard's importer makes for a foreign HAR. Same non-string guard as `decodeResponseBody`. */
 function decodeRequestBody(postData: HarPostData | undefined): string | undefined {
-  if (!postData?.text) return undefined;
+  if (typeof postData?.text !== 'string' || postData.text === '') return undefined;
   return Buffer.from(postData.text, 'utf8').toString('base64');
 }
 
@@ -124,6 +135,20 @@ function nextImportedId(index: number): string {
 
 function bodyByteLength(base64: string | undefined): number {
   return base64 ? Buffer.from(base64, 'base64').length : 0;
+}
+
+/**
+ * `typeof value === 'number'`, not `value !== undefined` — a malformed
+ * HAR's field can just as easily be `null` (JSON has no `undefined`), and
+ * `null >= 0` evaluates to `true` in JavaScript (relational comparisons
+ * coerce `null` to `0`), so a naive `value !== undefined && value >= 0`
+ * check would let a `null` field through disguised as a real, non-negative
+ * measurement (agy code review). Returns `undefined` for anything that
+ * isn't actually a non-negative number, `-1` (HAR's own "not measured"
+ * sentinel) included.
+ */
+function nonNegativeNumberOrUndefined(value: unknown): number | undefined {
+  return typeof value === 'number' && value >= 0 ? value : undefined;
 }
 
 /** Throws a descriptive `Error` (not a bare `TypeError`) when `entry` is missing the fields every HAR 1.2 entry must have — a hand-edited or truncated HAR file, most likely. */
@@ -147,7 +172,7 @@ function harEntryToExchange(entry: HarEntry, index: number): CapturedExchange {
   const ext = entry._detour;
   const startedAt = entry.startedDateTime ? Date.parse(entry.startedDateTime) : NaN;
   const resolvedStartedAt = Number.isNaN(startedAt) ? Date.now() : startedAt;
-  const durationMs = entry.time !== undefined && entry.time >= 0 ? entry.time : undefined;
+  const durationMs = nonNegativeNumberOrUndefined(entry.time);
 
   const requestBody = ext?.requestBodyBase64 ?? decodeRequestBody(entry.request.postData);
   const responseBody = ext?.responseBodyBase64 ?? decodeResponseBody(entry.response.content);
@@ -160,19 +185,13 @@ function harEntryToExchange(entry: HarEntry, index: number): CapturedExchange {
     isSSL: ext?.isSSL ?? entry.request.url.startsWith('https:'),
     protocol: ext?.protocol ?? (entry.request.httpVersion === 'HTTP/2' ? 'HTTP/2' : 'HTTP/1.1'),
     requestHeaders: headersToMap(entry.request.headers),
-    requestBodySize:
-      entry.request.bodySize !== undefined && entry.request.bodySize >= 0
-        ? entry.request.bodySize
-        : bodyByteLength(requestBody),
+    requestBodySize: nonNegativeNumberOrUndefined(entry.request.bodySize) ?? bodyByteLength(requestBody),
     requestBody,
     startedAt: resolvedStartedAt,
     statusCode: entry.response.status || undefined,
     statusMessage: ext?.statusMessage ?? entry.response.statusText,
     responseHeaders: headersToMap(entry.response.headers),
-    responseBodySize:
-      entry.response.bodySize !== undefined && entry.response.bodySize >= 0
-        ? entry.response.bodySize
-        : bodyByteLength(responseBody),
+    responseBodySize: nonNegativeNumberOrUndefined(entry.response.bodySize) ?? bodyByteLength(responseBody),
     responseBody,
     finishedAt: durationMs !== undefined ? resolvedStartedAt + durationMs : undefined,
     durationMs,
@@ -198,7 +217,19 @@ export function parseHarLog(text: string): CapturedExchange[] {
   }
   const entries = parsed.log?.entries ?? [];
   return entries.map((entry, index) => {
-    validateEntry(entry, index);
-    return harEntryToExchange(entry, index);
+    // A final safety net, not the primary mechanism (`validateEntry` above
+    // and the individual field guards throughout this file are): a HAR
+    // field this file didn't anticipate being malformed in some other way
+    // should still fail as a labeled, readable error rather than an
+    // uncaught exception crashing the whole `detour record --from-har`
+    // run over one bad entry (agy code review).
+    try {
+      validateEntry(entry, index);
+      return harEntryToExchange(entry, index);
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith(`HAR entry #${index}`)) throw err;
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(`HAR entry #${index}: ${reason}`, { cause: err });
+    }
   });
 }
