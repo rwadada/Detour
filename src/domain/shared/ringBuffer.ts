@@ -39,12 +39,35 @@ export class RingBuffer<T> {
   private readonly keyOf: (item: T) => string;
   private readonly byteLimit?: RingBufferByteLimit<T>;
   private readonly slotOfKey = new Map<string, number>();
+  /**
+   * `byteLimit.sizeOf`'s result the last time it was actually called for
+   * whatever's currently in each slot — parallel to `slots`, indexed the
+   * same way. Only meaningful (and only ever written) while `byteLimit` is
+   * set.
+   *
+   * Caching this, rather than calling `sizeOf` again on the slot's stored
+   * value whenever a size is needed (on update or eviction), matters
+   * because the backend's own caller (`dashboardServer.ts`'s `backlog`)
+   * hands this the *same* `CapturedExchange` object reference for a
+   * `request` event and the `response` event that later updates it in
+   * place (`onRequestData` appends straight onto it) — by the time an
+   * update or eviction runs, re-measuring `slots[slot]` would report the
+   * object's *current* size, not what it actually contributed to
+   * `totalBytes` last time. Re-measuring "the old size" off a since-mutated
+   * object is not a delta at all — for an insert immediately followed by an
+   * in-place-mutating update, it silently makes `totalBytes` undercount by
+   * exactly the mutation, and can drive it negative once that entry is
+   * later evicted (the eviction path would subtract the *further-mutated*
+   * size, not the smaller one `totalBytes` actually gained). Caught by agy
+   * code review before this was ever wired into the real backlog.
+   */
+  private readonly sizeAtSlot: number[];
   /** Index of the oldest occupied slot (meaningful only while `count > 0`). */
   private head = 0;
   /** Index the next brand-new entry will be written to. */
   private tail = 0;
   private count = 0;
-  /** Sum of `byteLimit.sizeOf(item)` over every entry currently held — `0` (and never read) when `byteLimit` isn't set. */
+  /** Sum of `sizeAtSlot` over every occupied slot — `0` (and never read) when `byteLimit` isn't set. */
   private totalBytes = 0;
 
   constructor(capacity: number, keyOf: (item: T) => string, byteLimit?: RingBufferByteLimit<T>) {
@@ -54,6 +77,7 @@ export class RingBuffer<T> {
     this.slots = new Array(capacity);
     this.keyOf = keyOf;
     this.byteLimit = byteLimit;
+    this.sizeAtSlot = byteLimit ? new Array(capacity).fill(0) : [];
   }
 
   get capacity(): number {
@@ -74,7 +98,7 @@ export class RingBuffer<T> {
     const evicted = this.slots[this.head];
     if (evicted !== undefined) {
       this.slotOfKey.delete(this.keyOf(evicted));
-      if (this.byteLimit) this.totalBytes -= this.byteLimit.sizeOf(evicted);
+      if (this.byteLimit) this.totalBytes -= this.sizeAtSlot[this.head]!;
     }
     this.slots[this.head] = undefined;
     this.head = (this.head + 1) % this.capacity;
@@ -94,13 +118,13 @@ export class RingBuffer<T> {
     const key = this.keyOf(item);
     const existingSlot = this.slotOfKey.get(key);
     if (existingSlot !== undefined) {
-      const previous = this.slots[existingSlot];
       if (this.byteLimit) {
-        // `previous` is only ever `undefined` here if some other bug left a
-        // stale `slotOfKey` entry pointing at an emptied slot — `sizeOf(item)`
-        // alone (no delta) is the least-wrong fallback rather than crashing.
-        const oldSize = previous !== undefined ? this.byteLimit.sizeOf(previous) : 0;
-        this.totalBytes += this.byteLimit.sizeOf(item) - oldSize;
+        // Never re-measures `slots[existingSlot]` (the *old* value) — see
+        // `sizeAtSlot`'s own doc comment for why that would be wrong for a
+        // caller that mutates its objects in place.
+        const newSize = this.byteLimit.sizeOf(item);
+        this.totalBytes += newSize - this.sizeAtSlot[existingSlot]!;
+        this.sizeAtSlot[existingSlot] = newSize;
       }
       this.slots[existingSlot] = item;
       this.evictToByteBudget();
@@ -114,7 +138,11 @@ export class RingBuffer<T> {
     this.slotOfKey.set(key, slot);
     this.tail = (this.tail + 1) % this.capacity;
     this.count += 1;
-    if (this.byteLimit) this.totalBytes += this.byteLimit.sizeOf(item);
+    if (this.byteLimit) {
+      const newSize = this.byteLimit.sizeOf(item);
+      this.sizeAtSlot[slot] = newSize;
+      this.totalBytes += newSize;
+    }
     this.evictToByteBudget();
   }
 
@@ -131,6 +159,7 @@ export class RingBuffer<T> {
   clear(): void {
     this.slots.fill(undefined);
     this.slotOfKey.clear();
+    if (this.byteLimit) this.sizeAtSlot.fill(0);
     this.head = 0;
     this.tail = 0;
     this.count = 0;

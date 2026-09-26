@@ -123,6 +123,52 @@ describe('RingBuffer', () => {
       expect(b.size).toBe(1);
     });
 
+    // agy code review: the real backend caller (dashboardServer.ts) hands
+    // upsert() the *same* CapturedExchange object reference for a `request`
+    // event and the `response` event that later mutates it in place (e.g.
+    // `exchange.responseBodySize += chunk.length`), unlike this test file's
+    // other cases, which always upsert a brand-new object. Re-measuring the
+    // slot's *stored* value to get "the old size" would read the object's
+    // already-mutated current state instead of what it actually contributed
+    // to totalByteSize last time — silently undercounting the update, and
+    // then over-subtracting (potentially driving totalByteSize negative)
+    // once that entry is eventually evicted.
+    it('tracks totalByteSize correctly when the SAME object reference is mutated in place between upserts, not just replaced with a new one', () => {
+      const b = byteBuffer(10, 1000);
+      const mutable = { id: 'a', value: 50 };
+      b.upsert(mutable); // e.g. a 'request' event
+      expect(b.totalByteSize).toBe(50);
+
+      // Mutated in place (same reference) rather than upserted as a new
+      // object — e.g. a body appended onto the exchange the 'request'
+      // event already inserted. A buggy implementation that re-measures
+      // the slot's *stored* value to compute "the old size" would read
+      // this already-mutated object for both `previous` and `item`,
+      // making the delta 0 — totalByteSize would stay 50, not grow to 300.
+      mutable.value = 300;
+      b.upsert(mutable); // the matching 'response' event, same reference
+      expect(b.totalByteSize).toBe(300);
+      expect(b.size).toBe(1);
+    });
+
+    it('evicting an entry that was previously mutated in place subtracts its cached size, not a re-measurement of its current (possibly further-changed) value', () => {
+      const b = byteBuffer(10, 350);
+      const mutable = { id: 'a', value: 50 };
+      b.upsert(mutable);
+      mutable.value = 300; // as above: mutated in place, not re-upserted as a new object
+      b.upsert(mutable);
+      expect(b.totalByteSize).toBe(300);
+
+      // Pushes the total to 400 (> 350), evicting 'a'. A correct eviction
+      // subtracts exactly the 300 totalByteSize already holds for it,
+      // landing on 100 — not some other value from re-deriving 'a''s size
+      // off its (mutable, and here further-changed) object at eviction time.
+      mutable.value = 999_999; // proves eviction doesn't re-measure `mutable` at all
+      b.upsert({ id: 'b', value: 100 });
+      expect(b.toArray().map((i) => i.id)).toEqual(['b']);
+      expect(b.totalByteSize).toBe(100);
+    });
+
     it("evicts oldest-first by position even when the update that tipped the budget was on that same entry — updating never changes an entry's position (matches the class's existing count-cap behavior)", () => {
       const b = byteBuffer(10, 300);
       b.upsert({ id: 'a', value: 50 });

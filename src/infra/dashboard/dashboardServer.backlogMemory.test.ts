@@ -86,6 +86,37 @@ describe('startDashboardServer — backlog memory cap (issue #165)', () => {
     expect(message.items.map((e) => e.id)).toEqual(['b', 'c']);
   });
 
+  it("tracks total memory correctly across a request→response pair on the SAME exchange object (agy code review — the real proxy pipeline mutates an exchange in place, e.g. 'exchange.responseBodySize += chunk.length', rather than emitting a fresh object per event)", async () => {
+    const eventBus = new DetourEventBus();
+    handle = await startDashboardServer({ port: 0, backlogSize: 10, maxCaptureMemoryBytes: 250 }, eventBus);
+    sockets = [];
+
+    // The same mutable exchange object for both events, exactly like the
+    // real request/response pipeline (see requestHandler.ts/
+    // responseHandler.ts) — not a fresh object per phase, which is what
+    // every other test in this file (and RingBuffer's own unit tests, bar
+    // one dedicated regression case) upserts instead.
+    const mutable = exchangeWithBody('a', 0);
+    eventBus.emit('request', mutable); // no body yet
+    mutable.responseBodySize = 100;
+    mutable.responseBody = 'A'.repeat(100);
+    eventBus.emit('response', mutable); // same reference, now carrying a body
+
+    eventBus.emit('response', exchangeWithBody('b', 100));
+    eventBus.emit('response', exchangeWithBody('c', 100)); // 100+100+100 = 300 > 250 — evicts 'a'
+
+    const socket = connect();
+    const message = await waitForMessage(socket, (m) => m.type === 'backlog');
+    expect(message.type).toBe('backlog');
+    if (message.type !== 'backlog') throw new Error('unreachable');
+    // With the bug, 'a''s in-place mutation would either never register
+    // (the update-in-place delta silently computing to 0) or corrupt the
+    // running total once 'a' is evicted (subtracting a re-measured, later
+    // value instead of what was actually added) — either way producing the
+    // wrong survivor set here, not the clean "oldest evicted" result below.
+    expect(message.items.map((e) => e.id)).toEqual(['b', 'c']);
+  });
+
   it('does not evict by bytes at all when maxCaptureMemoryBytes is omitted (count-cap-only, pre-#165 behavior)', async () => {
     const eventBus = new DetourEventBus();
     handle = await startDashboardServer({ port: 0, backlogSize: 10 }, eventBus);

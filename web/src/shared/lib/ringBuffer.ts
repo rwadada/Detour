@@ -36,10 +36,30 @@ export class RingBuffer<T> {
   private readonly keyOf: (item: T) => string;
   private readonly byteLimit?: RingBufferByteLimit<T>;
   private readonly slotOfKey = new Map<string, number>();
+  /**
+   * `byteLimit.sizeOf`'s result the last time it was actually called for
+   * whatever's currently in each slot — parallel to `slots`, indexed the
+   * same way. Only meaningful (and only ever written) while `byteLimit` is
+   * set.
+   *
+   * Caching this, rather than calling `sizeOf` again on the slot's stored
+   * value whenever a size is needed (on update or eviction), matters
+   * because the backend's own counterpart to this class hands `upsert` the
+   * *same* `CapturedExchange` object reference for a `request` event and
+   * the `response` event that later updates it in place — by the time an
+   * update or eviction runs, re-measuring `slots[slot]` would report the
+   * object's *current* size, not what it actually contributed to
+   * `totalBytes` last time. This client-side copy happens not to hit that
+   * specific case (every WS message is a freshly-parsed JSON object, never
+   * the same reference twice), but the two copies are meant to stay
+   * identical, and the bug agy code review caught in the backend one would
+   * silently reappear here the moment that assumption ever stopped holding.
+   */
+  private readonly sizeAtSlot: number[];
   private head = 0;
   private tail = 0;
   private count = 0;
-  /** Sum of `byteLimit.sizeOf(item)` over every entry currently held — `0` (and never read) when `byteLimit` isn't set. */
+  /** Sum of `sizeAtSlot` over every occupied slot — `0` (and never read) when `byteLimit` isn't set. */
   private totalBytes = 0;
 
   constructor(capacity: number, keyOf: (item: T) => string, byteLimit?: RingBufferByteLimit<T>) {
@@ -49,6 +69,7 @@ export class RingBuffer<T> {
     this.slots = new Array(capacity);
     this.keyOf = keyOf;
     this.byteLimit = byteLimit;
+    this.sizeAtSlot = byteLimit ? new Array(capacity).fill(0) : [];
   }
 
   get capacity(): number {
@@ -69,7 +90,7 @@ export class RingBuffer<T> {
     const evicted = this.slots[this.head];
     if (evicted !== undefined) {
       this.slotOfKey.delete(this.keyOf(evicted));
-      if (this.byteLimit) this.totalBytes -= this.byteLimit.sizeOf(evicted);
+      if (this.byteLimit) this.totalBytes -= this.sizeAtSlot[this.head]!;
     }
     this.slots[this.head] = undefined;
     this.head = (this.head + 1) % this.capacity;
@@ -88,10 +109,13 @@ export class RingBuffer<T> {
     const key = this.keyOf(item);
     const existingSlot = this.slotOfKey.get(key);
     if (existingSlot !== undefined) {
-      const previous = this.slots[existingSlot];
       if (this.byteLimit) {
-        const oldSize = previous !== undefined ? this.byteLimit.sizeOf(previous) : 0;
-        this.totalBytes += this.byteLimit.sizeOf(item) - oldSize;
+        // Never re-measures `slots[existingSlot]` (the *old* value) — see
+        // `sizeAtSlot`'s own doc comment for why that would be wrong for a
+        // caller that mutates its objects in place.
+        const newSize = this.byteLimit.sizeOf(item);
+        this.totalBytes += newSize - this.sizeAtSlot[existingSlot]!;
+        this.sizeAtSlot[existingSlot] = newSize;
       }
       this.slots[existingSlot] = item;
       this.evictToByteBudget();
@@ -105,7 +129,11 @@ export class RingBuffer<T> {
     this.slotOfKey.set(key, slot);
     this.tail = (this.tail + 1) % this.capacity;
     this.count += 1;
-    if (this.byteLimit) this.totalBytes += this.byteLimit.sizeOf(item);
+    if (this.byteLimit) {
+      const newSize = this.byteLimit.sizeOf(item);
+      this.sizeAtSlot[slot] = newSize;
+      this.totalBytes += newSize;
+    }
     this.evictToByteBudget();
   }
 
@@ -121,6 +149,7 @@ export class RingBuffer<T> {
   clear(): void {
     this.slots.fill(undefined);
     this.slotOfKey.clear();
+    if (this.byteLimit) this.sizeAtSlot.fill(0);
     this.head = 0;
     this.tail = 0;
     this.count = 0;
