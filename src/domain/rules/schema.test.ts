@@ -72,6 +72,49 @@ describe('validateRulesData', () => {
     expect(result.errors.some((e) => e.includes('action.simulate cannot be combined'))).toBe(true);
   });
 
+  it('accepts a mock action with a valid responses sequence', () => {
+    const result = validateRulesData({
+      rules: [
+        baseRule({
+          action: { type: 'mock', status: 200, responses: [{ body: { items: ['A'] } }, { status: 404 }] },
+        }),
+      ],
+    });
+    expect(result).toEqual({ valid: true, errors: [] });
+  });
+
+  it('rejects an empty responses array (schema-level, minItems: 1)', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'mock', responses: [] } })],
+    });
+    expect(result.valid).toBe(false);
+  });
+
+  it('rejects a responses step with both body and bodyFile set', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'mock', responses: [{ body: { a: 1 }, bodyFile: 'x.json' }] } })],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('action.responses[0].body and action.responses[0].bodyFile'))).toBe(
+      true,
+    );
+  });
+
+  it('rejects a responses step combining simulate with body', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'mock', responses: [{ simulate: 'close', body: 'x' }] } })],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('action.responses[0].simulate cannot be combined'))).toBe(true);
+  });
+
+  it('rejects a responses step with an unknown field', () => {
+    const result = validateRulesData({
+      rules: [baseRule({ action: { type: 'mock', responses: [{ type: 'mock', status: 200 }] } })],
+    });
+    expect(result.valid).toBe(false);
+  });
+
   it('accepts a route action', () => {
     const result = validateRulesData({
       rules: [baseRule({ action: { type: 'route', host: 'staging.example.com', port: 443 } })],

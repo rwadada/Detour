@@ -30,6 +30,22 @@
       }
     },
     {
+      "name": "mock-sequential-responses",
+      "enabled": false,
+      "match": {
+        "method": "GET",
+        "url": "https://api.example.com/items"
+      },
+      "action": {
+        "type": "mock",
+        "status": 200,
+        "responses": [
+          { "body": { "items": ["A"] } },
+          { "body": { "items": ["A", "B"] } }
+        ]
+      }
+    },
+    {
       "name": "mock-simulate-timeout",
       "enabled": false,
       "match": {

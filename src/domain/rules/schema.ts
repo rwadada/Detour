@@ -123,6 +123,28 @@ export const RULES_JSON_SCHEMA = {
         bodyFile: { type: 'string', minLength: 1 },
         delayMs: { type: 'integer', minimum: 0 },
         simulate: { enum: ['timeout', 'close'] },
+        // See `MockAction.responses`'s doc comment (issue #181). `minItems:
+        // 1` rejects an empty array outright — it would just behave exactly
+        // like omitting `responses` entirely (see `pickMockAction`), which
+        // is almost certainly not what an author who bothered to write `[]`
+        // intended.
+        responses: { type: 'array', minItems: 1, items: { $ref: '#/definitions/mockStep' } },
+      },
+    },
+    // Same shape as `mockAction` above, minus `type` (a step isn't a
+    // standalone action) and minus `responses` itself (no nesting a
+    // sequence inside one of its own steps).
+    mockStep: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        status: { type: 'integer', minimum: 100, maximum: 599 },
+        statusMessage: { type: 'string' },
+        headers: { type: 'object', additionalProperties: { type: 'string' } },
+        body: {},
+        bodyFile: { type: 'string', minLength: 1 },
+        delayMs: { type: 'integer', minimum: 0 },
+        simulate: { enum: ['timeout', 'close'] },
       },
     },
     routeAction: {
@@ -229,15 +251,30 @@ function validateSemantics(data: RulesFile): string[] {
       }
       seenNames.add(rule.name);
     }
-    if (rule.action?.type === 'mock' && rule.action.body !== undefined && rule.action.bodyFile !== undefined) {
-      errors.push(`rules[${index}] (${label}): action.body and action.bodyFile cannot both be set`);
-    }
-    if (
-      rule.action?.type === 'mock' &&
-      rule.action.simulate !== undefined &&
-      (rule.action.body !== undefined || rule.action.bodyFile !== undefined)
-    ) {
-      errors.push(`rules[${index}] (${label}): action.simulate cannot be combined with action.body/action.bodyFile`);
+    if (rule.action?.type === 'mock') {
+      if (rule.action.body !== undefined && rule.action.bodyFile !== undefined) {
+        errors.push(`rules[${index}] (${label}): action.body and action.bodyFile cannot both be set`);
+      }
+      if (
+        rule.action.simulate !== undefined &&
+        (rule.action.body !== undefined || rule.action.bodyFile !== undefined)
+      ) {
+        errors.push(`rules[${index}] (${label}): action.simulate cannot be combined with action.body/action.bodyFile`);
+      }
+      // Same two checks, applied to each step of `responses` individually
+      // (issue #181) — a step's fields are self-contained (see
+      // `pickMockAction`'s doc comment on why `body`/`bodyFile` don't merge
+      // across the base action and a step), so the same ambiguity the
+      // top-level checks above catch can recur within one step on its own.
+      for (const [stepIndex, step] of (rule.action.responses ?? []).entries()) {
+        const stepLabel = `action.responses[${stepIndex}]`;
+        if (step.body !== undefined && step.bodyFile !== undefined) {
+          errors.push(`rules[${index}] (${label}): ${stepLabel}.body and ${stepLabel}.bodyFile cannot both be set`);
+        }
+        if (step.simulate !== undefined && (step.body !== undefined || step.bodyFile !== undefined)) {
+          errors.push(`rules[${index}] (${label}): ${stepLabel}.simulate cannot be combined with .body/.bodyFile`);
+        }
+      }
     }
     if (rule.action?.type === 'breakpoint' && rule.action.request === false && rule.action.response === false) {
       errors.push(
