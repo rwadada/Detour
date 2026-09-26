@@ -82,4 +82,65 @@ describe('pickMockAction', () => {
     expect(picked.body).toEqual({ from: 'base' });
     expect(picked.bodyFile).toBeUndefined();
   });
+
+  // agy code review (issue #181 PR): a step overriding only body/bodyFile
+  // left the base action's `simulate` sitting on the merged result, which
+  // requestHandler.ts's "simulate wins over body" check would then honor
+  // instead of the step's body — silently defeating the very override the
+  // step was written for.
+  it("a step's own body wins over the base action's simulate, clearing it", () => {
+    const action: MockAction = {
+      type: 'mock',
+      simulate: 'timeout',
+      responses: [{ body: { from: 'step' } }],
+    };
+    const picked = pickMockAction(action, 0);
+    expect(picked.body).toEqual({ from: 'step' });
+    expect(picked.simulate).toBeUndefined();
+  });
+
+  it("a step's own bodyFile wins over the base action's simulate, clearing it", () => {
+    const action: MockAction = {
+      type: 'mock',
+      simulate: 'close',
+      responses: [{ bodyFile: 'step.json' }],
+    };
+    const picked = pickMockAction(action, 0);
+    expect(picked.bodyFile).toBe('step.json');
+    expect(picked.simulate).toBeUndefined();
+  });
+
+  it("a step's own simulate wins over the base action's body, clearing body/bodyFile", () => {
+    const action: MockAction = {
+      type: 'mock',
+      body: { from: 'base' },
+      responses: [{ simulate: 'close' }],
+    };
+    const picked = pickMockAction(action, 0);
+    expect(picked.simulate).toBe('close');
+    expect(picked.body).toBeUndefined();
+    expect(picked.bodyFile).toBeUndefined();
+  });
+
+  it("a step's own simulate wins over the base action's bodyFile, clearing body/bodyFile", () => {
+    const action: MockAction = {
+      type: 'mock',
+      bodyFile: 'base.json',
+      responses: [{ simulate: 'timeout' }],
+    };
+    const picked = pickMockAction(action, 0);
+    expect(picked.simulate).toBe('timeout');
+    expect(picked.body).toBeUndefined();
+    expect(picked.bodyFile).toBeUndefined();
+  });
+
+  it("a step that sets neither body/bodyFile nor simulate inherits the base action's simulate untouched", () => {
+    const action: MockAction = {
+      type: 'mock',
+      simulate: 'close',
+      responses: [{ status: 201 }],
+    };
+    const picked = pickMockAction(action, 0);
+    expect(picked.simulate).toBe('close');
+  });
 });
