@@ -11,7 +11,7 @@ import type {
   InterceptState,
   ThrottleState,
 } from '../../domain/exchange/types';
-import { toWireExchange } from '../../domain/exchange/wireExchange';
+import { toResponsePatch, toWireExchange } from '../../domain/exchange/wireExchange';
 import { SAMPLE_RULES_FILE } from '../../domain/rules/sample';
 import { findRejectedScriptWrites } from '../../domain/rules/scriptGate';
 import type { RulesFile } from '../../domain/rules/types';
@@ -550,7 +550,12 @@ export async function startDashboardServer(
   };
   const onResponse = (exchange: Readonly<CapturedExchange>) => {
     backlog.upsert(exchange);
-    broadcast({ type: 'response', exchange: toWireExchange(exchange) });
+    // Only the response-side diff goes out here (issue #165's Proposal C) —
+    // `requestBody`/`requestHeaders` already went out in full on this same
+    // id's `request` broadcast above and haven't changed since. `backlog`
+    // itself still keeps (and replays to a newly-connecting client via
+    // `toWireExchange` below) the complete exchange either way.
+    broadcast({ type: 'response', exchange: toResponsePatch(exchange) });
   };
   const onError: DetourEvents['error'] = (event) => broadcast({ type: 'error', event });
   // Rules state, unlike intercept/focus/throttle/blockHosts above, isn't

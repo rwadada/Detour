@@ -75,6 +75,16 @@ export interface CapturedExchange {
   passthrough?: true;
 }
 
+/**
+ * The `response` message's payload — see `src/domain/exchange/types.ts`'s
+ * `ExchangeResponsePatch` (issue #165's Proposal C). Everything a full
+ * `CapturedExchange` carries except `requestBody`/`requestHeaders`, already
+ * received in full via this same id's earlier `request` message. Merged
+ * onto the exchange already held for `id` by `createExchangeStore.ts`'s
+ * `mergeResponsePatch` — never used as a `CapturedExchange` on its own.
+ */
+export type ExchangeResponsePatch = Omit<CapturedExchange, 'requestBody' | 'requestHeaders'>;
+
 export interface ProxyErrorEvent {
   id?: string;
   errorKind: string;
@@ -347,7 +357,8 @@ export type DashboardServerMessage =
   | { type: 'backlog'; items: CapturedExchange[] }
   | { type: 'wsBacklog'; items: CapturedWebSocketConnection[] }
   | { type: 'request'; exchange: CapturedExchange }
-  | { type: 'response'; exchange: CapturedExchange }
+  /** `exchange` is a patch, not the full exchange — see `ExchangeResponsePatch`'s own doc comment. */
+  | { type: 'response'; exchange: ExchangeResponsePatch }
   | { type: 'error'; event: ProxyErrorEvent }
   | { type: 'breakpoint'; exchange: CapturedExchange; payload: BreakpointPayload }
   | { type: 'intercept'; state: InterceptState }

@@ -1,4 +1,4 @@
-import type { CapturedExchange, WireExchange } from './types';
+import type { CapturedExchange, ExchangeResponsePatch, WireExchange } from './types';
 
 /**
  * The one place a `CapturedExchange`'s `requestBody`/`responseBody`
@@ -30,4 +30,17 @@ export function fromWireExchange(wire: WireExchange): CapturedExchange {
     requestBody: wire.requestBody !== undefined ? Buffer.from(wire.requestBody, 'base64') : undefined,
     responseBody: wire.responseBody !== undefined ? Buffer.from(wire.responseBody, 'base64') : undefined,
   };
+}
+
+/**
+ * Builds a `response` dashboard message's payload (issue #165's Proposal
+ * C) — same base64 encoding as `toWireExchange`, minus `requestBody`/
+ * `requestHeaders`: the client already has both in full from this same
+ * id's earlier `request` message, and neither ever changes by the time a
+ * `response` event fires. See `ExchangeResponsePatch`'s own doc comment.
+ */
+export function toResponsePatch(exchange: CapturedExchange): ExchangeResponsePatch {
+  // eslint-disable-next-line sonarjs/no-unused-vars -- deliberately dropped, not forwarded — see the doc comment above (`@typescript-eslint/no-unused-vars`'s own `^_` ignore pattern already covers these; only sonarjs's separate rule needs silencing).
+  const { requestBody: _requestBody, requestHeaders: _requestHeaders, ...patch } = toWireExchange(exchange);
+  return patch;
 }
