@@ -1,5 +1,71 @@
 # Changelog
 
+## [1.6.0](https://github.com/rwadada/Detour/compare/v1.5.0...v1.6.0) (2026-09-26)
+
+
+### Features
+
+* async cert key generation, LRU-bounded caches, CA validity monitoring ([#164](https://github.com/rwadada/Detour/issues/164)) ([88f3fa2](https://github.com/rwadada/Detour/commit/88f3fa29dd867ab899cb70355a2744e6bdab49db))
+* benchmark harness for the proxy hot path ([#163](https://github.com/rwadada/Detour/issues/163)) ([aca5bac](https://github.com/rwadada/Detour/commit/aca5bac7821e7865f67dc24854aa328f3d008c10))
+* benchmark harness for the proxy hot path (`npm run bench`) ([0167878](https://github.com/rwadada/Detour/commit/0167878fa637903421219917abbf3beb34254518))
+* cap the live backlog's total captured-body memory ([#165](https://github.com/rwadada/Detour/issues/165) Proposal A) ([a4cba03](https://github.com/rwadada/Detour/commit/a4cba03413748a7914a80273b6046a474f3cfa32))
+* cap the live backlog's total captured-body memory ([#165](https://github.com/rwadada/Detour/issues/165) Proposal A) ([025cf84](https://github.com/rwadada/Detour/commit/025cf841568c316431c849e76c1a205cdb4b6c84))
+* HAR timing mapping + detour record --from-har ([#167](https://github.com/rwadada/Detour/issues/167)) ([14dfe8c](https://github.com/rwadada/Detour/commit/14dfe8c734a496a911b74f3c9e8530743209c070))
+* HAR timing mapping + detour record --from-har ([#167](https://github.com/rwadada/Detour/issues/167)) ([fe4b407](https://github.com/rwadada/Detour/commit/fe4b4079bb1fcec1e197bf7def95e954f29282e1))
+* require --proxy-auth credentials before the proxy serves any client ([a3abebe](https://github.com/rwadada/Detour/commit/a3abebe843aacfbaf5b2fbdca740cb27d3e53652))
+* require --proxy-auth credentials before the proxy serves any client ([3f38755](https://github.com/rwadada/Detour/commit/3f38755b2f5f29d2d7ba585048d8779637b7e1c4))
+* reuse upstream connections via HTTP(S) Agent keep-alive ([#162](https://github.com/rwadada/Detour/issues/162)) ([90e5e90](https://github.com/rwadada/Detour/commit/90e5e9057b5ae47b3ee4ecba08f2930f856aa998))
+* reuse upstream connections via HTTP(S) Agent keep-alive ([#162](https://github.com/rwadada/Detour/issues/162)) ([8be4d4d](https://github.com/rwadada/Detour/commit/8be4d4deae05879c8ff5168492bfce702b4f10c2))
+* sequential mock responses via mock.responses ([#181](https://github.com/rwadada/Detour/issues/181)) ([a9b7fee](https://github.com/rwadada/Detour/commit/a9b7fee6637ae77bd7019a7f8dca58d6a9577e2b))
+* sequential mock responses via mock.responses ([#181](https://github.com/rwadada/Detour/issues/181)) ([01e3669](https://github.com/rwadada/Detour/commit/01e3669606951f62d6f1d54c668bf9028c7558ff))
+* serve the dashboard over HTTPS on --lan and rate-limit login attempts ([ebe69d9](https://github.com/rwadada/Detour/commit/ebe69d9106658293941cf75a27e2398249eaaf55))
+* serve the dashboard over HTTPS on --lan and rate-limit login attempts ([ee1070f](https://github.com/rwadada/Detour/commit/ee1070fa9ce53edfcda66793b2c7212fb44b88d7))
+* upstream HTTP/2 with ALPN negotiation and multiplexing ([#166](https://github.com/rwadada/Detour/issues/166)) ([41ff789](https://github.com/rwadada/Detour/commit/41ff789f5ee24c56b1dc2fba4c32ab511667c376))
+* upstream HTTP/2 with ALPN negotiation and multiplexing ([#166](https://github.com/rwadada/Detour/issues/166)) ([940d692](https://github.com/rwadada/Detour/commit/940d692a083f0ea72113839e05bc356a4f743d86))
+* upstream TLS trust, mTLS, and certificate visibility ([#160](https://github.com/rwadada/Detour/issues/160)) ([d0c0d7d](https://github.com/rwadada/Detour/commit/d0c0d7d4c47968a902db225516407a0fa47829d3))
+* upstream TLS trust, mTLS, and certificate visibility ([#160](https://github.com/rwadada/Detour/issues/160)) ([e50e280](https://github.com/rwadada/Detour/commit/e50e28030d6576dedd815bf644b2bf300fde22e5))
+
+
+### Bug Fixes
+
+* address 2nd Copilot round on [#176](https://github.com/rwadada/Detour/issues/176) - dead branch, flaky test ([de9c3dc](https://github.com/rwadada/Detour/commit/de9c3dc5bd247590d72b4305ba0a1f7a18563570))
+* address Copilot review on [#176](https://github.com/rwadada/Detour/issues/176) - timing baseline and attach guard ([9336e3e](https://github.com/rwadada/Detour/commit/9336e3eb6cb34dee090809894321169feac1a6ba))
+* address Copilot review on [#177](https://github.com/rwadada/Detour/issues/177) - stale doc comment, Tabs remount ([36a05c5](https://github.com/rwadada/Detour/commit/36a05c5536c77eb12dad48ce6a9a41cb58d98a5d))
+* apply the RDN-join fix that got dropped during the merge conflict resolution ([3961157](https://github.com/rwadada/Detour/commit/3961157bf4e9d6ab7d0c008f5a1a12a505a1c44e))
+* **bench:** dial the dashboard by hostname, and stop the gate passing a run that measured nothing ([4d7f7e4](https://github.com/rwadada/Detour/commit/4d7f7e405a3a385e788ba75b19d074788e5a4855))
+* **bench:** exit on failure instead of hanging, and label the payload honestly ([ed62f8d](https://github.com/rwadada/Detour/commit/ed62f8d0afad468930e5026bb879f96ac9165920))
+* **bench:** fail fast on a broken baseline, fix the --scenarios example ([620a46b](https://github.com/rwadada/Detour/commit/620a46bc09a930ea47573f157b2b793528e0ac6a))
+* **bench:** isolate HOME, target the upstream's actual bind address, and validate --scenarios ([ca78149](https://github.com/rwadada/Detour/commit/ca78149b12e2457939dbe54ebd580aafb0cb4ddf))
+* **bench:** reject a fractional --connections and an unknown --scenarios id ([7c1b479](https://github.com/rwadada/Detour/commit/7c1b4790a37688d66afe9faeb7166dc02e029b99))
+* **bench:** reject empty --scenarios entries, name throughput by its real unit, gate bench on verify ([a0eb413](https://github.com/rwadada/Detour/commit/a0eb4131ca8be4d3406f1cee15c4b9a61877e2d6))
+* **bench:** sample the proxy process asynchronously during the measured window ([716c4c8](https://github.com/rwadada/Detour/commit/716c4c8ba35ad32e8aa508401044c9b51bf06209))
+* **bench:** time out a stalled request and validate scenario 7's warmup ([b06e625](https://github.com/rwadada/Detour/commit/b06e62526dd00e37ff42acbd0cd49223272a6c9a))
+* bound loginFailuresByIp, clean up test listeners, tighten SAN to reachable hosts ([1b4fc8a](https://github.com/rwadada/Detour/commit/1b4fc8ab4eeb3c1a2c3bc765130e593bb3240484))
+* cache each slot's own byte size instead of re-measuring the stored value (agy review) ([799e75f](https://github.com/rwadada/Detour/commit/799e75fab9ba885e7d1b8957780bc9b5828b4f46))
+* clear a mock's stale statusMessage when a rewrite overrides its status ([8e45a20](https://github.com/rwadada/Detour/commit/8e45a20a0d2b4281d9b73ff23e71e81561bdda78))
+* clear simulate/body/bodyFile as a group when a responses step overrides either ([27e32bd](https://github.com/rwadada/Detour/commit/27e32bd1db19a6441349d110631fded72a1ea78d))
+* compute lanAddresses once per start, and never mint an empty-SAN cert ([391c0de](https://github.com/rwadada/Detour/commit/391c0de123aa81c6599d7268f39e1e3ae95bede6))
+* dedupe h2 stream error listener, clean up in-flight ALPN probes ([7f1b1d5](https://github.com/rwadada/Detour/commit/7f1b1d510d2098112cf21f0507eff5587c143a29))
+* delete content-length case-insensitively in breakpoint handlers ([1cc71bb](https://github.com/rwadada/Detour/commit/1cc71bb4725573c86184dc92cfdc71a9f50a525b))
+* docs site's mobile sidebar never actually hid, overlapping content ([732e14c](https://github.com/rwadada/Detour/commit/732e14c8501e2dd901a1642ea629bc1d9a445dbe))
+* docs site's mobile sidebar never actually hid, overlapping content ([02e3570](https://github.com/rwadada/Detour/commit/02e3570d69e8cc5e71ab8f2c6dbb1a2979186c5e))
+* extend the simulate-clearing group to status/statusMessage/headers too ([3ecaae7](https://github.com/rwadada/Detour/commit/3ecaae72b3674f417263adf0c2a7beb36257eb74))
+* guard runCommandUnderProxy against an empty command, make stepIcon exhaustive ([e4e942c](https://github.com/rwadada/Detour/commit/e4e942c4ec46e2d5dac5c44f9c6cef0616cfc35a))
+* harden HAR import against malformed/foreign data (agy review) ([d7ec387](https://github.com/rwadada/Detour/commit/d7ec387cd3e40b34ad5d26f8f981ee346e7bb43b))
+* hedge the shared LAN warning, plug a temp-dir leak, unstale a comment ([9e2dc4b](https://github.com/rwadada/Detour/commit/9e2dc4b9158e495a38f27fdd89663bc0d7d9c190))
+* idle-evict h2 sessions, merge case-variant headers, harden mux test ([295ac45](https://github.com/rwadada/Detour/commit/295ac4581efb449ac348af4d128ff348a0b46b88))
+* make dashboardServer.tls.test.ts hermetic, correct README lockout claim ([2e47ce2](https://github.com/rwadada/Detour/commit/2e47ce2f31f61922be622d95cf0607d829a4f73a))
+* point three stale doc-comment references at their post-[#168](https://github.com/rwadada/Detour/issues/168) locations ([99865bb](https://github.com/rwadada/Detour/commit/99865bbb13c3243eda9e1d4364e5a9a0d5d31046))
+* restore the console.log spy, and stop the LAN warning contradicting itself ([9e2ff61](https://github.com/rwadada/Detour/commit/9e2ff6176783afa25417fc166904c412003daa85))
+* **test:** restore the mocked console.log in setupReport.test.ts ([e26a69b](https://github.com/rwadada/Detour/commit/e26a69bfdb304d5909e7cdbe8c800f88b08b50aa))
+* validate the actual executable name in runCommandUnderProxy, not just array length ([a31ff3f](https://github.com/rwadada/Detour/commit/a31ff3f5501e3701248d0cec1fc02759731370e6))
+* **web:** contain tab-strip scroll to TabsList, not the whole panel ([9089712](https://github.com/rwadada/Detour/commit/908971250c4025ca73876a74b1cadc79adf45d70))
+
+
+### Performance Improvements
+
+* async cert key generation, LRU-bounded caches, CA validity monitoring ([#164](https://github.com/rwadada/Detour/issues/164)) ([bb48f43](https://github.com/rwadada/Detour/commit/bb48f43e046bed4732233757c04aedb850386f65))
+
 ## [1.5.0](https://github.com/rwadada/Detour/compare/v1.4.0...v1.5.0) (2026-09-19)
 
 
