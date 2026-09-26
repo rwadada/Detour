@@ -300,6 +300,13 @@ export interface UnreachableRuleWarning {
   message: string;
 }
 
+/** Mirrors `src/domain/rules/scriptGate.ts`'s `ScriptGateWarning` (issue #161) — a `script` rule that's present but currently skipped because `--allow-scripts` isn't on. */
+export interface ScriptGateWarning {
+  ruleName: string;
+  ruleIndex: number;
+  message: string;
+}
+
 /** Mirrors `src/domain/dashboard/protocol.ts`'s `HistoryFilters` (issue #144). Every field optional — omitted means "no restriction". */
 export interface HistoryFilters {
   method?: string;
@@ -350,8 +357,13 @@ export type DashboardServerMessage =
   | { type: 'wsOpen'; connection: CapturedWebSocketConnection }
   | { type: 'wsFrame'; connection: CapturedWebSocketConnection }
   | { type: 'wsClose'; connection: CapturedWebSocketConnection }
-  /** The currently active rules.json contents — `null` when no rules file is configured for this session. `unreachableWarnings` is computed against this same `data` (empty when it's `null`), not any unsaved Rules editor draft. */
-  | { type: 'rules'; data: RulesFile | null; unreachableWarnings: UnreachableRuleWarning[] }
+  /** The currently active rules.json contents — `null` when no rules file is configured for this session. `unreachableWarnings`/`scriptWarnings` are computed against this same `data` (empty when it's `null`), not any unsaved Rules editor draft. */
+  | {
+      type: 'rules';
+      data: RulesFile | null;
+      unreachableWarnings: UnreachableRuleWarning[];
+      scriptWarnings: ScriptGateWarning[];
+    }
   /** The saved rule profiles available to switch to or apply. */
   | { type: 'ruleProfiles'; profiles: RuleProfileSummary[] }
   /** The current persistent `detour start` defaults — sent once on connect and again after every `setUserConfig`. */

@@ -1,5 +1,12 @@
 import { create } from 'zustand';
-import type { DashboardConnection, Rule, RuleProfileSummary, RulesFile, UnreachableRuleWarning } from '@/shared/api';
+import type {
+  DashboardConnection,
+  Rule,
+  RuleProfileSummary,
+  RulesFile,
+  ScriptGateWarning,
+  UnreachableRuleWarning,
+} from '@/shared/api';
 
 export interface RuleState {
   /** The currently active rules.json contents, or `null` if this session has no rules file configured, or the initial `rules` message hasn't arrived yet. */
@@ -17,6 +24,8 @@ export interface RuleState {
   rulesFileAt: number | null;
   /** A rule that can never run because an earlier `mock`/`route`/`breakpoint`/`script` rule already matches every request it would — see `UnreachableRuleWarning`'s doc comment. Mirrors `rulesFile`: reflects the last-saved file, not any unsaved Rules editor draft. */
   unreachableWarnings: UnreachableRuleWarning[];
+  /** A `script` rule that's present but currently skipped because `--allow-scripts` isn't on (issue #161) — see `ScriptGateWarning`'s doc comment. Mirrors `rulesFile`, same as `unreachableWarnings`. */
+  scriptWarnings: ScriptGateWarning[];
   /** Saved rule profiles (issue #19's Rules Profiles), available to apply or overwrite. */
   profiles: RuleProfileSummary[];
   /** `Date.now()` when `profiles` was last (re)set — mirrors `rulesFileAt`, for the same reason, against `ruleProfiles` messages instead. */
@@ -108,6 +117,7 @@ export function createRuleStore(connection: DashboardConnection) {
           set({
             rulesFile: message.data,
             unreachableWarnings: message.unreachableWarnings ?? [],
+            scriptWarnings: message.scriptWarnings ?? [],
             rulesFileAt: Date.now(),
           });
           return;
@@ -128,6 +138,7 @@ export function createRuleStore(connection: DashboardConnection) {
       rulesFile: null,
       rulesFileAt: null,
       unreachableWarnings: [],
+      scriptWarnings: [],
       profiles: [],
       profilesAt: null,
       lastError: null,

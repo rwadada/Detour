@@ -19,12 +19,12 @@ describe('createRuleStore', () => {
     const store = createRuleStore(connection);
     expect(store.getState().rulesFileAt).toBeNull();
 
-    emit({ type: 'rules', data: rulesFile, unreachableWarnings: [] });
+    emit({ type: 'rules', data: rulesFile, unreachableWarnings: [], scriptWarnings: [] });
     expect(store.getState().rulesFile).toEqual(rulesFile);
     const first = store.getState().rulesFileAt;
     expect(first).toEqual(expect.any(Number));
 
-    emit({ type: 'rules', data: null, unreachableWarnings: [] });
+    emit({ type: 'rules', data: null, unreachableWarnings: [], scriptWarnings: [] });
     expect(store.getState().rulesFile).toBeNull();
     expect(store.getState().rulesFileAt).not.toBeNull();
   });
@@ -40,7 +40,7 @@ describe('createRuleStore', () => {
       message:
         'rule "dead" (index 1) can never match: rule "catch-all" (index 0) already matches every request "dead" would, and — being a mock/route/breakpoint/script rule — stops evaluation there.',
     };
-    emit({ type: 'rules', data: rulesFile, unreachableWarnings: [warning] });
+    emit({ type: 'rules', data: rulesFile, unreachableWarnings: [warning], scriptWarnings: [] });
     expect(store.getState().unreachableWarnings).toEqual([warning]);
   });
 
@@ -52,6 +52,21 @@ describe('createRuleStore', () => {
     // to exercise the case the field is actually missing off the wire.
     emit({ type: 'rules', data: rulesFile } as unknown as Parameters<typeof emit>[0]);
     expect(store.getState().unreachableWarnings).toEqual([]);
+  });
+
+  it("applies a `rules` message's `scriptWarnings`, defaulting to an empty array when omitted (issue #161, same reasoning as `unreachableWarnings` above)", () => {
+    const { connection, emit } = fakeDashboardConnection();
+    const store = createRuleStore(connection);
+    const scriptWarning = {
+      ruleName: 's1',
+      ruleIndex: 0,
+      message: 'rule "s1" (index 0): `script` actions are disabled — pass --allow-scripts to run it.',
+    };
+    emit({ type: 'rules', data: rulesFile, unreachableWarnings: [], scriptWarnings: [scriptWarning] });
+    expect(store.getState().scriptWarnings).toEqual([scriptWarning]);
+
+    emit({ type: 'rules', data: rulesFile, unreachableWarnings: [] } as unknown as Parameters<typeof emit>[0]);
+    expect(store.getState().scriptWarnings).toEqual([]);
   });
 
   it('applies a `ruleProfiles` message, bumping profilesAt', () => {

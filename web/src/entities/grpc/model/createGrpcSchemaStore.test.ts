@@ -36,7 +36,7 @@ describe('createGrpcSchemaStore', () => {
     const { connection, emit } = fakeDashboardConnection();
     const store = createGrpcSchemaStore(connection);
 
-    emit({ type: 'rules', data: null, unreachableWarnings: [] });
+    emit({ type: 'rules', data: null, unreachableWarnings: [], scriptWarnings: [] });
     expect(store.getState().schema).toBeNull();
     expect(store.getState().schemaAt).toBeNull();
   });

@@ -16,6 +16,12 @@ const routeRule = (name: string): Rule => ({
   action: { type: 'route', host: 'x' },
 });
 
+const scriptRule = (name: string, path = 'hook.js'): Rule => ({
+  name,
+  match: { url: 'https://api.example.com/*' },
+  action: { type: 'script', path },
+});
+
 /**
  * Triggers RuleEngine's private debounced-reload logic directly, bypassing
  * the real `fs.watch` file-system event it's normally scheduled from.
@@ -66,6 +72,25 @@ describe('RuleEngine', () => {
     engine.close();
     engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader, allowExternalScriptPaths: true });
     expect(engine.allowExternalScriptPaths).toBe(true);
+  });
+
+  it('defaults allowScripts to false, and honors an explicit true (issue #161)', () => {
+    writeRules(filePath, [routeRule('r1')]);
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });
+    expect(engine.allowScripts).toBe(false);
+    engine.close();
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader, allowScripts: true });
+    expect(engine.allowScripts).toBe(true);
+  });
+
+  it('reports a scriptWarning for every script rule while allowScripts is off, and none once it is on (issue #161)', () => {
+    writeRules(filePath, [routeRule('r1'), scriptRule('s1')]);
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });
+    expect(engine.getScriptWarnings()).toEqual([expect.objectContaining({ ruleName: 's1', ruleIndex: 1 })]);
+    engine.close();
+
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader, allowScripts: true });
+    expect(engine.getScriptWarnings()).toEqual([]);
   });
 
   it('throws on an initially invalid rules file', () => {

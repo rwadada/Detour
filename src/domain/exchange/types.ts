@@ -1,4 +1,5 @@
 import type { IncomingHttpHeaders } from 'node:http';
+import type { ScriptGateWarning } from '../rules/scriptGate';
 import type { UnreachableRuleWarning } from '../rules/unreachableRules';
 
 /**
@@ -252,6 +253,7 @@ export interface RulesReloadEvent {
   filePath: string;
   ruleCount: number;
   unreachableWarnings: UnreachableRuleWarning[];
+  scriptWarnings: ScriptGateWarning[];
 }
 
 /** A paused request, awaiting the dashboard's edit/resume. Headers/body reflect what the client actually sent. */

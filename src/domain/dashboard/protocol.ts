@@ -10,6 +10,7 @@ import type {
   ThrottleState,
 } from '../exchange/types';
 import type { RuleProfileSummary } from '../rules/profile';
+import type { ScriptGateWarning } from '../rules/scriptGate';
 import type { RulesFile } from '../rules/types';
 import type { UnreachableRuleWarning } from '../rules/unreachableRules';
 
@@ -204,12 +205,18 @@ export type DashboardServerMessage =
    * rules file configured (`detour start` without `--rules`, and no
    * `rules.json` auto-detected in the working directory).
    *
-   * `unreachableWarnings` reflects this same `data` (empty when `data` is
-   * `null`) — see `findUnreachableRules`'s doc comment for what's actually
-   * detected. It's computed against the last-*saved* file, not whatever
+   * `unreachableWarnings`/`scriptWarnings` reflect this same `data` (empty
+   * when `data` is `null`) — see `findUnreachableRules`'s/
+   * `findDisabledScriptWarnings`'s doc comments for what's actually
+   * detected. Both are computed against the last-*saved* file, not whatever
    * unsaved edits the Rules editor's own draft state might currently hold.
    */
-  | { type: 'rules'; data: RulesFile | null; unreachableWarnings: UnreachableRuleWarning[] }
+  | {
+      type: 'rules';
+      data: RulesFile | null;
+      unreachableWarnings: UnreachableRuleWarning[];
+      scriptWarnings: ScriptGateWarning[];
+    }
   /**
    * The saved rule profiles available to switch to or apply (issue #19's
    * Rules Profiles) — sent once right after connecting and again after any

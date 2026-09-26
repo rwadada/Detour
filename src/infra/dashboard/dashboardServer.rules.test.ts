@@ -102,6 +102,7 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
           filePath: rulesPath,
           ruleCount: info.ruleCount,
           unreachableWarnings: info.unreachableWarnings,
+          scriptWarnings: info.scriptWarnings,
         }),
       onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
     });
@@ -116,6 +117,7 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
       type: 'rules',
       data: { rules: [routeRule('a')] },
       unreachableWarnings: findUnreachableRules([routeRule('a')]),
+      scriptWarnings: [],
     });
   });
 
@@ -123,7 +125,7 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
     handle = await startDashboardServer({ port: 0, ruleProfileStore }, eventBus);
     const socket = connect();
     const message = await waitForMessage(socket, (m) => m.type === 'rules');
-    expect(message).toEqual({ type: 'rules', data: null, unreachableWarnings: [] });
+    expect(message).toEqual({ type: 'rules', data: null, unreachableWarnings: [], scriptWarnings: [] });
   });
 
   it('setRules saves valid edits, which land back as a `rules` broadcast once reloaded', async () => {
@@ -138,6 +140,7 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
       type: 'rules',
       data: { rules: [routeRule('a'), routeRule('b')] },
       unreachableWarnings: findUnreachableRules([routeRule('a'), routeRule('b')]),
+      scriptWarnings: [],
     });
     expect(JSON.parse(fs.readFileSync(rulesPath, 'utf8')).rules).toHaveLength(2);
   });
@@ -155,6 +158,95 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
 
     expect(error).toMatchObject({ type: 'error', event: { errorKind: 'RULES_WRITE_ERROR' } });
     expect(fs.readFileSync(rulesPath, 'utf8')).toBe(before);
+  });
+
+  it('setRules rejects adding a brand-new script rule, without writing it to disk (issue #161)', async () => {
+    await startWithRuleEngine();
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'rules');
+    const before = fs.readFileSync(rulesPath, 'utf8');
+
+    socket.send(
+      JSON.stringify({
+        type: 'setRules',
+        data: {
+          rules: [
+            routeRule('a'),
+            {
+              name: 'new-script',
+              match: { url: 'https://api.example.com/*' },
+              action: { type: 'script', path: 'x.js' },
+            },
+          ],
+        },
+      }),
+    );
+    const error = await waitForMessage(socket, (m) => m.type === 'error');
+
+    expect(error).toMatchObject({
+      type: 'error',
+      event: { errorKind: 'RULES_WRITE_ERROR', message: expect.stringContaining('adding a new') },
+    });
+    expect(fs.readFileSync(rulesPath, 'utf8')).toBe(before);
+  });
+
+  it("setRules rejects changing an existing script rule's path, without writing it to disk (issue #161)", async () => {
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [{ name: 's', match: { url: 'https://api.example.com/*' }, action: { type: 'script', path: 'old.js' } }],
+      }),
+    );
+    await startWithRuleEngine();
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'rules');
+    const before = fs.readFileSync(rulesPath, 'utf8');
+
+    socket.send(
+      JSON.stringify({
+        type: 'setRules',
+        data: {
+          rules: [
+            { name: 's', match: { url: 'https://api.example.com/*' }, action: { type: 'script', path: 'new.js' } },
+          ],
+        },
+      }),
+    );
+    const error = await waitForMessage(socket, (m) => m.type === 'error');
+
+    expect(error).toMatchObject({
+      type: 'error',
+      event: { errorKind: 'RULES_WRITE_ERROR', message: expect.stringContaining('changing') },
+    });
+    expect(fs.readFileSync(rulesPath, 'utf8')).toBe(before);
+  });
+
+  it('setRules still allows re-saving an existing script rule with its path unchanged (issue #161)', async () => {
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          { name: 's', match: { url: 'https://api.example.com/*' }, action: { type: 'script', path: 'hook.js' } },
+        ],
+      }),
+    );
+    await startWithRuleEngine();
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'rules');
+
+    socket.send(
+      JSON.stringify({
+        type: 'setRules',
+        data: {
+          rules: [
+            { name: 's', match: { url: 'https://api.example.com/*' }, action: { type: 'script', path: 'hook.js' } },
+            routeRule('a'),
+          ],
+        },
+      }),
+    );
+    const updated = await waitForMessage(socket, (m) => m.type === 'rules' && m.data?.rules.length === 2);
+    expect(updated.type).toBe('rules');
   });
 
   it('setRules without a configured rules file broadcasts an error instead of throwing', async () => {
@@ -223,6 +315,7 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
       type: 'rules',
       data: { rules: [routeRule('a')], $activeProfile: 'snapshot' },
       unreachableWarnings: findUnreachableRules([routeRule('a')]),
+      scriptWarnings: [],
     });
   });
 
@@ -239,7 +332,85 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
       type: 'rules',
       data: { rules: [routeRule('a'), routeRule('b')], $activeProfile: 'two-rules' },
       unreachableWarnings: findUnreachableRules([routeRule('a'), routeRule('b')]),
+      scriptWarnings: [],
     });
+  });
+
+  it('applyRuleProfile rejects a saved profile that would introduce a new script rule, without writing it to disk (issue #161)', async () => {
+    writeRuleProfile(
+      'has-script',
+      { rules: [{ name: 's', match: { url: 'https://api.example.com/*' }, action: { type: 'script', path: 'x.js' } }] },
+      profilesDir,
+    );
+    await startWithRuleEngine();
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'rules');
+    const before = fs.readFileSync(rulesPath, 'utf8');
+
+    socket.send(JSON.stringify({ type: 'applyRuleProfile', name: 'has-script' }));
+    const error = await waitForMessage(socket, (m) => m.type === 'error');
+
+    expect(error).toMatchObject({
+      type: 'error',
+      event: { errorKind: 'RULE_PROFILE_ERROR', message: expect.stringContaining('adding a new') },
+    });
+    expect(fs.readFileSync(rulesPath, 'utf8')).toBe(before);
+  });
+
+  it("applyRuleProfile rejects a saved profile that would repoint an already-active script rule's path (issue #161)", async () => {
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [{ name: 's', match: { url: 'https://api.example.com/*' }, action: { type: 'script', path: 'old.js' } }],
+      }),
+    );
+    writeRuleProfile(
+      'repointed-script',
+      {
+        rules: [{ name: 's', match: { url: 'https://api.example.com/*' }, action: { type: 'script', path: 'new.js' } }],
+      },
+      profilesDir,
+    );
+    await startWithRuleEngine();
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'rules');
+    const before = fs.readFileSync(rulesPath, 'utf8');
+
+    socket.send(JSON.stringify({ type: 'applyRuleProfile', name: 'repointed-script' }));
+    const error = await waitForMessage(socket, (m) => m.type === 'error');
+
+    expect(error).toMatchObject({
+      type: 'error',
+      event: { errorKind: 'RULE_PROFILE_ERROR', message: expect.stringContaining('changing') },
+    });
+    expect(fs.readFileSync(rulesPath, 'utf8')).toBe(before);
+  });
+
+  it('applyRuleProfile still allows a saved profile whose script rule exactly matches what is already active (issue #161)', async () => {
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          { name: 's', match: { url: 'https://api.example.com/*' }, action: { type: 'script', path: 'hook.js' } },
+        ],
+      }),
+    );
+    writeRuleProfile(
+      'same-script',
+      {
+        rules: [
+          { name: 's', match: { url: 'https://api.example.com/*' }, action: { type: 'script', path: 'hook.js' } },
+        ],
+      },
+      profilesDir,
+    );
+    await startWithRuleEngine();
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'rules');
+
+    socket.send(JSON.stringify({ type: 'applyRuleProfile', name: 'same-script' }));
+    const updated = await waitForMessage(socket, (m) => m.type === 'rules' && m.data?.$activeProfile === 'same-script');
+    expect(updated.type).toBe('rules');
   });
 
   it('setRules clears $activeProfile even when a profile was applied just before it', async () => {
@@ -265,6 +436,7 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
       type: 'rules',
       data: { rules: [routeRule('a'), routeRule('b')] },
       unreachableWarnings: findUnreachableRules([routeRule('a'), routeRule('b')]),
+      scriptWarnings: [],
     });
   });
 
@@ -321,6 +493,7 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
             filePath: lazyPath,
             ruleCount: info.ruleCount,
             unreachableWarnings: info.unreachableWarnings,
+            scriptWarnings: info.scriptWarnings,
           }),
         onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
       });
@@ -336,6 +509,7 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
       type: 'rules',
       data: { rules: [routeRule('a'), routeRule('b')], $activeProfile: 'two-rules' },
       unreachableWarnings: findUnreachableRules([routeRule('a'), routeRule('b')]),
+      scriptWarnings: [],
     });
     expect(created).toBe(1);
     expect(fs.existsSync(lazyPath)).toBe(true);
@@ -347,6 +521,7 @@ describe('startDashboardServer — Rules editor / Rules Profiles (issue #19)', (
       type: 'rules',
       data: { rules: [routeRule('a'), routeRule('b'), routeRule('c')], $activeProfile: 'three-rules' },
       unreachableWarnings: findUnreachableRules([routeRule('a'), routeRule('b'), routeRule('c')]),
+      scriptWarnings: [],
     });
     expect(created).toBe(1);
   });

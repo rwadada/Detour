@@ -3,6 +3,7 @@ import { findHeader } from '../domain/exchange/headers';
 import type { CapturedExchange, CapturedWebSocketConnection, ProxyErrorEvent } from '../domain/exchange/types';
 import { formatGrpcSection, type GrpcExchangeInfo } from '../domain/grpc/grpcDumpFormat';
 import { isGrpcContentType, parseGrpcPath } from '../domain/grpc/grpcFraming';
+import type { ScriptGateWarning } from '../domain/rules/scriptGate';
 import type { UnreachableRuleWarning } from '../domain/rules/unreachableRules';
 
 const ansi = {
@@ -103,11 +104,21 @@ export function logProxyError(event: ProxyErrorEvent): void {
   console.error(`${paint(ansi.red, '✖ proxy error')} [${event.errorKind}] ${event.message}`);
 }
 
-/** Prints one line per `findUnreachableRules` finding, at startup and after every reload — see that function's doc comment for what's actually detected. */
-export function logUnreachableRuleWarnings(warnings: readonly UnreachableRuleWarning[]): void {
+/** Shared by `logUnreachableRuleWarnings`/`logScriptGateWarnings` below — both print one `⚠ <message>` line per pre-formatted warning, at startup and after every reload. */
+function logRuleWarnings(warnings: readonly { message: string }[]): void {
   for (const warning of warnings) {
     console.log(paint(ansi.yellow, `⚠ ${warning.message}`));
   }
+}
+
+/** Prints one line per `findUnreachableRules` finding — see that function's doc comment for what's actually detected. */
+export function logUnreachableRuleWarnings(warnings: readonly UnreachableRuleWarning[]): void {
+  logRuleWarnings(warnings);
+}
+
+/** Prints one line per `findDisabledScriptWarnings` finding (issue #161) — see that function's doc comment for what's actually detected. */
+export function logScriptGateWarnings(warnings: readonly ScriptGateWarning[]): void {
+  logRuleWarnings(warnings);
 }
 
 function formatBytes(bytes: number): string {

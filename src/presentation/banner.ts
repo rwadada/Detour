@@ -1,5 +1,5 @@
 import type { RuleEngine } from '../usecase/ruleEngine';
-import { logUnreachableRuleWarnings } from './logger';
+import { logScriptGateWarnings, logUnreachableRuleWarnings } from './logger';
 
 /**
  * The core LAN-access security fact, worded once and reused wherever
@@ -181,6 +181,7 @@ export function printStartupBanner(info: {
       `Rules file: ${info.ruleEngine.filePath} (loaded ${info.ruleEngine.getRules().length} rule(s), watching for changes)`,
     );
     logUnreachableRuleWarnings(info.ruleEngine.getUnreachableWarnings());
+    logScriptGateWarnings(info.ruleEngine.getScriptWarnings());
   }
   if (info.dumpDir) {
     console.log(`Full request/response dumps → ${info.dumpDir}`);

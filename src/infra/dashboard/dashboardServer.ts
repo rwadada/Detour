@@ -12,6 +12,7 @@ import type {
   ThrottleState,
 } from '../../domain/exchange/types';
 import { SAMPLE_RULES_FILE } from '../../domain/rules/sample';
+import { findRejectedScriptWrites } from '../../domain/rules/scriptGate';
 import type { RulesFile } from '../../domain/rules/types';
 import { RingBuffer } from '../../domain/shared/ringBuffer';
 import type { DashboardClientMessage, DashboardServerMessage } from '../../domain/dashboard/protocol';
@@ -525,6 +526,7 @@ export async function startDashboardServer(
     type: 'rules',
     data: ruleEngine ? { rules: [...ruleEngine.getRules()], $activeProfile: ruleEngine.getActiveProfile() } : null,
     unreachableWarnings: ruleEngine ? [...ruleEngine.getUnreachableWarnings()] : [],
+    scriptWarnings: ruleEngine ? [...ruleEngine.getScriptWarnings()] : [],
   });
   const ruleProfilesMessage = (): DashboardServerMessage => ({
     type: 'ruleProfiles',
@@ -886,6 +888,18 @@ export async function startDashboardServer(
   function handleRulesMessage(message: DashboardClientMessage): void {
     if (message.type === 'setRules') {
       if (!ruleEngine) return broadcastError('RULES_WRITE_ERROR', 'No rules file is configured for this session.');
+      // Issue #161: refuse a `setRules` write that adds a brand-new `script`
+      // rule or changes an existing one's `path`, regardless of whether
+      // `--allow-scripts` is on — this closes the network-reachable half of
+      // the `setRules` → `script` → `require()` chain without touching the
+      // read side (a `script` rule already in rules.json keeps running,
+      // subject to `--allow-scripts`, however it got there). Checked before
+      // the `try` below since this is a validation failure, not a write
+      // failure — nothing has been written yet either way.
+      const scriptViolations = findRejectedScriptWrites(ruleEngine.getRules(), message.data.rules);
+      if (scriptViolations.length > 0) {
+        return broadcastError('RULES_WRITE_ERROR', scriptViolations.join('; '));
+      }
       try {
         // No `activeProfile` — clears `$activeProfile` on the written file
         // even if `message.data` (the editor's own draft, synced from an
@@ -941,7 +955,21 @@ export async function startDashboardServer(
         // and the dashboard looking stuck rather than told why.
         const engine = ensureRuleEngine();
         if (!engine) return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
-        engine.write(ruleProfileStore.read(message.name).rules, { activeProfile: message.name });
+        const profileRules = ruleProfileStore.read(message.name).rules;
+        // Same reasoning as `setRules`'s own check above (issue #161):
+        // `applyRuleProfile` is an equally network-reachable way to change
+        // what's active, so it has to be gated the same way — a saved
+        // profile can (validly, and without any check of its own) carry a
+        // `script` rule from a time it was legitimately active, e.g. via
+        // `saveActiveRulesAsProfile` or a profile saved before this gate
+        // existed. Applying it back must not resurrect a `script` rule (or
+        // change its path) that isn't already active right now, exactly as
+        // `setRules` itself can't.
+        const scriptViolations = findRejectedScriptWrites(engine.getRules(), profileRules);
+        if (scriptViolations.length > 0) {
+          return broadcastError('RULE_PROFILE_ERROR', scriptViolations.join('; '));
+        }
+        engine.write(profileRules, { activeProfile: message.name });
       } catch (err) {
         broadcastError('RULE_PROFILE_ERROR', describeError(err));
       }

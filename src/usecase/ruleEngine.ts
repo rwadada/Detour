@@ -8,6 +8,7 @@ import {
   type MatchedRules,
 } from '../domain/rules/matcher';
 import { pickMockAction } from '../domain/rules/mockSequence';
+import { findDisabledScriptWarnings, type ScriptGateWarning } from '../domain/rules/scriptGate';
 import type { MockAction, Rule, RulesFile } from '../domain/rules/types';
 import { findUnreachableRules, type UnreachableRuleWarning } from '../domain/rules/unreachableRules';
 import type { FileWatcher } from './ports/fileWatcher';
@@ -44,7 +45,11 @@ export interface RuleEngineOptions {
   watch?: boolean;
   /** Debounce window for coalescing the several fs events one save can produce, in ms. */
   debounceMs?: number;
-  onReload?: (info: { ruleCount: number; unreachableWarnings: UnreachableRuleWarning[] }) => void;
+  onReload?: (info: {
+    ruleCount: number;
+    unreachableWarnings: UnreachableRuleWarning[];
+    scriptWarnings: ScriptGateWarning[];
+  }) => void;
   onReloadError?: (message: string) => void;
   /** Reads/validates rules.json — injected so this UseCase never touches the filesystem directly (see infra/fs/rulesFileSource.ts). */
   reader: RulesFileReader;
@@ -61,6 +66,20 @@ export interface RuleEngineOptions {
    * file on disk. See `resolveRulePath`'s doc comment.
    */
   allowExternalScriptPaths?: boolean;
+  /**
+   * Issue #161's `detour start --allow-scripts` opt-in: whether a `script`
+   * rule's `beforeRequest`/`beforeResponse` hooks actually run at all.
+   * Defaults to `false` — a `script` module runs as arbitrary JavaScript
+   * with detour's own process permissions (up to and including its CA
+   * private key), and `setRules` can otherwise reach an existing one over
+   * the network with nothing but a dashboard password (or nothing at all)
+   * in the way. Doesn't affect whether `script` rules are *matched* (they
+   * still take priority the same way any other terminal rule would); see
+   * `findDisabledScriptWarnings` for what a `script` rule does when this is
+   * off, and `infra/proxy/scriptModuleLoader.ts`'s `tryLoadScriptModule`
+   * for where that's actually enforced.
+   */
+  allowScripts?: boolean;
 }
 
 /**
@@ -75,9 +94,13 @@ export class RuleEngine {
   readonly basePath: string;
   /** See `RuleEngineOptions.allowExternalScriptPaths`'s doc comment. */
   readonly allowExternalScriptPaths: boolean;
+  /** See `RuleEngineOptions.allowScripts`'s doc comment. */
+  readonly allowScripts: boolean;
   private compiledRules: CompiledRule[];
   /** See `findUnreachableRules`'s doc comment — recomputed alongside `compiledRules` in the constructor and `reload()`, so it's always in sync with whatever rules are actually loaded. */
   private unreachableWarnings: UnreachableRuleWarning[];
+  /** See `findDisabledScriptWarnings`'s doc comment — kept in sync the same way `unreachableWarnings` is. */
+  private scriptWarnings: ScriptGateWarning[];
   /** See `RulesFile.$activeProfile`'s doc comment — mirrors whatever the on-disk file's own field currently says, kept in sync by `reload()` the same way `compiledRules` is. */
   private activeProfile: string | undefined;
   /**
@@ -101,8 +124,10 @@ export class RuleEngine {
     this.filePath = filePath;
     this.basePath = path.dirname(filePath);
     this.allowExternalScriptPaths = options.allowExternalScriptPaths ?? false;
+    this.allowScripts = options.allowScripts ?? false;
     this.compiledRules = compileRules(data.rules, filePath);
     this.unreachableWarnings = findUnreachableRules(data.rules);
+    this.scriptWarnings = findDisabledScriptWarnings(data.rules, this.allowScripts);
     this.activeProfile = data.$activeProfile;
     this.options = options;
   }
@@ -132,6 +157,11 @@ export class RuleEngine {
   /** See `findUnreachableRules`'s doc comment. A defensive copy, like `getRules()` — a caller mutating the returned array must not corrupt this engine's own internal state. */
   getUnreachableWarnings(): readonly UnreachableRuleWarning[] {
     return [...this.unreachableWarnings];
+  }
+
+  /** See `findDisabledScriptWarnings`'s doc comment. A defensive copy, same reasoning as `getUnreachableWarnings()`. */
+  getScriptWarnings(): readonly ScriptGateWarning[] {
+    return [...this.scriptWarnings];
   }
 
   /** See `RulesFile.$activeProfile`'s doc comment. `undefined` when the current content isn't (or isn't known to still be) any saved profile's. */
@@ -206,11 +236,16 @@ export class RuleEngine {
       // every sequential mock rule's count back to 0 here.
       this.mockCallCounts = new WeakMap();
       this.unreachableWarnings = findUnreachableRules(data.rules);
+      this.scriptWarnings = findDisabledScriptWarnings(data.rules, this.allowScripts);
       this.activeProfile = data.$activeProfile;
       // Defensive copy — same reasoning as `getUnreachableWarnings()`, so a
       // listener mutating what it's handed can't corrupt this engine's own
       // internal state.
-      this.options.onReload?.({ ruleCount: data.rules.length, unreachableWarnings: [...this.unreachableWarnings] });
+      this.options.onReload?.({
+        ruleCount: data.rules.length,
+        unreachableWarnings: [...this.unreachableWarnings],
+        scriptWarnings: [...this.scriptWarnings],
+      });
     } catch (err) {
       // Keep serving the last known-good rules rather than crash the proxy.
       this.options.onReloadError?.(err instanceof Error ? err.message : String(err));

@@ -1,6 +1,6 @@
 import { json } from '@codemirror/lang-json';
 import CodeMirror from '@uiw/react-codemirror';
-import { AlertTriangle, Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, Plus, ShieldOff, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useRuleStore } from '@/entities/rule';
 import { useTheme } from '@/shared/lib/theme';
@@ -33,6 +33,7 @@ export function RulesEditorPanel() {
   const rulesFile = useRuleStore((s) => s.rulesFile);
   const rulesFileAt = useRuleStore((s) => s.rulesFileAt);
   const unreachableWarnings = useRuleStore((s) => s.unreachableWarnings);
+  const scriptWarnings = useRuleStore((s) => s.scriptWarnings);
   const setRules = useRuleStore((s) => s.setRules);
   const dirty = useRuleStore((s) => s.dirtyDraft);
   const setDirty = useRuleStore((s) => s.setDirtyDraft);
@@ -273,6 +274,8 @@ export function RulesEditorPanel() {
               // message) so the icon's `title`/`aria-label` can't end up
               // reading a different match than the one that made it render.
               const warning = dirty ? undefined : unreachableWarnings.find((w) => w.ruleIndex === index);
+              // Same "only while the draft mirrors the last-saved file" caveat as `warning` above — issue #161.
+              const scriptWarning = dirty ? undefined : scriptWarnings.find((w) => w.ruleIndex === index);
               return (
                 <li
                   key={`${rule.name}-${index}`}
@@ -300,6 +303,16 @@ export function RulesEditorPanel() {
                       className="shrink-0 text-[var(--status-4xx)]"
                     >
                       <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                    </span>
+                  )}
+                  {scriptWarning && (
+                    <span
+                      role="img"
+                      aria-label={scriptWarning.message}
+                      title={scriptWarning.message}
+                      className="shrink-0 text-[var(--muted)]"
+                    >
+                      <ShieldOff className="h-3.5 w-3.5" aria-hidden="true" />
                     </span>
                   )}
                   <button

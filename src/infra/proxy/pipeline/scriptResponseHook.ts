@@ -3,7 +3,7 @@ import { compactHeaders, deleteHeader, flattenHeaders } from '../../../domain/ex
 import type { CapturedExchange } from '../../../domain/exchange/types';
 import type { ScriptModule, ScriptRequestInfo, ScriptResponseInfo } from '../../../domain/rules/scriptAction';
 import type { Rule } from '../../../domain/rules/types';
-import { runBeforeResponse } from '../../../usecase/runScriptHooks';
+import { DEFAULT_SCRIPT_TIMEOUT_MS, runBeforeResponse } from '../../../usecase/runScriptHooks';
 import type { DetourEventBus } from '../../eventBus';
 import { attachCertificate, attachTiming, attachUpstreamProtocol } from '../attachTiming';
 import type { ErrorCallback, IContext } from '../engine/types';
@@ -16,6 +16,8 @@ export interface ScriptResponseHookDeps {
   rewriteContexts: Map<string, Rule[]>;
   /** Keyed by ctx.uuid — set by the request phase's script hook, read (and cleared) here. */
   scriptRequestBodies: Map<string, Buffer>;
+  /** `--script-timeout-ms` (issue #161) — see `runBeforeResponse`'s own doc comment. */
+  scriptTimeoutMs?: number;
 }
 
 /**
@@ -39,7 +41,14 @@ export interface ScriptResponseHookDeps {
  * which caps *that* copy on purpose).
  */
 export function createScriptResponseHookHandler(deps: ScriptResponseHookDeps) {
-  const { eventBus, inFlight, ruleContexts, rewriteContexts, scriptRequestBodies } = deps;
+  const {
+    eventBus,
+    inFlight,
+    ruleContexts,
+    rewriteContexts,
+    scriptRequestBodies,
+    scriptTimeoutMs = DEFAULT_SCRIPT_TIMEOUT_MS,
+  } = deps;
 
   return function handleScriptResponseHook(
     ctx: IContext,
@@ -121,7 +130,7 @@ export function createScriptResponseHookHandler(deps: ScriptResponseHookDeps) {
         body: Buffer.concat(chunks),
       };
 
-      runBeforeResponse(module, reqInfo, resInfo)
+      runBeforeResponse(module, reqInfo, resInfo, scriptTimeoutMs)
         .then(finish)
         .catch((err) => {
           const message = err instanceof Error ? err.message : String(err);

@@ -418,12 +418,12 @@ export function createRequestHandler(deps: RequestHandlerDeps): OnRequestParams 
       if (terminal?.action.type === 'script') {
         ruleContexts.set(ctx.uuid, terminal);
         const ruleEngine = getRuleEngine();
-        const module = tryLoadScriptModule(
-          terminal,
-          ruleEngine!.basePath,
-          ruleEngine!.allowExternalScriptPaths,
-          (message) => eventBus.emit('error', { id: ctx.uuid, errorKind: 'RULE_SCRIPT_ERROR', message }),
-        );
+        const module = tryLoadScriptModule(terminal, {
+          basePath: ruleEngine!.basePath,
+          allowExternalPaths: ruleEngine!.allowExternalScriptPaths,
+          allowScripts: ruleEngine!.allowScripts,
+          onError: (message) => eventBus.emit('error', { id: ctx.uuid, errorKind: 'RULE_SCRIPT_ERROR', message }),
+        });
         // Always runs (not just when `beforeRequest` is defined) — a
         // `beforeResponse` hook (checked separately at the response phase)
         // needs the real, full request body as its `req` argument, which

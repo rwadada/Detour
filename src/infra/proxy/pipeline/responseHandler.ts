@@ -81,12 +81,12 @@ export function createResponseHandler(deps: ResponseHandlerDeps): OnRequestParam
       // even has a `beforeResponse` hook — a rule with only `beforeRequest`
       // has nothing left to do at the response phase and falls through to
       // the normal capture/forwarding below, same as a `route`/no-op rule.
-      const module = tryLoadScriptModule(
-        terminal,
-        ruleEngine!.basePath,
-        ruleEngine!.allowExternalScriptPaths,
-        (message) => eventBus.emit('error', { id: ctx.uuid, errorKind: 'RULE_SCRIPT_ERROR', message }),
-      );
+      const module = tryLoadScriptModule(terminal, {
+        basePath: ruleEngine!.basePath,
+        allowExternalPaths: ruleEngine!.allowExternalScriptPaths,
+        allowScripts: ruleEngine!.allowScripts,
+        onError: (message) => eventBus.emit('error', { id: ctx.uuid, errorKind: 'RULE_SCRIPT_ERROR', message }),
+      });
       if (module?.beforeResponse) {
         scriptModules.set(ctx.uuid, module);
         // Fully handled by handleScriptResponseHook from onResponseHeaders

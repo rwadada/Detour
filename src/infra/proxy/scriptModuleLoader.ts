@@ -26,6 +26,14 @@ export function tryResolveMock(
   }
 }
 
+export interface TryLoadScriptModuleOptions {
+  basePath: string;
+  allowExternalPaths: boolean;
+  /** See `RuleEngineOptions.allowScripts`'s doc comment. */
+  allowScripts: boolean;
+  onError: (message: string) => void;
+}
+
 /**
  * Loads a `script` rule's module, reporting (via `onError`) rather than
  * throwing if the file is missing/unreadable/malformed — a broken script
@@ -33,14 +41,20 @@ export function tryResolveMock(
  * untouched (same philosophy as `tryResolveMock`'s 500 fallback, minus the
  * mock response since a script rule has no response of its own to fall
  * back to).
+ *
+ * `allowScripts` false (issue #161's `--allow-scripts` opt-in, off by
+ * default) short-circuits before ever touching the filesystem or calling
+ * `require()` — every caller already treats a load failure as "forward the
+ * exchange untouched, having told `onError`", so refusing here reuses that
+ * same fallback path rather than needing one of its own.
  */
-export function tryLoadScriptModule(
-  rule: Rule,
-  basePath: string,
-  allowExternalPaths: boolean,
-  onError: (message: string) => void,
-): ScriptModule | undefined {
+export function tryLoadScriptModule(rule: Rule, options: TryLoadScriptModuleOptions): ScriptModule | undefined {
+  const { basePath, allowExternalPaths, allowScripts, onError } = options;
   const action = rule.action as Extract<Rule['action'], { type: 'script' }>;
+  if (!allowScripts) {
+    onError(`rule "${rule.name}": script actions are disabled — pass --allow-scripts to enable them`);
+    return undefined;
+  }
   try {
     return loadScriptModule(action, basePath, allowExternalPaths);
   } catch (err) {

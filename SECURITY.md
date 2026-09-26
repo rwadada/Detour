@@ -59,12 +59,29 @@ dashboard run on your own machine. Worth knowing up front:
   system keeps trusting that CA. Treat `~/.detour/certs/keys/ca.private.key`
   like any other private key.
 - **`rules.json` is not a sandboxed format.** A `script` action's hook runs
-  with the same permissions as the `detour` process itself. Only load rules
-  files you trust the origin of, the same way you'd treat any other local
-  script. `script.path` and `mock.bodyFile` are restricted to the directory
-  rules.json lives in by default (an absolute path or `../` traversal is
-  rejected) — `detour start --allow-external-script-paths` opts back into
-  unrestricted paths for both, if you deliberately want that.
+  with the same permissions as the `detour` process itself — up to and
+  including its CA private key. Only load rules files you trust the origin
+  of, the same way you'd treat any other local script. `script.path` and
+  `mock.bodyFile` are restricted to the directory rules.json lives in by
+  default (an absolute path or `../` traversal is rejected) —
+  `detour start --allow-external-script-paths` opts back into unrestricted
+  paths for both, if you deliberately want that.
+- **`script` rules don't run at all unless you opt in.** `detour start
+  --allow-scripts` is required before a `script` rule's `beforeRequest`/
+  `beforeResponse` hooks actually execute — without it, a matching `script`
+  rule is skipped (with a warning), not run. This exists because the
+  dashboard can reach an *existing* `script` rule over the network with
+  nothing but a dashboard password (or, if none is set, nothing at all)
+  standing between a remote client and code execution with the CA private
+  key's permissions. Every dashboard action that can change what's active —
+  `setRules` and `applyRuleProfile` alike — also refuses to add a brand-new
+  `script` rule or change an existing one's `path`, regardless of
+  `--allow-scripts`; that half of the chain (a rules.json file, or a saved
+  profile, you already trust enough to run) is the only thing
+  `--allow-scripts` is meant to gate. A `script` hook that never resolves
+  also no longer hangs its exchange forever: `--script-timeout-ms` (default
+  5000) forwards the exchange untouched and logs an error once it's
+  exceeded.
 - Certificate pinning inside a target app is a defense Detour (or any MITM
   proxy) cannot bypass from the network side — that's expected behavior, not
   a vulnerability in Detour.

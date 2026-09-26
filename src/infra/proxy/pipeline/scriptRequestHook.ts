@@ -3,7 +3,7 @@ import { deleteHeader, flattenHeaders } from '../../../domain/exchange/headers';
 import type { CapturedExchange } from '../../../domain/exchange/types';
 import type { ScriptModule, ScriptRequestInfo } from '../../../domain/rules/scriptAction';
 import type { Rule } from '../../../domain/rules/types';
-import { runBeforeRequest } from '../../../usecase/runScriptHooks';
+import { DEFAULT_SCRIPT_TIMEOUT_MS, runBeforeRequest } from '../../../usecase/runScriptHooks';
 import type { DetourEventBus } from '../../eventBus';
 import type { ErrorCallback, IContext } from '../engine/types';
 
@@ -11,6 +11,8 @@ export interface ScriptRequestHookDeps {
   eventBus: DetourEventBus;
   /** Keyed by ctx.uuid — shared with the response phase, not owned here. */
   scriptRequestBodies: Map<string, Buffer>;
+  /** `--script-timeout-ms` (issue #161) — see `runBeforeRequest`'s own doc comment. */
+  scriptTimeoutMs?: number;
 }
 
 /**
@@ -40,7 +42,7 @@ export interface ScriptRequestHookDeps {
  * is a second, capped copy purely for `exchange.requestBody`.
  */
 export function createScriptRequestHookHandler(deps: ScriptRequestHookDeps) {
-  const { eventBus, scriptRequestBodies } = deps;
+  const { eventBus, scriptRequestBodies, scriptTimeoutMs = DEFAULT_SCRIPT_TIMEOUT_MS } = deps;
 
   return function handleScriptRequestHook(
     ctx: IContext,
@@ -107,7 +109,7 @@ export function createScriptRequestHookHandler(deps: ScriptRequestHookDeps) {
         forwardBody(result.body);
       };
 
-      runBeforeRequest(module, req)
+      runBeforeRequest(module, req, scriptTimeoutMs)
         .then(applyResult)
         .catch((err) => {
           const message = err instanceof Error ? err.message : String(err);
