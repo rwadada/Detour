@@ -34,6 +34,15 @@ export function parseIdleMs(value: string): number {
   return ms;
 }
 
+/** Validates `--script-timeout-ms <ms>` (issue #161): a positive integer count of milliseconds. */
+export function parseScriptTimeoutMs(value: string): number {
+  const ms = Number(value);
+  if (!Number.isInteger(ms) || ms <= 0) {
+    throw new Error(`--script-timeout-ms must be a positive integer of milliseconds (got: ${value})`);
+  }
+  return ms;
+}
+
 export function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }

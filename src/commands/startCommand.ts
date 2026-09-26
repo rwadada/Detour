@@ -32,12 +32,22 @@ import {
   logExchangeFull,
   logGrpcSection,
   logProxyError,
+  logScriptGateWarnings,
   logUnreachableRuleWarnings,
   logWebSocketConnection,
   logWebSocketFull,
 } from '../presentation/logger';
 import { RuleEngine } from '../usecase/ruleEngine';
-import { collectRepeatable, describeError, parseDumpLevel, parseIdleMs, parseOnOff, parsePort } from './optionParsers';
+import { DEFAULT_SCRIPT_TIMEOUT_MS } from '../usecase/runScriptHooks';
+import {
+  collectRepeatable,
+  describeError,
+  parseDumpLevel,
+  parseIdleMs,
+  parseOnOff,
+  parsePort,
+  parseScriptTimeoutMs,
+} from './optionParsers';
 
 /** Auto-loaded when `--rules` isn't given and this file exists in the current directory. */
 const DEFAULT_RULES_FILENAME = 'passthrough.rule.json';
@@ -59,6 +69,10 @@ interface StartOptions {
   rules?: string;
   /** `--allow-external-script-paths` (issue #98): let `script.path`/`mock.bodyFile` resolve outside rules.json's own directory instead of being rejected — see `resolveRulePath`'s doc comment. Off by default. */
   allowExternalScriptPaths?: boolean;
+  /** `--allow-scripts` (issue #161): actually run a `script` rule's hooks. Off by default — see `RuleEngineOptions.allowScripts`'s doc comment. */
+  allowScripts?: boolean;
+  /** `--script-timeout-ms <ms>` (issue #161): how long a `script` rule's `beforeRequest`/`beforeResponse` hook may run before its exchange is forwarded untouched and the timeout is logged as an error. Always present (commander default). */
+  scriptTimeoutMs: string;
   dump: string;
   http2: boolean;
   proto: string[];
@@ -406,9 +420,10 @@ async function runStartBody({
     if (dumpDir) writeWebSocketDumpFile(connection, dumpDir);
   });
   eventBus.on('error', logProxyError);
-  eventBus.on('rulesReloaded', ({ filePath, ruleCount, unreachableWarnings }) => {
+  eventBus.on('rulesReloaded', ({ filePath, ruleCount, unreachableWarnings, scriptWarnings }) => {
     console.log(`↻ Reloaded rules (${ruleCount}): ${filePath}`);
     logUnreachableRuleWarnings(unreachableWarnings);
+    logScriptGateWarnings(scriptWarnings);
   });
 
   let ruleEngine: RuleEngine | undefined;
@@ -425,11 +440,13 @@ async function runStartBody({
       writer: fsRulesFileWriter,
       watcher: fsFileWatcher,
       allowExternalScriptPaths: options.allowExternalScriptPaths ?? false,
+      allowScripts: options.allowScripts ?? false,
       onReload: (info) =>
         eventBus.emit('rulesReloaded', {
           filePath: ruleEngine!.filePath,
           ruleCount: info.ruleCount,
           unreachableWarnings: info.unreachableWarnings,
+          scriptWarnings: info.scriptWarnings,
         }),
       onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
     });
@@ -449,6 +466,7 @@ async function runStartBody({
         upstreamProxyUrl: options.upstreamProxy,
         proxyAuth,
         upstreamTls,
+        scriptTimeoutMs: parseScriptTimeoutMs(options.scriptTimeoutMs),
       },
       eventBus,
     );
@@ -497,11 +515,13 @@ async function runStartBody({
       writer: fsRulesFileWriter,
       watcher: fsFileWatcher,
       allowExternalScriptPaths: options.allowExternalScriptPaths ?? false,
+      allowScripts: options.allowScripts ?? false,
       onReload: (info) =>
         eventBus.emit('rulesReloaded', {
           filePath,
           ruleCount: info.ruleCount,
           unreachableWarnings: info.unreachableWarnings,
+          scriptWarnings: info.scriptWarnings,
         }),
       onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
     });
@@ -511,6 +531,7 @@ async function runStartBody({
         : `ℹ Loaded existing ${DEFAULT_RULES_FILENAME} to apply this rule profile (auto-loaded from now on; pass --rules to use a different file)`,
     );
     logUnreachableRuleWarnings(engine.getUnreachableWarnings());
+    logScriptGateWarnings(engine.getScriptWarnings());
     handle.setRuleEngine(engine);
     return engine;
   }
@@ -873,6 +894,15 @@ export function registerStartCommand(program: Command): void {
     .option(
       '--allow-external-script-paths',
       `Allow a rule's \`script.path\`/\`mock.bodyFile\` to resolve outside the directory rules.json lives in (including an absolute path) instead of being rejected (issue #98). SECURITY: a \`script\` module runs as arbitrary JavaScript with detour's own process permissions, and a \`mock.bodyFile\` returns any file it points to as a response body — off by default so a rules.json write from anything reaching the dashboard (e.g. \`setRules\`) can't read/execute outside its own directory.`,
+    )
+    .option(
+      '--allow-scripts',
+      "Actually run a `script` rule's `beforeRequest`/`beforeResponse` hooks (issue #161). SECURITY: a `script` module runs as arbitrary JavaScript with detour's own process permissions — up to and including its CA private key — so this is off by default. A `script` rule with this off is skipped (with a warning), not executed; `setRules` can never add a new `script` rule or change an existing one's path regardless of this flag, so enabling it only ever runs a script you (or a rules.json you trust) already wrote to disk.",
+    )
+    .option(
+      '--script-timeout-ms <ms>',
+      `How long a \`script\` rule's \`beforeRequest\`/\`beforeResponse\` hook may run before its exchange is forwarded untouched and the timeout is logged as an error (issue #161) — a hook that never resolves would otherwise stall that exchange forever.`,
+      String(DEFAULT_SCRIPT_TIMEOUT_MS),
     )
     .option(
       '--dump <level>',

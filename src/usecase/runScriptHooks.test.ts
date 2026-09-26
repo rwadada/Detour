@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ScriptModule, ScriptRequestInfo, ScriptResponseInfo } from '../domain/rules/scriptAction';
-import { runBeforeRequest, runBeforeResponse } from './runScriptHooks';
+import { runBeforeRequest, runBeforeResponse, ScriptTimeoutError } from './runScriptHooks';
 
 function baseRequest(overrides: Partial<ScriptRequestInfo> = {}): ScriptRequestInfo {
   return { method: 'GET', url: 'https://api.example.com/x', headers: {}, body: Buffer.alloc(0), ...overrides };
@@ -57,6 +57,17 @@ describe('runBeforeRequest', () => {
     };
     await expect(runBeforeRequest(module, baseRequest())).rejects.toThrow('boom');
   });
+
+  it('rejects with ScriptTimeoutError once a hook outruns its timeout, without waiting for it to ever settle (issue #161)', async () => {
+    const module: ScriptModule = { beforeRequest: () => new Promise(() => undefined) }; // never settles
+    await expect(runBeforeRequest(module, baseRequest(), 10)).rejects.toBeInstanceOf(ScriptTimeoutError);
+  });
+
+  it('resolves normally when the hook settles comfortably inside its timeout', async () => {
+    const module: ScriptModule = { beforeRequest: () => ({ headers: { 'x-detour': '1' } }) };
+    const result = await runBeforeRequest(module, baseRequest(), 1000);
+    expect(result.headers).toEqual({ 'x-detour': '1' });
+  });
 });
 
 describe('runBeforeResponse', () => {
@@ -81,5 +92,12 @@ describe('runBeforeResponse', () => {
   it('propagates a rejected hook promise to the caller', async () => {
     const module: ScriptModule = { beforeResponse: () => Promise.reject(new Error('nope')) };
     await expect(runBeforeResponse(module, baseRequest(), baseResponse())).rejects.toThrow('nope');
+  });
+
+  it('rejects with ScriptTimeoutError once a hook outruns its timeout (issue #161)', async () => {
+    const module: ScriptModule = { beforeResponse: () => new Promise(() => undefined) }; // never settles
+    await expect(runBeforeResponse(module, baseRequest(), baseResponse(), 10)).rejects.toBeInstanceOf(
+      ScriptTimeoutError,
+    );
   });
 });

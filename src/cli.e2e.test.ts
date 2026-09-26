@@ -1314,7 +1314,7 @@ describe('detour start (CLI, end-to-end)', () => {
         ],
       }),
     );
-    cli = await startDetourCli(['--rules', rulesPath]);
+    cli = await startDetourCli(['--rules', rulesPath, '--allow-scripts']);
 
     const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
       const req = http.request(
@@ -1336,6 +1336,54 @@ describe('detour start (CLI, end-to-end)', () => {
       body: 'original-body-from-script',
       scripted: true,
     });
+  });
+
+  it("skips a script rule's hooks entirely, forwarding the request untouched, without --allow-scripts (issue #161)", async () => {
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'rules.script.js'),
+      `module.exports = {
+        beforeRequest(req) {
+          return { body: req.body.toString('utf8') + '-from-script' };
+        },
+      };`,
+    );
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'e2e-script-disabled-by-default',
+            match: { url: `http://127.0.0.1:${echo.port}/scripted` },
+            action: { type: 'script', path: 'rules.script.js' },
+          },
+        ],
+      }),
+    );
+    // No --allow-scripts: this is the out-of-the-box posture (issue #161) —
+    // a script rule's hooks must never run against real traffic just
+    // because a rules.json (reachable over the network via `setRules`)
+    // names one.
+    cli = await startDetourCli(['--rules', rulesPath]);
+
+    const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = http.request(
+        { host: 'localhost', port: cli!.port, path: `http://127.0.0.1:${echo!.port}/scripted`, method: 'POST' },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+        },
+      );
+      req.on('error', reject);
+      req.end('original-body');
+    });
+
+    expect(result.status).toBe(200);
+    // No '-from-script' suffix and no `scripted` field — the hook never ran.
+    expect(JSON.parse(result.body)).toEqual({ method: 'POST', path: '/scripted', body: 'original-body' });
   });
 
   it('forwards a request body larger than the dashboard capture cap unmodified through a script rule', async () => {
@@ -1367,7 +1415,7 @@ describe('detour start (CLI, end-to-end)', () => {
         ],
       }),
     );
-    cli = await startDetourCli(['--rules', rulesPath]);
+    cli = await startDetourCli(['--rules', rulesPath, '--allow-scripts']);
 
     const bigBody = 'x'.repeat(300 * 1024); // > MAX_CAPTURED_BODY_BYTES
     const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
@@ -1512,7 +1560,7 @@ describe('detour start (CLI, end-to-end)', () => {
         ],
       }),
     );
-    cli = await startDetourCli(['--rules', rulesPath]);
+    cli = await startDetourCli(['--rules', rulesPath, '--allow-scripts']);
 
     try {
       const result = await requestThroughProxy(cli.port, fixed.port, '/big');
@@ -1559,7 +1607,7 @@ describe('detour start (CLI, end-to-end)', () => {
         ],
       }),
     );
-    cli = await startDetourCli(['--rules', rulesPath]);
+    cli = await startDetourCli(['--rules', rulesPath, '--allow-scripts']);
 
     try {
       const setCookie = await new Promise<string[] | undefined>((resolve, reject) => {
@@ -1606,7 +1654,7 @@ describe('detour start (CLI, end-to-end)', () => {
         ],
       }),
     );
-    cli = await startDetourCli(['--rules', rulesPath]);
+    cli = await startDetourCli(['--rules', rulesPath, '--allow-scripts']);
 
     const bigBody = 'x'.repeat(300 * 1024); // > MAX_CAPTURED_BODY_BYTES
     const observedLength = await new Promise<string | string[] | undefined>((resolve, reject) => {
@@ -1653,7 +1701,7 @@ describe('detour start (CLI, end-to-end)', () => {
         ],
       }),
     );
-    cli = await startDetourCli(['--rules', rulesPath]);
+    cli = await startDetourCli(['--rules', rulesPath, '--allow-scripts']);
 
     const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
       const req = http.request(
@@ -1700,7 +1748,7 @@ describe('detour start (CLI, end-to-end)', () => {
         ],
       }),
     );
-    cli = await startDetourCli(['--rules', rulesPath]);
+    cli = await startDetourCli(['--rules', rulesPath, '--allow-scripts']);
 
     const { socket, exchange: requestExchange } = await waitForExchange(cli.dashboardPort, 'request', url);
     const responseExchange = (await waitForExchange(cli.dashboardPort, 'response', url)).exchange;

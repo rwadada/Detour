@@ -80,6 +80,14 @@ export interface ProxyServerOptions {
    * certificate — what Detour did before this existed.
    */
   upstreamTls?: UpstreamTlsOptions;
+  /**
+   * `--script-timeout-ms` (issue #161): how long a `script` rule's
+   * `beforeRequest`/`beforeResponse` hook may run before its exchange is
+   * forwarded untouched and the timeout is logged as an error — see
+   * `usecase/runScriptHooks.ts`'s `withTimeout`. Defaults to
+   * `DEFAULT_SCRIPT_TIMEOUT_MS`.
+   */
+  scriptTimeoutMs?: number;
 }
 
 export interface ProxyServerHandle {
@@ -292,7 +300,11 @@ export async function startProxyServer(
     ruleContexts,
     rewriteContexts,
   });
-  const handleScriptRequestHook = createScriptRequestHookHandler({ eventBus, scriptRequestBodies });
+  const handleScriptRequestHook = createScriptRequestHookHandler({
+    eventBus,
+    scriptRequestBodies,
+    scriptTimeoutMs: options.scriptTimeoutMs,
+  });
   const handleResponseBreakpoint = createResponseBreakpointHandler({
     eventBus,
     breakpoints,
@@ -306,6 +318,7 @@ export async function startProxyServer(
     ruleContexts,
     rewriteContexts,
     scriptRequestBodies,
+    scriptTimeoutMs: options.scriptTimeoutMs,
   });
 
   // Response header/status rewrites must run before ProxyEngine flushes
