@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { CapturedExchange, WireExchange } from './types';
-import { fromWireExchange, toWireExchange } from './wireExchange';
+import { fromWireExchange, toResponsePatch, toWireExchange } from './wireExchange';
 
 const BASE = {
   id: 'ex-1',
@@ -90,5 +90,33 @@ describe('fromWireExchange', () => {
     });
     const roundTripped = fromWireExchange(toWireExchange(original));
     expect(roundTripped.requestBody).toEqual(original.requestBody);
+  });
+});
+
+describe('toResponsePatch', () => {
+  it('omits requestBody and requestHeaders, keeping every other field (including a base64-encoded responseBody)', () => {
+    const source = exchange({
+      requestBody: Buffer.from('{"q":1}'),
+      requestHeaders: { accept: 'application/json' },
+      responseBody: Buffer.from('{"ok":true}'),
+      statusCode: 200,
+    });
+    const patch = toResponsePatch(source);
+    expect(patch).not.toHaveProperty('requestBody');
+    expect(patch).not.toHaveProperty('requestHeaders');
+    expect(patch.responseBody).toBe(Buffer.from('{"ok":true}').toString('base64'));
+    expect(patch.statusCode).toBe(200);
+  });
+
+  it('leaves an absent responseBody as undefined rather than encoding it as an empty string', () => {
+    const patch = toResponsePatch(exchange());
+    expect(patch.responseBody).toBeUndefined();
+  });
+
+  it('never base64-encodes requestBody at all, not even to immediately discard it (agy code review — building this on toWireExchange would have encoded it first for nothing, exactly the cost this proposal exists to avoid)', () => {
+    const requestBody = Buffer.from('{"q":1}');
+    const toStringSpy = vi.spyOn(requestBody, 'toString');
+    toResponsePatch(exchange({ requestBody, responseBody: Buffer.from('ok') }));
+    expect(toStringSpy).not.toHaveBeenCalled();
   });
 });
