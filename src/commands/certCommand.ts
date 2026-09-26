@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Command } from 'commander';
-import { ensureCaCert } from '../infra/proxy/certExport';
+import { ensureCaCert, regenerateCaCert } from '../infra/proxy/certExport';
 
 /** Wires `detour cert export` into the CLI. */
 export function registerCertCommand(program: Command): void {
@@ -26,6 +26,24 @@ export function registerCertCommand(program: Command): void {
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         fs.writeFileSync(dest, pem);
         console.log(`✔ Exported CA certificate to ${dest}`);
+      } catch (err) {
+        console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  cert
+    .command('regenerate')
+    .description(
+      'Replaces the local root CA with a freshly generated one, valid for 3 years (issue #164) — needed when the current CA has expired, since detour never silently re-signs it. Every device that trusted the old certificate must trust the new one (`detour setup`).',
+    )
+    .action(async () => {
+      try {
+        const certPath = await regenerateCaCert();
+        console.log(`✔ Generated a new CA certificate at ${certPath}`);
+        console.log(
+          '  The previous CA is gone: re-install this one on every device/browser that was trusting it (`detour setup`), and restart any running `detour start`.',
+        );
       } catch (err) {
         console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;

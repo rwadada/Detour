@@ -1,7 +1,11 @@
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
 import type http from 'node:http';
 import type { IncomingMessage } from 'node:http';
+import net from 'node:net';
 import type { Socket } from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 import { hashPassword } from '../../../domain/auth/passwordHash';
@@ -464,6 +468,40 @@ describe('ProxyEngine proxy authentication gate (issue #158)', () => {
       expect(await guardDecision(proxyAuthInternals(credentials), 'Basic anything')).toBe('denied');
     } finally {
       spy.mockRestore();
+    }
+  });
+});
+
+describe('ProxyEngine.listen() cleanup on a late bind failure (issue #164 review round 2)', () => {
+  it('closes the already-bound internal TLS server instead of leaking it when the public port fails to bind', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-proxy-engine-test-'));
+    const blocker = net.createServer();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        blocker.once('error', reject);
+        blocker.listen(0, '127.0.0.1', resolve);
+      });
+      // Occupy the exact port `listen()` will then also try to bind, so its
+      // own `listenAsync(this.httpServer, options.port, ...)` call fails
+      // *after* the internal TLS server (an ephemeral port picked
+      // independently) is already up and listening.
+      const port = (blocker.address() as net.AddressInfo).port;
+
+      const engine = new ProxyEngine();
+      const err = await new Promise<Error | undefined>((resolve) => {
+        engine.listen({ port, host: '127.0.0.1', sslCaDir: dir }, (e) => resolve(e ?? undefined));
+      });
+
+      expect(err).toBeInstanceOf(Error);
+      const internals = engine as unknown as { tlsServer?: net.Server };
+      // Without the fix, this stays `true`: `listen()`'s catch block reported
+      // the failure via `callback(err)` but never closed the internal TLS
+      // server it had already bound, leaking a listening socket that keeps
+      // the process alive even after the error is reported.
+      expect(internals.tlsServer?.listening).toBe(false);
+    } finally {
+      blocker.close();
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

@@ -95,6 +95,8 @@ export function printStartupBanner(info: {
   upstreamCaCount: number;
   /** Whether `--client-cert`/`--client-key` (issue #160) are configured for mTLS. */
   clientCertSet: boolean;
+  /** The CA-expiry warning line's text (issue #164), or undefined when the CA isn't within 30 days of expiring — resolved by the caller (`domain/cert/caValidity.ts`'s `caExpiryWarning`) since `presentation/` may not read `infra/`'s `ca.pem` itself. An already-expired CA never reaches here: `CertAuthority.load` refuses it, so `detour start` fails before printing any banner at all. */
+  caExpiryWarning: string | undefined;
 }): void {
   console.log(
     `Detour proxy started → http://localhost:${info.proxyPort} (HTTP/2: ${info.http2Enabled ? 'on' : 'off'}, upstream HTTP/2: ${info.http2UpstreamEnabled ? 'on' : 'off'})`,
@@ -102,6 +104,10 @@ export function printStartupBanner(info: {
   console.log(`Proxy authentication: ${info.proxyAuthSet ? 'required (Basic)' : 'off (--proxy-auth <user:pass>)'}`);
   console.log(`Root CA certificate: ${info.caCertPath}`);
   console.log('  To decrypt HTTPS traffic, install this CA certificate as trusted on your target device/browser.');
+  // Only printed inside the last 30 days of the CA's life (issue #164) —
+  // renewing means re-trusting it on every device, which is worth a
+  // heads-up well before the day everything starts failing at once.
+  if (info.caExpiryWarning) console.log(`⚠ ${info.caExpiryWarning}`);
   const dashboardScheme = info.dashboardTls ? 'https' : 'http';
   if (info.dashboardPort === undefined) {
     console.log('Dashboard → disabled (--headless)');

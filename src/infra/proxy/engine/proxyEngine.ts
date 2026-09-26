@@ -385,7 +385,12 @@ export class ProxyEngine {
 
   async listen(options: ProxyEngineOptions, callback: ErrorCallback = () => undefined): Promise<void> {
     try {
-      this.ca = CertAuthority.load(options.sslCaDir);
+      this.ca = await CertAuthority.load(options.sslCaDir);
+      // Mints the shared leaf keypair before the internal TLS server (and
+      // therefore its SNICallback) exists, so no handshake ever waits on a
+      // keygen: `warmUp` is async, while `getSecureContext` — called from
+      // inside the handshake — has to stay synchronous (issue #164).
+      await this.ca.warmUp();
       this.proxyAuth = options.proxyAuth;
       this.upstreamTls = options.upstreamTls;
       // See `UpstreamHttp2Pool`'s doc comment for why an upstream proxy
@@ -415,6 +420,15 @@ export class ProxyEngine {
       this.httpPort = (this.httpServer.address() as net.AddressInfo).port;
       callback();
     } catch (err) {
+      // `this.tlsServer` (and, further along, `this.httpServer`) can already
+      // be bound and listening by the time a later step in this try block
+      // throws — e.g. the public port losing a bind race against another
+      // process after the internal TLS server's ephemeral-port bind already
+      // succeeded. Without this, that socket stays open and keeps the event
+      // loop alive even though `callback(err)` reports failure, so the
+      // process (a `--detach` daemon child in particular) never actually
+      // exits after "reporting" the error it just rejected with.
+      this.close();
       callback(err instanceof Error ? err : new Error(String(err)));
     }
   }

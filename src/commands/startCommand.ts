@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { Command } from 'commander';
 import { hashPassword } from '../domain/auth/passwordHash';
 import { parseProxyAuthFlag, type ProxyAuthCredentials } from '../domain/auth/proxyAuth';
+import { caExpiryWarning } from '../domain/cert/caValidity';
 import { CliExitError } from '../domain/daemon/errors';
 import { resolveCertDir } from '../infra/certStore';
 import { startDashboardServer, WEB_DIST_DIR } from '../infra/dashboard/dashboardServer';
@@ -19,6 +20,7 @@ import { lanAddresses } from '../infra/network/lanAddresses';
 import { isHistoryPersistenceSupported, openHistoryStore, type HistoryStore } from '../infra/persistence/historyStore';
 import { isDaemonChild, signalDaemonError, signalDaemonReady, spawnDaemonChild } from '../infra/process/daemonize';
 import { openBrowser } from '../infra/process/openBrowser';
+import { readCaValidity } from '../infra/proxy/certExport';
 import { CertAuthority } from '../infra/proxy/engine/certAuthority';
 import { startIdleWatcher } from '../infra/proxy/idleWatcher';
 import { startProxyServer } from '../infra/proxy/proxyServer';
@@ -551,15 +553,27 @@ async function runStartBody({
     // binds `localhost`-only, so including them there would pad the SAN
     // with addresses this dashboard was never going to accept a connection
     // on anyway (Copilot review, PR #175).
-    const tlsKeyCert = dashboardTls
-      ? CertAuthority.load(resolveCertDir()).getMultiHostKeyCert([
+    try {
+      let tlsKeyCert: { key: string; cert: string } | undefined;
+      if (dashboardTls) {
+        const dashboardCa = await CertAuthority.load(resolveCertDir());
+        // A separate `CertAuthority` instance from the proxy's own — its leaf
+        // keypair isn't shared, so it needs its own `warmUp()` before minting
+        // (issue #164's `getLeafKeys()` throws otherwise). Pre-existing
+        // one-keypair-per-instance behavior, unchanged by that issue: async
+        // `node:crypto` generation just means this no longer blocks the event
+        // loop while it happens. Inside this `try` (not before it) so a
+        // failure here — the CA load or the leaf keygen — hits the same
+        // "proxy's already up, don't leave it running" cleanup below as a
+        // `startDashboardServer` failure does, instead of leaking the proxy.
+        await dashboardCa.warmUp();
+        tlsKeyCert = dashboardCa.getMultiHostKeyCert([
           'localhost',
           '127.0.0.1',
           '::1',
           ...(dashboardHost === '0.0.0.0' ? lanAddrs : []),
-        ])
-      : undefined;
-    try {
+        ]);
+      }
       dashboardHandle = await startDashboardServer(
         {
           port: requestedDashboardPort,
@@ -656,6 +670,7 @@ async function runStartBody({
     insecureUpstream: options.insecureUpstream ?? false,
     upstreamCaCount: options.upstreamCa.length,
     clientCertSet: !!upstreamTls?.cert,
+    caExpiryWarning: caExpiryWarningLine(handle.caCertPath),
   });
 
   // DETOUR_READY (issue #20): a stable, greppable line a CI script can wait
@@ -723,6 +738,22 @@ function readDashboardPasswordSet(): boolean {
     return !!loadUserConfig().dashboardPasswordHash;
   } catch {
     return false;
+  }
+}
+
+/**
+ * The startup banner's CA-expiry warning line, or undefined when there's
+ * nothing to warn about (issue #164). Reading `ca.pem` can fail (deleted
+ * between startup and banner, unreadable, corrupt) — that's not worth
+ * crashing a proxy that's already up and serving over, so it degrades to no
+ * warning, the same posture as `readDashboardPasswordSet` above.
+ */
+function caExpiryWarningLine(certPath: string): string | undefined {
+  try {
+    const validity = readCaValidity(certPath);
+    return validity && caExpiryWarning(validity);
+  } catch {
+    return undefined;
   }
 }
 

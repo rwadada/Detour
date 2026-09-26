@@ -9,6 +9,13 @@ import { DetourEventBus } from '../eventBus';
 import { CertAuthority } from '../proxy/engine/certAuthority';
 import { startDashboardServer, type DashboardServerHandle } from './dashboardServer';
 
+/** A `CertAuthority` ready to mint leaves — `load` alone doesn't generate the leaf keypair (see `CertAuthority.warmUp`, issue #164). */
+async function loadWarmCa(dir: string): Promise<CertAuthority> {
+  const ca = await CertAuthority.load(dir);
+  await ca.warmUp();
+  return ca;
+}
+
 /**
  * `tlsKeyCert` (issue #159): serving the dashboard over HTTPS once `--lan`
  * exposes it to the network, using a leaf cert from Detour's own
@@ -83,7 +90,7 @@ describe('startDashboardServer — TLS (issue #159)', () => {
   });
 
   it('serves HTTPS/WSS when a tlsKeyCert is given, and traffic flows normally over it', async () => {
-    const ca = CertAuthority.load(certDir);
+    const ca = await loadWarmCa(certDir);
     const tlsKeyCert = ca.getMultiHostKeyCert(['localhost', '127.0.0.1']);
     handle = await startDashboardServer({ port: 0, tlsKeyCert, userConfigPath: configPath }, eventBus);
 
@@ -99,7 +106,7 @@ describe('startDashboardServer — TLS (issue #159)', () => {
   });
 
   it("the presented cert's SAN covers every host getMultiHostKeyCert was given", async () => {
-    const ca = CertAuthority.load(certDir);
+    const ca = await loadWarmCa(certDir);
     const tlsKeyCert = ca.getMultiHostKeyCert(['localhost', '127.0.0.1']);
     handle = await startDashboardServer({ port: 0, tlsKeyCert, userConfigPath: configPath }, eventBus);
 
@@ -115,7 +122,7 @@ describe('startDashboardServer — TLS (issue #159)', () => {
   });
 
   it('a plain (non-TLS) client cannot speak to the HTTPS listener', async () => {
-    const ca = CertAuthority.load(certDir);
+    const ca = await loadWarmCa(certDir);
     const tlsKeyCert = ca.getMultiHostKeyCert(['localhost', '127.0.0.1']);
     handle = await startDashboardServer({ port: 0, tlsKeyCert, userConfigPath: configPath }, eventBus);
 

@@ -53,6 +53,7 @@ describe('printStartupBanner', () => {
       insecureUpstream: false,
       upstreamCaCount: 0,
       clientCertSet: false,
+      caExpiryWarning: undefined,
       ...overrides,
     });
     return logged.join('\n');
@@ -164,5 +165,16 @@ describe('printStartupBanner', () => {
     expect(loaded).toContain('Full request/response dumps → /srv/detour/dumps');
     expect(loaded).toContain('History persistence → /srv/detour/h.db');
     expect(loaded).toContain('gRPC message decoding: 2 .proto file(s) loaded');
+  });
+
+  it('omits the CA-expiry warning when the CA is not close to expiring (issue #164)', () => {
+    expect(print()).not.toContain('⚠ Root CA expires');
+  });
+
+  it('warns right after the Root CA certificate line once it is within 30 days of expiring', () => {
+    const banner = print({ caExpiryWarning: 'Root CA expires in 5 days (2026-09-26) — run `detour cert regenerate`.' });
+    const lines = banner.split('\n');
+    const caLineIndex = lines.findIndex((line) => line.startsWith('Root CA certificate:'));
+    expect(lines[caLineIndex + 2]).toBe('⚠ Root CA expires in 5 days (2026-09-26) — run `detour cert regenerate`.');
   });
 });
