@@ -269,6 +269,72 @@ describe('RuleEngine', () => {
     expect(fs.readFileSync(filePath, 'utf8')).toBe(before);
   });
 
+  it("resolveMockStep() returns a plain mock rule's action unchanged", () => {
+    const mockRule: Rule = {
+      name: 'm',
+      match: { url: 'https://api.example.com/*' },
+      action: { type: 'mock', status: 200 },
+    };
+    writeRules(filePath, [mockRule]);
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });
+    const [rule] = engine.getRules();
+    expect(engine.resolveMockStep(rule!)).toBe(rule!.action);
+  });
+
+  it("resolveMockStep() walks a mock rule's responses sequence across successive calls, then sticks on the last entry", () => {
+    const mockRule: Rule = {
+      name: 'm',
+      match: { url: 'https://api.example.com/*' },
+      action: { type: 'mock', status: 200, responses: [{ status: 201 }, { status: 202 }] },
+    };
+    writeRules(filePath, [mockRule]);
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });
+    const [rule] = engine.getRules();
+
+    expect(engine.resolveMockStep(rule!).status).toBe(201);
+    expect(engine.resolveMockStep(rule!).status).toBe(202);
+    expect(engine.resolveMockStep(rule!).status).toBe(202);
+  });
+
+  it("resolveMockStep()'s call count is tracked per rule, not shared across different rules", () => {
+    const rules: Rule[] = [
+      {
+        name: 'a',
+        match: { url: 'https://a.example.com/*' },
+        action: { type: 'mock', responses: [{ status: 201 }] },
+      },
+      {
+        name: 'b',
+        match: { url: 'https://b.example.com/*' },
+        action: { type: 'mock', responses: [{ status: 202 }] },
+      },
+    ];
+    writeRules(filePath, rules);
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });
+    const [a, b] = engine.getRules();
+
+    engine.resolveMockStep(a!);
+    expect(engine.resolveMockStep(b!).status).toBe(202);
+  });
+
+  it("resolveMockStep()'s call count resets to 0 across a reload (fresh Rule objects)", () => {
+    const mockRule = (): unknown => ({
+      name: 'm',
+      match: { url: 'https://api.example.com/*' },
+      action: { type: 'mock', responses: [{ status: 201 }, { status: 202 }] },
+    });
+    writeRules(filePath, [mockRule()]);
+    engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });
+    const [before] = engine.getRules();
+    engine.resolveMockStep(before!);
+    expect(engine.resolveMockStep(before!).status).toBe(202);
+
+    writeRules(filePath, [mockRule()]);
+    triggerReload(engine);
+    const [after] = engine.getRules();
+    expect(engine.resolveMockStep(after!).status).toBe(201);
+  });
+
   it('watches for changes by default and stops once closed', async () => {
     writeRules(filePath, [routeRule('a')]);
     let reloadCount = 0;

@@ -7,7 +7,8 @@ import {
   type MatchableRequest,
   type MatchedRules,
 } from '../domain/rules/matcher';
-import type { Rule, RulesFile } from '../domain/rules/types';
+import { pickMockAction } from '../domain/rules/mockSequence';
+import type { MockAction, Rule, RulesFile } from '../domain/rules/types';
 import { findUnreachableRules, type UnreachableRuleWarning } from '../domain/rules/unreachableRules';
 import type { FileWatcher } from './ports/fileWatcher';
 import type { RulesFileReader } from './ports/rulesFileReader';
@@ -79,6 +80,19 @@ export class RuleEngine {
   private unreachableWarnings: UnreachableRuleWarning[];
   /** See `RulesFile.$activeProfile`'s doc comment — mirrors whatever the on-disk file's own field currently says, kept in sync by `reload()` the same way `compiledRules` is. */
   private activeProfile: string | undefined;
+  /**
+   * How many times each `mock` rule with a `responses` sequence has
+   * matched so far, keyed by `Rule` object identity (issue #181's
+   * sequential responses — see `MockAction.responses`'s doc comment and
+   * `resolveMockAction` below). A `WeakMap` rather than tracking this on
+   * the rule itself: rules are plain data owned by callers too (e.g. the
+   * dashboard's Rules editor), and reloading rules.json (or a hand-edit
+   * that happens to produce byte-identical content) always parses a brand
+   * new set of `Rule` objects — so recreating this alongside
+   * `compiledRules` in `reload()` is enough to reset every rule's count
+   * back to 0 without needing to identify *which* rules changed.
+   */
+  private mockCallCounts = new WeakMap<Rule, number>();
   private stopWatching?: () => void;
   private debounceTimer?: ReturnType<typeof setTimeout>;
   private readonly options: RuleEngineOptions;
@@ -126,6 +140,30 @@ export class RuleEngine {
   }
 
   /**
+   * Resolves the effective `mock` action for one match of `rule` — see
+   * `MockAction.responses`'s doc comment (issue #181). Named distinctly
+   * from `usecase/resolveMockAction.ts`'s unrelated `resolveMockAction`
+   * function (which turns an already-*chosen* action's `body`/`bodyFile`
+   * into a `MockResponse`) to avoid the two being mistaken for each other.
+   * `rule.action` must be a `mock` action; the only caller
+   * (`requestHandler`'s mock branch) already knows this, having just
+   * checked `terminal.action.type === 'mock'` itself.
+   *
+   * Advances (and owns) the call counter as a side effect: each call
+   * consumes the next step in `rule.action.responses`, so this must be
+   * called at most once per actual match, not speculatively. Rules with no
+   * `responses` never touch the counter at all, returning `rule.action`
+   * unchanged — same as `pickMockAction` itself.
+   */
+  resolveMockStep(rule: Rule): MockAction {
+    const action = rule.action as MockAction;
+    if (!action.responses || action.responses.length === 0) return action;
+    const callIndex = this.mockCallCounts.get(rule) ?? 0;
+    this.mockCallCounts.set(rule, callIndex + 1);
+    return pickMockAction(action, callIndex);
+  }
+
+  /**
    * Validates and saves `rules` to disk (issue #19's Rules editor). Doesn't
    * update `compiledRules`/`activeProfile` itself — the write lands back
    * through the same `fs.watch`-driven reload path a manual edit would (see
@@ -163,6 +201,10 @@ export class RuleEngine {
     try {
       const data = this.options.reader.read(this.filePath);
       this.compiledRules = compileRules(data.rules, this.filePath);
+      // Fresh `Rule` objects just got parsed above — see `mockCallCounts`'s
+      // own doc comment on why a brand new `WeakMap` is enough to reset
+      // every sequential mock rule's count back to 0 here.
+      this.mockCallCounts = new WeakMap();
       this.unreachableWarnings = findUnreachableRules(data.rules);
       this.activeProfile = data.$activeProfile;
       // Defensive copy — same reasoning as `getUnreachableWarnings()`, so a
