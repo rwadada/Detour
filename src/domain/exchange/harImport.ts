@@ -113,17 +113,17 @@ function safeHostOf(url: string): string {
   }
 }
 
-/** Re-encodes a foreign entry's `response.content` back to base64, respecting its `encoding` field when the source already gave us base64 — same logic as the dashboard's own `decodeHarResponseBody`. `content.text` isn't necessarily a string on a malformed HAR (agy code review) — treated the same as absent rather than crashing `Buffer.from` with an unhelpful type error. */
-function decodeResponseBody(content: HarContent | undefined): string | undefined {
+/** Decodes a foreign entry's `response.content` into raw bytes, respecting its `encoding` field when the source already gave us base64 — same logic as the dashboard's own `decodeHarResponseBody`. `content.text` isn't necessarily a string on a malformed HAR (agy code review) — treated the same as absent rather than crashing `Buffer.from` with an unhelpful type error. */
+function decodeResponseBody(content: HarContent | undefined): Buffer | undefined {
   if (typeof content?.text !== 'string' || content.text === '') return undefined;
-  if (content.encoding === 'base64') return content.text;
-  return Buffer.from(content.text, 'utf8').toString('base64');
+  if (content.encoding === 'base64') return Buffer.from(content.text, 'base64');
+  return Buffer.from(content.text, 'utf8');
 }
 
 /** HAR's `postData` has no `encoding` field (unlike `response.content`) — a request body is always assumed to be the UTF-8 text as-is, same assumption the dashboard's importer makes for a foreign HAR. Same non-string guard as `decodeResponseBody`. */
-function decodeRequestBody(postData: HarPostData | undefined): string | undefined {
+function decodeRequestBody(postData: HarPostData | undefined): Buffer | undefined {
   if (typeof postData?.text !== 'string' || postData.text === '') return undefined;
-  return Buffer.from(postData.text, 'utf8').toString('base64');
+  return Buffer.from(postData.text, 'utf8');
 }
 
 let importCounter = 0;
@@ -131,10 +131,6 @@ let importCounter = 0;
 function nextImportedId(index: number): string {
   importCounter += 1;
   return `har-import-${index}-${importCounter}`;
-}
-
-function bodyByteLength(base64: string | undefined): number {
-  return base64 ? Buffer.from(base64, 'base64').length : 0;
 }
 
 /**
@@ -174,8 +170,17 @@ function harEntryToExchange(entry: HarEntry, index: number): CapturedExchange {
   const resolvedStartedAt = Number.isNaN(startedAt) ? Date.now() : startedAt;
   const durationMs = nonNegativeNumberOrUndefined(entry.time);
 
-  const requestBody = ext?.requestBodyBase64 ?? decodeRequestBody(entry.request.postData);
-  const responseBody = ext?.responseBodyBase64 ?? decodeResponseBody(entry.response.content);
+  // `ext?.xBodyBase64` is base64 text (the HAR `_detour` extension's own
+  // wire shape — see `harImport.ts`'s own module doc comment); every other
+  // source of a body here already decodes straight to a `Buffer` above.
+  const requestBody =
+    ext?.requestBodyBase64 !== undefined
+      ? Buffer.from(ext.requestBodyBase64, 'base64')
+      : decodeRequestBody(entry.request.postData);
+  const responseBody =
+    ext?.responseBodyBase64 !== undefined
+      ? Buffer.from(ext.responseBodyBase64, 'base64')
+      : decodeResponseBody(entry.response.content);
 
   return {
     id: ext?.id ?? nextImportedId(index),
@@ -185,13 +190,13 @@ function harEntryToExchange(entry: HarEntry, index: number): CapturedExchange {
     isSSL: ext?.isSSL ?? entry.request.url.startsWith('https:'),
     protocol: ext?.protocol ?? (entry.request.httpVersion === 'HTTP/2' ? 'HTTP/2' : 'HTTP/1.1'),
     requestHeaders: headersToMap(entry.request.headers),
-    requestBodySize: nonNegativeNumberOrUndefined(entry.request.bodySize) ?? bodyByteLength(requestBody),
+    requestBodySize: nonNegativeNumberOrUndefined(entry.request.bodySize) ?? requestBody?.length ?? 0,
     requestBody,
     startedAt: resolvedStartedAt,
     statusCode: entry.response.status || undefined,
     statusMessage: ext?.statusMessage ?? entry.response.statusText,
     responseHeaders: headersToMap(entry.response.headers),
-    responseBodySize: nonNegativeNumberOrUndefined(entry.response.bodySize) ?? bodyByteLength(responseBody),
+    responseBodySize: nonNegativeNumberOrUndefined(entry.response.bodySize) ?? responseBody?.length ?? 0,
     responseBody,
     finishedAt: durationMs !== undefined ? resolvedStartedAt + durationMs : undefined,
     durationMs,

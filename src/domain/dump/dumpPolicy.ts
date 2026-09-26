@@ -62,14 +62,14 @@ function formatHeaders(headers: Readonly<IncomingHttpHeaders>): string {
 }
 
 /**
- * Decodes a captured base64 body for display: pretty-printed JSON when it
- * parses as such, the raw UTF-8 text otherwise. Binary bodies come out as
- * whatever (likely unreadable) text `Buffer#toString('utf8')` produces —
- * good enough for a debug dump, not a claim of correctness.
+ * Renders a captured body for display: pretty-printed JSON when it parses
+ * as such, the raw UTF-8 text otherwise. Binary bodies come out as whatever
+ * (likely unreadable) text `Buffer#toString('utf8')` produces — good enough
+ * for a debug dump, not a claim of correctness.
  */
-function formatBody(body: string | undefined, truncated: boolean | undefined): string {
+function formatBody(body: Buffer | undefined, truncated: boolean | undefined): string {
   if (body === undefined) return '  (empty)';
-  const text = Buffer.from(body, 'base64').toString('utf8');
+  const text = body.toString('utf8');
   const pretty = tryPrettyJson(text);
   const suffix = truncated ? '\n  … (truncated)' : '';
   return `${indent(pretty)}${suffix}`;
@@ -159,7 +159,12 @@ function formatWebSocketFrame(frame: WebSocketFrameRecord): string {
   if (frame.type === 'message') kind = frame.binary ? 'binary' : 'text';
   const header = `  [${new Date(frame.at).toISOString()}] ${arrow} ${kind} (${frame.size}B)`;
   if (frame.type !== 'message') return header;
-  return `${header}\n${indent(formatBody(frame.data, frame.truncated))}`;
+  // `frame.data` is base64 (`WebSocketFrameRecord`, unlike `CapturedExchange`'s
+  // now-`Buffer` bodies — issue #165's Proposal B never touched WS frame
+  // capture, out of scope for that issue) — decoded here rather than
+  // widening `formatBody` to accept either shape.
+  const body = frame.data !== undefined ? Buffer.from(frame.data, 'base64') : undefined;
+  return `${header}\n${indent(formatBody(body, frame.truncated))}`;
 }
 
 /**

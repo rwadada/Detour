@@ -60,13 +60,13 @@ describe('formatExchangeDump', () => {
   });
 
   it('pretty-prints a JSON body', () => {
-    const body = Buffer.from(JSON.stringify({ id: 1 })).toString('base64');
+    const body = Buffer.from(JSON.stringify({ id: 1 }));
     const dump = formatExchangeDump(baseExchange({ requestBody: body }));
     expect(dump).toContain('"id": 1');
   });
 
   it('falls back to raw text for a non-JSON body', () => {
-    const body = Buffer.from('not json').toString('base64');
+    const body = Buffer.from('not json');
     const dump = formatExchangeDump(baseExchange({ requestBody: body }));
     expect(dump).toContain('not json');
   });
@@ -80,13 +80,13 @@ describe('formatExchangeDump', () => {
   it('notes truncation and includes the response once present', () => {
     const dump = formatExchangeDump(
       baseExchange({
-        requestBody: Buffer.from('x').toString('base64'),
+        requestBody: Buffer.from('x'),
         requestBodyTruncated: true,
         statusCode: 200,
         statusMessage: 'OK',
         durationMs: 12,
         responseHeaders: { 'content-type': 'text/plain' },
-        responseBody: Buffer.from('ok').toString('base64'),
+        responseBody: Buffer.from('ok'),
       }),
     );
     expect(dump).toContain('(truncated)');

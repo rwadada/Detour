@@ -72,7 +72,7 @@ describe('buildFixtureFromExchange', () => {
   });
 
   it('stores a UTF-8 body as plain text, not base64', () => {
-    const body = Buffer.from('{"id":1}').toString('base64');
+    const body = Buffer.from('{"id":1}');
     const { fixture } = buildFixtureFromExchange(exchange({ responseBody: body }), 1);
     expect(fixture.responseBody).toBe('{"id":1}');
     expect(fixture.responseBodyEncoding).toBeUndefined();
@@ -80,9 +80,8 @@ describe('buildFixtureFromExchange', () => {
 
   it('keeps a non-UTF-8 body as base64, flagging the encoding', () => {
     const binary = Buffer.from([0xff, 0xd8, 0xff, 0x00, 0x10]); // not valid UTF-8
-    const body = binary.toString('base64');
-    const { fixture } = buildFixtureFromExchange(exchange({ responseBody: body }), 1);
-    expect(fixture.responseBody).toBe(body);
+    const { fixture } = buildFixtureFromExchange(exchange({ responseBody: binary }), 1);
+    expect(fixture.responseBody).toBe(binary.toString('base64'));
     expect(fixture.responseBodyEncoding).toBe('base64');
   });
 

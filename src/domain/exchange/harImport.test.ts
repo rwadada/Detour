@@ -41,7 +41,7 @@ describe('parseHarLog', () => {
     });
     expect(exchange?.requestHeaders.accept).toBe('*/*');
     expect(exchange?.responseHeaders?.['content-type']).toBe('application/json');
-    expect(Buffer.from(exchange?.responseBody ?? '', 'base64').toString('utf8')).toBe('{"id":1}');
+    expect(exchange?.responseBody?.toString('utf8')).toBe('{"id":1}');
   });
 
   it('merges repeated header names (e.g. multiple Set-Cookie) into a string[] instead of overwriting', () => {
@@ -74,7 +74,7 @@ describe('parseHarLog', () => {
         }),
       ]),
     );
-    expect(Buffer.from(exchange?.requestBody ?? '', 'base64').toString('utf8')).toBe('{"name":"widget"}');
+    expect(exchange?.requestBody?.toString('utf8')).toBe('{"name":"widget"}');
   });
 
   it('falls back to an empty host for a URL too malformed to parse', () => {
@@ -94,7 +94,7 @@ describe('parseHarLog', () => {
         }),
       ]),
     );
-    expect(Buffer.from(exchange?.responseBody ?? '', 'base64')).toEqual(binary);
+    expect(exchange?.responseBody).toEqual(binary);
   });
 
   it('prefers the _detour extension over the standard fields, when present', () => {
@@ -117,7 +117,7 @@ describe('parseHarLog', () => {
     expect(exchange?.isSSL).toBe(false);
     expect(exchange?.protocol).toBe('HTTP/2');
     expect(exchange?.statusMessage).toBe('Created');
-    expect(Buffer.from(exchange?.responseBody ?? '', 'base64').toString('utf8')).toBe('exact bytes');
+    expect(exchange?.responseBody?.toString('utf8')).toBe('exact bytes');
   });
 
   // agy code review: `null` (JSON has no `undefined`) passes a naive

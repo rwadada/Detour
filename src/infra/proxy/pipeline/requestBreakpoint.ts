@@ -63,7 +63,9 @@ export function createRequestBreakpointHandler(deps: RequestBreakpointDeps) {
         method: exchange.method,
         path: opts?.path ?? ctx.clientToProxyRequest.url ?? '/',
         headers: flattenHeaders(opts?.headers ?? ctx.clientToProxyRequest.headers),
-        body: exchange.requestBody,
+        // `BreakpointRequestPayload.body` is base64 (the wire shape) —
+        // `exchange.requestBody` is a `Buffer` (issue #165's Proposal B).
+        body: exchange.requestBody?.toString('base64'),
         // Read directly off `displayCapture` rather than the exchange field
         // it just set — a re-wrap of an already-capped buffer later (see the
         // `BodyCapture.of(finalBody)` below) must never be mistaken for this.

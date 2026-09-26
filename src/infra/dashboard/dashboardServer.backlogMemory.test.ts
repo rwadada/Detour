@@ -65,7 +65,7 @@ describe('startDashboardServer — backlog memory cap (issue #165)', () => {
       startedAt: 0,
       statusCode: 200,
       responseBodySize: bodyLength,
-      responseBody: 'A'.repeat(bodyLength),
+      responseBody: Buffer.alloc(bodyLength, 'A'),
     };
   }
 
@@ -99,7 +99,7 @@ describe('startDashboardServer — backlog memory cap (issue #165)', () => {
     const mutable = exchangeWithBody('a', 0);
     eventBus.emit('request', mutable); // no body yet
     mutable.responseBodySize = 100;
-    mutable.responseBody = 'A'.repeat(100);
+    mutable.responseBody = Buffer.alloc(100, 'A');
     eventBus.emit('response', mutable); // same reference, now carrying a body
 
     eventBus.emit('response', exchangeWithBody('b', 100));

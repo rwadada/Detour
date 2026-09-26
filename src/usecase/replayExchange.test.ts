@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { CapturedExchange } from '../domain/exchange/types';
+import type { CapturedExchange, WireExchange } from '../domain/exchange/types';
 import { DetourEventBus } from '../infra/eventBus';
 import type { HttpRequester } from './ports/httpRequester';
 import { replayExchange } from './replayExchange';
@@ -16,7 +16,8 @@ function failingRequester(error: Error): HttpRequester {
   };
 }
 
-function original(overrides: Partial<CapturedExchange> = {}): CapturedExchange {
+/** The dashboard client's replay request always carries a `WireExchange` — base64 body, same as everything else it sends (issue #165's Proposal B). */
+function original(overrides: Partial<WireExchange> = {}): WireExchange {
   return {
     id: 'original-1',
     method: 'POST',
@@ -67,7 +68,7 @@ describe('replayExchange', () => {
     expect(requestPhase?.method).toBe('POST');
     expect(requestPhase?.url).toBe('https://api.example.com/widgets');
     expect(requestPhase?.host).toBe('api.example.com');
-    expect(requestPhase?.requestBody).toBe(Buffer.from('{"name":"x"}').toString('base64'));
+    expect(requestPhase?.requestBody?.toString('utf8')).toBe('{"name":"x"}');
   });
 
   it('strips hop-by-hop headers before sending, but keeps them out of the captured request only', async () => {
@@ -104,7 +105,7 @@ describe('replayExchange', () => {
     expect(responsePhase?.statusMessage).toBe('Created');
     expect(responsePhase?.responseHeaders).toEqual({ 'content-type': 'application/json' });
     expect(responsePhase?.responseBodySize).toBe(11);
-    expect(Buffer.from(responsePhase?.responseBody ?? '', 'base64').toString()).toBe('{"id":"w1"}');
+    expect(responsePhase?.responseBody?.toString()).toBe('{"id":"w1"}');
     expect(responsePhase?.durationMs).toBeGreaterThanOrEqual(0);
   });
 

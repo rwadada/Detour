@@ -2,12 +2,12 @@ import type {
   BlockHostsState,
   BreakpointPayload,
   BreakpointResumeCommand,
-  CapturedExchange,
   CapturedWebSocketConnection,
   FocusState,
   InterceptState,
   ProxyErrorEvent,
   ThrottleState,
+  WireExchange,
 } from '../exchange/types';
 import type { RuleProfileSummary } from '../rules/profile';
 import type { ScriptGateWarning } from '../rules/scriptGate';
@@ -147,13 +147,13 @@ export type DashboardServerMessage =
   /** A `login` message's password didn't match — the socket stays unauthenticated (no snapshot, no traffic) and can retry. */
   | { type: 'authFailed' }
   /** Sent once, right after connecting: the recent-history backlog so a client that (re)connects mid-session isn't starting from a blank table. */
-  | { type: 'backlog'; items: CapturedExchange[] }
+  | { type: 'backlog'; items: WireExchange[] }
   /** Sent once, right after connecting: the recent WebSocket connection backlog (see `backlog` above; issue #17). */
   | { type: 'wsBacklog'; items: CapturedWebSocketConnection[] }
   /** A request finished sending to the upstream server (may still be awaiting a response). */
-  | { type: 'request'; exchange: CapturedExchange }
+  | { type: 'request'; exchange: WireExchange }
   /** A request/response exchange finished. */
-  | { type: 'response'; exchange: CapturedExchange }
+  | { type: 'response'; exchange: WireExchange }
   /** A proxy-level error (connection reset, TLS failure, rules.json reload failure, etc). */
   | { type: 'error'; event: ProxyErrorEvent }
   /**
@@ -162,7 +162,7 @@ export type DashboardServerMessage =
    * table/row display; `payload` carries the full editable request/response
    * content for the breakpoint editor.
    */
-  | { type: 'breakpoint'; exchange: CapturedExchange; payload: BreakpointPayload }
+  | { type: 'breakpoint'; exchange: WireExchange; payload: BreakpointPayload }
   /**
    * The current intercept on/off state — sent once right after connecting
    * (alongside `backlog`) so a (re)connecting client starts in sync, and
@@ -257,7 +257,7 @@ export type DashboardServerMessage =
    * isn't broadcast to every connected tab, since it answers one tab's own
    * query rather than reflecting shared server state.
    */
-  | { type: 'historyResult'; requestId: string; items: CapturedExchange[]; hasMore: boolean };
+  | { type: 'historyResult'; requestId: string; items: WireExchange[]; hasMore: boolean };
 
 /**
  * Messages sent from a connected browser client to the dashboard server over
@@ -308,7 +308,7 @@ export type DashboardClientMessage =
    * have already fallen out of its own backlog. The result appears as a
    * normal new `request`/`response` pair, not a dedicated message type.
    */
-  | { type: 'replay'; exchange: CapturedExchange }
+  | { type: 'replay'; exchange: WireExchange }
   /**
    * Persists a change to `~/.detour/config.json` (see `UserConfigState`) —
    * merged into the existing file the same way `detour config` does, so

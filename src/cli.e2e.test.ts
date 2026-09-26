@@ -3887,10 +3887,13 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-max-capture-memory-'));
       const rulesPath = path.join(tmpDir, 'rules.json');
       // 500KB, comfortably over MAX_CAPTURED_BODY_BYTES (256KB) — captured
-      // (and thus counted toward the backlog's total) at exactly that cap,
-      // ~341KB once base64-encoded. Four of these (~1.36MB) exceeds the 1MB
-      // --max-capture-memory budget below well before the 500-item count
-      // cap ever would.
+      // (and thus counted toward the backlog's total) at exactly that cap.
+      // `capturedExchangeByteSize` counts raw bytes now (issue #165's
+      // Proposal B dropped the base64-in-memory representation, so there's
+      // no more 1.33x inflation to count) — five of these (~1.28MB, since
+      // four alone would land exactly on the 1MB budget without exceeding
+      // it) exceeds the --max-capture-memory budget below well before the
+      // 500-item count cap ever would.
       fs.writeFileSync(
         rulesPath,
         JSON.stringify({
@@ -3915,7 +3918,7 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
           '--max-capture-memory',
           '1',
         ]);
-        for (let i = 0; i < 4; i++) {
+        for (let i = 0; i < 5; i++) {
           await requestThroughProxy(cli.proxyPort, upstream.port, '/big');
         }
 
@@ -3931,9 +3934,9 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
           socket.on('error', reject);
         });
         // What matters here is only that *something* got evicted well short
-        // of 4 entries, proving the byte cap (not just the 500-item count
+        // of 5 entries, proving the byte cap (not just the 500-item count
         // cap) actually fired.
-        expect(backlog.items.length).toBeLessThan(4);
+        expect(backlog.items.length).toBeLessThan(5);
       } finally {
         await upstream.close();
         fs.rmSync(tmpDir, { recursive: true, force: true });

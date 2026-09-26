@@ -173,7 +173,7 @@ function evaluateNoPiiLeak(
       fields.push({ field: `request header "${key}"`, text: value });
     }
     if (exchange.requestBody) {
-      fields.push({ field: 'request body', text: Buffer.from(exchange.requestBody, 'base64').toString('utf8') });
+      fields.push({ field: 'request body', text: exchange.requestBody.toString('utf8') });
     }
     if (exchange.responseHeaders) {
       for (const [key, value] of Object.entries(flattenHeaders(exchange.responseHeaders))) {
@@ -181,7 +181,7 @@ function evaluateNoPiiLeak(
       }
     }
     if (exchange.responseBody) {
-      fields.push({ field: 'response body', text: Buffer.from(exchange.responseBody, 'base64').toString('utf8') });
+      fields.push({ field: 'response body', text: exchange.responseBody.toString('utf8') });
     }
     for (const { field, text } of fields) {
       const label = findPiiLabel(text, assertion, customPatterns);
