@@ -31,6 +31,23 @@ describe('RingBuffer', () => {
     expect(b.size).toBe(2);
   });
 
+  it('get() returns the entry stored for a key, or undefined if there is none', () => {
+    const b = buffer(10);
+    b.upsert({ id: 'a', value: 1 });
+    expect(b.get('a')).toEqual({ id: 'a', value: 1 });
+    expect(b.get('missing')).toBeUndefined();
+  });
+
+  it('get() reflects an in-place update, and returns undefined once evicted', () => {
+    const b = buffer(2);
+    b.upsert({ id: 'a', value: 1 });
+    b.upsert({ id: 'a', value: 99 });
+    expect(b.get('a')).toEqual({ id: 'a', value: 99 });
+    b.upsert({ id: 'b', value: 2 });
+    b.upsert({ id: 'c', value: 3 }); // evicts 'a' (capacity 2)
+    expect(b.get('a')).toBeUndefined();
+  });
+
   it('evicts the oldest entry once at capacity', () => {
     const b = buffer(2);
     b.upsert({ id: 'a', value: 1 });

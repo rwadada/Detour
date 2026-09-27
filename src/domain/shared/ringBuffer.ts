@@ -146,6 +146,12 @@ export class RingBuffer<T> {
     this.evictToByteBudget();
   }
 
+  /** Returns the entry currently stored for `key`, or `undefined` if there isn't one (evicted, or never inserted). */
+  get(key: string): T | undefined {
+    const slot = this.slotOfKey.get(key);
+    return slot === undefined ? undefined : this.slots[slot];
+  }
+
   /** Returns all entries, oldest first. */
   toArray(): T[] {
     const out: T[] = [];

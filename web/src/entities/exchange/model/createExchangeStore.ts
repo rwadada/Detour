@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { RingBuffer } from '@/shared/lib/ringBuffer';
-import type { CapturedExchange, DashboardConnection } from '@/shared/api';
+import type { CapturedExchange, DashboardConnection, ExchangeResponsePatch } from '@/shared/api';
 
 /** Bounds memory by count alone — see `MAX_CAPTURE_MEMORY_BYTES` below for the byte cap that actually matters once bodies aren't trivial (issue #165): 5000 exchanges each carrying a couple of base64'd 256 KB bodies would be well over a gigabyte before this count is ever reached. */
 const MAX_EXCHANGES = 5000;
@@ -99,7 +99,18 @@ export function createExchangeStore(connection: DashboardConnection) {
     maxTotalBytes: MAX_CAPTURE_MEMORY_BYTES,
     sizeOf: capturedExchangeByteSize,
   });
-  let pendingUpserts: CapturedExchange[] = [];
+  // A `request`/`breakpoint` message always carries a full `CapturedExchange`;
+  // a `response` message carries only the diff (issue #165's Proposal C —
+  // see `ExchangeResponsePatch`'s own doc comment) and needs merging onto
+  // whatever's already on record for that id before it can be upserted as
+  // one. Tagged rather than pre-merged at receipt time so `flush` below can
+  // resolve each patch against `buffer`'s state *as of its own turn* in this
+  // batch — a `request` and its `response` both landing in the same
+  // unflushed animation frame (a fast mock/local response easily beats 16ms)
+  // must still merge onto the just-arrived request, not a stale or missing
+  // prior entry.
+  type PendingUpdate = { kind: 'full'; exchange: CapturedExchange } | { kind: 'patch'; patch: ExchangeResponsePatch };
+  let pendingUpserts: PendingUpdate[] = [];
   let flushHandle: number | undefined;
   // Non-null while in imported mode: the live buffer above keeps being
   // updated by WS traffic underneath, but `exchanges` shows this snapshot
@@ -120,7 +131,10 @@ export function createExchangeStore(connection: DashboardConnection) {
     const flush = () => {
       flushHandle = undefined;
       if (pendingUpserts.length === 0) return;
-      for (const item of pendingUpserts) buffer.upsert(item);
+      for (const update of pendingUpserts) {
+        if (update.kind === 'full') buffer.upsert(update.exchange);
+        else buffer.upsert(mergeResponsePatch(buffer.get(update.patch.id), update.patch));
+      }
       pendingUpserts = [];
       if (importedExchanges === null && !paused) set({ exchanges: buffer.toArray() });
     };
@@ -138,9 +152,12 @@ export function createExchangeStore(connection: DashboardConnection) {
           if (importedExchanges === null && !paused) set({ exchanges: buffer.toArray() });
           return;
         case 'request':
-        case 'response':
         case 'breakpoint':
-          pendingUpserts.push(message.exchange);
+          pendingUpserts.push({ kind: 'full', exchange: message.exchange });
+          scheduleFlush();
+          return;
+        case 'response':
+          pendingUpserts.push({ kind: 'patch', patch: message.exchange });
           scheduleFlush();
           return;
         default:
@@ -204,6 +221,21 @@ export function createExchangeStore(connection: DashboardConnection) {
       },
     };
   });
+}
+
+/**
+ * Merges a `response` patch (issue #165's Proposal C — see
+ * `ExchangeResponsePatch`'s own doc comment) onto the exchange already held
+ * for that id. Falls back to an empty `requestHeaders` (and no
+ * `requestBody`) rather than producing an exchange missing a required
+ * field if, somehow, no earlier `request` is on record for this id (e.g. a
+ * `request` message this tab never actually received) — every
+ * response-side field the patch itself carries still renders correctly
+ * either way; this only degrades the request-side half nothing here ever
+ * saw in the first place.
+ */
+function mergeResponsePatch(existing: CapturedExchange | undefined, patch: ExchangeResponsePatch): CapturedExchange {
+  return existing ? { ...existing, ...patch } : { ...patch, requestHeaders: {} };
 }
 
 /** Toggles `id` in/out of a compare set, capping it at 2 by dropping the oldest entry. */

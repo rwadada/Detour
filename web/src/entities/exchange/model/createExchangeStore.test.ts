@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fakeDashboardConnection, type CapturedExchange, type DashboardServerMessage } from '@/shared/api';
+import {
+  fakeDashboardConnection,
+  type CapturedExchange,
+  type DashboardServerMessage,
+  type ExchangeResponsePatch,
+} from '@/shared/api';
 import { DEFAULT_FILTERS, createExchangeStore, isPassthroughDone, matchesFilters } from './createExchangeStore';
 
 // `scheduleFlush` batches upserts via `requestAnimationFrame` — not
@@ -35,6 +40,18 @@ function exchange(overrides: Partial<CapturedExchange> = {}): CapturedExchange {
   };
 }
 
+/**
+ * A `response` message's payload, mirroring what the real server actually
+ * sends (issue #165's Proposal C) — every field `exchange()` has, minus
+ * `requestBody`/`requestHeaders`, which a real `response` message never
+ * carries at all.
+ */
+function responsePatch(overrides: Partial<ExchangeResponsePatch> = {}): ExchangeResponsePatch {
+  // eslint-disable-next-line sonarjs/no-unused-vars -- deliberately dropped, not forwarded — see the doc comment above.
+  const { requestBody: _requestBody, requestHeaders: _requestHeaders, ...patch } = exchange(overrides);
+  return patch;
+}
+
 /** `fakeDashboardConnection`, plus flushing the batched-update animation frame after every message. */
 function fakeConnection() {
   const fake = fakeDashboardConnection();
@@ -62,6 +79,48 @@ describe('createExchangeStore', () => {
     fake.emit({ type: 'response', exchange: exchange({ id: 'a', statusCode: 200 }) });
     expect(store.getState().exchanges).toHaveLength(1);
     expect(store.getState().exchanges[0]?.statusCode).toBe(200);
+  });
+
+  it("merges a response patch onto the request's own requestBody/requestHeaders rather than wiping them (issue #165's Proposal C)", () => {
+    const fake = fakeConnection();
+    const store = createExchangeStore(fake.connection);
+    fake.emit({
+      type: 'request',
+      exchange: exchange({ id: 'a', requestHeaders: { accept: 'application/json' }, requestBody: 'eyJxIjoxfQ==' }),
+    });
+    // A real `response` message never carries `requestBody`/`requestHeaders`
+    // at all (see `ExchangeResponsePatch`) — omitted here the same way,
+    // rather than set to `undefined`, so this actually exercises the merge
+    // path rather than an unrelated "explicit undefined" case.
+    fake.emit({ type: 'response', exchange: responsePatch({ id: 'a', statusCode: 200 }) });
+    const merged = store.getState().exchanges[0];
+    expect(merged?.statusCode).toBe(200);
+    expect(merged?.requestHeaders).toEqual({ accept: 'application/json' });
+    expect(merged?.requestBody).toBe('eyJxIjoxfQ==');
+  });
+
+  it('merges a request and its response arriving in the same batch (before either is flushed)', () => {
+    const fake = fakeDashboardConnection();
+    const store = createExchangeStore(fake.connection);
+    fake.emit({
+      type: 'request',
+      exchange: exchange({ id: 'a', requestHeaders: { accept: 'application/json' } }),
+    });
+    fake.emit({ type: 'response', exchange: responsePatch({ id: 'a', statusCode: 200 }) });
+    flushPendingFrame();
+    const merged = store.getState().exchanges[0];
+    expect(merged?.statusCode).toBe(200);
+    expect(merged?.requestHeaders).toEqual({ accept: 'application/json' });
+  });
+
+  it('falls back to an empty requestHeaders rather than crashing when a response patch arrives for an id with no prior request on record', () => {
+    const fake = fakeConnection();
+    const store = createExchangeStore(fake.connection);
+    fake.emit({ type: 'response', exchange: responsePatch({ id: 'orphan', statusCode: 200 }) });
+    const merged = store.getState().exchanges[0];
+    expect(merged?.id).toBe('orphan');
+    expect(merged?.statusCode).toBe(200);
+    expect(merged?.requestHeaders).toEqual({});
   });
 
   it('also upserts the exchange snapshot carried by a breakpoint message', () => {

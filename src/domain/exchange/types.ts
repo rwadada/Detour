@@ -220,6 +220,22 @@ export type WireExchange = Omit<CapturedExchange, 'requestBody' | 'responseBody'
 };
 
 /**
+ * The `response` dashboard message's payload (issue #165's Proposal C) —
+ * everything a `WireExchange` carries except `requestBody`/`requestHeaders`.
+ * A client already received both of those in full via this same id's
+ * earlier `request` message, and neither ever changes between the two (the
+ * request has finished sending, headers included, before `response` can
+ * even fire) — re-sending them doubles the size of every response
+ * broadcast for no reason, `requestBody` especially once bodies aren't
+ * trivial. The client is expected to merge this onto the exchange it
+ * already holds for `id`, not replace it wholesale — see
+ * `toResponsePatch` (`wireExchange.ts`) for where this is built, and
+ * `web/src/entities/exchange/model/createExchangeStore.ts`'s mirrored
+ * `mergeResponsePatch` for where it's consumed.
+ */
+export type ExchangeResponsePatch = Omit<WireExchange, 'requestBody' | 'requestHeaders'>;
+
+/**
  * A single WebSocket frame captured while a proxied `ws://`/`wss://`
  * connection is open (issue #17). `type` mirrors the `ws` library's own
  * event names — `message` carries the application payload, `ping`/`pong`

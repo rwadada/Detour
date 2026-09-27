@@ -3,6 +3,7 @@ import type {
   BreakpointPayload,
   BreakpointResumeCommand,
   CapturedWebSocketConnection,
+  ExchangeResponsePatch,
   FocusState,
   InterceptState,
   ProxyErrorEvent,
@@ -152,8 +153,15 @@ export type DashboardServerMessage =
   | { type: 'wsBacklog'; items: CapturedWebSocketConnection[] }
   /** A request finished sending to the upstream server (may still be awaiting a response). */
   | { type: 'request'; exchange: WireExchange }
-  /** A request/response exchange finished. */
-  | { type: 'response'; exchange: WireExchange }
+  /**
+   * A request/response exchange finished. `exchange` is a *patch*, not the
+   * full exchange (issue #165's Proposal C) — it omits `requestBody`/
+   * `requestHeaders`, already sent in full via this same id's earlier
+   * `request` message above and unchanged since. The client must merge
+   * this onto the exchange it already holds for `id` (see
+   * `ExchangeResponsePatch`'s own doc comment), not replace it wholesale.
+   */
+  | { type: 'response'; exchange: ExchangeResponsePatch }
   /** A proxy-level error (connection reset, TLS failure, rules.json reload failure, etc). */
   | { type: 'error'; event: ProxyErrorEvent }
   /**
