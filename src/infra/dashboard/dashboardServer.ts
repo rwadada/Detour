@@ -185,6 +185,34 @@ export interface DashboardServerOptions {
    * this is only really `undefined` from a test double that doesn't care.
    */
   maxCaptureMemoryBytes?: number;
+  /**
+   * Enables WebSocket `permessage-deflate` compression on `/ws` (issue
+   * #165's Proposal D) — `false` (the default, matching `ws`'s own
+   * server-side default when this option is omitted entirely) means every
+   * broadcast/backlog frame goes out uncompressed, exactly as before this
+   * option existed. `undefined`/`false` are both "off".
+   *
+   * Measured via `scripts/bench.mjs`'s scenarios 9/10 (dashboard-connected,
+   * a body large enough to hit the 256 KB capture cap, repeated over 8
+   * connections for 10s): compressed and uncompressed came out
+   * statistically identical on req/s and p95/p99 latency (both ~500 req/s,
+   * ~20ms p95 — the WS broadcast was never the bottleneck at this scale to
+   * begin with), while peak RSS was ~7.5x higher with compression on
+   * (~265 MB vs ~1990 MB, reproduced across repeated runs) — exactly the
+   * "catastrophic memory fragmentation" `ws`'s own README warns Node's
+   * zlib binding is prone to under concurrent compression. No measured
+   * upside, a severe and repeatable memory cost: left off by default, and
+   * not recommended even via `--dashboard-compress` outside a deliberate
+   * experiment on a bandwidth-constrained `--lan` connection (a case this
+   * loopback-based benchmark can't itself validate one way or the other).
+   * `threshold`/`concurrencyLimit` below are the ws-recommended values,
+   * left as-is since there was no measured reason to tune them further.
+   * `serverNoContextTakeover` is always forced on when this is enabled —
+   * see its own comment at the `WebSocketServer` construction below for
+   * the CRIME/BREACH-shaped risk a shared compression dictionary would
+   * otherwise open up across every message this connection broadcasts.
+   */
+  dashboardCompression?: boolean;
 }
 
 export interface DashboardServerHandle {
@@ -423,7 +451,40 @@ export async function startDashboardServer(
     : http.createServer(requestListener);
   const verifyClient: WebSocket.VerifyClientCallbackSync = (info) =>
     isAllowedHost(info.req.headers.host) && isAllowedOrigin(info.origin);
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws', verifyClient });
+  // `perMessageDeflate: false` when `dashboardCompression` is off (the
+  // default) is explicit rather than just omitting the option — `ws`
+  // itself defaults to `false` server-side either way, but spelling it out
+  // here makes the two states this option actually toggles between visible
+  // at the call site, rather than relying on a reader already knowing `ws`'s
+  // own default. See `DashboardServerOptions.dashboardCompression`'s doc
+  // comment for the measurement behind this choice and its tuning.
+  const wss = new WebSocketServer({
+    server: httpServer,
+    path: '/ws',
+    verifyClient,
+    perMessageDeflate: options.dashboardCompression
+      ? {
+          threshold: 1024,
+          concurrencyLimit: 10,
+          serverMaxWindowBits: 10,
+          // Without this, `ws` negotiates context takeover by default
+          // (reusing one compression dictionary across every message on
+          // the connection, unless the *client* opts out) — every message
+          // this socket ever broadcasts shares one connected client's whole
+          // session (every exchange, every other feature's state changes),
+          // so a shared dictionary is exactly the CRIME/BREACH-style
+          // side-channel setup: an attacker who can get their own traffic
+          // captured into the same stream (their own request through this
+          // proxy) and observe this connection's encrypted frame sizes
+          // could use the compression ratio's byte-count leakage to infer
+          // another exchange's secret bytes (a session cookie, say) sharing
+          // that dictionary (agy code review). Forcing a fresh dictionary
+          // per message trades a little compression ratio for closing that
+          // off entirely, regardless of what the client itself requests.
+          serverNoContextTakeover: true,
+        }
+      : false,
+  });
 
   // Issue #66's optional dashboard password: sockets that have proven they
   // know the current password (or connected while none was configured — see

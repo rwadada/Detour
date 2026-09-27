@@ -139,6 +139,13 @@ interface StartOptions {
   http2Upstream: boolean;
   /** `--max-capture-memory <MB>` (issue #165), unparsed: caps the live backlog's *total* captured-body memory, independent of (and typically the tighter of the two, once bodies are non-trivial) its 500-item count cap. Always present (commander default). */
   maxCaptureMemory: string;
+  /**
+   * `--dashboard-compress` (issue #165's Proposal D), off by default: turns
+   * on WebSocket `permessage-deflate` compression for `/ws`. See
+   * `DashboardServerOptions.dashboardCompression`'s doc comment for what
+   * this actually trades off and the measurement behind the default.
+   */
+  dashboardCompress?: boolean;
 }
 
 /**
@@ -622,6 +629,7 @@ async function runStartBody({
           lanAddresses: lanAddrs,
           insecureUpstream: options.insecureUpstream ?? false,
           maxCaptureMemoryBytes: parseMaxCaptureMemoryBytes(options.maxCaptureMemory),
+          dashboardCompression: options.dashboardCompress ?? false,
         },
         eventBus,
       );
@@ -968,6 +976,10 @@ export function registerStartCommand(program: Command): void {
       '--max-capture-memory <MB>',
       "Caps the live backlog's total captured-body memory (issue #165), independent of its 500-item count cap — a handful of large bodies can otherwise account for hundreds of MB well before that count is reached. Evicts the oldest exchange(s) once exceeded, same as hitting the count cap; --persist above still has them, if it's on.",
       '64',
+    )
+    .option(
+      '--dashboard-compress',
+      "Enable WebSocket permessage-deflate compression on the dashboard's /ws feed (issue #165's Proposal D). Off by default and not generally recommended: scripts/bench.mjs's scenarios 9/10 measured no throughput/latency benefit (the WS broadcast was never the bottleneck) alongside a ~7.5x peak-memory increase — the same zlib memory fragmentation ws's own README warns about. Provided for a deliberate experiment on a bandwidth-constrained --lan connection, a case this loopback benchmark can't itself validate either way.",
     )
     .option(
       '--upstream-proxy <url>',

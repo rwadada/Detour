@@ -34,6 +34,7 @@
 //   npm run bench -- --json out.json       # save results
 //   npm run bench -- --compare a.json b.json   # diff two saved runs
 //   npm run bench -- --gate                # exit 1 if overhead exceeds the ceiling
+//   DETOUR_BENCH_DEBUG=1 npm run bench -- ...  # forward the running detour process's stderr live
 
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -127,8 +128,38 @@ const SCENARIOS = [
     purpose: 'per-host cert issuance',
   },
   // Scenario 8 isn't listed here: it's the no-proxy baseline, and the harness
-  // measures one per distinct (scheme, body size) the selected scenarios
-  // actually use, so every ratio compares like with like.
+  // measures one per distinct (scheme, body size, body kind) the selected
+  // scenarios actually use, so every ratio compares like with like.
+  //
+  // 9/10 (issue #165's Proposal D): a body that fully occupies
+  // MAX_CAPTURED_BODY_BYTES (256 KB — this is `300*KB` specifically so the
+  // *captured/broadcast* body is always the full 256 KB regardless of
+  // stream chunking, matching what a real large response's dashboard
+  // broadcast payload maxes out at no matter how much bigger the response
+  // itself is), differing only in whether the dashboard's `/ws` compresses
+  // it. `jsonBody: true` — not `bodyFor`'s single repeated byte, which
+  // deflate crushes to almost nothing and would overstate compression's
+  // real-world value — see `jsonBodyFor`'s own doc comment.
+  {
+    id: 9,
+    name: 'HTTPS + dashboard, 256 KB body (permessage-deflate off)',
+    scheme: 'https',
+    bodyBytes: 300 * KB,
+    jsonBody: true,
+    dashboard: true,
+    dashboardCompress: false,
+    purpose: 'dashboard WS compression cost/benefit — baseline',
+  },
+  {
+    id: 10,
+    name: 'HTTPS + dashboard, 256 KB body (permessage-deflate on)',
+    scheme: 'https',
+    bodyBytes: 300 * KB,
+    jsonBody: true,
+    dashboard: true,
+    dashboardCompress: true,
+    purpose: 'dashboard WS compression cost/benefit — compressed',
+  },
 ];
 
 const QUICK_SCENARIOS = [1, 2, 5];
@@ -279,6 +310,24 @@ function generateUpstreamCert() {
 }
 
 /**
+ * A pseudo-random (but deterministic — `mulberry32`, seeded fixed) generator,
+ * used below to build `jsonBodyFor`'s field values. `Math.random()` would
+ * work just as well for what this measures, but a fixed seed makes the
+ * generated body (and thus its compressibility) identical run to run,
+ * matching every other scenario's use of a pre-allocated, reused body.
+ */
+function mulberry32(seed) {
+  let a = seed;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
  * Serves `/bytes/<n>` with exactly n bytes. Bodies are pre-allocated once and
  * reused so the upstream never becomes the bottleneck being measured — the
  * point is to time Detour, not this server's allocator.
@@ -294,17 +343,57 @@ function startUpstream({ tls, certs }) {
     return body;
   };
 
+  // A *realistic* body for scenarios 9/10 (permessage-deflate, issue #165's
+  // Proposal D) — `bodyFor`'s single repeated byte compresses at a ratio no
+  // real HTTP response ever sees (deflate crushes it to almost nothing),
+  // which would make compression look far more valuable than it actually is
+  // for typical JSON/HTML traffic. This instead repeats a small JSON record
+  // with pseudo-random field values (moderate, not artificial, repetition —
+  // the kind a real paginated API response has) until it reaches exactly
+  // `size` bytes.
+  const jsonBodies = new Map();
+  const jsonBodyFor = (size) => {
+    let body = jsonBodies.get(size);
+    if (!body) {
+      const random = mulberry32(42);
+      // Each `piece` already carries its own leading comma (everything but
+      // the first) — `length` below is the real, exact running length of
+      // `parts.join('')`, not an estimate. Tracking a separate per-record
+      // "+1 for the comma `join` will add" and reconciling it against `[`/
+      // `]` afterwards (an earlier version of this function did exactly
+      // that) double-counts the last record's non-existent trailing comma,
+      // silently handing back a body 1 byte short of `size`.
+      const parts = ['['];
+      let length = 2; // '[' + ']'
+      while (length < size) {
+        const record = `{"id":${parts.length - 1},"name":"item-${Math.floor(random() * 1e6)}","value":${random().toFixed(4)},"active":${random() > 0.5}}`;
+        const piece = parts.length === 1 ? record : `,${record}`;
+        parts.push(piece);
+        length += piece.length;
+      }
+      body = Buffer.from(`${parts.join('')}]`).subarray(0, size);
+      // Only reachable for a `size` too small to even fit `[]` — pads with
+      // spaces (valid JSON whitespace) rather than silently handing back a
+      // shorter-than-requested buffer the way a bare `subarray` past the
+      // end would.
+      if (body.length < size) {
+        const padded = Buffer.alloc(size, ' ');
+        body.copy(padded);
+        body = padded;
+      }
+      jsonBodies.set(size, body);
+    }
+    return body;
+  };
+
   const handler = (req, res) => {
     req.resume();
-    const match = /^\/bytes\/(\d+)/.exec(req.url ?? '');
-    const size = match ? Number(match[1]) : KB;
-    const body = bodyFor(size);
-    // `application/octet-stream`, not `application/json`: the body is a run
-    // of filler bytes, and labelling it JSON would misrepresent it to
-    // anyone reading a capture while profiling. Nothing measured here
-    // branches on the type — `BodyCapture` counts bytes and is content-type
-    // agnostic — so this is honesty, not a change to the workload.
-    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': String(body.length) });
+    const jsonMatch = /^\/json-bytes\/(\d+)/.exec(req.url ?? '');
+    const bytesMatch = /^\/bytes\/(\d+)/.exec(req.url ?? '');
+    const size = Number(jsonMatch?.[1] ?? bytesMatch?.[1] ?? KB);
+    const body = jsonMatch ? jsonBodyFor(size) : bodyFor(size);
+    const contentType = jsonMatch ? 'application/json' : 'application/octet-stream';
+    res.writeHead(200, { 'content-type': contentType, 'content-length': String(body.length) });
     res.end(body);
   };
 
@@ -336,10 +425,11 @@ function closeServer(server) {
 // ---------------------------------------------------------------------------
 
 /** Spawns `bin/detour.js start`, resolving once its DETOUR_READY line lands. */
-async function startDetour({ rulesPath, dashboard, upstreamCaPath }) {
+async function startDetour({ rulesPath, dashboard, dashboardCompress, upstreamCaPath }) {
   const args = [detourEntry, 'start', '--port', '0', '--no-open'];
   if (dashboard) args.push('--dashboard-port', '0');
   else args.push('--headless');
+  if (dashboardCompress) args.push('--dashboard-compress');
   if (rulesPath) args.push('--rules', rulesPath);
 
   // A scratch HOME, not the caller's real one: every persistent-config path
@@ -372,6 +462,12 @@ async function startDetour({ rulesPath, dashboard, upstreamCaPath }) {
   });
   child.stderr.on('data', (chunk) => {
     stderr += chunk;
+    // `stderr` above is only ever surfaced if `detour` never becomes ready
+    // (see the throw below) — once a scenario is actually running, an
+    // ongoing proxy error (a bad scenario, a real regression) otherwise
+    // shows up only as an opaque failed-request count with no clue why.
+    // `DETOUR_BENCH_DEBUG=1 npm run bench -- ...` opts into seeing it live.
+    if (process.env.DETOUR_BENCH_DEBUG) process.stderr.write(chunk);
   });
 
   let ready;
@@ -732,7 +828,20 @@ async function connectDashboard(port) {
   return { close: () => socket.close() };
 }
 
-async function measureBaseline({ scheme, bodyBytes, upstreams, certs, options }) {
+/**
+ * The key `measureBaselines`/`measureAll` share a no-proxy baseline under —
+ * (scheme, body size, body kind), not just the first two: scenarios 9/10's
+ * `jsonBody` request path serves entirely different bytes than `bytes/<n>`
+ * at the same size (see `jsonBodyFor`'s doc comment), so it needs its own
+ * baseline rather than accidentally reusing (or colliding with) a same-size
+ * `bodyFor` one — nothing else in `SCENARIOS` uses `jsonBody` yet, but this
+ * keeps that from becoming a silent trap the day something does.
+ */
+function baselineKey(scenario) {
+  return `${scenario.scheme}-${scenario.bodyBytes}-${scenario.jsonBody ? 'json' : 'raw'}`;
+}
+
+async function measureBaseline({ scheme, bodyBytes, jsonBody, upstreams, certs, options }) {
   const target = {
     scheme,
     // 127.0.0.1, not 'localhost': `startUpstream` binds the literal address
@@ -743,7 +852,7 @@ async function measureBaseline({ scheme, bodyBytes, upstreams, certs, options })
     // just the opposite direction: that server binds by hostname).
     host: '127.0.0.1',
     port: scheme === 'https' ? upstreams.https.port : upstreams.http.port,
-    requestPath: `/bytes/${bodyBytes}`,
+    requestPath: `${jsonBody ? '/json-bytes' : '/bytes'}/${bodyBytes}`,
     ca: scheme === 'https' ? certs.caPem : undefined,
   };
   await runLoad({ connections: options.connections, durationMs: options.warmupMs, target });
@@ -753,21 +862,21 @@ async function measureBaseline({ scheme, bodyBytes, upstreams, certs, options })
 
 /**
  * Runs scenario 8 — the no-proxy denominator — once per distinct (scheme,
- * body size) the selected scenarios use, so a 10 MB run is never compared
- * against a 1 KB baseline. Always before the proxied runs: every ratio
- * reported later is against these.
+ * body size, body kind — see `baselineKey`) the selected scenarios use, so a
+ * 10 MB run is never compared against a 1 KB baseline. Always before the
+ * proxied runs: every ratio reported later is against these.
  */
 async function measureBaselines(selected, { upstreams, certs, options }) {
   const wanted = new Map();
   for (const scenario of selected) {
-    const key = `${scenario.scheme}-${scenario.bodyBytes}`;
+    const key = baselineKey(scenario);
     if (!wanted.has(key)) wanted.set(key, scenario);
   }
 
   const baselines = new Map();
   const rows = [];
   for (const [key, scenario] of wanted) {
-    const label = `${scenario.scheme}, ${formatBytes(scenario.bodyBytes)}`;
+    const label = `${scenario.scheme}, ${formatBytes(scenario.bodyBytes)}${scenario.jsonBody ? ' JSON' : ''}`;
     process.stdout.write(`  running baseline (${label})...\n`);
     const metrics = await measureBaseline({ ...scenario, upstreams, certs, options });
     if (metrics.requests === 0 || metrics.errors > 0) {
@@ -793,7 +902,12 @@ async function measureBaselines(selected, { upstreams, certs, options }) {
 
 async function measureScenario(scenario, { upstreams, options, tmpDir, upstreamCaPath }) {
   const rulesPath = scenario.rules ? writeRules(tmpDir, scenario.rules, { upstreamHttpsPort: upstreams.https.port }) : undefined;
-  const detour = await startDetour({ rulesPath, dashboard: scenario.dashboard, upstreamCaPath });
+  const detour = await startDetour({
+    rulesPath,
+    dashboard: scenario.dashboard,
+    dashboardCompress: scenario.dashboardCompress,
+    upstreamCaPath,
+  });
   let dashboard;
   try {
     if (scenario.dashboard) dashboard = await connectDashboard(detour.dashboardPort);
@@ -805,7 +919,7 @@ async function measureScenario(scenario, { upstreams, options, tmpDir, upstreamC
       // too rather than rely on how 'localhost' happens to resolve.
       host: '127.0.0.1',
       port: scenario.scheme === 'https' ? upstreams.https.port : upstreams.http.port,
-      requestPath: `/bytes/${scenario.bodyBytes}`,
+      requestPath: `${scenario.jsonBody ? '/json-bytes' : '/bytes'}/${scenario.bodyBytes}`,
       proxyUrl: `http://127.0.0.1:${detour.proxyPort}`,
       // The client trusts Detour's MITM CA, exactly as a configured device does.
       ca: fs.readFileSync(detour.caCertPath, 'utf8'),
@@ -925,7 +1039,7 @@ async function measureAll(selected, { upstreams, certs, options, tmpDir, upstrea
     for (const scenario of selected) {
       process.stdout.write(`  running scenario ${scenario.id} (${scenario.name})...\n`);
       const metrics = await measureScenario(scenario, { upstreams, options, tmpDir, upstreamCaPath });
-      const baseline = baselines.get(`${scenario.scheme}-${scenario.bodyBytes}`);
+      const baseline = baselines.get(baselineKey(scenario));
       rows.push({
         id: scenario.id,
         key: `${scenario.id}`,
