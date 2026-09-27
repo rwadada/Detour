@@ -32,7 +32,8 @@ export class BodyCapture {
   /** Applies the capture to an exchange's `{prefix}Body`/`{prefix}BodyTruncated` fields. Omitted entirely when nothing was captured. */
   applyTo(exchange: CapturedExchange, prefix: 'request' | 'response'): void {
     if (this.chunks.length === 0) return;
-    const body = Buffer.concat(this.chunks).toString('base64');
+    // Raw bytes, not base64 (issue #165's Proposal B) — see `CapturedExchange`'s own doc comment.
+    const body = Buffer.concat(this.chunks);
     if (prefix === 'request') {
       exchange.requestBody = body;
       exchange.requestBodyTruncated = this.truncated;

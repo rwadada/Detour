@@ -111,7 +111,7 @@ export function buildFixtureFromExchange(exchange: CapturedExchange, sequence: n
   if (exchange.statusMessage) fixture.statusMessage = exchange.statusMessage;
 
   if (exchange.responseBody) {
-    const buffer = Buffer.from(exchange.responseBody, 'base64');
+    const buffer = exchange.responseBody;
     const utf8 = buffer.toString('utf8');
     // Buffer.from(utf8, 'utf8') round-tripping back to the exact same bytes
     // means this was valid UTF-8 to begin with (not, say, a gzip-compressed
@@ -121,7 +121,11 @@ export function buildFixtureFromExchange(exchange: CapturedExchange, sequence: n
     if (Buffer.from(utf8, 'utf8').equals(buffer)) {
       fixture.responseBody = utf8;
     } else {
-      fixture.responseBody = exchange.responseBody;
+      // Fixture files are always base64 on disk for a binary body — unlike
+      // `CapturedExchange` (issue #165's Proposal B), there's no in-memory
+      // hot path to spare here, just a JSON file meant to be committed/
+      // diffed, so base64 text is the right call same as before.
+      fixture.responseBody = buffer.toString('base64');
       fixture.responseBodyEncoding = 'base64';
     }
   }

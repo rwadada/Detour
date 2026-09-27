@@ -30,7 +30,7 @@ describe('BodyCapture', () => {
     capture.add(Buffer.from('hello'));
     const ex = exchange();
     capture.applyTo(ex, 'response');
-    expect(Buffer.from(ex.responseBody ?? '', 'base64').toString('utf8')).toBe('hello');
+    expect(ex.responseBody?.toString('utf8')).toBe('hello');
     expect(ex.responseBodyTruncated).toBe(false);
   });
 
@@ -40,7 +40,7 @@ describe('BodyCapture', () => {
     const ex = exchange();
     capture.applyTo(ex, 'request');
     expect(ex.requestBodyTruncated).toBe(true);
-    expect(Buffer.from(ex.requestBody ?? '', 'base64')).toHaveLength(MAX_CAPTURED_BODY_BYTES);
+    expect(ex.requestBody).toHaveLength(MAX_CAPTURED_BODY_BYTES);
   });
 
   it('BodyCapture.of() caps a buffer already in memory the same way', () => {

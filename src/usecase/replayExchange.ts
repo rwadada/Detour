@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
 import { BodyCapture } from '../domain/exchange/bodyCapture';
-import type { CapturedExchange } from '../domain/exchange/types';
+import type { CapturedExchange, WireExchange } from '../domain/exchange/types';
 import type { HttpRequester } from './ports/httpRequester';
 
 /**
@@ -41,12 +41,18 @@ function stripHopByHopHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders
  * with no new frontend plumbing needed to display it.
  */
 export async function replayExchange(
-  original: CapturedExchange,
+  original: WireExchange,
   eventBus: ExchangeEventEmitter,
   requester: HttpRequester,
 ): Promise<void> {
   const startedAt = Date.now();
   const requestHeaders = stripHopByHopHeaders(original.requestHeaders);
+  // `original` is a `WireExchange` — the dashboard client only ever has a
+  // base64-encoded body to send back (issue #165's Proposal B: the wire
+  // format and `CapturedExchange`'s own in-memory `Buffer` representation
+  // diverge on exactly this field). Decoded once, then reused below for
+  // both the real outbound request and the freshly-built `CapturedExchange`
+  // this replay broadcasts — never re-stored as the original base64 string.
   const requestBody = original.requestBody ? Buffer.from(original.requestBody, 'base64') : undefined;
 
   const exchange: CapturedExchange = {
@@ -58,7 +64,7 @@ export async function replayExchange(
     protocol: 'HTTP/1.1',
     requestHeaders,
     requestBodySize: original.requestBodySize,
-    requestBody: original.requestBody,
+    requestBody,
     requestBodyTruncated: original.requestBodyTruncated,
     startedAt,
     responseBodySize: 0,

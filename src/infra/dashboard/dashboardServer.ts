@@ -11,6 +11,7 @@ import type {
   InterceptState,
   ThrottleState,
 } from '../../domain/exchange/types';
+import { toWireExchange } from '../../domain/exchange/wireExchange';
 import { SAMPLE_RULES_FILE } from '../../domain/rules/sample';
 import { findRejectedScriptWrites } from '../../domain/rules/scriptGate';
 import type { RulesFile } from '../../domain/rules/types';
@@ -542,11 +543,14 @@ export async function startDashboardServer(
 
   const onRequest = (exchange: Readonly<CapturedExchange>) => {
     backlog.upsert(exchange);
-    broadcast({ type: 'request', exchange });
+    // Encoded to base64 only right here, at the point of actually going out
+    // over JSON — `backlog` above keeps the `Buffer` (issue #165's
+    // Proposal B; see `toWireExchange`'s own doc comment).
+    broadcast({ type: 'request', exchange: toWireExchange(exchange) });
   };
   const onResponse = (exchange: Readonly<CapturedExchange>) => {
     backlog.upsert(exchange);
-    broadcast({ type: 'response', exchange });
+    broadcast({ type: 'response', exchange: toWireExchange(exchange) });
   };
   const onError: DetourEvents['error'] = (event) => broadcast({ type: 'error', event });
   // Rules state, unlike intercept/focus/throttle/blockHosts above, isn't
@@ -617,7 +621,7 @@ export async function startDashboardServer(
   // tab so all of them can show/edit it, not just the one that happens to be
   // focused.
   const onBreakpointHit: DetourEvents['breakpointHit'] = ({ exchange, payload }) =>
-    broadcast({ type: 'breakpoint', exchange, payload });
+    broadcast({ type: 'breakpoint', exchange: toWireExchange(exchange), payload });
   const onInterceptChanged: DetourEvents['interceptChanged'] = (state) => {
     interceptState = state;
     broadcast({ type: 'intercept', state });
@@ -674,7 +678,7 @@ export async function startDashboardServer(
       dashboardOnLan: host === '0.0.0.0',
     };
     socket.send(JSON.stringify(lanInfoMessage));
-    const backlogMessage: DashboardServerMessage = { type: 'backlog', items: backlog.toArray() };
+    const backlogMessage: DashboardServerMessage = { type: 'backlog', items: backlog.toArray().map(toWireExchange) };
     socket.send(JSON.stringify(backlogMessage));
     const wsBacklogMessage: DashboardServerMessage = { type: 'wsBacklog', items: wsBacklog.toArray() };
     socket.send(JSON.stringify(wsBacklogMessage));
@@ -829,7 +833,7 @@ export async function startDashboardServer(
           const reply: DashboardServerMessage = {
             type: 'historyResult',
             requestId: message.requestId,
-            items: result.items,
+            items: result.items.map(toWireExchange),
             hasMore: result.hasMore,
           };
           socket.send(JSON.stringify(reply));

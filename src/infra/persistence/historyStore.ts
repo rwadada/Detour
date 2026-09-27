@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import type { HistoryQuery } from '../../domain/dashboard/protocol';
-import type { CapturedExchange } from '../../domain/exchange/types';
+import type { CapturedExchange, WireExchange } from '../../domain/exchange/types';
+import { fromWireExchange, toWireExchange } from '../../domain/exchange/wireExchange';
 
 export interface HistoryQueryResult {
   items: CapturedExchange[];
@@ -145,6 +146,13 @@ export function openHistoryStore(dbPath: string): HistoryStore {
 
   return {
     record(exchange) {
+      // Persisted as a `WireExchange` (base64 body text), not the in-memory
+      // `Buffer`-based `CapturedExchange` directly — `JSON.stringify` on a
+      // `Buffer` serializes it as `{"type":"Buffer","data":[...]}`, not
+      // base64, which would both bloat the row and break `query()`'s read
+      // path below. This also keeps the on-disk format unchanged from
+      // before issue #165's Proposal B, so an existing `--persist` database
+      // needs no migration.
       upsert.run(
         exchange.id,
         exchange.startedAt,
@@ -152,7 +160,7 @@ export function openHistoryStore(dbPath: string): HistoryStore {
         exchange.host,
         exchange.url,
         exchange.statusCode ?? null,
-        JSON.stringify(exchange),
+        JSON.stringify(toWireExchange(exchange)),
       );
     },
 
@@ -170,7 +178,10 @@ export function openHistoryStore(dbPath: string): HistoryStore {
         .prepare(`SELECT data FROM exchanges ${where} ORDER BY started_at DESC, id DESC LIMIT ?`)
         .all(...params, limit + 1) as Array<{ data: string }>;
       const hasMore = rows.length > limit;
-      const items = rows.slice(0, limit).map((row) => JSON.parse(row.data) as CapturedExchange);
+      // The row's JSON text is a `WireExchange` (base64 body text) — decoded
+      // back to a real `CapturedExchange` (Buffer bodies) here so callers
+      // get the same shape they'd get from the live in-memory backlog.
+      const items = rows.slice(0, limit).map((row) => fromWireExchange(JSON.parse(row.data) as WireExchange));
       return { items, hasMore };
     },
 

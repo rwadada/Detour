@@ -172,6 +172,28 @@ describe.skipIf(!isHistoryPersistenceSupported())('openHistoryStore', () => {
     store.close();
   });
 
+  it('round-trips requestBody/responseBody as real Buffers, not base64 text or JSON-serialized Buffer objects (issue #165 Proposal B)', () => {
+    const store = openHistoryStore(tmpDbPath());
+    store.record(
+      exchange({
+        requestBody: Buffer.from('{"name":"x"}'),
+        requestBodySize: 12,
+        responseBody: Buffer.from('{"id":"w1"}'),
+        responseBodySize: 11,
+      }),
+    );
+
+    const result = store.query({ limit: 10 });
+
+    expect(result.items).toHaveLength(1);
+    const [item] = result.items;
+    expect(Buffer.isBuffer(item?.requestBody)).toBe(true);
+    expect(Buffer.isBuffer(item?.responseBody)).toBe(true);
+    expect(item?.requestBody?.toString('utf8')).toBe('{"name":"x"}');
+    expect(item?.responseBody?.toString('utf8')).toBe('{"id":"w1"}');
+    store.close();
+  });
+
   it('persists across separate store instances against the same file', () => {
     const dbPath = tmpDbPath();
     const first = openHistoryStore(dbPath);

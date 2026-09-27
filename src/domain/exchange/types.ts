@@ -90,9 +90,20 @@ export interface ClientProcessInfo {
 }
 
 /**
- * A single HTTP(S) request/response pair captured by the proxy.
- * This is the shape shared over the in-memory event bus, and later
- * (via the web dashboard) over the wire to consumers.
+ * A single HTTP(S) request/response pair captured by the proxy — the shape
+ * shared over the in-memory event bus and held in the dashboard's backlog.
+ *
+ * `requestBody`/`responseBody` are raw `Buffer`s here, not base64 (issue
+ * #165's Proposal B) — a base64 `string` inflates the captured bytes by
+ * ~1.33x and, being a V8 string, competes with everything else for space on
+ * the JS heap rather than sitting in external memory the way a `Buffer`'s
+ * backing store does. Base64 is only ever produced at the point something
+ * actually needs it as JSON-transportable text — see `WireExchange`/
+ * `toWireExchange` below for the dashboard-broadcast case, the same
+ * conversion `historyStore.ts` applies before writing to SQLite. Every
+ * *internal* consumer (dump, `detour test` assertions, gRPC frame decode,
+ * breakpoint/script hooks, replay) works with the `Buffer` directly and no
+ * longer decodes it itself.
  */
 export interface CapturedExchange {
   /** Unique id for this exchange, stable across the request/response lifecycle. */
@@ -129,11 +140,11 @@ export interface CapturedExchange {
   requestHeaders: IncomingHttpHeaders;
   requestBodySize: number;
   /**
-   * Captured request body, base64-encoded, capped at `MAX_CAPTURED_BODY_BYTES`
+   * Captured request body, raw bytes, capped at `MAX_CAPTURED_BODY_BYTES`
    * (see proxyServer.ts). Undefined when the body was empty or hasn't been
    * captured yet (e.g. a `request` event fired before the body finished).
    */
-  requestBody?: string;
+  requestBody?: Buffer;
   /** True when `requestBodySize` exceeds what was actually captured in `requestBody`. */
   requestBodyTruncated?: boolean;
   startedAt: number;
@@ -142,8 +153,8 @@ export interface CapturedExchange {
   statusMessage?: string;
   responseHeaders?: IncomingHttpHeaders;
   responseBodySize: number;
-  /** Captured response body, base64-encoded and capped — see `requestBody`. */
-  responseBody?: string;
+  /** Captured response body, raw bytes and capped — see `requestBody`. */
+  responseBody?: Buffer;
   /** True when `responseBodySize` exceeds what was actually captured in `responseBody`. */
   responseBodyTruncated?: boolean;
   finishedAt?: number;
@@ -189,6 +200,24 @@ export interface CapturedExchange {
    */
   passthrough?: true;
 }
+
+/**
+ * `CapturedExchange`'s JSON-transportable form — everything the same
+ * except `requestBody`/`responseBody`, which are base64 `string`s here
+ * instead of `Buffer`s (issue #165's Proposal B). This is what actually
+ * goes out over the dashboard's WebSocket (`DashboardServerMessage`'s
+ * exchange-carrying variants all use this, not `CapturedExchange` itself)
+ * and what `historyStore.ts` persists to SQLite — see `toWireExchange`
+ * (`wireExchange.ts`) for the one place that conversion happens. Never
+ * constructed by hand elsewhere: building one field-by-field instead of
+ * through `toWireExchange` is exactly the mistake this split exists to
+ * make impossible to do by accident (forgetting the encode, or encoding
+ * twice).
+ */
+export type WireExchange = Omit<CapturedExchange, 'requestBody' | 'responseBody'> & {
+  requestBody?: string;
+  responseBody?: string;
+};
 
 /**
  * A single WebSocket frame captured while a proxied `ws://`/`wss://`

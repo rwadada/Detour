@@ -164,7 +164,7 @@ describe('evaluateAssertions — noPiiLeak', () => {
   });
 
   it('scans the decoded request/response body too', () => {
-    const body = Buffer.from('contact: person@example.com').toString('base64');
+    const body = Buffer.from('contact: person@example.com');
     const [result] = evaluateAssertions(
       [assertion],
       [exchange({ url: 'https://ads.example.net/track', requestBody: body })],
@@ -213,7 +213,7 @@ describe('evaluateAssertions — noPiiLeak', () => {
       [
         exchange({
           url: 'https://ads.example.net/track',
-          requestBody: Buffer.from('no pii here').toString('base64'),
+          requestBody: Buffer.from('no pii here'),
           requestBodyTruncated: true,
         }),
       ],

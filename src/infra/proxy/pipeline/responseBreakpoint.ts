@@ -81,7 +81,9 @@ export function createResponseBreakpointHandler(deps: ResponseBreakpointDeps) {
         status: res.statusCode ?? 200,
         statusMessage: res.statusMessage,
         headers: flattenHeaders(res.headers),
-        body: snapshot.responseBody,
+        // `BreakpointResponsePayload.body` is base64 (the wire shape) —
+        // `snapshot.responseBody` is a `Buffer` (issue #165's Proposal B).
+        body: snapshot.responseBody?.toString('base64'),
         // Read directly off `displayCapture` — see the request phase's
         // identical fix above for why this must not go through a re-wrap of
         // an already-capped buffer.

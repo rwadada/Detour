@@ -102,9 +102,9 @@ describe('buildGrpcExchangeInfo', () => {
     const responseBody = frame(Buffer.from(responseType.encode({ message: 'hi world' }).finish()));
 
     const exchange = baseExchange({
-      requestBody: requestBody.toString('base64'),
+      requestBody: requestBody,
       responseHeaders: { 'content-type': 'application/grpc+proto' },
-      responseBody: responseBody.toString('base64'),
+      responseBody: responseBody,
     });
 
     const info = buildGrpcExchangeInfo(exchange, registry);
@@ -121,7 +121,7 @@ describe('buildGrpcExchangeInfo', () => {
 
     const exchange = baseExchange({
       requestHeaders: { 'content-type': 'application/grpc+proto', 'grpc-encoding': 'gzip' },
-      requestBody: requestBody.toString('base64'),
+      requestBody: requestBody,
     });
 
     const info = buildGrpcExchangeInfo(exchange, registry);
@@ -133,7 +133,7 @@ describe('buildGrpcExchangeInfo', () => {
     const requestBody = frame(Buffer.from('not really compressed'), 0x1);
     const exchange = baseExchange({
       requestHeaders: { 'content-type': 'application/grpc+proto', 'grpc-encoding': 'snappy' },
-      requestBody: requestBody.toString('base64'),
+      requestBody: requestBody,
     });
 
     const info = buildGrpcExchangeInfo(exchange, registry);
@@ -142,7 +142,7 @@ describe('buildGrpcExchangeInfo', () => {
 
   it('propagates frame truncation from splitGrpcFrames', async () => {
     const registry = await loadRegistry();
-    const exchange = baseExchange({ requestBody: Buffer.from([0, 0, 0]).toString('base64') });
+    const exchange = baseExchange({ requestBody: Buffer.from([0, 0, 0]) });
     const info = buildGrpcExchangeInfo(exchange, registry);
     expect(info?.requestFramesTruncated).toBe(true);
   });
@@ -156,7 +156,7 @@ describe('buildGrpcExchangeInfo', () => {
     const requestType = registry.resolveMethod('helloworld.Greeter', 'SayHello')!.requestType;
     const completeFrame = frame(Buffer.from(requestType.encode({ name: 'world' }).finish()));
     const exchange = baseExchange({
-      requestBody: completeFrame.toString('base64'),
+      requestBody: completeFrame,
       requestBodyTruncated: true,
     });
     const info = buildGrpcExchangeInfo(exchange, registry);
@@ -171,7 +171,7 @@ describe('buildGrpcExchangeInfo', () => {
 
     const exchange = baseExchange({
       requestHeaders: { 'content-type': 'application/grpc+proto', 'Grpc-Encoding': 'gzip' },
-      requestBody: requestBody.toString('base64'),
+      requestBody: requestBody,
     });
 
     const info = buildGrpcExchangeInfo(exchange, registry);

@@ -44,10 +44,6 @@ function decodeFrames(
     });
 }
 
-function bufferOf(base64: string | undefined): Buffer {
-  return base64 ? Buffer.from(base64, 'base64') : Buffer.alloc(0);
-}
-
 function unresolvedInfo(
   parsed: { service: string; method: string },
   truncated: { requestFramesTruncated: boolean; responseFramesTruncated: boolean },
@@ -87,10 +83,10 @@ export function buildGrpcExchangeInfo(
   if (!parsed) return undefined;
 
   const { frames: requestFrames, truncated: requestFramesSplitTruncated } = splitGrpcFrames(
-    bufferOf(exchange.requestBody),
+    exchange.requestBody ?? Buffer.alloc(0),
   );
   const { frames: responseFrames, truncated: responseFramesSplitTruncated } = splitGrpcFrames(
-    bufferOf(exchange.responseBody),
+    exchange.responseBody ?? Buffer.alloc(0),
   );
   // `splitGrpcFrames` only sees a body already capped by `BodyCapture` (see
   // `MAX_CAPTURED_BODY_BYTES`) — if that cap happened to land exactly on a

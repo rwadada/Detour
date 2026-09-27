@@ -118,7 +118,7 @@ export function createScriptResponseHookHandler(deps: ScriptResponseHookDeps) {
         method: exchange.method,
         url: exchange.url,
         headers: flattenHeaders(exchange.requestHeaders),
-        body: requestBody ?? (exchange.requestBody ? Buffer.from(exchange.requestBody, 'base64') : Buffer.alloc(0)),
+        body: requestBody ?? exchange.requestBody ?? Buffer.alloc(0),
       };
       const resInfo: ScriptResponseInfo = {
         status: res.statusCode ?? 200,
