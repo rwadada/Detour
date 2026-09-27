@@ -3944,6 +3944,22 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
     });
   });
 
+  describe('--dashboard-compress (issue #165)', () => {
+    it('negotiates permessage-deflate on /ws only when the flag is passed', async () => {
+      cli = await startDetourCliReady(['--port', '0', '--dashboard-port', '0', '--dashboard-compress']);
+      const dashboardPort = cli.dashboardPort;
+      const extensions = await new Promise<string | undefined>((resolve, reject) => {
+        const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+        socket.on('upgrade', (res) => {
+          resolve(res.headers['sec-websocket-extensions']);
+          socket.close();
+        });
+        socket.on('error', reject);
+      });
+      expect(extensions).toContain('permessage-deflate');
+    });
+  });
+
   describe('--fail-on-running', () => {
     it('exits with code 3 when another instance is already tracked as running on the same --port', async () => {
       const port = await findFreePort();
