@@ -356,19 +356,31 @@ function startUpstream({ tls, certs }) {
     let body = jsonBodies.get(size);
     if (!body) {
       const random = mulberry32(42);
-      const records = [];
-      let bytes = 2; // `[` + `]`
-      // `while`, not a counting `for`: the loop's real stop condition is
-      // `bytes` (how much of `size` has been filled), not `records.length`
-      // — a `for (let i = 0; bytes < size; i += 1)` would have two
-      // variables governing the same loop, which is exactly the mismatch
-      // `sonarjs/misplaced-loop-counter` exists to flag.
-      while (bytes < size) {
-        const record = `{"id":${records.length},"name":"item-${Math.floor(random() * 1e6)}","value":${random().toFixed(4)},"active":${random() > 0.5}}`;
-        records.push(record);
-        bytes += record.length + 1; // +1 for the joining comma
+      // Each `piece` already carries its own leading comma (everything but
+      // the first) — `length` below is the real, exact running length of
+      // `parts.join('')`, not an estimate. Tracking a separate per-record
+      // "+1 for the comma `join` will add" and reconciling it against `[`/
+      // `]` afterwards (an earlier version of this function did exactly
+      // that) double-counts the last record's non-existent trailing comma,
+      // silently handing back a body 1 byte short of `size`.
+      const parts = ['['];
+      let length = 2; // '[' + ']'
+      while (length < size) {
+        const record = `{"id":${parts.length - 1},"name":"item-${Math.floor(random() * 1e6)}","value":${random().toFixed(4)},"active":${random() > 0.5}}`;
+        const piece = parts.length === 1 ? record : `,${record}`;
+        parts.push(piece);
+        length += piece.length;
       }
-      body = Buffer.from(`[${records.join(',')}]`).subarray(0, size);
+      body = Buffer.from(`${parts.join('')}]`).subarray(0, size);
+      // Only reachable for a `size` too small to even fit `[]` — pads with
+      // spaces (valid JSON whitespace) rather than silently handing back a
+      // shorter-than-requested buffer the way a bare `subarray` past the
+      // end would.
+      if (body.length < size) {
+        const padded = Buffer.alloc(size, ' ');
+        body.copy(padded);
+        body = padded;
+      }
       jsonBodies.set(size, body);
     }
     return body;

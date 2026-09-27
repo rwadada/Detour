@@ -3945,10 +3945,8 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
   });
 
   describe('--dashboard-compress (issue #165)', () => {
-    it('negotiates permessage-deflate on /ws only when the flag is passed', async () => {
-      cli = await startDetourCliReady(['--port', '0', '--dashboard-port', '0', '--dashboard-compress']);
-      const dashboardPort = cli.dashboardPort;
-      const extensions = await new Promise<string | undefined>((resolve, reject) => {
+    function negotiatedExtensions(dashboardPort: number | undefined): Promise<string | undefined> {
+      return new Promise((resolve, reject) => {
         const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
         socket.on('upgrade', (res) => {
           resolve(res.headers['sec-websocket-extensions']);
@@ -3956,7 +3954,18 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
         });
         socket.on('error', reject);
       });
+    }
+
+    it('negotiates permessage-deflate on /ws when the flag is passed', async () => {
+      cli = await startDetourCliReady(['--port', '0', '--dashboard-port', '0', '--dashboard-compress']);
+      const extensions = await negotiatedExtensions(cli.dashboardPort);
       expect(extensions).toContain('permessage-deflate');
+    });
+
+    it('never negotiates permessage-deflate when the flag is omitted (the default)', async () => {
+      cli = await startDetourCliReady(['--port', '0', '--dashboard-port', '0']);
+      const extensions = await negotiatedExtensions(cli.dashboardPort);
+      expect(extensions).toBeUndefined();
     });
   });
 

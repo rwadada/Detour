@@ -207,6 +207,10 @@ export interface DashboardServerOptions {
    * loopback-based benchmark can't itself validate one way or the other).
    * `threshold`/`concurrencyLimit` below are the ws-recommended values,
    * left as-is since there was no measured reason to tune them further.
+   * `serverNoContextTakeover` is always forced on when this is enabled —
+   * see its own comment at the `WebSocketServer` construction below for
+   * the CRIME/BREACH-shaped risk a shared compression dictionary would
+   * otherwise open up across every message this connection broadcasts.
    */
   dashboardCompression?: boolean;
 }
@@ -459,7 +463,26 @@ export async function startDashboardServer(
     path: '/ws',
     verifyClient,
     perMessageDeflate: options.dashboardCompression
-      ? { threshold: 1024, concurrencyLimit: 10, serverMaxWindowBits: 10 }
+      ? {
+          threshold: 1024,
+          concurrencyLimit: 10,
+          serverMaxWindowBits: 10,
+          // Without this, `ws` negotiates context takeover by default
+          // (reusing one compression dictionary across every message on
+          // the connection, unless the *client* opts out) — every message
+          // this socket ever broadcasts shares one connected client's whole
+          // session (every exchange, every other feature's state changes),
+          // so a shared dictionary is exactly the CRIME/BREACH-style
+          // side-channel setup: an attacker who can get their own traffic
+          // captured into the same stream (their own request through this
+          // proxy) and observe this connection's encrypted frame sizes
+          // could use the compression ratio's byte-count leakage to infer
+          // another exchange's secret bytes (a session cookie, say) sharing
+          // that dictionary (agy code review). Forcing a fresh dictionary
+          // per message trades a little compression ratio for closing that
+          // off entirely, regardless of what the client itself requests.
+          serverNoContextTakeover: true,
+        }
       : false,
   });
 
