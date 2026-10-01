@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.6.1](https://github.com/rwadada/Detour/compare/v1.6.0...v1.6.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* regenerate PWA install icons to match the current "detour" mark ([1413eba](https://github.com/rwadada/Detour/commit/1413eba3cdcd420b66595f311636abe16b19c1a0))
+* regenerate PWA install icons to match the current "detour" mark ([e4abde8](https://github.com/rwadada/Detour/commit/e4abde885480f0cad5f5cb0bcd181cf8b5ba6f0b))
+
 ## [1.6.0](https://github.com/rwadada/Detour/compare/v1.5.0...v1.6.0) (2026-09-27)
 
 
