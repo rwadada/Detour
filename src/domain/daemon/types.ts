@@ -26,4 +26,8 @@ export interface RunState {
   startedAt: number;
   /** Path to this daemon's log file — set only when `detached` is true. */
   logFile?: string;
+  /** The `detour start` arguments this process was launched with (after `start`, minus `--detach`/`--foreground`) — lets `detour update` relaunch it identically on the new version. Absent in state files written by older versions. May contain secrets (e.g. `--proxy-auth`), so the state file is written owner-only. */
+  startArgs?: string[];
+  /** Working directory at launch, so relative paths in `startArgs` (`--rules`, `--proto`, …) resolve the same way on relaunch. */
+  cwd?: string;
 }

@@ -79,6 +79,18 @@ detour start
 
 This installs from [rwadada/homebrew-detour](https://github.com/rwadada/homebrew-detour), which ships a self-contained release build — no `npm install` or Node toolchain setup required beyond Node itself (pulled in automatically as the formula's dependency). `brew tap` only needs to run once; `brew install detour`/`brew upgrade detour` work with no `rwadada/` prefix from then on.
 
+#### Updating
+
+Use `detour update` rather than a bare `brew upgrade detour` while Detour is running: Homebrew deletes the old version's files, and a still-running process keeps pointing at them (the dashboard stops loading). `detour update` checks the latest GitHub release, runs `brew update` + `brew upgrade` for you, then stops each running instance and relaunches it in the background on the new version with the same `start` arguments and working directory.
+
+```bash
+detour update --check   # just report whether a newer release exists
+detour update           # upgrade + restart running instances (asks first)
+detour update --yes     # same, without the prompt (for scripts)
+```
+
+Notes: an instance that was running in the foreground comes back as a background daemon (`detour status`/`detour stop` manage it as usual); captured traffic held in memory is lost on restart (use `--persist` to keep it); instances started by a Detour older than this feature aren't touched — restart them by hand. Installs other than Homebrew (a source checkout, `npm start`) can still use `--check` but must be updated manually. The `start` arguments are kept in `~/.detour/run/<port>.json` (owner-only permissions), so `--proxy-auth` credentials end up there as well as in the process list.
+
 ### From source
 
 ```bash

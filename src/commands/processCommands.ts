@@ -1,9 +1,7 @@
 import type { Command } from 'commander';
-import { findLiveRunState, isProcessAlive, removeRunState } from '../infra/fs/runStateStore';
+import { findLiveRunState } from '../infra/fs/runStateStore';
+import { stopInstance } from '../infra/process/stopInstance';
 import { parsePort } from './optionParsers';
-
-/** How long `detour stop` waits for a SIGTERM'd process to exit on its own before escalating to SIGKILL. */
-export const STOP_GRACE_PERIOD_MS = 10_000;
 
 /** Shared by `detour status`/`detour stop` (issue #20) when nothing is tracked as running on `port`. */
 export function reportNotRunning(port: number): void {
@@ -54,26 +52,7 @@ export function registerProcessCommands(program: Command): void {
           reportNotRunning(port);
           return;
         }
-        try {
-          process.kill(state.pid, 'SIGTERM');
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== 'ESRCH') throw err;
-        }
-        const deadline = Date.now() + STOP_GRACE_PERIOD_MS;
-        while (isProcessAlive(state.pid) && Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-        if (isProcessAlive(state.pid)) {
-          try {
-            process.kill(state.pid, 'SIGKILL');
-          } catch (err) {
-            if ((err as NodeJS.ErrnoException).code !== 'ESRCH') throw err;
-          }
-        }
-        // Self-healing (see findLiveRunState): normally the process removes
-        // its own state file as part of graceful shutdown, but a SIGKILL after
-        // the grace period skips that — clean it up here either way.
-        removeRunState(port);
+        await stopInstance(state);
         console.log(`✔ Stopped detour (pid ${state.pid}) on port ${port}.`);
       } catch (err) {
         console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);

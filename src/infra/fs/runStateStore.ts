@@ -10,13 +10,19 @@ export function resolveRunDir(): string {
   return dir;
 }
 
+/** State files carry the original `detour start` arguments, which can include credentials (`--proxy-auth`) — owner-only, like the process list entry they mirror. */
+const STATE_FILE_MODE = 0o600;
+
 function runStateFilePath(requestedPort: number): string {
   return path.join(resolveRunDir(), `${requestedPort}.json`);
 }
 
 /** Persists `state`, overwriting whatever (if anything) was tracked for `state.requestedPort` before. */
 export function writeRunState(state: RunState): void {
-  fs.writeFileSync(runStateFilePath(state.requestedPort), JSON.stringify(state, null, 2));
+  const filePath = runStateFilePath(state.requestedPort);
+  fs.writeFileSync(filePath, JSON.stringify(state, null, 2), { mode: STATE_FILE_MODE });
+  // `mode` only applies when the file is created; tighten a pre-existing one too.
+  fs.chmodSync(filePath, STATE_FILE_MODE);
 }
 
 /**
@@ -43,7 +49,7 @@ export function reserveRunState(state: RunState): boolean {
   const filePath = runStateFilePath(state.requestedPort);
   const tryCreate = (): boolean => {
     try {
-      fs.writeFileSync(filePath, JSON.stringify(state, null, 2), { flag: 'wx' });
+      fs.writeFileSync(filePath, JSON.stringify(state, null, 2), { flag: 'wx', mode: STATE_FILE_MODE });
       return true;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
@@ -126,4 +132,17 @@ export function findLiveRunState(requestedPort: number): RunState | undefined {
     return undefined;
   }
   return state;
+}
+
+/** Every instance currently tracked as running, across all ports (self-healing stale entries as `findLiveRunState` does). */
+export function listLiveRunStates(): RunState[] {
+  const dir = resolveRunDir();
+  const states: RunState[] = [];
+  for (const name of fs.readdirSync(dir)) {
+    const match = /^(\d+)\.json$/.exec(name);
+    if (!match) continue;
+    const state = findLiveRunState(Number(match[1]));
+    if (state) states.push(state);
+  }
+  return states.sort((a, b) => a.requestedPort - b.requestedPort);
 }
