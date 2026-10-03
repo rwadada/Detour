@@ -28,6 +28,8 @@ import { assertPortAvailable } from '../portCheck';
 import type { HistoryStore } from '../persistence/historyStore';
 import { nodeHttpRequester } from '../proxy/nodeHttpRequester';
 import { hashPassword, verifyPassword } from '../../domain/auth/passwordHash';
+import type { UpdateService } from '../../domain/update/updateService';
+import { createDashboardUpdates, hasForwardingHeaders, isLoopbackAddress } from './dashboardUpdates';
 import { serveStatic } from './staticServer';
 
 /**
@@ -213,7 +215,16 @@ export interface DashboardServerOptions {
    * otherwise open up across every message this connection broadcasts.
    */
   dashboardCompression?: boolean;
+  /**
+   * Release check + self-update, so the dashboard can show a "new version"
+   * banner and offer an Update button (see `dashboardUpdates.ts` for who may
+   * trigger it). Omitted → no `updateInfo` is ever sent and `startUpdate` is
+   * rejected.
+   */
+  updateService?: UpdateService;
 }
+
+const UPDATE_INFO_REFRESH_MS = 60 * 60 * 1000;
 
 export interface DashboardServerHandle {
   /** Port the dashboard actually bound to (relevant when options.port is 0). */
@@ -492,6 +503,31 @@ export async function startDashboardServer(
   // than a plain property on the socket so nothing here needs to remember to
   // clean up on close — an unreachable socket just falls out of it.
   const authenticatedSockets = new WeakSet<WebSocket>();
+  // The subset of `authenticatedSockets` that really proved a password via
+  // `login` (the rest were grandfathered in while none was set), and the
+  // sockets whose peer is the loopback interface — together what decides who
+  // may trigger a self-update (see `createDashboardUpdates`).
+  // `let` so that changing the password can revoke every earlier proof at once.
+  let passwordVerifiedSockets = new WeakSet<WebSocket>();
+  const loopbackSockets = new WeakSet<WebSocket>();
+  const dashboardUpdates = createDashboardUpdates(
+    options.updateService,
+    {
+      isLoopback: (socket) => loopbackSockets.has(socket),
+      isPasswordVerified: (socket) => passwordVerifiedSockets.has(socket),
+    },
+    Date.now,
+    (message) => broadcast({ type: 'updateStatus', state: 'failed', message }),
+  );
+  const sendUpdateInfo = async (socket: WebSocket) => {
+    const message = await dashboardUpdates.infoFor(socket);
+    if (message && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+  };
+  const sendUpdateInfoToAll = () => {
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN && authenticatedSockets.has(client)) void sendUpdateInfo(client);
+    }
+  };
   // Sockets with a `login` currently awaiting `verifyPassword` —
   // guards against two `login` frames racing each other: both would pass
   // the `!authenticatedSockets.has(socket)` check below before either
@@ -763,6 +799,9 @@ export async function startDashboardServer(
     socket.send(JSON.stringify(protoSchemaMessage));
     const historyStatusMessage: DashboardServerMessage = { type: 'historyStatus', enabled: !!options.historyStore };
     socket.send(JSON.stringify(historyStatusMessage));
+    // Last and unawaited: the release lookup may hit the network, and must
+    // never delay the snapshot above.
+    void sendUpdateInfo(socket);
   };
 
   wss.on('connection', (socket: WebSocket, req: IncomingMessage) => {
@@ -772,6 +811,7 @@ export async function startDashboardServer(
     // `--lan`'s own bind-at-spawn-time semantics. Only *new* connections
     // made after that point are asked for it.
     if (!currentPasswordHash()) authenticatedSockets.add(socket);
+    if (isLoopbackAddress(req.socket.remoteAddress) && !hasForwardingHeaders(req.headers)) loopbackSockets.add(socket);
 
     const ip = clientIp(req);
     if (!authenticatedSockets.has(socket)) {
@@ -843,6 +883,7 @@ export async function startDashboardServer(
         else if (message.type === 'setFocus') eventBus.emit('setFocus', message.hosts);
         else if (message.type === 'setThrottle') eventBus.emit('setThrottle', message.state);
         else if (message.type === 'setBlockHosts') eventBus.emit('setBlockHosts', message.state);
+        else if (message.type === 'startUpdate') socket.send(JSON.stringify(await dashboardUpdates.start(socket)));
         else if (message.type === 'replay') {
           // Fire-and-forget: `replayExchange` never rejects (network
           // failures land in the replayed exchange's own `error` field, see
@@ -876,6 +917,10 @@ export async function startDashboardServer(
             // setting a password, where the config becoming unreadable
             // before that next read would still fail open.
             lastKnownPasswordHash = dashboardPasswordHash;
+            // A session that logged in with the old password must not keep
+            // the right to run a host-level update after it's been changed.
+            passwordVerifiedSockets = new WeakSet<WebSocket>();
+            sendUpdateInfoToAll();
             broadcast(userConfigMessage());
           } catch (err) {
             broadcastError('USER_CONFIG_WRITE_ERROR', describeError(err));
@@ -941,6 +986,7 @@ export async function startDashboardServer(
         loginFailuresByIp.delete(ip);
         releaseUnauthenticatedSlot(socket, ip);
         authenticatedSockets.add(socket);
+        passwordVerifiedSockets.add(socket);
         sendInitialPayload(socket);
         return;
       }
@@ -1097,6 +1143,11 @@ export async function startDashboardServer(
       eventBus.on('wsClose', onWsClose);
       eventBus.on('rulesReloaded', onRulesReloaded);
 
+      // Keeps a long-open tab current: the lookup itself is cached, so this
+      // is cheap — it only matters once the cache has expired.
+      const updateTimer = options.updateService ? setInterval(sendUpdateInfoToAll, UPDATE_INFO_REFRESH_MS) : undefined;
+      updateTimer?.unref();
+
       const address = httpServer.address();
       // Reassigns the outer `let boundPort` (declared up top, alongside
       // `isAllowedOrigin`'s doc comment on why) — not a new binding — so an
@@ -1119,6 +1170,7 @@ export async function startDashboardServer(
             eventBus.off('wsFrame', onWsFrame);
             eventBus.off('wsClose', onWsClose);
             eventBus.off('rulesReloaded', onRulesReloaded);
+            if (updateTimer) clearInterval(updateTimer);
             for (const client of wss.clients) client.close();
             wss.close(() => httpServer.close(() => res()));
           }),

@@ -257,6 +257,18 @@ export type DashboardServerMessage =
    */
   | { type: 'historyStatus'; enabled: boolean }
   /**
+   * Sent right after connecting and again whenever the periodic release check
+   * finds something new: what version this instance runs and the newest
+   * release (`latest` is null when it couldn't be determined — offline, rate
+   * limited, or the check is disabled). `canUpdate` is per connection: true
+   * only when this install can upgrade itself *and* this client is allowed to
+   * trigger it (loopback, or a password-authenticated session) — otherwise
+   * the UI can only point the user at `detour update` in a terminal.
+   */
+  | { type: 'updateInfo'; current: string; latest: string | null; updateAvailable: boolean; canUpdate: boolean }
+  /** Answer to `startUpdate`, sent to the requesting socket only. `started` means the detached updater was launched; this process is about to be stopped and relaunched by it. */
+  | { type: 'updateStatus'; state: 'started' | 'rejected' | 'failed'; message?: string }
+  /**
    * Answers a `queryHistory` request (issue #144) with one page of
    * persisted exchanges, newest-first. `requestId` echoes the request so a
    * client that fired a new query before an earlier one's answer arrived
@@ -342,4 +354,6 @@ export type DashboardClientMessage =
    * `historyStatus` before ever sending this, but this keeps a stray query
    * from hanging forever waiting on a reply that would otherwise never come.
    */
-  | { type: 'queryHistory'; requestId: string; query: HistoryQuery };
+  | { type: 'queryHistory'; requestId: string; query: HistoryQuery }
+  /** Runs `detour update --yes` detached (stop, `brew upgrade`, relaunch on the new version). Only honored for a loopback or password-authenticated socket on an install that can update itself; answered by `updateStatus`. */
+  | { type: 'startUpdate' };

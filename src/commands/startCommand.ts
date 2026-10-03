@@ -26,6 +26,7 @@ import { startIdleWatcher } from '../infra/proxy/idleWatcher';
 import { startProxyServer } from '../infra/proxy/proxyServer';
 import { redactProxyUrlCredentials, validateUpstreamProxyUrl } from '../infra/proxy/upstreamProxyAgent';
 import { resolveUpstreamTlsOptions } from '../infra/proxy/upstreamTlsOptions';
+import { createDefaultUpdateService } from '../infra/update/defaultUpdateService';
 import { extractStartArgs } from '../domain/update/restartArgs';
 import { LAN_ACCESS_WARNING, printStartupBanner } from '../presentation/banner';
 import {
@@ -637,6 +638,7 @@ async function runStartBody({
           insecureUpstream: options.insecureUpstream ?? false,
           maxCaptureMemoryBytes: parseMaxCaptureMemoryBytes(options.maxCaptureMemory),
           dashboardCompression: options.dashboardCompress ?? false,
+          updateService: createDefaultUpdateService(trackRunState),
         },
         eventBus,
       );

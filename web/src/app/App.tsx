@@ -1,5 +1,6 @@
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { HistoryBanner } from '@/features/history';
+import { UpdateBanner } from '@/features/update-notice';
 import { ImportedBanner } from '@/features/log-viewer';
 import { ContextBar } from '@/widgets/context-bar';
 import { InspectorPanel } from '@/widgets/inspector-panel';
@@ -22,6 +23,7 @@ export default function App() {
         <Toolbar />
         <ContextBar />
         <ImportedBanner />
+        <UpdateBanner />
         <HistoryBanner />
         {/* `autoSaveId` persists the split (the inspector panel's width/height) to localStorage itself — issue #24 Phase 5's panel-size persistence. */}
         <PanelGroup autoSaveId="detour-main-panels" direction="horizontal" className="flex-1 overflow-hidden">
