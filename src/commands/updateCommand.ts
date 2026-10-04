@@ -1,9 +1,8 @@
-import fs from 'node:fs';
 import readline from 'node:readline/promises';
 import type { Command } from 'commander';
-import { detectInstallMethod } from '../domain/update/installMethod';
 import { listLiveRunStates } from '../infra/fs/runStateStore';
 import { stopInstance } from '../infra/process/stopInstance';
+import { detectCurrentInstall } from '../infra/update/currentInstall';
 import { fetchLatestReleaseVersion } from '../infra/update/githubRelease';
 import { brewUpgradeDetour, readInstalledBrewVersion, startInstanceViaBrew } from '../infra/update/homebrew';
 import { runUpdate, type UpdateDeps } from '../usecase/update/runUpdate';
@@ -29,8 +28,7 @@ async function confirmOnTty(question: string): Promise<boolean> {
 const pkg = require('../../package.json') as { version: string };
 
 function buildDeps(): UpdateDeps {
-  const entry = process.argv[1];
-  const install = detectInstallMethod(entry ? fs.realpathSync(entry) : '');
+  const install = detectCurrentInstall();
   const prefix = install.kind === 'homebrew' ? install.prefix : '';
   return {
     currentVersion: pkg.version,
