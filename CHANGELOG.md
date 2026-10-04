@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.7.0](https://github.com/rwadada/Detour/compare/v1.6.1...v1.7.0) (2026-10-04)
+
+
+### Features
+
+* add `detour update` (Homebrew upgrade + restart running instances) ([e60d107](https://github.com/rwadada/Detour/commit/e60d107a7d9111eb2da7b936abba1d0cbd890b0e))
+* add `detour update` to upgrade Homebrew installs and restart running instances ([70ed3d6](https://github.com/rwadada/Detour/commit/70ed3d68e0fc3d3876dd7f917536061b69a06b47))
+* offer a one-click Detour update from the dashboard ([b4ff43b](https://github.com/rwadada/Detour/commit/b4ff43beabda0add464e2b0a4f0d5e2913a7472c))
+* one-click Detour update from the dashboard ([a3d5182](https://github.com/rwadada/Detour/commit/a3d51827ef38a4b07f491116fe2734d5ec848b0c))
+
 ## [1.6.1](https://github.com/rwadada/Detour/compare/v1.6.0...v1.6.1) (2026-10-01)
 
 
