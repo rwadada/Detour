@@ -26,6 +26,7 @@ import { startIdleWatcher } from '../infra/proxy/idleWatcher';
 import { startProxyServer } from '../infra/proxy/proxyServer';
 import { redactProxyUrlCredentials, validateUpstreamProxyUrl } from '../infra/proxy/upstreamProxyAgent';
 import { resolveUpstreamTlsOptions } from '../infra/proxy/upstreamTlsOptions';
+import { extractStartArgs } from '../domain/update/restartArgs';
 import { LAN_ACCESS_WARNING, printStartupBanner } from '../presentation/banner';
 import {
   logExchange,
@@ -319,6 +320,7 @@ async function runStart(options: StartOptions): Promise<void> {
       detached: isDaemonChild(),
       startedAt: Date.now(),
       logFile: process.env.DETOUR_LOG_FILE,
+      ...relaunchInfo(),
     });
     if (!reserved) {
       const existing = findLiveRunState(port);
@@ -336,6 +338,11 @@ async function runStart(options: StartOptions): Promise<void> {
     if (reservedRunState) removeRunState(port);
     throw err;
   }
+}
+
+/** What `detour update` needs from the run-state file to relaunch this process identically on a newer version. */
+function relaunchInfo(): { startArgs: string[]; cwd: string } {
+  return { startArgs: extractStartArgs(process.argv.slice(3)), cwd: process.cwd() };
 }
 
 interface RunStartBodyContext {
@@ -654,6 +661,7 @@ async function runStartBody({
         detached: isDaemonChild(),
         startedAt: Date.now(),
         logFile: process.env.DETOUR_LOG_FILE,
+        ...relaunchInfo(),
       });
     } catch (err) {
       // The proxy (and dashboard) are already up at this point — an

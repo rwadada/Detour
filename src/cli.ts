@@ -8,6 +8,7 @@ import { registerServeCommand } from './commands/serveCommand';
 import { registerSetupCommands } from './commands/setupCommand';
 import { registerStartCommand } from './commands/startCommand';
 import { registerTestCommand } from './commands/testCommand';
+import { registerUpdateCommand } from './commands/updateCommand';
 
 // Detour's composition root. Every subcommand's wiring lives in its own
 // module under `src/commands/` (issue #168 — this file was 1,837 lines of
@@ -37,6 +38,7 @@ export function createCli(): Command {
   registerRecordCommand(program);
   registerServeCommand(program);
   registerRulesCommands(program);
+  registerUpdateCommand(program);
 
   return program;
 }
