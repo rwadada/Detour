@@ -169,6 +169,7 @@ const SELF_TARGET_REJECTION = 'Detour does not proxy requests to its own listene
 
 /** The `403` sent down a raw CONNECT socket for a tunnel aimed at one of this process's own listeners (issue #205) — hand-built and closed immediately, so no tunnel is ever established. */
 function rejectSelfTargetConnect(socket: Duplex): void {
+  if (socket.destroyed) return;
   socket.end(
     'HTTP/1.1 403 Forbidden\r\n' +
       'Content-Type: text/plain; charset=utf-8\r\n' +

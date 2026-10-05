@@ -33,9 +33,10 @@ export const LAN_ACCESS_WARNING =
   'unless a dashboard password is set (`detour config --dashboard-password`), there is no authentication at all — anyone on your network can reach the dashboard, view decrypted HTTPS traffic through it, or edit rules, and the proxy itself serves anyone who asks unless you set --proxy-auth';
 
 /**
- * The startup banner's callout (issue #158) for the combination that
- * actually creates an open forward proxy on a shared network: `--lan`/
- * `lanAccess` on, `--proxy-auth`/`proxyAuth` unset. Worth shouting about
+ * The startup banner's callout (issue #158) for the open forward proxy
+ * the proxy always is on a shared network (it binds to every interface
+ * regardless of `--lan`/`lanAccess`, issue #205) while `--proxy-auth`/`proxyAuth`
+ * is unset. Worth shouting about
  * separately from `LAN_ACCESS_WARNING` because the consequence isn't
  * "someone could snoop on your session" but "someone else's traffic ends up
  * decrypted in your dumps, and your machine is their egress hop".
@@ -45,8 +46,8 @@ const PROXY_OPEN_WARNING =
 
 /**
  * The startup banner's callout for `--insecure-upstream` (issue #160) —
- * loud and unconditional (unlike `PROXY_OPEN_WARNING`, which only fires for
- * a specific risky combination) because this flag disables a safety check
+ * loud and unconditional (unlike `PROXY_OPEN_WARNING`, which only fires
+ * while `--proxy-auth` is unset) because this flag disables a safety check
  * for the *entire session*, silently: nothing about a normal request
  * signals that its upstream's certificate went unverified apart from this
  * one line at startup and the dashboard's own persistent header indicator.
@@ -165,16 +166,9 @@ export function printStartupBanner(info: {
       `⚠ Dashboard bound to every network interface, not just this machine — SECURITY: ${risk}. Only do this on a network you trust.`,
     );
   }
-  // Issue #158. Keyed off `--lan`/`lanAccess` (`lanEnabled`, what
-  // `dashboardHost` encodes) rather than `dashboardOnLan`: the proxy is
-  // reachable from the network either way, so `--headless --lan` — a
-  // CI/scripted session with no dashboard at all — needs this warning just
-  // as much. Not keyed off "is this machine actually on a network"
-  // (`lanAddresses`), since `--lan` is an explicit statement of intent to be
-  // reachable, and a warning that disappeared while offline would be
-  // missing exactly when someone joins a café Wi-Fi mid-session.
-  // Issue #205: now unconditional. The proxy binds to every interface
-  // whatever `--lan` says, so "only dangerous with --lan" was never true.
+  // Issues #158/#205. Unconditional whenever `--proxy-auth` is unset: the
+  // proxy binds to every interface whatever `--lan` says, so it is open to
+  // the network even for a plain localhost-dashboard or `--headless` session.
   if (!info.proxyAuthSet) {
     console.log(`⚠ SECURITY: ${PROXY_OPEN_WARNING}.`);
   }
@@ -204,8 +198,8 @@ export function printStartupBanner(info: {
     console.log('Upstream client certificate → configured (--client-cert/--client-key)');
   }
   // Loud and unconditional (issue #160) — see `INSECURE_UPSTREAM_WARNING`'s
-  // own doc comment for why this doesn't get the same "only for a specific
-  // risky combination" treatment as `PROXY_OPEN_WARNING` above.
+  // own doc comment for why this is not gated on a specific
+  // condition the way `PROXY_OPEN_WARNING` (only while --proxy-auth is unset) is.
   if (info.insecureUpstream) {
     console.log(`⚠ SECURITY: ${INSECURE_UPSTREAM_WARNING}.`);
   }
