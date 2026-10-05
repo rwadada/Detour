@@ -3784,6 +3784,39 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
     expect(cli.stdout()).toMatch(/DETOUR_READY proxyPort=\d+ dashboardPort=\d+ pid=\d+/);
   });
 
+  it('exits on SIGTERM within a few seconds even while a relayed WebSocket is still open (issue #206)', async () => {
+    const upstreamServer = http.createServer();
+    const upstreamWss = new WebSocketServer({ server: upstreamServer });
+    let upstreamConnected = false;
+    upstreamWss.on('connection', (ws) => {
+      upstreamConnected = true;
+      const timer = setInterval(() => ws.readyState === ws.OPEN && ws.send('tick'), 20);
+      ws.on('close', () => clearInterval(timer));
+      ws.on('error', () => {});
+    });
+    await new Promise<void>((resolve) => upstreamServer.listen(0, '127.0.0.1', resolve));
+    const upstreamPort = (upstreamServer.address() as net.AddressInfo).port;
+    let client: net.Socket | undefined;
+    try {
+      cli = await startDetourCliReady(['--port', '0', '--dashboard-port', '0', '--foreground', '--no-open']);
+      client = net.connect(cli.proxyPort, '127.0.0.1', () =>
+        client!.write(
+          `GET http://127.0.0.1:${upstreamPort}/ HTTP/1.1\r\nHost: 127.0.0.1:${upstreamPort}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+        ),
+      );
+      client.on('error', () => {});
+      await expect.poll(() => upstreamConnected, { timeout: 5000 }).toBe(true);
+
+      process.kill(cli.pid, 'SIGTERM');
+
+      await expect.poll(() => cli!.exitCode(), { timeout: 8000 }).toBe(0);
+    } finally {
+      client?.destroy();
+      upstreamWss.clients.forEach((c) => c.terminate());
+      upstreamServer.close();
+    }
+  }, 30_000);
+
   describe('--headless', () => {
     it('skips starting the dashboard entirely while the proxy keeps working', async () => {
       echo = await startEchoServer();

@@ -1190,12 +1190,29 @@ export async function startDashboardServer(
             eventBus.off('rulesReloaded', onRulesReloaded);
             if (updateTimer) clearInterval(updateTimer);
             for (const client of wss.clients) client.close();
-            wss.close(() => httpServer.close(() => res()));
+            // `httpServer.close()` waits for every connection, so one client
+            // that never answers the close handshake (or a stray keep-alive)
+            // would block shutdown forever (issue #206) — cut what remains
+            // after a short drain.
+            const force = setTimeout(() => {
+              for (const client of wss.clients) client.terminate();
+              httpServer.closeAllConnections();
+            }, SHUTDOWN_DRAIN_MS);
+            force.unref();
+            wss.close(() =>
+              httpServer.close(() => {
+                clearTimeout(force);
+                res();
+              }),
+            );
           }),
       });
     });
   });
 }
+
+/** How long `stop()` lets connections finish before cutting them (issue #206). */
+const SHUTDOWN_DRAIN_MS = 3000;
 
 function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
