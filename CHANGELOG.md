@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.9.0](https://github.com/rwadada/Detour/compare/v1.8.0...v1.9.0) (2026-10-05)
+
+
+### Features
+
+* add a "Check for updates" button to the dashboard sidebar ([e1301bb](https://github.com/rwadada/Detour/commit/e1301bbf12520ad6fb03eb8d67d770b4d7992ae2))
+* add a "Check for updates" button to the dashboard sidebar ([971258b](https://github.com/rwadada/Detour/commit/971258bbdef49bfa15e780de914cebf457bb2c52))
+* keep the captured traffic list across a dashboard-initiated update ([924696c](https://github.com/rwadada/Detour/commit/924696ca4b108a891ca9b4ad275bfeddb68b4485))
+* keep the traffic list across a dashboard-initiated update ([51d1793](https://github.com/rwadada/Detour/commit/51d1793421350b1af6cc7dfcbfdbc14d5eb8c25c))
+
+
+### Bug Fixes
+
+* blank gap above the log list after a server restart ([77e0a89](https://github.com/rwadada/Detour/commit/77e0a89355e6b3e9671a11aaaa8130055a116376))
+* reset the log table's virtualizer when the list empties ([ee151ec](https://github.com/rwadada/Detour/commit/ee151ec10793568d992cadf02dcc2d7f88c48d28))
+
 ## [1.8.0](https://github.com/rwadada/Detour/compare/v1.7.0...v1.8.0) (2026-10-05)
 
 
