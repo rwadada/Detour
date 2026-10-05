@@ -10,6 +10,9 @@ export interface UpdateInfo {
 
 export type UpdatePhase = 'idle' | 'updating' | 'failed';
 
+/** Progress of a user-requested "Check for updates": `checked`/`timeout` stay put until the next click so the result remains readable. */
+export type CheckState = 'idle' | 'checking' | 'checked' | 'timeout';
+
 export interface UpdateStoreState {
   /** Mirrors the server's `updateInfo` — `null` until one arrives (never, for installs that can't check). */
   info: UpdateInfo | null;
@@ -18,16 +21,23 @@ export interface UpdateStoreState {
   message: string | undefined;
   /** The release the user chose to hide the banner for; a still-newer release brings it back. */
   dismissedVersion: string | null;
+  checkState: CheckState;
   startUpdate: () => void;
   dismiss: () => void;
+  /** Asks the server to look for a new release now instead of waiting out its cache; the answer arrives as `updateInfo`. */
+  checkForUpdate: () => void;
 }
 
 /** The server's brew update + upgrade + relaunch usually takes well under this; past it, assume something went wrong. */
 export const UPDATE_TIMEOUT_MS = 5 * 60 * 1000;
 
+/** The server answers a check as soon as GitHub does (its own request timeout is 10 s); past this, nothing is coming. */
+export const CHECK_TIMEOUT_MS = 15 * 1000;
+
 export interface UpdateStoreOptions {
   reload?: () => void;
   timeoutMs?: number;
+  checkTimeoutMs?: number;
 }
 
 /**
@@ -40,6 +50,7 @@ export interface UpdateStoreOptions {
 export function createUpdateStore(connection: DashboardConnection, options: UpdateStoreOptions = {}) {
   const reload = options.reload ?? (() => window.location.reload());
   const timeoutMs = options.timeoutMs ?? UPDATE_TIMEOUT_MS;
+  const checkTimeoutMs = options.checkTimeoutMs ?? CHECK_TIMEOUT_MS;
 
   return create<UpdateStoreState>((set, get) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -48,9 +59,19 @@ export function createUpdateStore(connection: DashboardConnection, options: Upda
       timer = undefined;
     };
 
+    let checkTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearCheckTimer = () => {
+      if (checkTimer !== undefined) clearTimeout(checkTimer);
+      checkTimer = undefined;
+    };
+
     connection.onMessage((message) => {
       if (message.type === 'updateInfo') {
         const previous = get().info;
+        if (get().checkState === 'checking') {
+          clearCheckTimer();
+          set({ checkState: 'checked' });
+        }
         set({
           info: {
             current: message.current,
@@ -76,6 +97,16 @@ export function createUpdateStore(connection: DashboardConnection, options: Upda
       phase: 'idle',
       message: undefined,
       dismissedVersion: null,
+      checkState: 'idle',
+      checkForUpdate: () => {
+        if (get().checkState === 'checking') return;
+        // A manual check is an explicit "tell me again": a release the user
+        // earlier hid with "Later" should be allowed to resurface.
+        set({ checkState: 'checking', dismissedVersion: null });
+        connection.send({ type: 'checkUpdate' });
+        clearCheckTimer();
+        checkTimer = setTimeout(() => set({ checkState: 'timeout' }), checkTimeoutMs);
+      },
       startUpdate: () => {
         if (get().phase === 'updating') return;
         set({ phase: 'updating', message: undefined });

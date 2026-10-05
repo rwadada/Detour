@@ -38,6 +38,36 @@ describe('createUpdateService', () => {
     expect(await service.getLatestVersion()).toBe('1.6.1');
   });
 
+  it('lets a forced check skip the cache once the last lookup is a little old', async () => {
+    const fetch = vi.fn<() => Promise<string>>().mockResolvedValueOnce('1.0.0').mockResolvedValue('1.6.1');
+    const { service, advance } = setup(fetch);
+    expect(await service.getLatestVersion()).toBe('1.0.0');
+    advance(60 * 1000);
+    expect(await service.getLatestVersion()).toBe('1.0.0');
+    expect(await service.getLatestVersion({ force: true })).toBe('1.6.1');
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a failed lookup on a forced check instead of waiting out the backoff', async () => {
+    const fetch = vi.fn<() => Promise<string>>().mockRejectedValueOnce(new Error('offline')).mockResolvedValue('1.6.1');
+    const { service, advance } = setup(fetch);
+    expect(await service.getLatestVersion()).toBeNull();
+    advance(60 * 1000);
+    expect(await service.getLatestVersion({ force: true })).toBe('1.6.1');
+  });
+
+  it('rate limits forced checks so repeated clicks reuse the last lookup', async () => {
+    const fetch = vi.fn(async () => '1.6.1');
+    const { service, advance } = setup(fetch);
+    await service.getLatestVersion({ force: true });
+    advance(5 * 1000);
+    await service.getLatestVersion({ force: true });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    advance(30 * 1000);
+    await service.getLatestVersion({ force: true });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it('shares one in-flight lookup between concurrent callers', async () => {
     const fetch = vi.fn(async () => '1.6.1');
     const { service } = setup(fetch);

@@ -97,6 +97,22 @@ describe('startDashboardServer — update banner', () => {
     expect(await failure).toMatchObject({ state: 'failed', message: expect.stringContaining('code 1') });
   });
 
+  it('re-runs the release lookup on checkUpdate and answers with a fresh updateInfo', async () => {
+    const getLatestVersion = vi.fn<(options?: { force?: boolean }) => Promise<string | null>>(async () => '1.0.0');
+    handle = await startDashboardServer(
+      { port: 0, updateService: fakeService({ getLatestVersion }) },
+      new DetourEventBus(),
+    );
+    const socket = connect();
+    const initial = await waitForMessage(socket, (m) => m.type === 'updateInfo');
+    expect(initial).toMatchObject({ latest: '1.0.0', updateAvailable: false });
+    getLatestVersion.mockResolvedValue('1.6.1');
+    const refreshed = waitForMessage(socket, (m) => m.type === 'updateInfo' && m.latest === '1.6.1');
+    socket.send(JSON.stringify({ type: 'checkUpdate' }));
+    expect(await refreshed).toMatchObject({ latest: '1.6.1', updateAvailable: true });
+    expect(getLatestVersion).toHaveBeenCalledWith({ force: true });
+  });
+
   it('does not treat a client behind a same-host reverse proxy as local', async () => {
     handle = await startDashboardServer({ port: 0, updateService: fakeService() }, new DetourEventBus());
     const socket = new WebSocket(`ws://localhost:${handle.port}/ws`, { headers: { 'x-forwarded-for': '203.0.113.9' } });
