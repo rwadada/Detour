@@ -16,7 +16,11 @@ import { SAMPLE_RULES_FILE } from '../../domain/rules/sample';
 import { findRejectedScriptWrites } from '../../domain/rules/scriptGate';
 import type { RulesFile } from '../../domain/rules/types';
 import { RingBuffer } from '../../domain/shared/ringBuffer';
-import type { DashboardClientMessage, DashboardServerMessage } from '../../domain/dashboard/protocol';
+import {
+  PROTOCOL_VERSION,
+  type DashboardClientMessage,
+  type DashboardServerMessage,
+} from '../../domain/dashboard/protocol';
 import type { HttpRequester } from '../../usecase/ports/httpRequester';
 import type { RuleProfileStore } from '../../usecase/ports/ruleProfileStore';
 import { replayExchange } from '../../usecase/replayExchange';
@@ -29,6 +33,7 @@ import type { HistoryStore } from '../persistence/historyStore';
 import { nodeHttpRequester } from '../proxy/nodeHttpRequester';
 import { hashPassword, verifyPassword } from '../../domain/auth/passwordHash';
 import type { UpdateService } from '../../domain/update/updateService';
+import { parseClientMessage } from '../../domain/dashboard/clientMessage';
 import { createDashboardUpdates, hasForwardingHeaders, isLoopbackAddress } from './dashboardUpdates';
 import { serveStatic } from './staticServer';
 
@@ -780,6 +785,7 @@ export async function startDashboardServer(
         type: 'proxyInfo',
         proxyPort: options.proxyPort,
         insecureUpstream: options.insecureUpstream ?? false,
+        protocolVersion: PROTOCOL_VERSION,
       };
       socket.send(JSON.stringify(proxyInfoMessage));
     }
@@ -884,9 +890,23 @@ export async function startDashboardServer(
     // nothing here needs the caller to wait on it.
     socket.on('message', async (raw) => {
       try {
-        const message = JSON.parse(raw.toString()) as DashboardClientMessage;
+        const parsed = parseClientMessage(raw.toString());
+        const authenticated = authenticatedSockets.has(socket);
+        if (!parsed.ok) {
+          // Reported only for an authenticated socket (issue #209): before
+          // login a frame is just noise from a stranger, and logging each
+          // one would hand them a way to flood this process's log.
+          if (authenticated) {
+            eventBus.emit('error', {
+              errorKind: 'DASHBOARD_BAD_MESSAGE',
+              message: `Rejected a malformed dashboard message — ${parsed.reason}`,
+            });
+          }
+          return;
+        }
+        const message = parsed.message;
 
-        if (!authenticatedSockets.has(socket)) {
+        if (!authenticated) {
           // Nothing but `login` is honored before authenticating — a
           // malicious device on the network that skipped straight to
           // `setRules`/`replay`/etc. without ever proving it knows the
@@ -969,8 +989,14 @@ export async function startDashboardServer(
           };
           socket.send(JSON.stringify(reply));
         } else handleRulesMessage(message);
-      } catch {
-        // Ignore malformed frames rather than crashing the dashboard.
+      } catch (err) {
+        // Frames are validated above, so reaching here means the handler
+        // itself threw — a bug, not a bad client. Surfaced rather than
+        // swallowed (issue #209), and it still can't crash the dashboard.
+        eventBus.emit('error', {
+          errorKind: 'DASHBOARD_HANDLER_ERROR',
+          message: `A dashboard message handler failed — ${describeError(err)}`,
+        });
       }
     });
   });

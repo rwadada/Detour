@@ -2,8 +2,8 @@ import { getDashboardConnection } from '@/shared/api';
 import { createBlockHostsStore } from './model/createBlockHostsStore';
 import { createFocusStore } from './model/createFocusStore';
 import { createInterceptStore } from './model/createInterceptStore';
-import { createProxyInfoStore } from './model/createProxyInfoStore';
 import { createThrottleStore } from './model/createThrottleStore';
+import { useProxyInfoStore } from './model/proxyInfoStore';
 
 export {
   createBlockHostsStore,
@@ -12,10 +12,17 @@ export {
 } from './model/createBlockHostsStore';
 export { createFocusStore, type FocusStoreState } from './model/createFocusStore';
 export { createInterceptStore, type InterceptState } from './model/createInterceptStore';
-export { createProxyInfoStore, resolveDashboardOnLan, type ProxyInfoState } from './model/createProxyInfoStore';
+export {
+  createProxyInfoStore,
+  isProtocolMismatch,
+  resolveDashboardOnLan,
+  type ProxyInfoState,
+} from './model/createProxyInfoStore';
 export { createThrottleStore, DEFAULT_THROTTLE_STATE, type ThrottleStoreState } from './model/createThrottleStore';
 export { PRESETS, presetFor, type PresetKey } from './model/presets';
+export { ProtocolMismatchBanner } from './ui/ProtocolMismatchBanner';
 export { ThrottleFields } from './ui/ThrottleFields';
+export { useProxyInfoStore };
 
 /**
  * The live proxy configuration entity (issue #24): Intercept/Focus/
@@ -33,4 +40,3 @@ export const useInterceptStore = createInterceptStore(getDashboardConnection());
 export const useFocusStore = createFocusStore(getDashboardConnection());
 export const useThrottleStore = createThrottleStore(getDashboardConnection());
 export const useBlockHostsStore = createBlockHostsStore(getDashboardConnection());
-export const useProxyInfoStore = createProxyInfoStore(getDashboardConnection());
