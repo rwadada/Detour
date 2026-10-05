@@ -18,7 +18,7 @@ const STATUS_CLASSES = ['ALL', 'pending', '2xx', '3xx', '4xx', '5xx'];
 
 /** Hover help for the search box (issue #213) — the expression syntax lives in `entities/exchange/lib/filterExpression.ts`. */
 const FILTER_HELP = [
-  'Plain text matches the URL. Combine terms with spaces (AND); prefix a term with - to negate it.',
+  'Plain text matches the URL. Combine terms with spaces (AND); prefix a term with - to negate it (plain words only alongside a key:value term).',
   'Keys: url host method status type header reqheader resheader body reqbody resbody duration size process rule proto',
   'Examples: status:4xx  -method:OPTIONS  host:api.example.com  header:authorization  type:json  duration:>1000  size:>=1mb  body:"error_code"',
   'header:name = has the header; header:name=text = its value contains text. Bodies are searched only as far as they were captured.',

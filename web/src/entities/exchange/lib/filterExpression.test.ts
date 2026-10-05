@@ -135,6 +135,46 @@ describe('compileFilterQuery', () => {
     });
   });
 
+  describe('review follow-ups', () => {
+    it('negates a plain word alongside a key, but keeps a lone -word literal', () => {
+      expect(matches('status:2xx -analytics')).toBe(true);
+      expect(matches('status:2xx -users')).toBe(false);
+      expect(matches('-api', exchange({ url: 'https://x.test/my-api/1' }))).toBe(true);
+      expect(matches('-api')).toBe(false);
+    });
+
+    it('unquotes a lone quoted plain query', () => {
+      expect(matches('"v1/users"')).toBe(true);
+      expect(matches('"v1/orders"')).toBe(false);
+    });
+
+    it('strips the opening quote of a not-yet-closed quoted value (mid-typing)', () => {
+      const e = exchange({ responseBody: b64('an error_code here') });
+      expect(matches('body:"error', e)).toBe(true);
+      expect(matches('body:"error_code"', e)).toBe(true);
+    });
+
+    it('unquotes a quoted header value after =', () => {
+      expect(matches('header:authorization="Bearer abc"')).toBe(true);
+      expect(matches('header:authorization="Bearer zzz"')).toBe(false);
+    });
+
+    it('never dips to nothing while a status or comparison is being typed', () => {
+      const e = exchange({ statusCode: 404 });
+      expect(matches('status:4', e)).toBe(true); // prefix of a code
+      expect(matches('status:40', e)).toBe(true);
+      expect(matches('status:5', e)).toBe(false);
+      expect(matches('status:4x', e)).toBe(true); // class in progress
+      expect(matches('duration:>')).toBe(true); // operator only: ignored
+      expect(matches('size:>=')).toBe(true);
+    });
+
+    it('status:pending matches an in-flight exchange only', () => {
+      expect(matches('status:pending', exchange({ statusCode: undefined }))).toBe(true);
+      expect(matches('status:pending')).toBe(false);
+    });
+  });
+
   describe('forgiving input', () => {
     it('ignores a key with no value yet (still typing)', () => {
       expect(matches('status:')).toBe(true);

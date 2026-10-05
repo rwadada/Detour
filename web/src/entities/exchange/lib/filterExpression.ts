@@ -7,6 +7,9 @@ import type { CapturedExchange, HeaderMap } from '@/shared/api';
  *   status:4xx host:api.example.com -method:OPTIONS body:"error_code" duration:>1000
  *
  * - Terms are separated by whitespace and ANDed. A leading `-` negates one.
+ * - `-word` negates a plain word too, but only alongside a recognised key
+ *   (`status:200 -analytics`); on its own it stays the literal text it always
+ *   was, so a search for `-api` still finds URLs containing `-api`.
  * - A value may be quoted (`body:"two words"`) to contain spaces.
  * - Only the keys below are recognised; anything else is plain text. A query
  *   with no recognised key is therefore one case-insensitive substring match
@@ -77,7 +80,11 @@ function tokenize(query: string): string[] {
   return tokens;
 }
 
-const unquote = (v: string): string => (v.length >= 2 && v.startsWith('"') && v.endsWith('"') ? v.slice(1, -1) : v);
+/** Strips surrounding quotes; a still-open `"abc` (mid-typing) loses its opening quote too, so it matches `abc` rather than nothing. */
+const unquote = (v: string): string => {
+  if (!v.startsWith('"')) return v;
+  return v.length >= 2 && v.endsWith('"') ? v.slice(1, -1) : v.slice(1);
+};
 
 function toRawTerm(token: string): RawTerm {
   const negated = token.startsWith('-') && token.length > 1;
@@ -87,7 +94,7 @@ function toRawTerm(token: string): RawTerm {
     const key = body.slice(0, colon).toLowerCase();
     if (isKey(key)) return { negated, key, value: unquote(body.slice(colon + 1)), raw: token };
   }
-  return { negated: false, key: null, value: unquote(token), raw: token };
+  return { negated, key: null, value: unquote(body), raw: token };
 }
 
 type Compare = (actual: number) => boolean;
@@ -132,7 +139,7 @@ function matchHeader(headers: HeaderMap | undefined, spec: string): boolean {
   const eq = spec.indexOf('=');
   if (eq === -1) return headerValue(headers, spec) !== undefined;
   const value = headerValue(headers, spec.slice(0, eq));
-  return value !== undefined && includesCI(value, spec.slice(eq + 1));
+  return value !== undefined && includesCI(value, unquote(spec.slice(eq + 1)));
 }
 
 const decoder = new TextDecoder();
@@ -142,7 +149,9 @@ const decodedBodies = new WeakMap<CapturedExchange, { req?: string; res?: string
 function decodeBase64(b64: string): string {
   try {
     const bin = atob(b64);
-    return decoder.decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return decoder.decode(bytes);
   } catch {
     return '';
   }
@@ -158,11 +167,16 @@ function bodyText(exchange: CapturedExchange, side: 'req' | 'res'): string | und
 }
 
 function statusMatcher(value: string): ExchangePredicate | null {
-  const cls = value.match(/^([1-5])xx$/i);
-  if (cls) {
+  if (value.toLowerCase() === 'pending') return (e) => e.statusCode === undefined && !e.passthrough;
+  // `4x` / `4xx`: a class, also while it is still being typed.
+  const cls = value.match(/^([1-5])(?:x|xx)?$/i);
+  if (cls && /x/i.test(value)) {
     const digit = Number(cls[1]);
     return (e) => e.statusCode !== undefined && Math.floor(e.statusCode / 100) === digit;
   }
+  // One or two digits can only be the start of a three-digit code (`4`, `40`
+  // on the way to `404`) — match by prefix so typing never dips to nothing.
+  if (/^\d{1,2}$/.test(value)) return (e) => e.statusCode !== undefined && String(e.statusCode).startsWith(value);
   const cmp = parseComparison(value, false);
   return cmp ? (e) => e.statusCode !== undefined && cmp(e.statusCode) : null;
 }
@@ -212,8 +226,9 @@ function build(key: Key, value: string): ExchangePredicate | null {
 }
 
 function compileTerm(term: RawTerm): ExchangePredicate | null {
-  if (term.key === null) return (e) => includesCI(e.url, term.value);
-  if (term.value === '') return null; // still typing `key:`
+  if (term.key === null)
+    return term.negated ? (e) => !includesCI(e.url, term.value) : (e) => includesCI(e.url, term.value);
+  if (term.value === '' || /^[<>=]+$/.test(term.value)) return null; // still typing `key:` / `key:>`
   const predicate = build(term.key, term.value) ?? ((e: CapturedExchange) => includesCI(e.url, term.raw));
   return term.negated ? (e) => !predicate(e) : predicate;
 }
@@ -226,7 +241,10 @@ function compile(query: string): ExchangePredicate {
   const terms = tokenize(trimmed).map(toRawTerm);
   // No recognised key anywhere: the whole query, spaces and all, is one URL
   // substring — what the search box did before expressions existed.
-  if (terms.every((t) => t.key === null)) return (e) => includesCI(e.url, trimmed);
+  if (terms.every((t) => t.key === null)) {
+    const needle = terms.length === 1 && trimmed.startsWith('"') ? terms[0]!.value : trimmed;
+    return (e) => includesCI(e.url, needle);
+  }
   const predicates = terms.map(compileTerm).filter((p): p is ExchangePredicate => p !== null);
   return (e) => predicates.every((p) => p(e));
 }
