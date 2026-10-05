@@ -80,6 +80,18 @@ export interface UserConfigState {
 }
 
 /**
+ * Version of the `/ws` wire protocol (issue #209), sent in `proxyInfo` so a
+ * dashboard page can tell it is talking to a server it wasn't built for — a
+ * cached PWA outliving a self-update is the realistic case. Bump it on any
+ * change an older (or newer) page can't cope with: a removed/renamed message
+ * or field, a changed meaning. Purely additive optional fields don't need
+ * one. The dashboard keeps its own copy in `web/src/shared/api/protocol.ts`
+ * (a test in `src/domain/dashboard/protocolVersion.test.ts` fails if the two
+ * drift apart).
+ */
+export const PROTOCOL_VERSION = 1;
+
+/**
  * Messages sent from the dashboard server to a connected browser client over
  * the `/ws` WebSocket. Kept in one place so the wire format has a single
  * source of truth; the frontend (web/src/lib/protocol.ts) mirrors this shape
@@ -104,7 +116,7 @@ export type DashboardServerMessage =
    * this entire session, and that's not something a user should be able to
    * miss by looking away for a moment.
    */
-  | { type: 'proxyInfo'; proxyPort: number; insecureUpstream: boolean }
+  | { type: 'proxyInfo'; proxyPort: number; insecureUpstream: boolean; protocolVersion: number }
   /**
    * Sent once, right after connecting (issue #66): every non-internal IPv4
    * address this machine has. Non-empty regardless of `--lan`/`lanAccess` —

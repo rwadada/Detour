@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { DashboardConnection } from '@/shared/api';
+import { PROTOCOL_VERSION, type DashboardConnection } from '@/shared/api';
 
 export interface ProxyInfoState {
   /** The proxy's port, or null until the `proxyInfo` message arrives (issue #24's sidebar Proxy URL / QR code). Null on an older server build that predates this message, too — the sidebar falls back to hiding the Proxy URL rather than guessing. */
@@ -10,6 +10,15 @@ export interface ProxyInfoState {
   dashboardOnLan: boolean;
   /** Whether this session was started with `--insecure-upstream` (issue #160), from `proxyInfo`'s own field — `false` (verification on) until that message arrives, or on an older server that predates the field. Powers the persistent "upstream verification off" indicator (`ContextBar`) and the log table's per-row unverified badge. */
   insecureUpstream: boolean;
+  /** The wire-protocol version the server reported in `proxyInfo` (issue #209) — `null` until that message arrives, and also for a server too old to send one. */
+  serverProtocolVersion: number | null;
+  /** Whether `proxyInfo` has arrived — what tells "not heard yet" apart from "an older server that sends no version". */
+  protocolChecked: boolean;
+}
+
+/** True once the server has answered and its protocol version isn't the one this page was built for (a missing version counts: such a server predates the check). */
+export function isProtocolMismatch(state: Pick<ProxyInfoState, 'protocolChecked' | 'serverProtocolVersion'>): boolean {
+  return state.protocolChecked && state.serverProtocolVersion !== PROTOCOL_VERSION;
 }
 
 /** How an older server's `lanInfo` (one predating the `dashboardOnLan` field) is read: back then `addresses` was only ever sent non-empty when the dashboard itself was LAN-bound (there was no proxy-always-on-LAN split yet), so "field missing" safely means "yes" under that older server's own semantics, not "no". Exported for the test below; not meant as a general-purpose default. */
@@ -36,12 +45,24 @@ export function createProxyInfoStore(connection: DashboardConnection) {
   return create<ProxyInfoState>((set) => {
     connection.onMessage((message) => {
       if (message.type === 'proxyInfo') {
-        set({ proxyPort: message.proxyPort, insecureUpstream: message.insecureUpstream ?? false });
+        set({
+          proxyPort: message.proxyPort,
+          insecureUpstream: message.insecureUpstream ?? false,
+          serverProtocolVersion: message.protocolVersion ?? null,
+          protocolChecked: true,
+        });
       } else if (message.type === 'lanInfo') {
         set({ lanAddresses: message.addresses, dashboardOnLan: resolveDashboardOnLan(message) });
       }
     });
 
-    return { proxyPort: null, lanAddresses: [], dashboardOnLan: false, insecureUpstream: false };
+    return {
+      proxyPort: null,
+      lanAddresses: [],
+      dashboardOnLan: false,
+      insecureUpstream: false,
+      serverProtocolVersion: null,
+      protocolChecked: false,
+    };
   });
 }

@@ -1,6 +1,6 @@
 import WebSocket from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { DashboardServerMessage } from '../../domain/dashboard/protocol';
+import { PROTOCOL_VERSION, type DashboardServerMessage } from '../../domain/dashboard/protocol';
 import { DetourEventBus } from '../eventBus';
 import { startDashboardServer, type DashboardServerHandle } from './dashboardServer';
 
@@ -62,7 +62,12 @@ describe('startDashboardServer — proxyInfo (issue #24)', () => {
     const socket = connect();
 
     const message = await waitForMessage(socket, (m) => m.type === 'proxyInfo');
-    expect(message).toEqual({ type: 'proxyInfo', proxyPort: 8080, insecureUpstream: false });
+    expect(message).toEqual({
+      type: 'proxyInfo',
+      proxyPort: 8080,
+      insecureUpstream: false,
+      protocolVersion: PROTOCOL_VERSION,
+    });
   });
 
   it('broadcasts insecureUpstream: true when the session was started with --insecure-upstream (issue #160)', async () => {
@@ -72,7 +77,12 @@ describe('startDashboardServer — proxyInfo (issue #24)', () => {
     const socket = connect();
 
     const message = await waitForMessage(socket, (m) => m.type === 'proxyInfo');
-    expect(message).toEqual({ type: 'proxyInfo', proxyPort: 8080, insecureUpstream: true });
+    expect(message).toEqual({
+      type: 'proxyInfo',
+      proxyPort: 8080,
+      insecureUpstream: true,
+      protocolVersion: PROTOCOL_VERSION,
+    });
   });
 
   it('sends nothing proxyInfo-shaped when proxyPort is omitted (e.g. dashboard-only tests)', async () => {
