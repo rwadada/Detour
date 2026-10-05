@@ -126,6 +126,26 @@ describe('createDashboardUpdates', () => {
     expect(await updates.start(socket)).toMatchObject({ state: 'started' });
   });
 
+  it('is updating from a successful launch until the updater ends without restarting us', async () => {
+    const { updates, startUpdate } = setup({ loopback: true });
+    expect(updates.isUpdating()).toBe(false);
+    await updates.start(socket);
+    expect(updates.isUpdating()).toBe(true);
+    startUpdate.mock.calls[0]?.[0](0);
+    expect(updates.isUpdating()).toBe(false);
+  });
+
+  it('is not updating after a rejected start or a spawn failure', async () => {
+    const rejected = setup({ loopback: false });
+    await rejected.updates.start(socket);
+    expect(rejected.updates.isUpdating()).toBe(false);
+
+    const failed = setup({ loopback: true });
+    failed.startUpdate.mockRejectedValueOnce(new Error('spawn failed'));
+    await failed.updates.start(socket);
+    expect(failed.updates.isUpdating()).toBe(false);
+  });
+
   it('reports a spawn failure without arming the debounce', async () => {
     const { updates, startUpdate } = setup({ loopback: true });
     startUpdate.mockRejectedValueOnce(new Error('spawn failed'));

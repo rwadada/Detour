@@ -35,6 +35,8 @@ export interface DashboardUpdates {
   refresh(): Promise<void>;
   /** Handles `startUpdate` from one socket and returns the `updateStatus` to send back to it. */
   start(socket: WebSocket): Promise<DashboardServerMessage>;
+  /** Whether an update was launched from the dashboard and hasn't ended without restarting this process — i.e. this process is about to be stopped for it. */
+  isUpdating(): boolean;
 }
 
 /**
@@ -54,8 +56,10 @@ export function createDashboardUpdates(
   const mayUpdate = (socket: WebSocket) =>
     !!service?.canSelfUpdate && (trust.isLoopback(socket) || trust.isPasswordVerified(socket));
   let lastStartedAt = Number.NEGATIVE_INFINITY;
+  let updating = false;
 
   return {
+    isUpdating: () => updating,
     async infoFor(socket) {
       if (!service) return null;
       const latest = await service.getLatestVersion();
@@ -90,9 +94,11 @@ export function createDashboardUpdates(
       }
       // Armed before the await: two sockets racing through the spawn must not both launch an updater.
       lastStartedAt = now();
+      updating = true;
       try {
         await service.startUpdate((exitCode) => {
           lastStartedAt = Number.NEGATIVE_INFINITY;
+          updating = false;
           onFailed(
             `The updater exited (code ${exitCode ?? 'unknown'}) without restarting Detour. See ${updateLogHint}.`,
           );
@@ -100,6 +106,7 @@ export function createDashboardUpdates(
         return { type: 'updateStatus', state: 'started' };
       } catch (err) {
         lastStartedAt = Number.NEGATIVE_INFINITY;
+        updating = false;
         return { type: 'updateStatus', state: 'failed', message: err instanceof Error ? err.message : String(err) };
       }
     },

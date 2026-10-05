@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Command } from 'commander';
+import { Option, type Command } from 'commander';
 import { hashPassword } from '../domain/auth/passwordHash';
 import { parseProxyAuthFlag, type ProxyAuthCredentials } from '../domain/auth/proxyAuth';
 import { caExpiryWarning } from '../domain/cert/caValidity';
@@ -26,6 +26,11 @@ import { startIdleWatcher } from '../infra/proxy/idleWatcher';
 import { startProxyServer } from '../infra/proxy/proxyServer';
 import { redactProxyUrlCredentials, validateUpstreamProxyUrl } from '../infra/proxy/upstreamProxyAgent';
 import { resolveUpstreamTlsOptions } from '../infra/proxy/upstreamTlsOptions';
+import {
+  discardBacklogSnapshot,
+  readBacklogSnapshot,
+  writeBacklogSnapshot,
+} from '../infra/update/backlogSnapshotStore';
 import { createDefaultUpdateService } from '../infra/update/defaultUpdateService';
 import { extractStartArgs } from '../domain/update/restartArgs';
 import { LAN_ACCESS_WARNING, printStartupBanner } from '../presentation/banner';
@@ -148,6 +153,8 @@ interface StartOptions {
    * this actually trades off and the measurement behind the default.
    */
   dashboardCompress?: boolean;
+  /** `--resume-backlog` (internal, hidden from `--help`): added by an update restart so this instance preloads the traffic the previous one saved for this `--port` on its way out. */
+  resumeBacklog?: boolean;
 }
 
 /**
@@ -361,6 +368,14 @@ async function runStartBody({
   trackRunState,
   options,
 }: RunStartBodyContext): Promise<void> {
+  // Without `--resume-backlog`, a snapshot left by an update that never got to
+  // relaunch is dropped rather than left on disk holding decrypted traffic.
+  // With it, the file is only removed once startup has succeeded (see below),
+  // so a start that fails to bind doesn't lose the traffic it was meant to resume.
+  const resumingBacklog = trackRunState && (options.resumeBacklog ?? false);
+  const resumedBacklog = resumingBacklog ? readBacklogSnapshot(port) : undefined;
+  if (trackRunState && !resumingBacklog) discardBacklogSnapshot(port);
+
   const dumpLevel = parseDumpLevel(options.dump);
   const dumpDir = dumpLevel === 'file' ? resolveDumpDir() : undefined;
 
@@ -639,6 +654,7 @@ async function runStartBody({
           maxCaptureMemoryBytes: parseMaxCaptureMemoryBytes(options.maxCaptureMemory),
           dashboardCompression: options.dashboardCompress ?? false,
           updateService: createDefaultUpdateService(trackRunState),
+          initialBacklog: resumedBacklog,
         },
         eventBus,
       );
@@ -677,6 +693,11 @@ async function runStartBody({
       throw err;
     }
   }
+
+  // Single-use: removed only now that every fallible startup step has
+  // succeeded, so a start that fails partway loses nothing (under
+  // `--headless` there is no dashboard to resume into, so it is just dropped).
+  if (resumingBacklog) discardBacklogSnapshot(port);
 
   // Deliberately after every fallible startup step above (dashboard bind,
   // run-state write) has committed — opening a browser tab and then tearing
@@ -728,6 +749,21 @@ async function runStartBody({
 
   let idleWatcher: ReturnType<typeof startIdleWatcher> | undefined;
 
+  // When a dashboard-initiated update is what's stopping this process, leave
+  // the captured traffic behind for the relaunched instance (see
+  // `--resume-backlog`). Best effort: losing the list must never block a stop.
+  const saveBacklogForUpdateRestart = () => {
+    const items = trackRunState ? dashboardHandle?.backlogForUpdateRestart() : undefined;
+    if (!items) return;
+    try {
+      writeBacklogSnapshot(port, items);
+    } catch (err) {
+      console.error(
+        `⚠ Could not save captured traffic for the restart: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+
   const shutdown = async (reason: NodeJS.Signals | 'idle') => {
     console.log(
       reason === 'idle'
@@ -735,6 +771,9 @@ async function runStartBody({
         : `\nReceived ${reason}. Stopping the proxy…`,
     );
     idleWatcher?.stop();
+    // Taken before either server stops: exchanges still in flight now aren't
+    // carried over (see `isResumable`), so there's nothing to wait for.
+    saveBacklogForUpdateRestart();
     let stopError: unknown;
     try {
       await Promise.all([handle.stop(), dashboardHandle?.stop()]);
@@ -986,6 +1025,12 @@ export function registerStartCommand(program: Command): void {
       '--max-capture-memory <MB>',
       "Caps the live backlog's total captured-body memory (issue #165), independent of its 500-item count cap — a handful of large bodies can otherwise account for hundreds of MB well before that count is reached. Evicts the oldest exchange(s) once exceeded, same as hitting the count cap; --persist above still has them, if it's on.",
       '64',
+    )
+    .addOption(
+      new Option(
+        '--resume-backlog',
+        'Preload the captured traffic a previous instance saved for this --port when `detour update` restarted it. Added automatically by the update; not meant to be passed by hand.',
+      ).hideHelp(),
     )
     .option(
       '--dashboard-compress',

@@ -12,7 +12,14 @@ describe('restart args', () => {
   });
 
   it('relaunches detached without opening a browser tab', () => {
-    expect(buildRestartArgs(['--port', '8080'])).toEqual(['start', '--port', '8080', '--no-open', '--detach']);
+    expect(buildRestartArgs(['--port', '8080'])).toEqual([
+      'start',
+      '--port',
+      '8080',
+      '--no-open',
+      '--resume-backlog',
+      '--detach',
+    ]);
   });
 
   it('does not duplicate an existing --no-open', () => {
@@ -21,7 +28,14 @@ describe('restart args', () => {
       '--no-open',
       '--port',
       '8080',
+      '--resume-backlog',
       '--detach',
     ]);
+  });
+
+  it('never replays --resume-backlog from an earlier restart', () => {
+    expect(extractStartArgs(['--port', '8080', '--resume-backlog', '--detach'])).toEqual(['--port', '8080']);
+    const restart = buildRestartArgs(['--resume-backlog', '--port', '8080']);
+    expect(restart.filter((arg) => arg === '--resume-backlog')).toHaveLength(1);
   });
 });

@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DashboardServerMessage } from '../../domain/dashboard/protocol';
+import type { CapturedExchange } from '../../domain/exchange/types';
 import type { UpdateService } from '../../domain/update/updateService';
 import { DetourEventBus } from '../eventBus';
 import { startDashboardServer, type DashboardServerHandle } from './dashboardServer';
@@ -111,6 +112,59 @@ describe('startDashboardServer — update banner', () => {
     socket.send(JSON.stringify({ type: 'checkUpdate' }));
     expect(await refreshed).toMatchObject({ latest: '1.6.1', updateAvailable: true });
     expect(getLatestVersion).toHaveBeenCalledWith({ force: true });
+  });
+
+  describe('keeping the traffic list across an update restart', () => {
+    function finished(id: string): CapturedExchange {
+      return {
+        id,
+        method: 'GET',
+        url: `https://example.com/${id}`,
+        host: 'example.com',
+        isSSL: true,
+        protocol: 'HTTP/1.1',
+        requestHeaders: {},
+        requestBodySize: 0,
+        startedAt: 1,
+        statusCode: 200,
+        responseBodySize: 0,
+        finishedAt: 2,
+      };
+    }
+
+    it('replays an initial backlog to a connecting client like freshly captured traffic', async () => {
+      handle = await startDashboardServer(
+        { port: 0, initialBacklog: [finished('old-1'), finished('old-2')] },
+        new DetourEventBus(),
+      );
+      const message = await waitForMessage(connect(), (m) => m.type === 'backlog');
+      expect(message).toMatchObject({ items: [{ id: 'old-1' }, { id: 'old-2' }] });
+    });
+
+    it('appends new traffic after the preloaded exchanges', async () => {
+      const eventBus = new DetourEventBus();
+      handle = await startDashboardServer({ port: 0, initialBacklog: [finished('old')] }, eventBus);
+      eventBus.emit('request', finished('new'));
+      const message = await waitForMessage(connect(), (m) => m.type === 'backlog');
+      expect(message).toMatchObject({ items: [{ id: 'old' }, { id: 'new' }] });
+    });
+
+    it('offers the backlog for the restart only once an update has been launched', async () => {
+      const eventBus = new DetourEventBus();
+      const updateService = fakeService();
+      handle = await startDashboardServer({ port: 0, updateService }, eventBus);
+      eventBus.emit('request', finished('a'));
+      expect(handle.backlogForUpdateRestart()).toBeUndefined();
+
+      const socket = connect();
+      await waitForMessage(socket, (m) => m.type === 'updateInfo');
+      socket.send(JSON.stringify({ type: 'startUpdate' }));
+      await waitForMessage(socket, (m) => m.type === 'updateStatus');
+      expect(handle.backlogForUpdateRestart()?.map((e) => e.id)).toEqual(['a']);
+
+      updateService.startUpdate.mock.calls[0]?.[0](1);
+      expect(handle.backlogForUpdateRestart()).toBeUndefined();
+    });
   });
 
   it('does not treat a client behind a same-host reverse proxy as local', async () => {
