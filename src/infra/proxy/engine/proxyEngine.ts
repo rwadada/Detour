@@ -1327,6 +1327,35 @@ export class ProxyEngine {
     }
     ctx.proxyToServerWebSocketOptions = { url, headers };
 
+    // A `wss://` upgrade inside a MITM tunnel never went through
+    // `verifyClient`, and its CONNECT target can differ from the upgrade's
+    // own (issue #205), so check the real target here.
+    if (isSSL) {
+      this.isSelfTargetUrl(url).then(
+        (isSelf) => (isSelf ? this.rejectSelfTargetWebSocket(clientWs) : this.runWebSocketChain(ctx, clientWs)),
+        () => this.runWebSocketChain(ctx, clientWs),
+      );
+      return;
+    }
+    this.runWebSocketChain(ctx, clientWs);
+  }
+
+  private isSelfTargetUrl(url: string): Promise<boolean> {
+    try {
+      const target = new URL(url);
+      const defaultPort = target.protocol === 'wss:' || target.protocol === 'https:' ? 443 : 80;
+      return this.selfTargets.isSelfTarget(target.hostname, target.port ? Number(target.port) : defaultPort);
+    } catch {
+      return Promise.resolve(false);
+    }
+  }
+
+  private rejectSelfTargetWebSocket(clientWs: WebSocket): void {
+    underlyingSocket(clientWs)?.resume();
+    clientWs.close(1008, SELF_TARGET_REJECTION);
+  }
+
+  private runWebSocketChain(ctx: WsContext, clientWs: WebSocket): void {
     runChain(this.onWebSocketConnectionHandlers, ctx, (err) => {
       if (err) {
         this.wsError(ctx, err);

@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import type { IncomingMessage } from 'node:http';
+import { describe, expect, it, vi } from 'vitest';
 import { ProxyEngine } from './proxyEngine';
 
 /** Sends `raw` to the proxy over a bare TCP socket and returns everything it answers up to the end of the headers. */
@@ -83,6 +84,29 @@ describe('ProxyEngine refuses to relay to its own listeners (issue #205)', () =>
         `GET http://localhost:${protectedPort}/ws HTTP/1.1\r\nHost: localhost:${protectedPort}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`,
       );
       expect(answer).toMatch(/^HTTP\/1\.1 403/);
+    });
+  });
+
+  it('refuses a wss:// upgrade tunnelled through an allowed CONNECT when its own target is a protected port', async () => {
+    await withProxy(async (_proxyPort, protectedPort, openPort) => {
+      // Reaches into the private handler the internal TLS server's own
+      // `connection` event calls, so no real TLS tunnel has to be built.
+      const engine = new ProxyEngine();
+      engine.protectLocalPort(protectedPort);
+      const internals = engine as unknown as {
+        handleWebSocketConnection(ws: unknown, req: IncomingMessage, isSSL: boolean): void;
+      };
+      const upgrade = (port: number) => ({ url: '/ws', headers: { host: `localhost:${port}` } }) as IncomingMessage;
+      const fakeWs = () => ({ close: vi.fn(), on: vi.fn(), _socket: undefined });
+
+      const blocked = fakeWs();
+      internals.handleWebSocketConnection(blocked, upgrade(protectedPort), true);
+      await vi.waitFor(() => expect(blocked.close).toHaveBeenCalledWith(1008, expect.any(String)));
+
+      const allowed = fakeWs();
+      internals.handleWebSocketConnection(allowed, upgrade(openPort), true);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(allowed.close).not.toHaveBeenCalledWith(1008, expect.any(String));
     });
   });
 });
