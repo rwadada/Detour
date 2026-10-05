@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { findInstalledPwaApp } from './findInstalledPwa';
 
 /**
  * Opens `url` in the user's default browser (issue #3 follow-up: `detour
@@ -14,7 +15,11 @@ import { spawn } from 'node:child_process';
  * dashboard down, nor block `runStartBody`'s caller.
  */
 export function openBrowser(url: string): void {
-  const { command, args } = browserCommandFor(process.platform, url);
+  // On macOS, prefer the installed dashboard PWA (same origin) over a browser tab.
+  const pwaApp = process.platform === 'darwin' ? findInstalledPwaApp(url) : undefined;
+  const { command, args } = pwaApp
+    ? { command: 'open', args: ['-a', pwaApp] }
+    : browserCommandFor(process.platform, url);
   try {
     // `detached: true` + `unref()`: the browser launcher (`open`/`start`/
     // `xdg-open`) shouldn't be a child detour has to wait on or clean up —

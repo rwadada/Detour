@@ -162,7 +162,7 @@ During development, run `npm run dev` to watch and run the TypeScript sources di
 
 ## Web dashboard
 
-`detour start` serves a real-time dashboard at `http://localhost:9080` by default (`--port` + `1000`; or whatever `--dashboard-port` is set to) for browsing captured traffic without leaving the browser, and opens it in your default browser automatically once it's ready. Pass `--no-open` to skip that (it's also skipped automatically under `--headless`, when the dashboard hasn't been built yet, or for an ephemeral `--dashboard-port 0`).
+`detour start` serves a real-time dashboard at `http://localhost:9080` by default (`--port` + `1000`; or whatever `--dashboard-port` is set to) for browsing captured traffic without leaving the browser, and opens it in your default browser automatically once it's ready (on macOS, if you have installed the dashboard as a PWA from Chrome / Edge / Brave at that same `http://localhost:<port>` address, the PWA window opens instead). Pass `--no-open` to skip that (it's also skipped automatically under `--headless`, when the dashboard hasn't been built yet, or for an ephemeral `--dashboard-port 0`).
 
 - Every request/response streams into the log table live over a WebSocket as it passes through the proxy; a bounded backlog (last 500 exchanges) is replayed on connect so refreshing the page doesn't lose recent history
 - The table is virtualized (`@tanstack/react-virtual`), so it stays smooth with thousands of rows
