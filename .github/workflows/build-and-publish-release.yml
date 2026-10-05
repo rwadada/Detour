@@ -47,12 +47,10 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          # The CLI's own `engines.node` stays >=18 (esbuild targets node18,
-          # and that's all end users need to *run* the release build) — but
-          # building the dashboard SPA needs Vite 7, which requires Node
-          # 20.19+/22.12+. Pinned to the exact floor of that range (rather
-          # than a bare "22") so a resolver change can't silently pick an
-          # early-22.x that predates it.
+          # `engines.node` (>=22.12) is the floor of Vite 7's own range for
+          # the dashboard SPA build, and the esbuild target. Pinned to that
+          # exact floor (rather than a bare "22") so a resolver change can't
+          # silently pick an early-22.x that predates it.
           node-version: "22.12.0"
 
       - name: Verify tag matches package.json version

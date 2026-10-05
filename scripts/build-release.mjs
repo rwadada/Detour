@@ -71,7 +71,7 @@ function main() {
     outfile,
     bundle: true,
     platform: 'node',
-    target: 'node18',
+    target: 'node22',
     format: 'cjs',
     external: ['bufferutil', 'utf-8-validate'],
     legalComments: 'none',
