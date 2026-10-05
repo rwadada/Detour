@@ -29,18 +29,23 @@ on:
           fails with a clear message instead if it's unset.
         required: false
 
+# `id-token`/`attestations` are for the build-provenance step below (issue
+# #211). A reusable workflow can't be granted more than its caller holds, so
+# release.yml and release-please.yml grant the same two.
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           # The CLI's own `engines.node` stays >=18 (esbuild targets node18,
           # and that's all end users need to *run* the release build) — but
@@ -102,6 +107,16 @@ jobs:
 
       - name: Build release tarball
         run: npm run build:release
+
+      # SLSA build provenance for the tarball (issue #211) — `detour update`
+      # and the Homebrew formula both fetch this artifact and run it on
+      # users' machines, so a verifiable link back to this workflow run
+      # matters. Check with `gh attestation verify <tarball> --repo
+      # rwadada/Detour`. Signed via GitHub's OIDC identity: no key to manage.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/detour-*.tar.gz
 
       - name: Publish release asset
         env:

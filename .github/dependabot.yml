@@ -1,0 +1,25 @@
+# Version updates (issue #211). Security-alert PRs already arrive on their
+# own; this adds the routine bumps, and — because Actions are pinned to
+# commit SHAs — is also what keeps those pins current.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "chore"

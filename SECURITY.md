@@ -86,5 +86,30 @@ dashboard run on your own machine. Worth knowing up front:
   proxy) cannot bypass from the network side — that's expected behavior, not
   a vulnerability in Detour.
 
+## Supply chain
+
+Detour installs a root CA and updates itself, so how it is built and
+released matters as much as its own code:
+
+- **Release tarballs carry a SLSA build-provenance attestation** (GitHub
+  Artifact Attestations). Verify one with
+  `gh attestation verify detour-<version>.tar.gz --repo rwadada/Detour`.
+  The sha256 in the release notes remains the quick integrity check;
+  `detour update` itself does not run the attestation check yet.
+- **GitHub Actions are pinned to commit SHAs**, and Dependabot keeps both
+  those pins and the npm dependencies current (weekly).
+- **CodeQL** (`javascript-typescript`) runs on every pull request, on
+  pushes to `main`, and weekly.
+- **`node-forge` decision (kept, revisit when a fix lands).** It generates
+  the CA/leaf keys and signs the certificates, and parses the CA PEM for
+  `detour cert`. Detour never uses it to *verify* signatures. The one open
+  advisory against it
+  ([GHSA-86w9-cpqp-85rv](https://github.com/advisories/GHSA-86w9-cpqp-85rv),
+  RSA PKCS#1 v1.5 signature *verification*, no patched release) is therefore
+  not reachable through Detour. Replacing it (a `node:crypto` key pair plus
+  an X.509 builder such as `@peculiar/x509`) is a candidate if a
+  generation/signing issue is ever found, but swapping the code path that
+  mints the root CA purely on a hunch carries more risk than it removes.
+
 If you're not sure whether something you found falls under this policy,
 report it anyway — that's a judgment call better made together than alone.
