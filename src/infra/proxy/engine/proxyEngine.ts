@@ -462,6 +462,11 @@ export class ProxyEngine {
     }
   }
 
+  /** Whether `host:port` is one of this process's own listeners — the same judgement the relay applies (issue #205), exposed so the dashboard's Replay / Edit & Send (issue #214) can refuse such a target too. */
+  isSelfTarget(host: string, port: number): Promise<boolean> {
+    return this.selfTargets.isSelfTarget(host, port);
+  }
+
   /** Marks a port some other listener in this process owns (the dashboard) as off-limits to relayed traffic (issue #205). */
   protectLocalPort(port: number): void {
     this.selfTargets.protectPort(port);

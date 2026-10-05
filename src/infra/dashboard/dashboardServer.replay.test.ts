@@ -99,4 +99,73 @@ describe('startDashboardServer — Replay (issue #19)', () => {
 
     expect(response).toMatchObject({ type: 'response', exchange: { error: 'ECONNREFUSED' } });
   });
+
+  describe('Edit & Send (issue #214)', () => {
+    async function connect(options: Parameters<typeof startDashboardServer>[0], eventBus: DetourEventBus) {
+      handle = await startDashboardServer(options, eventBus);
+      sockets = [];
+      const socket = new WebSocket(`ws://localhost:${handle.port}/ws`);
+      sockets.push(socket);
+      await new Promise((resolve) => socket.on('open', resolve));
+      return socket;
+    }
+
+    it('sends the overridden request and links the result back to the original', async () => {
+      const requests: Array<{ method: string; url: string }> = [];
+      const requester: HttpRequester = {
+        request: async (req) => {
+          requests.push({ method: req.method, url: req.url });
+          return { statusCode: 200, statusMessage: 'OK', headers: {}, body: Buffer.alloc(0) };
+        },
+      };
+      const socket = await connect({ port: 0, httpRequester: requester }, new DetourEventBus());
+
+      socket.send(
+        JSON.stringify({
+          type: 'replay',
+          exchange: original(),
+          overrides: { method: 'DELETE', url: 'https://api.example.com/other' },
+        }),
+      );
+      const response = await waitForMessage(socket, (m) => m.type === 'response' && m.exchange.id !== 'original-1');
+
+      expect(requests).toEqual([{ method: 'DELETE', url: 'https://api.example.com/other' }]);
+      expect(response).toMatchObject({ exchange: { replayOf: 'original-1', method: 'DELETE' } });
+    });
+
+    it('refuses a URL that points at one of its own listeners, and never sends it', async () => {
+      let sent = 0;
+      const requester: HttpRequester = {
+        request: async () => {
+          sent++;
+          return { statusCode: 200, statusMessage: 'OK', headers: {}, body: Buffer.alloc(0) };
+        },
+      };
+      const isSelfTarget = async (host: string, port: number) => host === 'localhost' && port === 4040;
+      const socket = await connect({ port: 0, httpRequester: requester, isSelfTarget }, new DetourEventBus());
+
+      socket.send(
+        JSON.stringify({ type: 'replay', exchange: original(), overrides: { url: 'http://localhost:4040/ws' } }),
+      );
+      const error = await waitForMessage(socket, (m) => m.type === 'error' && m.event.errorKind === 'REPLAY_REJECTED');
+
+      expect(error).toMatchObject({ event: { errorKind: 'REPLAY_REJECTED' } });
+      expect(sent).toBe(0);
+    });
+
+    it('still replays to a target that is not its own listener', async () => {
+      const requester: HttpRequester = {
+        request: async () => ({ statusCode: 204, statusMessage: 'No Content', headers: {}, body: Buffer.alloc(0) }),
+      };
+      const isSelfTarget = async () => false;
+      const socket = await connect({ port: 0, httpRequester: requester, isSelfTarget }, new DetourEventBus());
+
+      socket.send(
+        JSON.stringify({ type: 'replay', exchange: original(), overrides: { url: 'http://localhost:3000/' } }),
+      );
+      const response = await waitForMessage(socket, (m) => m.type === 'response' && m.exchange.id !== 'original-1');
+
+      expect(response).toMatchObject({ exchange: { statusCode: 204 } });
+    });
+  });
 });

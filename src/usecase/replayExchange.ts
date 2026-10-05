@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
 import { BodyCapture } from '../domain/exchange/bodyCapture';
+import type { ReplayOverrides } from '../domain/dashboard/protocol';
 import type { CapturedExchange, WireExchange } from '../domain/exchange/types';
 import type { HttpRequester } from './ports/httpRequester';
 
@@ -27,6 +28,17 @@ function stripHopByHopHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders
   return result;
 }
 
+/** `host`/`isSSL` of the URL actually being sent to; the original's own when the URL wasn't edited (or can't be parsed — the request itself then fails and says why). */
+function describeTarget(url: string, original: WireExchange): { host: string; isSSL: boolean } {
+  if (url === original.url) return { host: original.host, isSSL: original.isSSL };
+  try {
+    const parsed = new URL(url);
+    return { host: parsed.host, isSSL: parsed.protocol === 'https:' };
+  } catch {
+    return { host: original.host, isSSL: original.isSSL };
+  }
+}
+
 /**
  * Re-sends a previously captured exchange for real (issue #19's Replay): a
  * fresh outbound HTTP(S) request built from the original method/url/
@@ -39,42 +51,54 @@ function stripHopByHopHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders
  * pick those up, add the exchange to the backlog, and push it to every
  * connected tab — a replay just shows up as a new row in the log table,
  * with no new frontend plumbing needed to display it.
+ *
+ * `overrides` (issue #214's Edit & Send) change method/URL/headers/body of
+ * what is sent; whatever they leave out keeps the original's value. The new
+ * exchange records `replayOf: original.id` either way, so the two can be
+ * found and compared.
  */
 export async function replayExchange(
   original: WireExchange,
   eventBus: ExchangeEventEmitter,
   requester: HttpRequester,
+  overrides: ReplayOverrides = {},
 ): Promise<void> {
   const startedAt = Date.now();
-  const requestHeaders = stripHopByHopHeaders(original.requestHeaders);
+  const method = overrides.method?.trim() || original.method;
+  const url = overrides.url?.trim() || original.url;
+  const target = describeTarget(url, original);
+  const requestHeaders = stripHopByHopHeaders(overrides.headers ?? original.requestHeaders);
   // `original` is a `WireExchange` — the dashboard client only ever has a
   // base64-encoded body to send back (issue #165's Proposal B: the wire
   // format and `CapturedExchange`'s own in-memory `Buffer` representation
   // diverge on exactly this field). Decoded once, then reused below for
   // both the real outbound request and the freshly-built `CapturedExchange`
   // this replay broadcasts — never re-stored as the original base64 string.
-  const requestBody = original.requestBody ? Buffer.from(original.requestBody, 'base64') : undefined;
+  const bodyEdited = overrides.body !== undefined;
+  const encodedBody = bodyEdited ? overrides.body : original.requestBody;
+  const requestBody = encodedBody ? Buffer.from(encodedBody, 'base64') : undefined;
 
   const exchange: CapturedExchange = {
     id: randomUUID(),
-    method: original.method,
-    url: original.url,
-    host: original.host,
-    isSSL: original.isSSL,
+    method,
+    url,
+    host: target.host,
+    isSSL: target.isSSL,
     protocol: 'HTTP/1.1',
     requestHeaders,
-    requestBodySize: original.requestBodySize,
+    requestBodySize: bodyEdited ? (requestBody?.length ?? 0) : original.requestBodySize,
     requestBody,
-    requestBodyTruncated: original.requestBodyTruncated,
+    requestBodyTruncated: bodyEdited ? false : original.requestBodyTruncated,
     startedAt,
     responseBodySize: 0,
+    replayOf: original.id,
   };
   eventBus.emit('request', exchange);
 
   try {
     const result = await requester.request({
-      method: original.method,
-      url: original.url,
+      method,
+      url,
       headers: requestHeaders,
       body: requestBody,
     });

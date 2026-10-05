@@ -8,25 +8,26 @@ export const nodeHttpRequester: HttpRequester = {
     return new Promise((resolve, reject) => {
       const url = new URL(options.url);
       const transport = url.protocol === 'https:' ? https : http;
-      const req = transport.request(
-        url,
-        { method: options.method, headers: options.headers as OutgoingHttpHeaders },
-        (res) => {
-          const chunks: Buffer[] = [];
-          res.on('data', (chunk: Buffer) => chunks.push(chunk));
-          res.on('end', () => {
-            resolve({
-              statusCode: res.statusCode ?? 0,
-              statusMessage: res.statusMessage,
-              headers: res.headers as IncomingHttpHeaders,
-              body: Buffer.concat(chunks),
-            });
+      // The captured `content-length` is dropped upstream (it describes the
+      // original bytes, and an edited body changes it), so state the real
+      // length here. Without it Node sends the body chunked, which plenty of
+      // servers and middleboxes read as an empty one.
+      const headers: OutgoingHttpHeaders = { ...(options.headers as OutgoingHttpHeaders) };
+      if (options.body) headers['content-length'] = options.body.length;
+      const req = transport.request(url, { method: options.method, headers }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => {
+          resolve({
+            statusCode: res.statusCode ?? 0,
+            statusMessage: res.statusMessage,
+            headers: res.headers as IncomingHttpHeaders,
+            body: Buffer.concat(chunks),
           });
-        },
-      );
+        });
+      });
       req.on('error', reject);
-      if (options.body) req.write(options.body);
-      req.end();
+      req.end(options.body);
     });
   },
 };

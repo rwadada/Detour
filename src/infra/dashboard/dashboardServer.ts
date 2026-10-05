@@ -134,6 +134,13 @@ export interface DashboardServerOptions {
    * same as no `--proto` at all) when this session has none configured.
    */
   protoRegistry?: ProtoRegistry;
+  /**
+   * Whether `host:port` is one of this process's own listeners. `replay`
+   * (issue #214: its URL is now editable) refuses such a target, the same
+   * way the proxy refuses to relay to one (issue #205). Omitted in tests
+   * that don't need it: nothing is then refused.
+   */
+  isSelfTarget?: (host: string, port: number) => Promise<boolean>;
   /** Performs the real outbound request for `replay` (issue #19). Injectable for tests; defaults to a real `node:http`/`node:https` request. */
   httpRequester?: HttpRequester;
   /** Backs `userConfig`/`setUserConfig` (the dashboard Settings panel's `defaultDetach`/`lanAccess` toggles). Injectable for tests; defaults to `~/.detour/config.json` (`resolveUserConfigPath()`). */
@@ -733,6 +740,30 @@ export async function startDashboardServer(
   };
   const broadcastError = (errorKind: string, message: string) =>
     broadcast({ type: 'error', event: { errorKind, message } });
+  /** Whether `url` points at one of this process's own listeners (issue #214 — the URL is now editable, so Replay could otherwise be aimed at the dashboard itself, see #205). Unparseable URLs aren't refused here: the request fails on its own and says why. */
+  const targetsOwnListener = async (url: string): Promise<boolean> => {
+    if (!options.isSelfTarget) return false;
+    try {
+      const target = new URL(url);
+      const defaultPort = target.protocol === 'https:' ? 443 : 80;
+      return await options.isSelfTarget(target.hostname, target.port ? Number(target.port) : defaultPort);
+    } catch {
+      return false;
+    }
+  };
+  const handleReplayMessage = async (message: Extract<DashboardClientMessage, { type: 'replay' }>) => {
+    const url = message.overrides?.url?.trim() || message.exchange.url;
+    if (await targetsOwnListener(url)) {
+      broadcastError('REPLAY_REJECTED', `Refused to replay to ${url}: it is one of Detour's own listeners.`);
+      return;
+    }
+    // Fire-and-forget: `replayExchange` never rejects (network failures land
+    // in the replayed exchange's own `error` field, see its doc comment) —
+    // this catch only guards against a genuine bug.
+    void replayExchange(message.exchange, eventBus, httpRequester, message.overrides).catch((err) =>
+      broadcastError('REPLAY_ERROR', describeError(err)),
+    );
+  };
   // Fires after *any* rules.json reload — whether triggered by `setRules`/
   // `applyRuleProfile` (which write the file, then wait for the same
   // fs.watch-driven reload a hand-edit would trigger) or an actual hand-edit
@@ -925,12 +956,7 @@ export async function startDashboardServer(
           await dashboardUpdates.refresh();
           sendUpdateInfoToAll();
         } else if (message.type === 'replay') {
-          // Fire-and-forget: `replayExchange` never rejects (network
-          // failures land in the replayed exchange's own `error` field, see
-          // its doc comment) — this catch only guards against a genuine bug.
-          void replayExchange(message.exchange, eventBus, httpRequester).catch((err) =>
-            broadcastError('REPLAY_ERROR', describeError(err)),
-          );
+          await handleReplayMessage(message);
         } else if (message.type === 'setUserConfig') {
           try {
             writeUserConfig(message.state, options.userConfigPath);
