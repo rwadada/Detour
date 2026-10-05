@@ -90,6 +90,12 @@ export interface ProxyEngineOptions {
   http2Upstream?: boolean;
 }
 
+/** How long `close()` lets in-flight connections finish before cutting them (issue #206). */
+const SHUTDOWN_DRAIN_MS = 3000;
+
+/** How long a relayed WebSocket leg gets to finish its close handshake once the other leg is gone before it is terminated (issue #206). */
+const WS_CLOSE_GRACE_MS = 2000;
+
 /**
  * `httpAgent`/`httpsAgent`'s shared keep-alive tuning (issue #162) — pulled
  * out to a constant so both agents' constructors, and `listen()`'s own
@@ -289,6 +295,9 @@ export class ProxyEngine {
   private httpAgent: http.Agent = new http.Agent(KEEP_ALIVE_AGENT_OPTIONS);
   private httpsAgent: http.Agent = new https.Agent(KEEP_ALIVE_AGENT_OPTIONS);
 
+  /** Every relayed WebSocket leg (client- and upstream-side) that hasn't closed yet, so `close()` can terminate them (issue #206). */
+  private readonly liveWebSockets = new Set<WebSocket>();
+
   private httpServer: http.Server | undefined;
   private tlsServer: https.Server | http2.Http2SecureServer | undefined;
 
@@ -458,10 +467,26 @@ export class ProxyEngine {
     this.selfTargets.protectPort(port);
   }
 
+  /**
+   * Stops listening and drops what would otherwise keep the process alive
+   * (issue #206): a relayed WebSocket is open-ended, and `Server.close()`
+   * waits for every connection, so one live relay used to block shutdown
+   * forever. WebSocket legs are terminated outright, idle keep-alive
+   * connections closed now, and whatever is still in flight after
+   * `SHUTDOWN_DRAIN_MS` is cut.
+   */
   close(): void {
     this.httpServer?.close();
     this.tlsServer?.close();
     this.http2Pool.closeAll();
+    for (const ws of this.liveWebSockets) ws.terminate();
+    this.liveWebSockets.clear();
+    this.httpServer?.closeIdleConnections();
+    const drain = setTimeout(() => {
+      this.httpServer?.closeAllConnections();
+      if (this.tlsServer && 'closeAllConnections' in this.tlsServer) this.tlsServer.closeAllConnections();
+    }, SHUTDOWN_DRAIN_MS);
+    drain.unref();
   }
 
   private createInternalTlsServer(http2Enabled: boolean): https.Server | http2.Http2SecureServer {
@@ -1380,6 +1405,10 @@ export class ProxyEngine {
     // upstream too instead of always using Node's default verification.
     const serverWs = new WebSocket(url, { headers, ...(ctx.isSSL ? this.upstreamTls : undefined) });
     ctx.serverWs = serverWs;
+    for (const leg of [clientWs, serverWs]) {
+      this.liveWebSockets.add(leg);
+      leg.once('close', () => this.liveWebSockets.delete(leg));
+    }
 
     clientWs.on('message', (data, isBinary) => this.relayFrame(ctx, 'message', false, data, isBinary));
     clientWs.on('ping', (data) => this.relayFrame(ctx, 'ping', false, data, undefined));
@@ -1425,6 +1454,10 @@ export class ProxyEngine {
               `Cannot send ${type} because ${fromServer ? 'clientToProxy' : 'proxyToServer'} socket isn't open`,
             ),
           );
+          // The destination is gone, so nobody is left to relay this leg's
+          // frames to — drop it instead of logging an error per frame while
+          // a chatty peer keeps pushing (issue #206).
+          (fromServer ? ctx.serverWs : ctx.clientWs)?.terminate();
           return;
         }
         if (type === 'message') dest.send(data as WebSocket.RawData, { binary: flags as boolean });
@@ -1476,6 +1509,13 @@ export class ProxyEngine {
     try {
       if (code === undefined || code === 1005) stillOpen.close();
       else stillOpen.close(code, message);
+      // A peer that keeps sending never completes the close handshake, and
+      // `ws` would wait 30s for it (issue #206) — cut the leg if it hasn't
+      // closed shortly after.
+      const leg = stillOpen;
+      setTimeout(() => {
+        if (leg.readyState !== WebSocket.CLOSED) leg.terminate();
+      }, WS_CLOSE_GRACE_MS).unref();
     } catch {
       // Best-effort — the connection is already in a broken state either way.
     }

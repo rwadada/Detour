@@ -79,10 +79,19 @@ describe('ProxyEngine.parseHostAndPort', () => {
   });
 });
 
-/** A minimal `WebSocket`-shaped double: just `readyState`/`close`, which is all `closeStillOpenLeg`/`wsError` touch. */
+/** A minimal `WebSocket`-shaped double: just `readyState`/`close`/`terminate`, which is all `closeStillOpenLeg`/`wsError` touch (`terminate` from the deferred cut-off, issue #206). */
 function fakeSocket(readyState: number) {
   const closeCalls: unknown[][] = [];
-  return { readyState, close: (...args: unknown[]) => closeCalls.push(args), closeCalls };
+  let terminateCount = 0;
+  return {
+    readyState,
+    close: (...args: unknown[]) => closeCalls.push(args),
+    terminate: () => {
+      terminateCount++;
+    },
+    terminateCalls: () => terminateCount,
+    closeCalls,
+  };
 }
 
 /** Exposes `ProxyEngine`'s private WebSocket cross-signaling methods for direct testing, without needing a real socket pair. */
@@ -113,6 +122,20 @@ describe('ProxyEngine WebSocket close/error cross-signaling', () => {
     const server = fakeSocket(WebSocket.OPEN);
     engineInternals().closeStillOpenLeg({ clientWs: client, serverWs: server }, 1005, Buffer.alloc(0));
     expect(server.closeCalls).toEqual([[]]);
+  });
+
+  it('terminates a still-open leg whose close handshake never completes (issue #206)', () => {
+    vi.useFakeTimers();
+    try {
+      const client = fakeSocket(WebSocket.CLOSED);
+      const server = fakeSocket(WebSocket.OPEN);
+      engineInternals().closeStillOpenLeg({ clientWs: client, serverWs: server });
+      expect(server.terminateCalls()).toBe(0);
+      vi.advanceTimersByTime(5000);
+      expect(server.terminateCalls()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does nothing when both legs are already in the same state', () => {

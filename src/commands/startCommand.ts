@@ -214,6 +214,9 @@ function resolveShouldDetach(options: StartOptions): boolean {
  */
 const PROXY_HOST = '0.0.0.0';
 
+/** Upper bound on how long `shutdown` waits for the servers to stop before exiting anyway (issue #206); above the servers' own 3s drain, below `STOP_GRACE_PERIOD_MS`. */
+const SHUTDOWN_TIMEOUT_MS = 6000;
+
 /**
  * Resolves the host the *dashboard* binds to for this `start` invocation:
  * `0.0.0.0` (every network interface) or `localhost`-only. Folds together
@@ -779,7 +782,14 @@ async function runStartBody({
     saveBacklogForUpdateRestart();
     let stopError: unknown;
     try {
-      await Promise.all([handle.stop(), dashboardHandle?.stop()]);
+      // Backstop (issue #206): each server already cuts stragglers after its
+      // own drain, but a stop that never settles must not turn SIGTERM into
+      // a SIGKILL — `shutdown`'s remaining cleanup (history close, run-state
+      // removal) only runs if this returns.
+      await Promise.race([
+        Promise.all([handle.stop(), dashboardHandle?.stop()]),
+        new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS).unref()),
+      ]);
     } catch (err) {
       stopError = err;
     } finally {
