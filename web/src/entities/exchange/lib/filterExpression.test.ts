@@ -113,6 +113,11 @@ describe('compileFilterQuery', () => {
       expect(matches('proto:http2', e)).toBe(true);
       expect(matches('proto:2', e)).toBe(true);
       expect(matches('proto:http1', e)).toBe(false);
+      // HTTP/1.1 is selectable by its major version as well as in full.
+      const h1 = exchange({ protocol: 'HTTP/1.1' });
+      for (const q of ['proto:1', 'proto:1.1', 'proto:http1', 'proto:http/1.1']) expect(matches(q, h1)).toBe(true);
+      expect(matches('proto:2', h1)).toBe(false);
+      expect(matches('proto:http', h1)).toBe(false); // nothing to compare: literal URL text, not "match all"
     });
   });
 

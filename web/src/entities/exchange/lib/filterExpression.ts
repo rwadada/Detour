@@ -219,8 +219,14 @@ function build(key: Key, value: string): ExchangePredicate | null {
     case 'rule':
       return (e) => includesCI(e.ruleName, value);
     case 'proto': {
+      // `1`, `1.1`, `http1`, `http/1.1` all name HTTP/1.1; `2`, `http2`, `http/2` name HTTP/2.
+      // A bare `http` leaves nothing to compare, so it falls back to URL text like any unusable value.
       const wanted = value.toLowerCase().replace(/^http\/?/, '');
-      return (e) => e.protocol.toLowerCase().replace(/^http\//, '') === wanted;
+      if (wanted === '') return null;
+      return (e) => {
+        const actual = e.protocol.toLowerCase().replace(/^http\//, '');
+        return actual === wanted || actual.startsWith(`${wanted}.`);
+      };
     }
   }
 }
