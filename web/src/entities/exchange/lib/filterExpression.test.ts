@@ -143,11 +143,11 @@ describe('compileFilterQuery', () => {
 
     it('falls back to literal URL text for an unusable value', () => {
       expect(matches('duration:abc')).toBe(false);
-      expect(matches('duration:abc', exchange({ url: 'http://x/duration:abc' }))).toBe(true);
+      expect(matches('duration:abc', exchange({ url: 'https://x/duration:abc' }))).toBe(true);
     });
 
     it('treats unknown keys as plain text', () => {
-      expect(matches('foo:bar', exchange({ url: 'http://x/?foo:bar' }))).toBe(true);
+      expect(matches('foo:bar', exchange({ url: 'https://x/?foo:bar' }))).toBe(true);
       expect(matches('foo:bar')).toBe(false);
     });
   });
