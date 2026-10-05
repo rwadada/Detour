@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
+import WebSocket from 'ws';
 import { ProxyEngine } from './proxyEngine';
 
 /** Sends `raw` to the proxy over a bare TCP socket and returns everything it answers up to the end of the headers. */
@@ -97,7 +98,14 @@ describe('ProxyEngine refuses to relay to its own listeners (issue #205)', () =>
         handleWebSocketConnection(ws: unknown, req: IncomingMessage, isSSL: boolean): void;
       };
       const upgrade = (port: number) => ({ url: '/ws', headers: { host: `localhost:${port}` } }) as IncomingMessage;
-      const fakeWs = () => ({ close: vi.fn(), on: vi.fn(), _socket: undefined });
+      const fakeWs = () => ({
+        close: vi.fn(),
+        terminate: vi.fn(),
+        on: vi.fn(),
+        once: vi.fn(),
+        readyState: WebSocket.OPEN,
+        _socket: undefined,
+      });
 
       const blocked = fakeWs();
       internals.handleWebSocketConnection(blocked, upgrade(protectedPort), true);
