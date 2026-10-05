@@ -53,6 +53,21 @@ dashboard run on your own machine. Worth knowing up front:
   your whole LAN, with no authentication by default. Only enable it on a
   network you trust, and set a dashboard password
   (`detour config --dashboard-password`) when you do.
+- **The proxy must never be a stepping stone to the dashboard.** Because the
+  proxy listens on every interface while the dashboard defaults to
+  localhost-only, a LAN client could otherwise ask the proxy to fetch
+  `http://localhost:<dashboard-port>/` (or open `/ws`) on its behalf — the
+  connection then originates from this machine's own loopback, past the
+  dashboard's bind address and `Host`/`Origin` checks (the same class of
+  issue as mitmproxy's CVE-2025-23217). The proxy therefore refuses
+  (`403`) any HTTP request, `CONNECT` tunnel or WebSocket upgrade whose
+  destination is one of its own listeners (the proxy, the dashboard, the
+  internal MITM server), judged on the resolved IP. Other localhost ports
+  (a dev server on `localhost:3000`) stay reachable on purpose. A `route`
+  rule can still point traffic at a dashboard port deliberately. Without
+  `--proxy-auth`, anyone on the network can still use the proxy itself as an
+  egress hop, which is why the startup banner warns about it regardless of
+  `--lan`.
 - **The CA private key is a high-value secret.** It's the key behind a
   certificate you've asked your OS/browser to trust — anyone who reads it
   can mint valid-looking certificates for any domain, for as long as your
