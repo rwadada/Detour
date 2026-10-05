@@ -78,7 +78,7 @@ export function ContextBar() {
           {[
             filters.method !== 'ALL' && `Method: ${filters.method}`,
             filters.status !== 'ALL' && `Status: ${filters.status}`,
-            filters.query && `URL contains "${filters.query}"`,
+            filters.query && `Filter: "${filters.query}"`,
           ]
             .filter(Boolean)
             .join(' · ')}
