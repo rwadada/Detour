@@ -115,11 +115,11 @@ const VALIDATORS: { [T in DashboardClientMessage['type']]: Validator } = {
     check([isObject(m.data) && Array.isArray(m.data.rules), 'data must be an object with a rules array']),
   createRuleProfile: (m) =>
     check(
-      [validName(m.name), 'name must be a string'],
+      [validName(m.name), 'name must be a string of at most 256 characters'],
       [m.template === 'blank' || m.template === 'sample', "template must be 'blank' or 'sample'"],
     ),
-  saveActiveRulesAsProfile: (m) => check([validName(m.name), 'name must be a string']),
-  applyRuleProfile: (m) => check([validName(m.name), 'name must be a string']),
+  saveActiveRulesAsProfile: (m) => check([validName(m.name), 'name must be a string of at most 256 characters']),
+  applyRuleProfile: (m) => check([validName(m.name), 'name must be a string of at most 256 characters']),
   replay: validateReplay,
   // The fields themselves are validated (and reported as USER_CONFIG_WRITE_ERROR) by `writeUserConfig`.
   setUserConfig: (m) => check([isObject(m.state), 'state must be an object']),
