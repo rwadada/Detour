@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.0](https://github.com/rwadada/Detour/compare/v1.7.0...v1.8.0) (2026-10-05)
+
+
+### Features
+
+* open the dashboard in its installed PWA window on macOS ([f1a2467](https://github.com/rwadada/Detour/commit/f1a246780cb04dc502b29d2014e4e8598e9a3825))
+* open the dashboard in its installed PWA window on macOS ([aa7fb95](https://github.com/rwadada/Detour/commit/aa7fb95e99dade788782793c98e53701d1b82d25))
+
 ## [1.7.0](https://github.com/rwadada/Detour/compare/v1.6.1...v1.7.0) (2026-10-04)
 
 
