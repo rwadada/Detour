@@ -33,10 +33,10 @@ export const LAN_ACCESS_WARNING =
   'unless a dashboard password is set (`detour config --dashboard-password`), there is no authentication at all — anyone on your network can reach the dashboard, view decrypted HTTPS traffic through it, or edit rules, and the proxy itself serves anyone who asks unless you set --proxy-auth';
 
 /**
- * The startup banner's callout (issue #158) for the open forward proxy
- * the proxy always is on a shared network (it binds to every interface
- * regardless of `--lan`/`lanAccess`, issue #205) while `--proxy-auth`/`proxyAuth`
- * is unset. Worth shouting about
+ * The startup banner's callout (issue #158) shown whenever `--proxy-auth`/
+ * `proxyAuth` is unset. The proxy binds to every interface regardless of
+ * `--lan`/`lanAccess` (issue #205), so without credentials it is always an
+ * open forward proxy on a shared network. Worth shouting about
  * separately from `LAN_ACCESS_WARNING` because the consequence isn't
  * "someone could snoop on your session" but "someone else's traffic ends up
  * decrypted in your dumps, and your machine is their egress hop".
