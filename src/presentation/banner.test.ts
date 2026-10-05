@@ -139,10 +139,8 @@ describe('printStartupBanner', () => {
     expect(authenticated).not.toContain('the proxy requires no credentials');
   });
 
-  it('omits the open-proxy warning when not bound to the network at all', () => {
-    expect(print({ dashboardHost: 'localhost', proxyAuthSet: false })).not.toContain(
-      'the proxy requires no credentials',
-    );
+  it('warns about an open proxy even without --lan, since the proxy always binds to every interface (#205)', () => {
+    expect(print({ dashboardHost: 'localhost', proxyAuthSet: false })).toContain('the proxy requires no credentials');
   });
 
   it('prints the upstream proxy URL exactly as given, already redacted by the caller', () => {
