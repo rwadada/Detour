@@ -40,6 +40,9 @@ import { serveStatic } from './staticServer';
  */
 const DEFAULT_BACKLOG_SIZE = 500;
 
+/** How long `stop()` lets connections finish before cutting them (issue #206). */
+const SHUTDOWN_DRAIN_MS = 3000;
+
 /**
  * `backlog`'s `RingBuffer.byteLimit.sizeOf` (issue #165): the base64
  * request/response bodies are what actually balloons — 500 exchanges each
@@ -1210,9 +1213,6 @@ export async function startDashboardServer(
     });
   });
 }
-
-/** How long `stop()` lets connections finish before cutting them (issue #206). */
-const SHUTDOWN_DRAIN_MS = 3000;
 
 function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
