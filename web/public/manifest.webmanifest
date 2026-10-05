@@ -4,6 +4,7 @@
   "description": "Real-time HTTP(S) traffic dashboard for the Detour debugging proxy.",
   "start_url": "/",
   "display": "standalone",
+  "launch_handler": { "client_mode": "focus-existing" },
   "background_color": "#0f1117",
   "theme_color": "#5eb3e8",
   "icons": [
