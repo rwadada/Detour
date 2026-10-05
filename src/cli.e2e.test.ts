@@ -3969,6 +3969,83 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
     });
   });
 
+  describe('--resume-backlog (traffic list kept across a `detour update` restart)', () => {
+    function writeSnapshot(home: string, port: number, ids: string[]): string {
+      const dir = path.join(home, '.detour', 'update-resume');
+      fs.mkdirSync(dir, { recursive: true });
+      const filePath = path.join(dir, `${port}.json`);
+      const items = ids.map((id) => ({
+        id,
+        method: 'GET',
+        url: `https://example.com/${id}`,
+        host: 'example.com',
+        isSSL: true,
+        protocol: 'HTTP/1.1',
+        requestHeaders: {},
+        requestBodySize: 0,
+        startedAt: 1,
+        statusCode: 200,
+        responseBodySize: 0,
+        finishedAt: 2,
+      }));
+      fs.writeFileSync(filePath, JSON.stringify({ version: 1, savedAt: Date.now(), items }));
+      return filePath;
+    }
+
+    function backlogIds(dashboardPort: number): Promise<string[]> {
+      return new Promise((resolve, reject) => {
+        const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+        socket.on('message', (raw) => {
+          const message = JSON.parse(raw.toString()) as { type: string; items?: { id: string }[] };
+          if (message.type !== 'backlog') return;
+          resolve((message.items ?? []).map((item) => item.id));
+          socket.close();
+        });
+        socket.once('error', reject);
+      });
+    }
+
+    it('preloads the snapshot saved for this port and deletes it', async () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-resume-e2e-'));
+      const port = await findFreePort();
+      const snapshot = writeSnapshot(tmpDir, port, ['kept-1', 'kept-2']);
+      cli = await startDetourCliReady(['--port', String(port), '--dashboard-port', '0', '--resume-backlog'], {
+        HOME: tmpDir,
+        USERPROFILE: tmpDir,
+      });
+      expect(await backlogIds(cli.dashboardPort!)).toEqual(['kept-1', 'kept-2']);
+      expect(fs.existsSync(snapshot)).toBe(false);
+    }, 40_000);
+
+    it('ignores and removes a leftover snapshot on an ordinary start', async () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-resume-e2e-'));
+      const port = await findFreePort();
+      const snapshot = writeSnapshot(tmpDir, port, ['stale']);
+      cli = await startDetourCliReady(['--port', String(port), '--dashboard-port', '0'], {
+        HOME: tmpDir,
+        USERPROFILE: tmpDir,
+      });
+      expect(await backlogIds(cli.dashboardPort!)).toEqual([]);
+      expect(fs.existsSync(snapshot)).toBe(false);
+    }, 40_000);
+
+    it('removes a leftover snapshot on a --headless start too, where there is no dashboard to resume into', async () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-resume-e2e-'));
+      const port = await findFreePort();
+      const snapshot = writeSnapshot(tmpDir, port, ['stale']);
+      cli = await startDetourCliReady(['--port', String(port), '--headless'], {
+        HOME: tmpDir,
+        USERPROFILE: tmpDir,
+      });
+      expect(fs.existsSync(snapshot)).toBe(false);
+    }, 40_000);
+
+    it('does not list --resume-backlog in --help, as it is added by the update itself', async () => {
+      const result = await runTsx(['src/cli.ts', 'start', '--help'], { cwd: REPO_ROOT, reject: false });
+      expect(result.stdout).not.toContain('resume-backlog');
+    });
+  });
+
   describe('--fail-on-running', () => {
     it('exits with code 3 when another instance is already tracked as running on the same --port', async () => {
       const port = await findFreePort();

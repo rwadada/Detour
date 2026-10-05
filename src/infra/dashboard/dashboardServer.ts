@@ -222,6 +222,13 @@ export interface DashboardServerOptions {
    * rejected.
    */
   updateService?: UpdateService;
+  /**
+   * Exchanges to preload into the live backlog before the first client
+   * connects — what a Detour update carries across its restart so the open
+   * dashboard keeps its traffic list. Replayed to every connecting client
+   * exactly like freshly captured traffic. Not re-recorded to `historyStore`.
+   */
+  initialBacklog?: readonly CapturedExchange[];
 }
 
 const UPDATE_INFO_REFRESH_MS = 60 * 60 * 1000;
@@ -229,6 +236,12 @@ const UPDATE_INFO_REFRESH_MS = 60 * 60 * 1000;
 export interface DashboardServerHandle {
   /** Port the dashboard actually bound to (relevant when options.port is 0). */
   port: number;
+  /**
+   * The live backlog, but only while a dashboard-initiated update is about to
+   * stop this process (otherwise `undefined`) — what to write out for the
+   * relaunched instance to resume from. Call it before `stop()`.
+   */
+  backlogForUpdateRestart(): CapturedExchange[] | undefined;
   stop(): Promise<void>;
 }
 
@@ -316,6 +329,7 @@ export async function startDashboardServer(
       ? { maxTotalBytes: options.maxCaptureMemoryBytes, sizeOf: capturedExchangeByteSize }
       : undefined,
   );
+  for (const item of options.initialBacklog ?? []) backlog.upsert(item);
   // Mirrors `backlog` above, but for WebSocket connections (issue #17) —
   // kept in its own buffer/message type since a connection's shape (a
   // stream of frames rather than one request/response pair) doesn't fit
@@ -1159,6 +1173,7 @@ export async function startDashboardServer(
       boundPort = typeof address === 'object' && address ? address.port : options.port;
       resolve({
         port: boundPort,
+        backlogForUpdateRestart: () => (dashboardUpdates.isUpdating() ? backlog.toArray() : undefined),
         stop: () =>
           new Promise<void>((res) => {
             eventBus.off('request', onRequest);

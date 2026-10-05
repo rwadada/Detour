@@ -20,12 +20,13 @@ function BannerText({
       <>Updating to Detour {info.latest}… Detour will restart and this page will reload (this can take a minute).</>
     );
   }
-  if (phase === 'failed') return <>Update failed: {message}</>;
+  if (phase === 'failed' && !confirming) return <>Update failed: {message}</>;
   return (
     <>
       <strong className="font-semibold">Detour {info.latest}</strong> is available (you have {info.current}).
       {!info.canUpdate && ' Run `detour update` in a terminal to upgrade.'}
-      {confirming && ' Every running Detour instance will restart; captured traffic in memory will be lost.'}
+      {confirming &&
+        ' Every running Detour instance will restart. This list of finished requests is carried over where possible; other instances lose their captured traffic.'}
     </>
   );
 }
