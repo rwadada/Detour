@@ -111,6 +111,14 @@ export interface ProxyServerHandle {
    * time.
    */
   setRuleEngine(engine: RuleEngine): void;
+  /**
+   * Marks a port another listener in this process owns (the dashboard) as one
+   * the proxy refuses to relay to (issue #205). The proxy listens on every
+   * interface, so without this a LAN client could use it as a stepping stone
+   * to the localhost-only dashboard. The proxy's own ports are protected
+   * automatically.
+   */
+  protectLocalPort(port: number): void;
   stop(): Promise<void>;
 }
 
@@ -397,6 +405,7 @@ export async function startProxyServer(
             setRuleEngine: (engine) => {
               ruleEngine = engine;
             },
+            protectLocalPort: (port) => proxy.protectLocalPort(port),
             stop: () =>
               new Promise<void>((res) => {
                 eventBus.off('breakpointResume', handleBreakpointResume);

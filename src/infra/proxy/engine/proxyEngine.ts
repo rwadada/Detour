@@ -34,6 +34,7 @@ import type {
   UpstreamResponse,
 } from './types';
 import { UPSTREAM_KEEP_ALIVE_TIMEOUT_MS } from './keepAliveTiming';
+import { createSelfTargetGuard } from './selfTarget';
 import { captureUpstreamCertificate } from './upstreamCertificate';
 import {
   adaptHttp2Response,
@@ -164,6 +165,19 @@ function readProxyAuthorization(req: IncomingMessage): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+const SELF_TARGET_REJECTION = 'Detour does not proxy requests to its own listeners';
+
+/** The `403` sent down a raw CONNECT socket for a tunnel aimed at one of this process's own listeners (issue #205) — hand-built and closed immediately, so no tunnel is ever established. */
+function rejectSelfTargetConnect(socket: Duplex): void {
+  socket.end(
+    'HTTP/1.1 403 Forbidden\r\n' +
+      'Content-Type: text/plain; charset=utf-8\r\n' +
+      `Content-Length: ${Buffer.byteLength(SELF_TARGET_REJECTION)}\r\n` +
+      'Connection: close\r\n\r\n' +
+      SELF_TARGET_REJECTION,
+  );
+}
+
 /** The `407` sent down a raw CONNECT socket, which (unlike the request path) has no `ServerResponse` to write through — hand-built and closed immediately, so no tunnel is ever established. */
 function rejectUnauthenticatedConnect(socket: Duplex): void {
   if (socket.destroyed) return;
@@ -276,6 +290,9 @@ export class ProxyEngine {
 
   private httpServer: http.Server | undefined;
   private tlsServer: https.Server | http2.Http2SecureServer | undefined;
+
+  /** Refuses relaying to this process's own listeners (issue #205): without it the LAN-facing proxy is a stepping stone to the localhost-only dashboard. */
+  private readonly selfTargets = createSelfTargetGuard();
 
   /** `ProxyEngineOptions.proxyAuth` (issue #158), captured on `listen` — `undefined` leaves the proxy open to every client, as it was before that flag existed. */
   private proxyAuth: ProxyAuthCredentials | undefined;
@@ -418,6 +435,8 @@ export class ProxyEngine {
 
       await listenAsync(this.httpServer, options.port, options.host);
       this.httpPort = (this.httpServer.address() as net.AddressInfo).port;
+      this.selfTargets.protectPort(this.httpPort);
+      this.selfTargets.protectPort(internalPort);
       callback();
     } catch (err) {
       // `this.tlsServer` (and, further along, `this.httpServer`) can already
@@ -431,6 +450,11 @@ export class ProxyEngine {
       this.close();
       callback(err instanceof Error ? err : new Error(String(err)));
     }
+  }
+
+  /** Marks a port some other listener in this process owns (the dashboard) as off-limits to relayed traffic (issue #205). */
+  protectLocalPort(port: number): void {
+    this.selfTargets.protectPort(port);
   }
 
   close(): void {
@@ -508,6 +532,15 @@ export class ProxyEngine {
 
   /** Runs the registered `onConnect` handlers (Block Hosts / Focus / passthrough dispatch — see `proxyServer.ts`); if every one calls back without handling the tunnel itself, MITMs it by bridging the raw client socket into the internal TLS/HTTP2 server. */
   private runConnectHandlers(req: IncomingMessage, socket: Duplex, head: Buffer, internalPort: number): void {
+    const target = ProxyEngine.parseHost(req.url ?? '', 443);
+    this.selfTargets.isSelfTarget(target.host, target.port ?? 443).then(
+      (isSelf) =>
+        isSelf ? rejectSelfTargetConnect(socket) : this.dispatchConnectHandlers(req, socket, head, internalPort),
+      () => this.dispatchConnectHandlers(req, socket, head, internalPort),
+    );
+  }
+
+  private dispatchConnectHandlers(req: IncomingMessage, socket: Duplex, head: Buffer, internalPort: number): void {
     let i = 0;
     const next = (err?: MaybeError): void => {
       if (err) {
@@ -628,6 +661,24 @@ export class ProxyEngine {
       res.end('Bad request: Host missing...', 'utf-8');
       return;
     }
+
+    this.selfTargets.isSelfTarget(hostPort.host, hostPort.port ?? (isSSL ? 443 : 80)).then(
+      (isSelf) => (isSelf ? this.rejectSelfTargetRequest(ctx) : this.relayRequest(ctx, hostPort)),
+      () => this.relayRequest(ctx, hostPort),
+    );
+  }
+
+  /** Answers a request aimed at one of this process's own listeners (issue #205) with a `403` — see `SelfTargetGuard`. Drains the body first so the client reads the response instead of an abruptly-reset socket. */
+  private rejectSelfTargetRequest(ctx: Context): void {
+    ctx.clientToProxyRequest.resume();
+    const res = ctx.proxyToClientResponse;
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(SELF_TARGET_REJECTION, 'utf-8');
+  }
+
+  private relayRequest(ctx: Context, hostPort: { host: string; port: number | undefined }): void {
+    const req = ctx.clientToProxyRequest;
+    const isSSL = ctx.isSSL;
 
     const headers: Record<string, string> = {};
     for (const key in req.headers) {
@@ -1215,11 +1266,30 @@ export class ProxyEngine {
                 callback(false, 407, 'Proxy Authentication Required', {
                   'Proxy-Authenticate': PROXY_AUTHENTICATE_CHALLENGE,
                 }),
-              () => callback(true),
+              () => this.guardSelfTargetUpgrade(info.req, callback),
             ),
     });
     wss.on('error', (err) => this.emitError('HTTP_SERVER_ERROR', null, err));
     wss.on('connection', (ws, upgradeReq) => this.handleWebSocketConnection(ws, upgradeReq, isSSL));
+  }
+
+  /** Refuses a `ws://` upgrade aimed at one of this process's own listeners (issue #205) before the handshake completes — `handleRequest`'s check never sees upgrades. */
+  private guardSelfTargetUpgrade(
+    req: IncomingMessage,
+    callback: (result: boolean, code?: number, message?: string) => void,
+  ): void {
+    const url = req.url ?? '';
+    const absolute = url.match(/^[a-z]+:\/\/([^/]+)/i);
+    const authority = absolute?.[1] ?? req.headers.host;
+    if (!authority) {
+      callback(true);
+      return;
+    }
+    const target = ProxyEngine.parseHost(authority, 80);
+    this.selfTargets.isSelfTarget(target.host, target.port ?? 80).then(
+      (isSelf) => (isSelf ? callback(false, 403, SELF_TARGET_REJECTION) : callback(true)),
+      () => callback(true),
+    );
   }
 
   private handleWebSocketConnection(clientWs: WebSocket, upgradeReq: IncomingMessage, isSSL: boolean): void {

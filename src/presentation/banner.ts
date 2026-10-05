@@ -173,7 +173,9 @@ export function printStartupBanner(info: {
   // (`lanAddresses`), since `--lan` is an explicit statement of intent to be
   // reachable, and a warning that disappeared while offline would be
   // missing exactly when someone joins a café Wi-Fi mid-session.
-  if (lanEnabled && !info.proxyAuthSet) {
+  // Issue #205: now unconditional. The proxy binds to every interface
+  // whatever `--lan` says, so "only dangerous with --lan" was never true.
+  if (!info.proxyAuthSet) {
     console.log(`⚠ SECURITY: ${PROXY_OPEN_WARNING}.`);
   }
   if (info.ruleEngine) {
