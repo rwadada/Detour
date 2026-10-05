@@ -429,4 +429,6 @@ export type DashboardClientMessage =
   /** Requests one page of persisted exchange history (issue #144), answered by a `historyResult` carrying the same `requestId`. */
   | { type: 'queryHistory'; requestId: string; query: HistoryQuery }
   /** Runs `detour update --yes` detached (stop, `brew upgrade`, relaunch on the new version). Only honored for a loopback or password-authenticated socket on an install that can update itself; answered by `updateStatus`. */
-  | { type: 'startUpdate' };
+  | { type: 'startUpdate' }
+  /** Re-runs the release lookup now instead of waiting out the cache; answered by a fresh `updateInfo`. No-op when update checking isn't configured. */
+  | { type: 'checkUpdate' };

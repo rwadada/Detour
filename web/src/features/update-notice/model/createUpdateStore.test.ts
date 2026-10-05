@@ -106,4 +106,48 @@ describe('createUpdateStore', () => {
     store.getState().dismiss();
     expect(store.getState().dismissedVersion).toBe('1.6.1');
   });
+
+  describe('checkForUpdate', () => {
+    it('sends checkUpdate once and settles on the next updateInfo', () => {
+      const fake = fakeDashboardConnection();
+      const store = createUpdateStore(fake.connection, { reload: vi.fn() });
+      fake.emit(info('1.0.0'));
+      store.getState().checkForUpdate();
+      store.getState().checkForUpdate();
+      expect(fake.sent).toEqual([{ type: 'checkUpdate' }]);
+      expect(store.getState().checkState).toBe('checking');
+      fake.emit(info('1.0.0', { latest: '1.0.0', updateAvailable: false }));
+      expect(store.getState().checkState).toBe('checked');
+      vi.advanceTimersByTime(60 * 1000);
+      expect(store.getState().checkState).toBe('checked');
+    });
+
+    it('gives up when the server never answers', () => {
+      const fake = fakeDashboardConnection();
+      const store = createUpdateStore(fake.connection, { reload: vi.fn(), checkTimeoutMs: 1000 });
+      fake.emit(info('1.0.0'));
+      store.getState().checkForUpdate();
+      vi.advanceTimersByTime(1000);
+      expect(store.getState().checkState).toBe('timeout');
+      store.getState().checkForUpdate();
+      expect(store.getState().checkState).toBe('checking');
+      expect(fake.sent).toHaveLength(2);
+    });
+
+    it('does not mistake an unrequested updateInfo for a check result', () => {
+      const fake = fakeDashboardConnection();
+      const store = createUpdateStore(fake.connection, { reload: vi.fn() });
+      fake.emit(info('1.0.0'));
+      expect(store.getState().checkState).toBe('idle');
+    });
+
+    it('lets a release hidden with "Later" resurface', () => {
+      const fake = fakeDashboardConnection();
+      const store = createUpdateStore(fake.connection, { reload: vi.fn() });
+      fake.emit(info('1.0.0'));
+      store.getState().dismiss();
+      store.getState().checkForUpdate();
+      expect(store.getState().dismissedVersion).toBeNull();
+    });
+  });
 });

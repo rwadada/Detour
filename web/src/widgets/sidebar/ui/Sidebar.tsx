@@ -4,6 +4,7 @@ import { useProxyInfoStore } from '@/entities/proxy-config';
 import { RulesEditorButton } from '@/features/rules-editor';
 import { RuleProfilesControl } from '@/features/rules-profiles';
 import { SettingsButton } from '@/features/settings-panel';
+import { UpdateCheck } from '@/features/update-notice';
 import { useConnectionStatus } from '@/shared/api';
 import { useCopyToClipboard } from '@/shared/lib/useCopyToClipboard';
 import { cn } from '@/shared/lib/utils';
@@ -76,6 +77,7 @@ export function Sidebar() {
             <h2 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">Settings</h2>
             <SettingsButton />
           </section>
+          <UpdateCheck />
           <a
             href="https://github.com/rwadada/Detour#readme"
             target="_blank"

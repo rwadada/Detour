@@ -67,6 +67,21 @@ describe('createDashboardUpdates', () => {
     expect(await offline.updates.infoFor(socket)).toMatchObject({ latest: null, updateAvailable: false });
   });
 
+  it('refresh forces a fresh release lookup, and is harmless without an update service', async () => {
+    const getLatestVersion = vi.fn(async (_options?: { force?: boolean }) => '1.6.1');
+    const service: UpdateService = {
+      currentVersion: '1.0.0',
+      canSelfUpdate: true,
+      getLatestVersion,
+      startUpdate: vi.fn(async () => {}),
+    };
+    const updates = createDashboardUpdates(service, { isLoopback: () => true, isPasswordVerified: () => true });
+    await updates.refresh();
+    expect(getLatestVersion).toHaveBeenCalledWith({ force: true });
+    const none = createDashboardUpdates(undefined, { isLoopback: () => true, isPasswordVerified: () => true });
+    await expect(none.refresh()).resolves.toBeUndefined();
+  });
+
   it('does not offer the button to an anonymous non-loopback client', async () => {
     const { updates, startUpdate } = setup();
     expect(await updates.infoFor(socket)).toMatchObject({ canUpdate: false });

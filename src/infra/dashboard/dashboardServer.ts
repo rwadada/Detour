@@ -884,7 +884,10 @@ export async function startDashboardServer(
         else if (message.type === 'setThrottle') eventBus.emit('setThrottle', message.state);
         else if (message.type === 'setBlockHosts') eventBus.emit('setBlockHosts', message.state);
         else if (message.type === 'startUpdate') socket.send(JSON.stringify(await dashboardUpdates.start(socket)));
-        else if (message.type === 'replay') {
+        else if (message.type === 'checkUpdate') {
+          await dashboardUpdates.refresh();
+          sendUpdateInfoToAll();
+        } else if (message.type === 'replay') {
           // Fire-and-forget: `replayExchange` never rejects (network
           // failures land in the replayed exchange's own `error` field, see
           // its doc comment) — this catch only guards against a genuine bug.

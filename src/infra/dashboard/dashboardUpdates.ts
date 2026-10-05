@@ -31,6 +31,8 @@ export function hasForwardingHeaders(headers: IncomingHttpHeaders): boolean {
 export interface DashboardUpdates {
   /** The `updateInfo` message for one socket, or null when update checking isn't configured. */
   infoFor(socket: WebSocket): Promise<DashboardServerMessage | null>;
+  /** Handles `checkUpdate`: re-runs the release lookup past the cache; the caller then re-sends `updateInfo` to every client. */
+  refresh(): Promise<void>;
   /** Handles `startUpdate` from one socket and returns the `updateStatus` to send back to it. */
   start(socket: WebSocket): Promise<DashboardServerMessage>;
 }
@@ -64,6 +66,9 @@ export function createDashboardUpdates(
         updateAvailable: latest !== null && isNewerVersion(latest, service.currentVersion),
         canUpdate: mayUpdate(socket),
       };
+    },
+    async refresh() {
+      await service?.getLatestVersion({ force: true });
     },
     async start(socket) {
       if (!service?.canSelfUpdate) {
