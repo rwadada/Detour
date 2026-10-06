@@ -1307,7 +1307,11 @@ export async function startDashboardServer(
         backlogForUpdateRestart: () => (dashboardUpdates.isUpdating() ? backlog.toArray() : undefined),
         stop: () =>
           new Promise<void>((res) => {
-            void control?.stop();
+            // Awaited, not fired and forgotten: a caller that treats a resolved
+            // `stop()` as "every port is released" (a test restarting Detour on
+            // a fixed `--control-port`) must not find the control listener
+            // still bound.
+            const controlStopped = control?.stop() ?? Promise.resolve();
             eventBus.off('request', onRequest);
             eventBus.off('response', onResponse);
             eventBus.off('error', onError);
@@ -1334,7 +1338,7 @@ export async function startDashboardServer(
             wss.close(() =>
               httpServer.close(() => {
                 clearTimeout(force);
-                res();
+                void controlStopped.then(() => res());
               }),
             );
           }),
@@ -1367,10 +1371,9 @@ export async function startDashboardServer(
         (control) => resolve(buildHandle(control)),
         (err: unknown) => {
           // The dashboard is already listening; release it so the caller is
-          // not left holding half a start.
-          wss.close();
-          httpServer.close();
-          reject(err);
+          // not left holding half a start — and only then report the failure,
+          // so "the start failed" can be trusted to mean "no port is held".
+          wss.close(() => httpServer.close(() => reject(err)));
         },
       );
     });

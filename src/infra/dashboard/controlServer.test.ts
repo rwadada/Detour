@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -9,6 +10,7 @@ import { RuleEngine } from '../../usecase/ruleEngine';
 import { DetourEventBus } from '../eventBus';
 import { fsFileWatcher, fsRulesFileReader, fsRulesFileWriter } from '../fs/rulesFileSource';
 import { listRuleProfiles, readRuleProfile, writeRuleProfile } from '../fs/ruleProfileStore';
+import { startControlServer } from './controlServer';
 import { startDashboardServer, type DashboardServerHandle } from './dashboardServer';
 
 const TOKEN = 'control-api-test-token-0123456789';
@@ -423,5 +425,94 @@ describe('control API (issue #212)', () => {
   it('answers 404 for an unknown endpoint', async () => {
     await start();
     expect((await call('GET', '/nope')).status).toBe(404);
+  });
+
+  describe('startControlServer().stop() on its own', () => {
+    const noDeps = {
+      getRuleEngine: () => undefined,
+      ensureRuleEngine: () => undefined,
+      profiles: () => undefined,
+      exchanges: () => [],
+      clearExchanges: () => undefined,
+      setThrottle: async (s: never) => s,
+      setBlockHosts: async (s: never) => s,
+      version: undefined,
+    };
+
+    it('resolves only once the listener is gone — a new server can take the same port at once', async () => {
+      const first = await startControlServer({ port: 0, token: TOKEN }, noDeps);
+      await first.stop();
+      const again = await startControlServer({ port: first.port, token: TOKEN }, noDeps);
+      expect(again.port).toBe(first.port);
+      await again.stop();
+    });
+
+    it('does not hang on a client that keeps its connection open', async () => {
+      const server = await startControlServer({ port: 0, token: TOKEN }, noDeps);
+      const idle = net.connect({ host: '127.0.0.1', port: server.port });
+      await new Promise<void>((resolve) => idle.once('connect', () => resolve()));
+
+      await expect(
+        Promise.race([
+          server.stop().then(() => 'stopped'),
+          new Promise((resolve) => setTimeout(() => resolve('hung'), 2000)),
+        ]),
+      ).resolves.toBe('stopped');
+      idle.destroy();
+    });
+  });
+
+  describe('releasing its ports', () => {
+    /** Whether something is listening on `port` right now (on loopback). */
+    const isListening = (port: number) =>
+      new Promise<boolean>((resolve) => {
+        const probe = net.connect({ host: '127.0.0.1', port }, () => {
+          probe.destroy();
+          resolve(true);
+        });
+        probe.on('error', () => resolve(false));
+      });
+
+    it('has released the control port by the time stop() resolves, so a restart on the same port works', async () => {
+      await start();
+      const port = handle!.controlPort!;
+      expect(await isListening(port)).toBe(true);
+
+      await handle!.stop();
+      handle = undefined;
+
+      expect(await isListening(port)).toBe(false);
+      // The proof that matters: starting again on exactly that port succeeds.
+      handle = await start({ controlPort: port });
+      expect(handle.controlPort).toBe(port);
+    });
+
+    it('releases the dashboard too before reporting that the control port could not be bound', async () => {
+      // Occupy a port, then ask the control API for it.
+      const blocker = net.createServer();
+      await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve));
+      const taken = (blocker.address() as net.AddressInfo).port;
+      try {
+        // A fixed dashboard port, so it can be probed afterwards.
+        const dashboardPort = await new Promise<number>((resolve) => {
+          const probe = net.createServer();
+          probe.listen(0, 'localhost', () => {
+            const free = (probe.address() as net.AddressInfo).port;
+            probe.close(() => resolve(free));
+          });
+        });
+
+        await expect(
+          startDashboardServer({ port: dashboardPort, accessToken: TOKEN, controlPort: taken }, eventBus),
+        ).rejects.toThrow(/EADDRINUSE/);
+
+        // By the time the failure was reported, the dashboard no longer holds its port.
+        expect(await isListening(dashboardPort)).toBe(false);
+        handle = await startDashboardServer({ port: dashboardPort, accessToken: TOKEN }, eventBus);
+        expect(handle.port).toBe(dashboardPort);
+      } finally {
+        blocker.close();
+      }
+    });
   });
 });

@@ -509,6 +509,20 @@ describe('RuleEngine', () => {
 
       expect(reloads).toBe(1);
     });
+
+    it("does not reload a second time from write()'s fallback timer — it must see that writeAndReload already applied the file", async () => {
+      // `writeAndReload` calls `write()`, which arms a fallback reload for a
+      // watcher that drops the notification. It has just reloaded itself, so
+      // the fallback must stand down: a second reload would reset every
+      // sequential mock under the caller (what the control API exists to avoid).
+      let reloads = 0;
+      engine = load(() => reloads++, controllableWatcher().watcher);
+
+      engine.writeAndReload([routeRule('a'), routeRule('b')]);
+      await wait(400); // well past the fallback's debounce(10) + grace(100) ms
+
+      expect(reloads).toBe(1);
+    });
   });
 
   describe('resetMockSequences()', () => {
@@ -530,6 +544,113 @@ describe('RuleEngine', () => {
       expect(engine.resolveMockStep(rule!).status).toBe(201);
       expect(reloads).toBe(0);
       expect(engine.getRules()[0]).toBe(rule);
+    });
+  });
+
+  /**
+   * `write()` must not depend on `fs.watch` to take effect: a write made
+   * within a few ms of the watch being created can go unreported while other
+   * processes are busy on the filesystem (see `RuleEngine.write`), and a
+   * dashboard save would then never show up. These use a watcher that is
+   * deterministic — one that reports nothing, and one that reports like a
+   * healthy `fs.watch` — instead of the real thing.
+   */
+  describe('write() when the file watcher is unreliable', () => {
+    const GRACE_PAST_DEBOUNCE_MS = 400;
+
+    /** A watcher that never reports a change — what a dropped `fs.watch` notification looks like. */
+    const silentWatcher = { watch: () => () => undefined };
+
+    /** A watcher that reports a change as soon as it is told one happened, like a healthy `fs.watch`. */
+    function healthyWatcher() {
+      let notify: () => void = () => undefined;
+      return {
+        watcher: {
+          watch: (_file: string, onChange: () => void) => {
+            notify = onChange;
+            return () => undefined;
+          },
+        },
+        fire: () => notify(),
+      };
+    }
+
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    function load(watcher: { watch: (file: string, onChange: () => void) => () => void }, onReload: () => void) {
+      writeRules(filePath, [routeRule('a')]);
+      return RuleEngine.load({
+        filePath,
+        reader: fsRulesFileReader,
+        writer: fsRulesFileWriter,
+        watcher: watcher as never,
+        debounceMs: 10,
+        onReload,
+      });
+    }
+
+    it('still reloads — by itself — when the watcher never reports the write', async () => {
+      let reloads = 0;
+      engine = load(silentWatcher, () => reloads++);
+
+      engine.write([routeRule('a'), routeRule('b')], { activeProfile: 'p' });
+      await wait(GRACE_PAST_DEBOUNCE_MS);
+
+      expect(reloads).toBe(1);
+      expect(engine.getRules().map((r) => r.name)).toEqual(['a', 'b']);
+      expect(engine.getActiveProfile()).toBe('p');
+    });
+
+    it('does not reload a second time when the watcher did report the write', async () => {
+      let reloads = 0;
+      const { watcher, fire } = healthyWatcher();
+      engine = load(watcher, () => reloads++);
+
+      engine.write([routeRule('a'), routeRule('b')]);
+      fire();
+      await wait(GRACE_PAST_DEBOUNCE_MS);
+
+      expect(reloads).toBe(1);
+    });
+
+    it('covers several quick writes with a single fallback reload that sees the latest content', async () => {
+      let reloads = 0;
+      engine = load(silentWatcher, () => reloads++);
+
+      engine.write([routeRule('a'), routeRule('b')]);
+      engine.write([routeRule('a'), routeRule('b'), routeRule('c')]);
+      await wait(GRACE_PAST_DEBOUNCE_MS);
+
+      expect(reloads).toBe(1);
+      expect(engine.getRules().map((r) => r.name)).toEqual(['a', 'b', 'c']);
+    });
+
+    it('does not reload after being closed', async () => {
+      let reloads = 0;
+      engine = load(silentWatcher, () => reloads++);
+
+      engine.write([routeRule('a'), routeRule('b')]);
+      engine.close();
+      await wait(GRACE_PAST_DEBOUNCE_MS);
+
+      expect(reloads).toBe(0);
+    });
+
+    it('leaves an engine that is not watching alone (its writes were never picked up automatically)', async () => {
+      let reloads = 0;
+      writeRules(filePath, [routeRule('a')]);
+      engine = RuleEngine.load({
+        filePath,
+        reader: fsRulesFileReader,
+        writer: fsRulesFileWriter,
+        watch: false,
+        onReload: () => reloads++,
+      });
+
+      engine.write([routeRule('a'), routeRule('b')]);
+      await wait(GRACE_PAST_DEBOUNCE_MS);
+
+      expect(reloads).toBe(0);
     });
   });
 });

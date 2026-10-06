@@ -144,8 +144,13 @@ describe.skipIf(!isHistoryPersistenceSupported())('startDashboardServer — hist
     sockets = [];
     const requester = connect();
     const bystander = connect();
-    await waitForMessage(requester, (m) => m.type === 'historyStatus');
-    await waitForMessage(bystander, (m) => m.type === 'historyStatus');
+    // Both listeners are attached before either is awaited: waiting for the
+    // requester first left the bystander's listener unattached while its own
+    // `historyStatus` could already arrive, which was then lost and timed out.
+    await Promise.all([
+      waitForMessage(requester, (m) => m.type === 'historyStatus'),
+      waitForMessage(bystander, (m) => m.type === 'historyStatus'),
+    ]);
 
     let bystanderSawResult = false;
     bystander.on('message', (raw) => {
