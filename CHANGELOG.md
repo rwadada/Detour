@@ -1,5 +1,35 @@
 # Changelog
 
+## [2.0.0](https://github.com/rwadada/Detour/compare/v1.9.0...v2.0.0) (2026-10-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* engines.node is now >=22.12 (Node 18 and 20 are EOL; the dashboard build already needed 22.12, and --persist needs node:sqlite).
+
+### Features
+
+* **dashboard:** validate client WS messages and check protocol version ([#209](https://github.com/rwadada/Detour/issues/209)) ([20e03bb](https://github.com/rwadada/Detour/commit/20e03bbf7ea73a8beb8c09f13910737aac066972))
+* **dashboard:** クライアントWSメッセージの検証とプロトコルバージョン確認 ([#209](https://github.com/rwadada/Detour/issues/209)) ([71effc1](https://github.com/rwadada/Detour/commit/71effc1a2e397c7307b6a2af09ec9ac664b82c39))
+* Edit & Send — edit a captured request before replaying it ([#214](https://github.com/rwadada/Detour/issues/214)) ([577a371](https://github.com/rwadada/Detour/commit/577a3719decd19a2b9dd0ff3793d420d33afe9cc))
+* Edit & Send — 記録済みリクエストを編集して再送できるようにする ([#214](https://github.com/rwadada/Detour/issues/214)) ([0b96b17](https://github.com/rwadada/Detour/commit/0b96b173889f85cb45509067fa51d52b76ddf89a))
+* require Node &gt;=22.12 and verify on Node 24 and macOS in CI ([#210](https://github.com/rwadada/Detour/issues/210)) ([9a933e3](https://github.com/rwadada/Detour/commit/9a933e3f1dbf39fb65d2275b9ca7f9b241230c37))
+* **web:** filter expressions in the search box ([#213](https://github.com/rwadada/Detour/issues/213)) ([ca93b18](https://github.com/rwadada/Detour/commit/ca93b1863cd41c3ae517b267dcd1287f2fbe2a06))
+* **web:** 検索欄でフィルタ式（status: header: body: duration: など）を使えるようにする ([#213](https://github.com/rwadada/Detour/issues/213)) ([186e9d3](https://github.com/rwadada/Detour/commit/186e9d335a0126744f22e5731ce1b1b46055f8e6))
+
+
+### Bug Fixes
+
+* **dashboard:** name the length limit in profile-name validation errors (Copilot on [#222](https://github.com/rwadada/Detour/issues/222)) ([d1c948e](https://github.com/rwadada/Detour/commit/d1c948ebb96a284b2e453e6c697128465c606568))
+* **proxy:** address Copilot review on [#217](https://github.com/rwadada/Detour/issues/217) (destroyed-socket guard, stale banner comments) ([83d28e0](https://github.com/rwadada/Detour/commit/83d28e0d5160dc29b7b9894b54d27386665d1f3a))
+* **proxy:** check self-target on wss:// upgrades inside MITM tunnels ([#205](https://github.com/rwadada/Detour/issues/205)) ([387d7d7](https://github.com/rwadada/Detour/commit/387d7d7e5b2d8158c45fcbade6a3ee062a6c834c))
+* **proxy:** refuse to relay to the proxy's own listeners ([#205](https://github.com/rwadada/Detour/issues/205)) ([da6a49e](https://github.com/rwadada/Detour/commit/da6a49e49762129b859b5096f4297e4b3f216a40))
+* **proxy:** terminate relayed WebSockets when a leg dies and on shutdown ([#206](https://github.com/rwadada/Detour/issues/206)) ([968a505](https://github.com/rwadada/Detour/commit/968a50578478ac9a950ecc30d7e215c3b4822f96))
+* **proxy:** プロキシ自身のlistener宛ての中継を拒否する ([#205](https://github.com/rwadada/Detour/issues/205)) ([c1c5d43](https://github.com/rwadada/Detour/commit/c1c5d436e19d34017ba9ac774263acabd2ed23fa))
+* **proxy:** 中継WebSocketのleak解消とSIGTERM時の確実な終了 ([#206](https://github.com/rwadada/Detour/issues/206)) ([4a71a9d](https://github.com/rwadada/Detour/commit/4a71a9db4f2344207c8201579f9d4bb0c882f6a6))
+* **web:** address agy review on filter expressions ([#213](https://github.com/rwadada/Detour/issues/213)) ([3c872c1](https://github.com/rwadada/Detour/commit/3c872c18c73db4df9f2dcfd5287116a6bb12359e))
+* **web:** make proto:1 / proto:http1 match HTTP/1.1 (Copilot on [#223](https://github.com/rwadada/Detour/issues/223)) ([5707812](https://github.com/rwadada/Detour/commit/5707812be7ddb5d00ed7ebd54fedbcdc32c681bd))
+
 ## [1.9.0](https://github.com/rwadada/Detour/compare/v1.8.0...v1.9.0) (2026-10-05)
 
 
