@@ -59,6 +59,9 @@ import {
   parseScriptTimeoutMs,
 } from './optionParsers';
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- same runtime package.json read as cli.ts.
+const pkg = require('../../package.json') as { version: string };
+
 /** Auto-loaded when `--rules` isn't given and this file exists in the current directory. */
 const DEFAULT_RULES_FILENAME = 'passthrough.rule.json';
 
@@ -87,6 +90,8 @@ interface StartOptions {
   dump: string;
   http2: boolean;
   proto: string[];
+  /** `--control-port` (issue #212): port for the control API a test runner drives this instance with. Undefined (the default) leaves it off. */
+  controlPort?: string;
   /** `--headless` (issue #20): skip starting the web dashboard entirely — proxy-only, for CI/scripted use. */
   headless?: boolean;
   /** `--exit-on-idle <ms>` (issue #20), unparsed. */
@@ -305,6 +310,14 @@ async function runStart(options: StartOptions): Promise<void> {
   installProcessCrashGuards();
   const port = parsePort(options.port, '--port');
   const headless = options.headless ?? false;
+  const controlPort = options.controlPort !== undefined ? parsePort(options.controlPort, '--control-port') : undefined;
+  if (controlPort !== undefined && headless) {
+    // The control API drives the dashboard server's state (the active rules,
+    // the captured-traffic backlog), which `--headless` does not start at all.
+    throw new Error(
+      '--control-port needs the dashboard server, which --headless does not start — drop --headless (add --no-open to keep a browser from opening)',
+    );
+  }
   const exitOnIdleMs = options.exitOnIdle !== undefined ? parseIdleMs(options.exitOnIdle) : undefined;
 
   // Run-state tracking (backs "Fail on Running", `detour status`, `detour
@@ -646,6 +659,8 @@ async function runStartBody({
           // Issue #205: the dashboard is not open to whoever can reach it
           // (which, through the proxy, includes the LAN) — see `accessToken`.
           accessToken: dashboardToken,
+          controlPort: options.controlPort !== undefined ? parsePort(options.controlPort, '--control-port') : undefined,
+          version: pkg.version,
           host: dashboardHost,
           proxyPort: handle.port,
           isSelfTarget: handle.isSelfTarget,
@@ -745,6 +760,7 @@ async function runStartBody({
     protoPaths: options.proto,
     dashboardPasswordSet,
     dashboardToken: bannerToken,
+    controlPort: dashboardHandle?.controlPort,
     proxyAuthSet: proxyAuth !== undefined,
     historyDbPath,
     // Redacted here rather than inside the banner: credentials can be
@@ -766,7 +782,11 @@ async function runStartBody({
   // running as a `--detach` daemon child (see `isDaemonChild`), this also
   // unblocks the parent's `spawnDaemonChild` handshake — a no-op otherwise.
   const dashboardPortSegment = dashboardHandle ? ` dashboardPort=${dashboardHandle.port}` : '';
-  console.log(`DETOUR_READY proxyPort=${handle.port}${dashboardPortSegment} pid=${process.pid}`);
+  // `controlPort` (issue #212) goes *after* pid, so a parser reading
+  // `proxyPort=… [dashboardPort=…] pid=…` keeps working unchanged.
+  const controlPortSegment =
+    dashboardHandle?.controlPort !== undefined ? ` controlPort=${dashboardHandle.controlPort}` : '';
+  console.log(`DETOUR_READY proxyPort=${handle.port}${dashboardPortSegment} pid=${process.pid}${controlPortSegment}`);
   signalDaemonReady({ proxyPort: handle.port, dashboardPort: dashboardHandle?.port });
 
   let idleWatcher: ReturnType<typeof startIdleWatcher> | undefined;
@@ -982,6 +1002,10 @@ export function registerStartCommand(program: Command): void {
     .option(
       '--dashboard-port <port>',
       `Port the web dashboard listens on (default: --port + ${DEFAULT_DASHBOARD_PORT_OFFSET}, e.g. 9080 for the default proxy port 8080)`,
+    )
+    .option(
+      '--control-port <port>',
+      'Turn on the control API (REST, 127.0.0.1 only, bearer token required) a test runner uses to swap rules, switch profiles, reset and read back traffic. Off by default; needs the dashboard (not --headless). 0 picks a free port',
     )
     .option(
       '--rules <path>',

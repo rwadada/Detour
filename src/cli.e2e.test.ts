@@ -5325,3 +5325,129 @@ describe('dashboard access token (issue #205, CLI end-to-end)', () => {
     expect(viaProxy.status).toBe(403);
   });
 });
+
+/**
+ * Issue #212, end to end: a test runner driving a real `detour start` through
+ * the control API — swap the rules, send traffic through the proxy, read back
+ * what passed, reset between cases.
+ */
+describe('control API (issue #212, CLI end-to-end)', () => {
+  let cli: Awaited<ReturnType<typeof startDetourCli>> | undefined;
+  let echo: Awaited<ReturnType<typeof startEchoServer>> | undefined;
+  let tmpDir: string | undefined;
+
+  afterEach(async () => {
+    await cli?.kill();
+    await echo?.close();
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    cli = undefined;
+    echo = undefined;
+    tmpDir = undefined;
+  });
+
+  /** What the control API's replies carry that these tests read. */
+  interface ControlReply {
+    ruleCount?: number;
+    exchanges: Array<{ statusCode: number }>;
+  }
+
+  const controlPortOf = (c: { stdout: () => string }) =>
+    Number(c.stdout().match(/Control API → http:\/\/127\.0\.0\.1:(\d+)/)?.[1]);
+
+  /** One call to the control API with the bearer token, as a test runner (or `curl -H "Authorization: Bearer …"`) would. */
+  function control(
+    port: number,
+    method: string,
+    requestPath: string,
+    body?: unknown,
+    token: string | null = E2E_DASHBOARD_TOKEN,
+  ): Promise<{ status: number; json: ControlReply }> {
+    return new Promise((resolve, reject) => {
+      const payload = body === undefined ? undefined : JSON.stringify(body);
+      const headers: Record<string, string> = {};
+      if (token !== null) headers.authorization = `Bearer ${token}`;
+      if (payload !== undefined) {
+        headers['content-type'] = 'application/json';
+        headers['content-length'] = String(Buffer.byteLength(payload));
+      }
+      const req = http.request({ host: '127.0.0.1', port, path: requestPath, method, headers }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          resolve({ status: res.statusCode ?? 0, json: text ? JSON.parse(text) : undefined });
+        });
+      });
+      req.on('error', reject);
+      req.end(payload);
+    });
+  }
+
+  it('is off unless --control-port is given', async () => {
+    cli = await startDetourCli();
+    expect(cli.stdout()).not.toContain('Control API');
+  });
+
+  it('refuses --control-port together with --headless, saying why', async () => {
+    const result = await runTsx(['src/cli.ts', 'start', '--port', '0', '--headless', '--control-port', '0'], {
+      cwd: REPO_ROOT,
+      reject: false,
+      env: { ...process.env, DETOUR_DASHBOARD_TOKEN: E2E_DASHBOARD_TOKEN },
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toMatch(/--control-port needs the dashboard/);
+  });
+
+  it('drives a running Detour: swap rules, send traffic, read it back, reset', async () => {
+    echo = await startEchoServer();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+    const rulesPath = path.join(tmpDir, 'rules.json');
+    fs.writeFileSync(rulesPath, JSON.stringify({ rules: [] }));
+    cli = await startDetourCli(['--rules', rulesPath, '--control-port', '0']);
+    const controlPort = controlPortOf(cli);
+    expect(controlPort).toBeGreaterThan(0);
+
+    // Without the bearer token: nothing.
+    expect((await control(controlPort, 'GET', '/rules', undefined, null)).status).toBe(401);
+
+    // Swap in a mock for one endpoint — and it is live the moment the call returns.
+    const mockRule = {
+      name: 'scenario',
+      match: { url: `http://127.0.0.1:${echo.port}/api/step` },
+      action: { type: 'mock', status: 200, responses: [{ status: 201 }, { status: 202 }] },
+    };
+    const put = await control(controlPort, 'PUT', '/rules', { rules: [mockRule] });
+    expect(put.status).toBe(200);
+    expect(put.json.ruleCount).toBe(1);
+
+    expect((await requestThroughProxy(cli.port, echo.port, '/api/step')).status).toBe(201);
+    expect((await requestThroughProxy(cli.port, echo.port, '/api/step')).status).toBe(202);
+
+    // What passed through, as an assertion would read it.
+    const seen = await control(controlPort, 'GET', '/exchanges?url=/api/step');
+    expect(seen.json.exchanges.map((e) => e.statusCode)).toEqual([201, 202]);
+
+    // Reset between test cases: the scenario starts over and the log is empty.
+    expect((await control(controlPort, 'POST', '/reset')).status).toBe(200);
+    expect((await control(controlPort, 'GET', '/exchanges')).json.exchanges).toEqual([]);
+    expect((await requestThroughProxy(cli.port, echo.port, '/api/step')).status).toBe(201);
+  });
+
+  it('turns a throttle profile and a Block Hosts list on, answering once the proxy applies them', async () => {
+    echo = await startEchoServer();
+    cli = await startDetourCli(['--control-port', '0']);
+    const controlPort = controlPortOf(cli);
+
+    // `host:*`: the echo server is on a non-default port, which a pattern is matched against as `host:port`.
+    const blocked = await control(controlPort, 'PUT', '/block-hosts', { hosts: ['127.0.0.1:*'], mode: 'forbidden' });
+    expect(blocked).toMatchObject({ status: 200, json: { hosts: ['127.0.0.1:*'], mode: 'forbidden' } });
+    // In effect by the time the call returned: the very next request is refused.
+    expect((await requestThroughProxy(cli.port, echo.port, '/x')).status).toBe(403);
+
+    await control(controlPort, 'PUT', '/block-hosts', { hosts: [], mode: 'forbidden' });
+    expect((await requestThroughProxy(cli.port, echo.port, '/x')).status).toBe(200);
+
+    const throttle = { enabled: false, downKbps: 0, upKbps: 0, latencyMs: 0, packetLossPct: 0 };
+    expect(await control(controlPort, 'PUT', '/throttle', throttle)).toMatchObject({ status: 200, json: throttle });
+  });
+});

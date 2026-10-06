@@ -38,6 +38,13 @@ function compileRules(rules: readonly Rule[], filePath: string): CompiledRule[] 
   });
 }
 
+/** What a (re)load produced — handed to `onReload`, and returned by `RuleEngine.writeAndReload`. */
+export interface ReloadInfo {
+  ruleCount: number;
+  unreachableWarnings: UnreachableRuleWarning[];
+  scriptWarnings: ScriptGateWarning[];
+}
+
 export interface RuleEngineOptions {
   /** Path to rules.json. Resolved relative to the current working directory if not absolute. */
   filePath: string;
@@ -45,11 +52,7 @@ export interface RuleEngineOptions {
   watch?: boolean;
   /** Debounce window for coalescing the several fs events one save can produce, in ms. */
   debounceMs?: number;
-  onReload?: (info: {
-    ruleCount: number;
-    unreachableWarnings: UnreachableRuleWarning[];
-    scriptWarnings: ScriptGateWarning[];
-  }) => void;
+  onReload?: (info: ReloadInfo) => void;
   onReloadError?: (message: string) => void;
   /** Reads/validates rules.json — injected so this UseCase never touches the filesystem directly (see infra/fs/rulesFileSource.ts). */
   reader: RulesFileReader;
@@ -81,6 +84,9 @@ export interface RuleEngineOptions {
    */
   allowScripts?: boolean;
 }
+
+/** How long after `writeAndReload` an unchanged file's watcher notifications are treated as that write's own echo. Comfortably past the debounce window and the few events one write produces. */
+const ECHO_WINDOW_MS = 1000;
 
 /**
  * Loads `rules.json`, compiles its rules for fast matching, and (by
@@ -118,6 +124,10 @@ export class RuleEngine {
   private mockCallCounts = new WeakMap<Rule, number>();
   private stopWatching?: () => void;
   private debounceTimer?: ReturnType<typeof setTimeout>;
+  /** What the engine is currently serving, serialised — lets the watcher skip the echo of `writeAndReload`'s own write (see there). */
+  private appliedJson: string;
+  /** Set by `writeAndReload`: until this time (epoch ms), a watcher-driven reload is that write coming back around, and is skipped if the file still holds what was applied. */
+  private ignoreEchoUntil = 0;
   private readonly options: RuleEngineOptions;
 
   private constructor(filePath: string, data: RulesFile, options: RuleEngineOptions) {
@@ -129,6 +139,7 @@ export class RuleEngine {
     this.unreachableWarnings = findUnreachableRules(data.rules);
     this.scriptWarnings = findDisabledScriptWarnings(data.rules, this.allowScripts);
     this.activeProfile = data.$activeProfile;
+    this.appliedJson = JSON.stringify(data);
     this.options = options;
   }
 
@@ -211,6 +222,42 @@ export class RuleEngine {
     this.options.writer.write(this.filePath, { rules, $activeProfile: opts?.activeProfile });
   }
 
+  /**
+   * Like `write()`, but returns only once the new rules are live — for a
+   * caller that is waiting on the change (the control API, issue #212, which
+   * answers a request only after the rules it just accepted are in effect).
+   * `write()` instead leaves the reload to the file watcher, whose delivery
+   * time is neither bounded nor guaranteed.
+   *
+   * Throws if the rules fail validation, no `writer` was configured, or what
+   * was written cannot be loaded back; nothing is changed in the first two
+   * cases, and the previous rules keep serving in all three.
+   *
+   * The watcher will still notice the write a moment later — possibly as
+   * several events spread over more than one debounce window. Those echoes
+   * are skipped for a short while afterwards (as long as the file still holds
+   * what was just applied): a second reload would reset every sequential
+   * mock's position (`mockCallCounts`) in the middle of whatever the caller
+   * started next. A save made after that window reloads as usual.
+   */
+  writeAndReload(rules: Rule[], opts?: { activeProfile?: string }): ReloadInfo {
+    this.write(rules, opts);
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    const info = this.applyFile();
+    this.ignoreEchoUntil = Date.now() + ECHO_WINDOW_MS;
+    this.options.onReload?.(info);
+    return info;
+  }
+
+  /**
+   * Starts every sequential mock (`responses`, issue #181) over from its first
+   * step, without touching the rules themselves — what a test runner wants
+   * between cases. (Reloading the file does the same as a side effect.)
+   */
+  resetMockSequences(): void {
+    this.mockCallCounts = new WeakMap();
+  }
+
   private startWatching(): void {
     if (!this.options.watcher) {
       throw new Error('RuleEngine: a `watcher` is required when `watch` is not false');
@@ -224,28 +271,47 @@ export class RuleEngine {
 
   private scheduleReload(): void {
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.debounceTimer = setTimeout(() => this.reload(), this.options.debounceMs ?? 150);
+    this.debounceTimer = setTimeout(() => this.reload({ watcher: true }), this.options.debounceMs ?? 150);
   }
 
-  private reload(): void {
+  /**
+   * Reads the file and swaps it in; throws (leaving the previous rules in
+   * place) if it cannot be read, parsed or compiled.
+   */
+  private applyFile(): ReloadInfo {
+    const data = this.options.reader.read(this.filePath);
+    const compiled = compileRules(data.rules, this.filePath);
+    this.compiledRules = compiled;
+    // Fresh `Rule` objects just got parsed above — see `mockCallCounts`'s
+    // own doc comment on why a brand new `WeakMap` is enough to reset
+    // every sequential mock rule's count back to 0 here.
+    this.mockCallCounts = new WeakMap();
+    this.unreachableWarnings = findUnreachableRules(data.rules);
+    this.scriptWarnings = findDisabledScriptWarnings(data.rules, this.allowScripts);
+    this.activeProfile = data.$activeProfile;
+    this.appliedJson = JSON.stringify(data);
+    // Defensive copy — same reasoning as `getUnreachableWarnings()`, so a
+    // listener mutating what it's handed can't corrupt this engine's own
+    // internal state.
+    return {
+      ruleCount: data.rules.length,
+      unreachableWarnings: [...this.unreachableWarnings],
+      scriptWarnings: [...this.scriptWarnings],
+    };
+  }
+
+  private reload(opts: { watcher?: boolean } = {}): void {
     try {
-      const data = this.options.reader.read(this.filePath);
-      this.compiledRules = compileRules(data.rules, this.filePath);
-      // Fresh `Rule` objects just got parsed above — see `mockCallCounts`'s
-      // own doc comment on why a brand new `WeakMap` is enough to reset
-      // every sequential mock rule's count back to 0 here.
-      this.mockCallCounts = new WeakMap();
-      this.unreachableWarnings = findUnreachableRules(data.rules);
-      this.scriptWarnings = findDisabledScriptWarnings(data.rules, this.allowScripts);
-      this.activeProfile = data.$activeProfile;
-      // Defensive copy — same reasoning as `getUnreachableWarnings()`, so a
-      // listener mutating what it's handed can't corrupt this engine's own
-      // internal state.
-      this.options.onReload?.({
-        ruleCount: data.rules.length,
-        unreachableWarnings: [...this.unreachableWarnings],
-        scriptWarnings: [...this.scriptWarnings],
-      });
+      if (opts.watcher && Date.now() < this.ignoreEchoUntil) {
+        // The echo of `writeAndReload`'s own write (see there) — if nothing
+        // changed since it was applied, there is nothing to reload.
+        if (JSON.stringify(this.options.reader.read(this.filePath)) === this.appliedJson) return;
+      }
+      // Applied first, *then* reported: `onReload?.(this.applyFile())` would
+      // skip evaluating its argument — i.e. never reload — when no `onReload`
+      // was given.
+      const info = this.applyFile();
+      this.options.onReload?.(info);
     } catch (err) {
       // Keep serving the last known-good rules rather than crash the proxy.
       this.options.onReloadError?.(err instanceof Error ? err.message : String(err));

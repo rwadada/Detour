@@ -36,7 +36,7 @@ function check(...rules: Array<[boolean, string]>): string | null {
 
 const MAX_NAME_LENGTH = 256;
 
-function validateThrottle(state: unknown): string | null {
+export function validateThrottle(state: unknown): string | null {
   if (!isObject(state)) return 'state must be an object';
   return check(
     [typeof state.enabled === 'boolean', 'state.enabled must be a boolean'],
@@ -47,7 +47,7 @@ function validateThrottle(state: unknown): string | null {
   );
 }
 
-function validateBlockHosts(state: unknown): string | null {
+export function validateBlockHosts(state: unknown): string | null {
   if (!isObject(state)) return 'state must be an object';
   return check(
     [isStringArray(state.hosts), 'state.hosts must be an array of strings'],

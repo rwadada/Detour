@@ -382,4 +382,154 @@ describe('RuleEngine', () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(reloadCount).toBe(0);
   });
+
+  describe('reloading without a notification callback', () => {
+    it('still reloads when no onReload was given (only onReloadError)', () => {
+      writeRules(filePath, [routeRule('a')]);
+      engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });
+
+      writeRules(filePath, [routeRule('a'), routeRule('b')]);
+      triggerReload(engine);
+
+      expect(engine.getRules().map((r) => r.name)).toEqual(['a', 'b']);
+    });
+  });
+
+  describe('writeAndReload() (issue #212)', () => {
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    /** Reports a change the way a healthy `fs.watch` does, whenever the test says so. */
+    function controllableWatcher() {
+      let notify: () => void = () => undefined;
+      return {
+        watcher: {
+          watch: (_file: string, onChange: () => void) => {
+            notify = onChange;
+            return () => undefined;
+          },
+        },
+        fire: () => notify(),
+      };
+    }
+
+    function load(onReload: () => void, watcher = controllableWatcher().watcher) {
+      writeRules(filePath, [routeRule('a')]);
+      return RuleEngine.load({
+        filePath,
+        reader: fsRulesFileReader,
+        writer: fsRulesFileWriter,
+        watcher,
+        debounceMs: 10,
+        onReload,
+      });
+    }
+
+    it('has the new rules live by the time it returns, with no watcher involved', () => {
+      let reloads = 0;
+      engine = load(() => reloads++);
+
+      const info = engine.writeAndReload([routeRule('a'), routeRule('b')], { activeProfile: 'p' });
+
+      expect(info.ruleCount).toBe(2);
+      expect(engine.getRules().map((r) => r.name)).toEqual(['a', 'b']);
+      expect(engine.getActiveProfile()).toBe('p');
+      expect(reloads).toBe(1);
+    });
+
+    it('rejects invalid rules without changing anything', () => {
+      engine = load(() => undefined);
+
+      expect(() => engine!.writeAndReload([{ name: 'bad' } as unknown as Rule])).toThrow(/validation/);
+
+      expect(engine.getRules().map((r) => r.name)).toEqual(['a']);
+    });
+
+    it('throws when no writer was configured', () => {
+      writeRules(filePath, [routeRule('a')]);
+      engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader });
+
+      expect(() => engine!.writeAndReload([routeRule('b')])).toThrow(/writer/);
+    });
+
+    it("skips the watcher's echo of its own write, so a sequential mock is not reset a moment later", async () => {
+      let reloads = 0;
+      const { watcher, fire } = controllableWatcher();
+      engine = load(() => reloads++, watcher);
+
+      engine.writeAndReload([routeRule('a')]);
+      const [rule] = engine.getRules();
+      // The test's own position in a sequence: any reload would start it over.
+      const countsBefore = (engine as unknown as { mockCallCounts: WeakMap<Rule, number> }).mockCallCounts;
+      fire(); // the watcher noticing the write
+      await wait(100);
+
+      expect(reloads).toBe(1);
+      expect((engine as unknown as { mockCallCounts: WeakMap<Rule, number> }).mockCallCounts).toBe(countsBefore);
+      expect(engine.getRules()[0]).toBe(rule);
+    });
+
+    it('skips every echo of its own write, however many events (and debounce windows) it is spread over', async () => {
+      let reloads = 0;
+      const { watcher, fire } = controllableWatcher();
+      engine = load(() => reloads++, watcher);
+
+      engine.writeAndReload([routeRule('a')]);
+      fire();
+      await wait(60); // past the 10 ms debounce: the first echo has been handled...
+      fire(); // ...and a second one arrives
+      await wait(60);
+
+      expect(reloads).toBe(1);
+    });
+
+    it('still reloads for a genuine edit made after the write', async () => {
+      let reloads = 0;
+      const { watcher, fire } = controllableWatcher();
+      engine = load(() => reloads++, watcher);
+
+      engine.writeAndReload([routeRule('a')]);
+      fire();
+      await wait(100);
+      writeRules(filePath, [routeRule('a'), routeRule('c')]); // a hand edit
+      fire();
+      await wait(100);
+
+      expect(reloads).toBe(2);
+      expect(engine.getRules().map((r) => r.name)).toEqual(['a', 'c']);
+    });
+
+    it('does not run a reload that was already scheduled before the write', async () => {
+      let reloads = 0;
+      const { watcher, fire } = controllableWatcher();
+      engine = load(() => reloads++, watcher);
+
+      fire(); // a reload is now pending...
+      engine.writeAndReload([routeRule('a'), routeRule('b')]); // ...but this one supersedes it
+      await wait(100);
+
+      expect(reloads).toBe(1);
+    });
+  });
+
+  describe('resetMockSequences()', () => {
+    it('starts sequential mocks over without reloading the rules', () => {
+      const mock: Rule = {
+        name: 'seq',
+        match: { url: 'https://api.example.com/*' },
+        action: { type: 'mock', status: 200, responses: [{ status: 201 }, { status: 202 }] },
+      };
+      fs.writeFileSync(filePath, JSON.stringify({ rules: [mock] }));
+      let reloads = 0;
+      engine = RuleEngine.load({ filePath, watch: false, reader: fsRulesFileReader, onReload: () => reloads++ });
+      const [rule] = engine.getRules();
+
+      expect(engine.resolveMockStep(rule!).status).toBe(201);
+      expect(engine.resolveMockStep(rule!).status).toBe(202);
+      engine.resetMockSequences();
+
+      expect(engine.resolveMockStep(rule!).status).toBe(201);
+      expect(reloads).toBe(0);
+      expect(engine.getRules()[0]).toBe(rule);
+    });
+  });
 });

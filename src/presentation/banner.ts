@@ -88,6 +88,8 @@ export function printStartupBanner(info: {
    * dashboard.
    */
   dashboardToken?: string;
+  /** The control API's port (issue #212), when `--control-port` turned it on. */
+  controlPort?: number;
   /** Whether `--proxy-auth`/`proxyAuth` requires credentials from every proxy client (issue #158). */
   proxyAuthSet: boolean;
   /** `--persist`'s resolved SQLite path (issue #144), undefined when not given. */
@@ -141,6 +143,11 @@ export function printStartupBanner(info: {
     if (info.dashboardToken) {
       console.log(
         'Dashboard access token: required — the Dashboard URL above carries it (stored in ~/.detour/dashboard-token). Keep that URL private.',
+      );
+    }
+    if (info.controlPort !== undefined) {
+      console.log(
+        `Control API → http://127.0.0.1:${info.controlPort} (loopback only; send the dashboard access token as "Authorization: Bearer <token>" — see the README)`,
       );
     }
   }
