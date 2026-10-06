@@ -1,4 +1,4 @@
-import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { Group, Panel, Separator, useDefaultLayout } from 'react-resizable-panels';
 import { ProtocolMismatchBanner } from '@/entities/proxy-config';
 import { HistoryBanner } from '@/features/history';
 import { UpdateBanner } from '@/features/update-notice';
@@ -17,6 +17,11 @@ import { Toolbar } from '@/widgets/toolbar';
  * `FilterBar`.
  */
 export default function App() {
+  // Persists the split (the inspector panel's width) to localStorage — issue #24 Phase 5's panel-size
+  // persistence. v4 no longer has `autoSaveId`: the layout is saved/restored through this hook, keyed by
+  // the group id, and handed to `Group` below.
+  const { defaultLayout, onLayoutChanged } = useDefaultLayout({ id: 'detour-main-panels' });
+
   return (
     <div className="flex h-full">
       <Sidebar />
@@ -27,16 +32,22 @@ export default function App() {
         <ImportedBanner />
         <UpdateBanner />
         <HistoryBanner />
-        {/* `autoSaveId` persists the split (the inspector panel's width/height) to localStorage itself — issue #24 Phase 5's panel-size persistence. */}
-        <PanelGroup autoSaveId="detour-main-panels" direction="horizontal" className="flex-1 overflow-hidden">
-          <Panel defaultSize={62} minSize={30} className="flex flex-col overflow-hidden">
+        {/* In v4 a bare number is pixels, so sizes are `%` strings (v3 read numbers as percentages). */}
+        <Group
+          id="detour-main-panels"
+          orientation="horizontal"
+          defaultLayout={defaultLayout}
+          onLayoutChanged={onLayoutChanged}
+          className="flex-1 overflow-hidden"
+        >
+          <Panel id="log" defaultSize="62%" minSize="30%" className="flex flex-col overflow-hidden">
             <LogTable />
           </Panel>
-          <PanelResizeHandle className="w-px bg-[var(--border)] hover:bg-[var(--accent)] data-[resize-handle-active]:bg-[var(--accent)]" />
-          <Panel defaultSize={38} minSize={22} className="overflow-hidden bg-[var(--panel)]">
+          <Separator className="w-px bg-[var(--border)] hover:bg-[var(--accent)] data-[separator=active]:bg-[var(--accent)] data-[separator=focus]:bg-[var(--accent)]" />
+          <Panel id="inspector" defaultSize="38%" minSize="22%" className="overflow-hidden bg-[var(--panel)]">
             <InspectorPanel />
           </Panel>
-        </PanelGroup>
+        </Group>
       </div>
     </div>
   );
