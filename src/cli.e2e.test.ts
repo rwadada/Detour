@@ -1072,7 +1072,12 @@ async function startDetourCli(
   });
 
   const start = Date.now();
-  while (!/Dashboard →/.test(stdout)) {
+  // Waits for the banner's *last* line, not just the Dashboard one: the
+  // banner is written line by line and can reach us in several chunks, and a
+  // test that reads `stdout()` right after this returns (e.g. one looking for
+  // a startup warning, which prints after the Dashboard line) would otherwise
+  // see only the first chunk and fail intermittently.
+  while (!/Dashboard →/.test(stdout) || !/Press Ctrl\+C to stop\./.test(stdout)) {
     if (Date.now() - start > 15_000) {
       subprocess.kill();
       throw new Error(`detour start never printed its ready banner.\nstdout: ${stdout}\nstderr: ${stderr}`);
