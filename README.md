@@ -314,7 +314,7 @@ detour start --port 8080 --no-open --control-port 8090
 # → "Control API → http://127.0.0.1:8090 (…)"      (and DETOUR_READY … pid=<n> controlPort=8090)
 ```
 
-It is **off by default** and, when on, deliberately narrow: bound to `127.0.0.1` only, **every request needs the dashboard's access token** as `Authorization: Bearer <token>` (the one in `~/.detour/dashboard-token`, or whatever `DETOUR_DASHBOARD_TOKEN` is set to — one secret, not two), and it is not a browser API (a request carrying an `Origin` header, or a `Host` that is not loopback, is refused, and no CORS headers are ever sent). It needs the dashboard server, so it can't be combined with `--headless` (use `--no-open` to keep a browser from opening). Writes answer **only once they have taken effect**, so traffic sent right after `PUT /rules` is never a race.
+It is **off by default** and, when on, deliberately narrow: bound to `127.0.0.1` only, **every request needs the dashboard's access token** as `Authorization: Bearer <token>` (the one in `~/.detour/dashboard-token`, or whatever `DETOUR_DASHBOARD_TOKEN` is set to — one secret, not two), and it is not a browser API (a request carrying an `Origin` header, or a `Host` that is not loopback, is refused, and no CORS headers are ever sent). Like the dashboard, it can't be reached by asking the proxy to relay to it (that is refused with `403`), so a device on your LAN that uses Detour as its proxy can't get to it. It needs the dashboard server, so it can't be combined with `--headless` (use `--no-open` to keep a browser from opening). Writes answer **only once they have taken effect**, so traffic sent right after `PUT /rules` is never a race.
 
 | Request | What it does |
 | --- | --- |

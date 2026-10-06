@@ -5433,6 +5433,17 @@ describe('control API (issue #212, CLI end-to-end)', () => {
     expect((await requestThroughProxy(cli.port, echo.port, '/api/step')).status).toBe(201);
   });
 
+  it('is not reachable by asking the proxy to relay to it, even with the token in hand', async () => {
+    cli = await startDetourCli(['--control-port', '0']);
+    const controlPort = controlPortOf(cli);
+    // Direct: fine. Through the proxy (which a LAN client can reach): refused.
+    expect((await control(controlPort, 'GET', '/health')).status).toBe(200);
+    const viaProxy = await requestThroughProxy(cli.port, controlPort, '/health', {
+      authorization: `Bearer ${E2E_DASHBOARD_TOKEN}`,
+    });
+    expect(viaProxy.status).toBe(403);
+  });
+
   it('turns a throttle profile and a Block Hosts list on, answering once the proxy applies them', async () => {
     echo = await startEchoServer();
     cli = await startDetourCli(['--control-port', '0']);

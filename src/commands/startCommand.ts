@@ -692,6 +692,10 @@ async function runStartBody({
       // Issue #205: the proxy listens on every interface, the dashboard may
       // not — never let the former relay to the latter.
       handle.protectLocalPort(dashboardHandle.port);
+      // The control API (issue #212) is the same kind of listener: loopback
+      // only, behind a token, and still not something a LAN client should be
+      // able to reach by asking the proxy to relay to it.
+      if (dashboardHandle.controlPort !== undefined) handle.protectLocalPort(dashboardHandle.controlPort);
     } catch (err) {
       // The proxy is already up and intercepting traffic at this point — don't
       // leave it running (and the process alive) just because the dashboard
