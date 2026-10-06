@@ -3,24 +3,13 @@
 ## [2.0.1](https://github.com/rwadada/Detour/compare/v2.0.0...v2.0.1) (2026-10-06)
 
 
-### ⚠ BREAKING CHANGES
-
-* **dashboard:** the dashboard now needs an access token (printed in the Dashboard URL at startup) unless a dashboard password is set.
-
-### Features
-
-* **dashboard:** require an access token by default; self-update only for authenticated clients ([#205](https://github.com/rwadada/Detour/issues/205)) ([e791a7a](https://github.com/rwadada/Detour/commit/e791a7a21fb339465865b20a3839d8ee6cfec43d))
-
-
 ### Bug Fixes
 
-* **daemon:** create the --detach log owner-only since it now holds the dashboard token (Copilot on [#241](https://github.com/rwadada/Detour/issues/241)) ([410742b](https://github.com/rwadada/Detour/commit/410742b2992074ed6e4af737a3400c429a06372f))
-* **dashboard:** ダッシュボードを既定でアクセストークン必須にし、自己アップデートは認証済みのみにする ([#205](https://github.com/rwadada/Detour/issues/205)) ([217f389](https://github.com/rwadada/Detour/commit/217f3895dcd2e948720583cc7c24acca43e745df))
-
-
-### Miscellaneous Chores
-
-* release the dashboard access token as 2.0.1 ([d8bb07f](https://github.com/rwadada/Detour/commit/d8bb07f76468a9cd183a16c1400047ee1797579e))
+* **dashboard:** require an access token by default; self-update only for authenticated clients ([#205](https://github.com/rwadada/Detour/issues/205)) ([e791a7a](https://github.com/rwadada/Detour/commit/e791a7a21fb339465865b20a3839d8ee6cfec43d))
+  * The proxy listens on every interface, so a localhost-only dashboard bind never kept a network neighbour out (the same class as mitmweb's CVE-2025-23217). `detour start` now prints a Dashboard URL carrying a random access token (kept in `~/.detour/dashboard-token`, mode `0600`); opening it once signs the browser in. A client without it is sent nothing and can run nothing. With a dashboard password set, the password is the secret instead.
+  * The dashboard's one-click self-update is now offered only to a client that proved the password or the token — coming from loopback no longer counts.
+  * **What you will notice:** a bare `http://localhost:<port>` now shows an "access token required" page — open the Dashboard URL that `detour start` printed. Scripts that connect to the dashboard WebSocket directly need `?token=…`. See SECURITY.md.
+* **daemon:** create the `--detach` log owner-only, since it now holds the tokenised Dashboard URL ([410742b](https://github.com/rwadada/Detour/commit/410742b2992074ed6e4af737a3400c429a06372f))
 
 ## [2.0.0](https://github.com/rwadada/Detour/compare/v1.9.0...v2.0.0) (2026-10-06)
 
