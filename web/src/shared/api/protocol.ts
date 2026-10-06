@@ -371,7 +371,7 @@ export type DashboardServerMessage =
   /** Sent once, right after connecting (issue #66): every LAN address this machine has — the proxy always binds to every interface, so this is non-empty regardless of `--lan`/`lanAccess`. `dashboardOnLan` says whether the dashboard is *also* bound to every interface right now (only then does a Dashboard URL, not just a Proxy one, make sense for each address) — optional since an older server predating that field won't send it (see `createProxyInfoStore`'s fallback for how that's handled). Powers the sidebar's LAN Access section. */
   | { type: 'lanInfo'; addresses: string[]; dashboardOnLan?: boolean }
   /** Sent instead of the usual just-connected snapshot when a dashboard password is configured and this socket hasn't supplied it yet (issue #66) — reply with `login`. Never sent at all when no password is configured. */
-  | { type: 'authRequired' }
+  | { type: 'authRequired'; method?: 'password' | 'token' }
   /** A `login` message's password didn't match — still unauthenticated, can retry. */
   | { type: 'authFailed' }
   | { type: 'backlog'; items: CapturedExchange[] }

@@ -195,13 +195,23 @@ The dashboard's source lives in [`web/`](./web) (React 19 + Vite + Tailwind CSS 
 
 ## LAN access, proxy authentication, and the dashboard password (issues #66, #158, #159)
 
-The **dashboard** binds to `localhost` only by default — nothing else on your network can reach it. `detour start --lan` (or `detour config --lan on` to make it the default for every future `start`) binds it to every network interface (`0.0.0.0`) instead, so another device on the same Wi-Fi/LAN can open it in a browser.
+The **dashboard** binds to `localhost` only by default, **and requires an access token** (see below) — a network bind alone was never a boundary, because the proxy itself listens on every interface (issue #205). `detour start --lan` (or `detour config --lan on` to make it the default for every future `start`) binds it to every network interface (`0.0.0.0`) instead, so another device on the same Wi-Fi/LAN can open it in a browser.
 
 The **proxy** always binds to every interface, with or without `--lan` — a proxy no other device can point its Wi-Fi settings at defeats the main use case, and unlike the dashboard it has no traffic-viewing or rule-editing surface of its own: reaching it usefully still means having this machine's CA cert installed and trusted.
 
 Once bound to the network, both the terminal's startup banner and the dashboard's sidebar ("LAN Access" section, only shown while `--lan` is active) list every reachable address, so you don't have to go find this machine's IP yourself — copy the URL straight from either place.
 
-**Out of the box, neither the proxy nor the dashboard authenticates anyone.** Anyone who can reach this machine can use the proxy — which means *their* HTTPS traffic gets decrypted with your CA and recorded into your dumps and dashboard, and your machine becomes their egress hop — and, with `--lan`, can also open the dashboard and read that traffic or edit rules. There are two independent locks for that.
+**Out of the box, the proxy authenticates no one, but the dashboard does.** Anyone who can reach this machine can use the proxy — which means *their* HTTPS traffic gets decrypted with your CA and recorded into your dumps and dashboard, and your machine becomes their egress hop. The dashboard (which shows that traffic and edits rules) is not open to whoever can reach it: it asks for an access token, and the proxy refuses to relay requests to its own listeners, so a neighbour on the network cannot reach it *through* the proxy either (CVE-2025-23217 was exactly that hole in mitmweb). There are three locks.
+
+### The dashboard access token (issue #205)
+
+`detour start` prints a Dashboard URL that ends in `/?token=…`. Open it once: the dashboard trades the token for an `HttpOnly` cookie, redirects to the plain URL (so the token doesn't stay in the address bar, history or a `Referer`), and stays signed in for a year. A page opened without the token only shows how to get one, and sends no traffic or rules.
+
+- The token is a random 256-bit value kept in `~/.detour/dashboard-token` (mode `0600`, next to the CA key), created on first use and reused across restarts and `detour update`, so an open tab isn't locked out after a restart. Delete the file to rotate it. Set `DETOUR_DASHBOARD_TOKEN` (16+ characters from `A-Z a-z 0-9 . _ ~ -`) to use a value you choose, e.g. in scripts.
+- Scripted clients can pass it as `?token=` on the WebSocket URL (`ws://localhost:4040/ws?token=…`).
+- The one-click self-update from the dashboard is available only to a client that proved the token (or the dashboard password) — being on loopback no longer counts, since the proxy relays other machines' requests from loopback.
+- With a **dashboard password** configured (below), the password is the secret instead and the URL stays plain; the token alone is then not enough.
+- Treat the URL like a password: anyone holding it can use the dashboard. The terminal banner prints it, so it ends up in your terminal scrollback and, for `--detach`, the log file.
 
 ### `--proxy-auth`: credentials for the proxy itself
 

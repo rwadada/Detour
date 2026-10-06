@@ -1,3 +1,4 @@
+import { tokenLandingPath } from '../domain/auth/dashboardAccess';
 import type { RuleEngine } from '../usecase/ruleEngine';
 import { logScriptGateWarnings, logUnreachableRuleWarnings } from './logger';
 
@@ -80,6 +81,13 @@ export function printStartupBanner(info: {
   protoPaths: string[];
   /** Whether `detour config --dashboard-password`/the Settings panel currently requires one (issue #66) — only relevant when `dashboardPort` isn't undefined. */
   dashboardPasswordSet: boolean;
+  /**
+   * The dashboard's access token (issue #205), to embed in the Dashboard URLs
+   * printed below so the first visit signs the browser in. Undefined when a
+   * dashboard password is what protects it instead, or when there is no
+   * dashboard.
+   */
+  dashboardToken?: string;
   /** Whether `--proxy-auth`/`proxyAuth` requires credentials from every proxy client (issue #158). */
   proxyAuthSet: boolean;
   /** `--persist`'s resolved SQLite path (issue #144), undefined when not given. */
@@ -110,13 +118,17 @@ export function printStartupBanner(info: {
   // heads-up well before the day everything starts failing at once.
   if (info.caExpiryWarning) console.log(`⚠ ${info.caExpiryWarning}`);
   const dashboardScheme = info.dashboardTls ? 'https' : 'http';
+  // `/?token=…` when an access token protects the dashboard (issue #205) —
+  // opening this URL once trades it for a cookie.
+  const dashboardUrl = (host: string) =>
+    `${dashboardScheme}://${host}:${info.dashboardPort}${tokenLandingPath(info.dashboardToken)}`;
   if (info.dashboardPort === undefined) {
     console.log('Dashboard → disabled (--headless)');
   } else if (info.dashboardBuilt) {
-    console.log(`Dashboard → ${dashboardScheme}://localhost:${info.dashboardPort}`);
+    console.log(`Dashboard → ${dashboardUrl('localhost')}`);
   } else {
     console.log(
-      `Dashboard → ${dashboardScheme}://localhost:${info.dashboardPort} (not built yet — run \`npm run build\`, or use \`npm run dev:dashboard\` for a dev server with hot reload)`,
+      `Dashboard → ${dashboardUrl('localhost')} (not built yet — run \`npm run build\`, or use \`npm run dev:dashboard\` for a dev server with hot reload)`,
     );
   }
   if (info.dashboardPort !== undefined) {
@@ -126,6 +138,11 @@ export function printStartupBanner(info: {
     console.log(
       `Dashboard password: ${info.dashboardPasswordSet ? 'required' : 'off (detour config --dashboard-password <value>)'}`,
     );
+    if (info.dashboardToken) {
+      console.log(
+        'Dashboard access token: required — the Dashboard URL above carries it (stored in ~/.detour/dashboard-token). Keep that URL private.',
+      );
+    }
   }
   // The proxy (unlike the dashboard) always binds to every network
   // interface — see `PROXY_HOST`'s doc comment — so its LAN address is
@@ -142,7 +159,7 @@ export function printStartupBanner(info: {
     console.log('Reachable on your network at:');
     for (const address of addresses) {
       console.log(`  Proxy     → http://${address}:${info.proxyPort}`);
-      if (dashboardOnLan) console.log(`  Dashboard → ${dashboardScheme}://${address}:${info.dashboardPort}`);
+      if (dashboardOnLan) console.log(`  Dashboard → ${dashboardUrl(address)}`);
     }
   }
   if (dashboardOnLan) {
@@ -159,9 +176,17 @@ export function printStartupBanner(info: {
     // `Dashboard password: required` line printed just above it whenever
     // one was actually set (issue #66), telling a user who had done the
     // right thing that it counted for nothing.
-    const risk = info.dashboardPasswordSet
-      ? 'the dashboard password is the only thing standing between anyone on your network and decrypted HTTPS traffic or rule edits'
-      : 'no dashboard password is set (detour config --dashboard-password), so anyone on your network can reach the dashboard, view decrypted HTTPS traffic through it, or edit rules';
+    let risk: string;
+    if (info.dashboardPasswordSet) {
+      risk =
+        'the dashboard password is the only thing standing between anyone on your network and decrypted HTTPS traffic or rule edits';
+    } else if (info.dashboardToken) {
+      risk =
+        'the access token in the Dashboard URL is the only thing standing between anyone on your network and decrypted HTTPS traffic or rule edits — do not share that URL (set a dashboard password with detour config --dashboard-password for something you can rotate)';
+    } else {
+      risk =
+        'no dashboard password is set (detour config --dashboard-password), so anyone on your network can reach the dashboard, view decrypted HTTPS traffic through it, or edit rules';
+    }
     console.log(
       `⚠ Dashboard bound to every network interface, not just this machine — SECURITY: ${risk}. Only do this on a network you trust.`,
     );

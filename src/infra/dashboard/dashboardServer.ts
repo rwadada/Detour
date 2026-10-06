@@ -31,10 +31,18 @@ import type { ProtoRegistry } from '../grpc/protoRegistry';
 import { assertPortAvailable } from '../portCheck';
 import type { HistoryStore } from '../persistence/historyStore';
 import { nodeHttpRequester } from '../proxy/nodeHttpRequester';
+import {
+  DASHBOARD_SESSION_COOKIE,
+  requestHasValidToken,
+  sessionCookieValue,
+  tokenFromUrl,
+  tokensEqual,
+  urlWithoutToken,
+} from '../../domain/auth/dashboardAccess';
 import { hashPassword, verifyPassword } from '../../domain/auth/passwordHash';
 import type { UpdateService } from '../../domain/update/updateService';
 import { parseClientMessage } from '../../domain/dashboard/clientMessage';
-import { createDashboardUpdates, hasForwardingHeaders, isLoopbackAddress } from './dashboardUpdates';
+import { createDashboardUpdates } from './dashboardUpdates';
 import { serveStatic } from './staticServer';
 
 /**
@@ -182,6 +190,16 @@ export interface DashboardServerOptions {
    * nothing over loopback.
    */
   tlsKeyCert?: { key: string; cert: string };
+  /**
+   * The dashboard's access token (issue #205). When set, and no dashboard
+   * password is configured, a client must present it — as the `?token=` of a
+   * first visit (traded for an HttpOnly cookie) or on the WebSocket URL —
+   * before it is sent any data or may do anything. With a password
+   * configured the password is the secret instead and this is not consulted.
+   * Omit to leave the dashboard open (what the unit tests do); `detour start`
+   * always supplies one.
+   */
+  accessToken?: string;
   /**
    * Whether this session was started with `--insecure-upstream` (issue
    * #160) — sent to every connecting client as `proxyInfo`'s own field, for
@@ -472,10 +490,39 @@ export async function startDashboardServer(
     return defaultPort === boundPort;
   }
 
+  /**
+   * First visit with `?token=` (issue #205): a valid token is traded for the
+   * session cookie and the browser is redirected to the same URL without it,
+   * so the secret doesn't stay in the address bar, history or `Referer`. A
+   * wrong one gets a plain 403 — and no cookie.
+   */
+  function exchangeTokenForCookie(req: http.IncomingMessage, res: http.ServerResponse, token: string): void {
+    const presented = tokenFromUrl(req.url);
+    if (presented === undefined || !tokensEqual(presented, token)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Invalid dashboard token');
+      return;
+    }
+    const attributes = ['HttpOnly', 'SameSite=Strict', 'Path=/', `Max-Age=${60 * 60 * 24 * 365}`];
+    if (options.tlsKeyCert) attributes.push('Secure');
+    res.writeHead(302, {
+      'Set-Cookie': `${DASHBOARD_SESSION_COOKIE}=${sessionCookieValue(token)}; ${attributes.join('; ')}`,
+      Location: urlWithoutToken(req.url ?? '/'),
+      'Cache-Control': 'no-store',
+      // Keeps the token out of any `Referer` the redirect target might send.
+      'Referrer-Policy': 'no-referrer',
+    });
+    res.end();
+  }
+
   const requestListener: http.RequestListener = (req, res) => {
     if (!isAllowedHost(req.headers.host)) {
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Forbidden');
+      return;
+    }
+    if (options.accessToken && tokenFromUrl(req.url) !== undefined) {
+      exchangeTokenForCookie(req, res, options.accessToken);
       return;
     }
     serveStatic(WEB_DIST_DIR, req, res);
@@ -532,18 +579,19 @@ export async function startDashboardServer(
   // than a plain property on the socket so nothing here needs to remember to
   // clean up on close — an unreachable socket just falls out of it.
   const authenticatedSockets = new WeakSet<WebSocket>();
-  // The subset of `authenticatedSockets` that really proved a password via
-  // `login` (the rest were grandfathered in while none was set), and the
-  // sockets whose peer is the loopback interface — together what decides who
-  // may trigger a self-update (see `createDashboardUpdates`).
+  // The subset of `authenticatedSockets` that really proved a secret — a
+  // password via `login`, or the access token (issue #205) — as opposed to
+  // being grandfathered in while neither was required. This is what decides
+  // who may trigger a self-update (see `createDashboardUpdates`); where a
+  // connection came *from* (loopback) deliberately plays no part, since the
+  // proxy relays LAN clients' requests from loopback.
   // `let` so that changing the password can revoke every earlier proof at once.
   let passwordVerifiedSockets = new WeakSet<WebSocket>();
-  const loopbackSockets = new WeakSet<WebSocket>();
+  const tokenVerifiedSockets = new WeakSet<WebSocket>();
   const dashboardUpdates = createDashboardUpdates(
     options.updateService,
     {
-      isLoopback: (socket) => loopbackSockets.has(socket),
-      isPasswordVerified: (socket) => passwordVerifiedSockets.has(socket),
+      isVerified: (socket) => passwordVerifiedSockets.has(socket) || tokenVerifiedSockets.has(socket),
     },
     Date.now,
     (message) => broadcast({ type: 'updateStatus', state: 'failed', message }),
@@ -864,8 +912,14 @@ export async function startDashboardServer(
     // the Wi-Fi password doesn't kick already-connected devices" posture as
     // `--lan`'s own bind-at-spawn-time semantics. Only *new* connections
     // made after that point are asked for it.
-    if (!currentPasswordHash()) authenticatedSockets.add(socket);
-    if (isLoopbackAddress(req.socket.remoteAddress) && !hasForwardingHeaders(req.headers)) loopbackSockets.add(socket);
+    if (!currentPasswordHash()) {
+      if (!options.accessToken) {
+        authenticatedSockets.add(socket);
+      } else if (requestHasValidToken(options.accessToken, { url: req.url, cookieHeader: req.headers.cookie })) {
+        authenticatedSockets.add(socket);
+        tokenVerifiedSockets.add(socket);
+      }
+    }
 
     const ip = clientIp(req);
     if (!authenticatedSockets.has(socket)) {
@@ -899,7 +953,10 @@ export async function startDashboardServer(
     if (authenticatedSockets.has(socket)) {
       sendInitialPayload(socket);
     } else {
-      const authRequiredMessage: DashboardServerMessage = { type: 'authRequired' };
+      const authRequiredMessage: DashboardServerMessage = {
+        type: 'authRequired',
+        method: currentPasswordHash() ? 'password' : 'token',
+      };
       socket.send(JSON.stringify(authRequiredMessage));
     }
 
@@ -1045,7 +1102,11 @@ export async function startDashboardServer(
       const hash = currentPasswordHash();
       let verified: boolean;
       try {
-        verified = !hash || (await verifyPassword(message.password, hash));
+        // No password configured: nothing to verify against, so `login` can
+        // only succeed where the dashboard is open — never where the access
+        // token is what protects it (issue #205), or a `login` with any
+        // string would get past it.
+        verified = hash ? await verifyPassword(message.password, hash) : !options.accessToken;
       } catch {
         // A crypto failure verifying the password is the server's problem,
         // not proof the client is wrong — but it still needs *some*

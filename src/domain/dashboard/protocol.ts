@@ -170,7 +170,7 @@ export type DashboardServerMessage =
    * when no password is configured; the snapshot goes out immediately in
    * that case, same as before this feature existed.
    */
-  | { type: 'authRequired' }
+  | { type: 'authRequired'; method?: 'password' | 'token' }
   /** A `login` message's password didn't match — the socket stays unauthenticated (no snapshot, no traffic) and can retry. */
   | { type: 'authFailed' }
   /** Sent once, right after connecting: the recent-history backlog so a client that (re)connects mid-session isn't starting from a blank table. */

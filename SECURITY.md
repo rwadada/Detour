@@ -41,11 +41,21 @@ anonymous.
 Detour is a **local development tool**, not a hosted service — the proxy and
 dashboard run on your own machine. Worth knowing up front:
 
-- **Localhost is the assumed trust boundary for the dashboard**, not a
-  security boundary on its own. The dashboard exposes decrypted traffic and
-  a rule engine that can execute arbitrary JavaScript (`script` rules) and
-  redirect traffic (`route` rules) — treat anything that can reach it as
-  having meaningful access to what's flowing through the proxy.
+- **Localhost is not a security boundary for the dashboard, so it requires
+  a secret by default.** The dashboard exposes decrypted traffic and a rule
+  engine that can execute arbitrary JavaScript (`script` rules) and redirect
+  traffic (`route` rules). Because the proxy listens on every interface, a
+  localhost-only bind never kept the network out on its own (see the next
+  point). `detour start` therefore generates a random access token
+  (`~/.detour/dashboard-token`, mode `0600`), prints a Dashboard URL carrying
+  it, and the dashboard sends no data and accepts no command from a client
+  that has not presented it — as a `?token=` on the first visit (traded for an
+  `HttpOnly`, `SameSite=Strict` cookie, then stripped from the URL) or on the
+  WebSocket URL. With a dashboard password set, the password is the secret
+  instead. Anyone who holds the URL, or reads that file, has full dashboard
+  access: treat both like a password. The dashboard's one-click self-update
+  is offered only to a client that proved a secret — never on the strength of
+  coming from loopback, which the proxy's relaying makes meaningless.
 - **The proxy itself is reachable from your local network unconditionally**
   — `--lan`/`lanAccess` doesn't gate it, and never has; a proxy nothing else
   on the network can reach isn't very useful. `--lan`/`lanAccess` only
@@ -64,7 +74,9 @@ dashboard run on your own machine. Worth knowing up front:
   destination is one of its own listeners (the proxy, the dashboard, the
   internal MITM server), judged on the resolved IP. Other localhost ports
   (a dev server on `localhost:3000`) stay reachable on purpose. A `route`
-  rule can still point traffic at a dashboard port deliberately. Without
+  rule can still point traffic at a dashboard port deliberately. This is
+  defence in depth alongside the access token above: even a request that does
+  reach the dashboard needs the token. Without
   `--proxy-auth`, anyone on the network can still use the proxy itself as an
   egress hop, which is why the startup banner warns about it regardless of
   `--lan`.

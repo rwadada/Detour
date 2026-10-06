@@ -21,10 +21,36 @@ const useAuthGateStore = createAuthGateStore(getDashboardConnection());
 export function AuthGate() {
   const status = useAuthGateStore((s) => s.status);
   const error = useAuthGateStore((s) => s.error);
+  const method = useAuthGateStore((s) => s.method);
   const login = useAuthGateStore((s) => s.login);
   const [password, setPassword] = useState('');
 
   if (status !== 'locked') return null;
+
+  if (method === 'token') {
+    // Issue #205: nothing to type. The token travels in the URL of the first
+    // visit (the server trades it for a cookie), so the only way forward is
+    // the link `detour start` printed.
+    return (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="auth-gate-title"
+        className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-[var(--background)] p-6"
+      >
+        <DetourLogo className="h-12 w-12 rounded-2xl" decorative />
+        <div id="auth-gate-title" className="text-sm font-semibold tracking-tight">
+          Access token required
+        </div>
+        <p className="max-w-sm text-center text-xs text-[var(--muted)]">
+          This dashboard is protected. Open the <strong className="font-semibold">Dashboard</strong> link that{' '}
+          <code className="font-mono-ui">detour start</code> printed in your terminal — it ends in{' '}
+          <code className="font-mono-ui">/?token=…</code> — and this page will unlock. The token is kept in{' '}
+          <code className="font-mono-ui">~/.detour/dashboard-token</code>.
+        </p>
+      </div>
+    );
+  }
 
   const submit = (e: FormEvent) => {
     e.preventDefault();

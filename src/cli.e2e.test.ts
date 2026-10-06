@@ -17,6 +17,13 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 
 /** tsx's own CLI entry point (resolved via its `exports` map, so this works the same however tsx is installed). */
 const TSX_CLI = require.resolve('tsx/cli');
+/**
+ * The dashboard requires an access token by default (issue #205). Every
+ * `detour start` the suite spawns gets this one via `DETOUR_DASHBOARD_TOKEN`
+ * (rather than the persisted `~/.detour/dashboard-token`), so a test that talks
+ * to the dashboard's WebSocket directly can authenticate with `?token=`.
+ */
+const E2E_DASHBOARD_TOKEN = 'e2e-dashboard-token-0123456789abcdef';
 
 /**
  * Runs `detour`'s CLI under tsx by spawning `node <tsx's cli.mjs> src/cli.ts
@@ -759,7 +766,7 @@ function writeAndRead(socket: net.Socket, data: string): Promise<string> {
  */
 function setIntercept(dashboardPort: number, enabled: boolean): Promise<void> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
     socket.on('open', () => socket.send(JSON.stringify({ type: 'setIntercept', enabled })));
     socket.on('message', (raw) => {
       const message = JSON.parse(raw.toString()) as { type: string; state?: { enabled: boolean } };
@@ -779,7 +786,7 @@ function setIntercept(dashboardPort: number, enabled: boolean): Promise<void> {
  */
 function setFocus(dashboardPort: number, hosts: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
     socket.on('open', () => socket.send(JSON.stringify({ type: 'setFocus', hosts })));
     socket.on('message', (raw) => {
       const message = JSON.parse(raw.toString()) as { type: string; state?: { hosts: string[] } };
@@ -807,7 +814,7 @@ interface ThrottleProfile {
  */
 function setThrottle(dashboardPort: number, state: ThrottleProfile): Promise<void> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
     socket.on('open', () => socket.send(JSON.stringify({ type: 'setThrottle', state })));
     socket.on('message', (raw) => {
       const message = JSON.parse(raw.toString()) as { type: string; state?: ThrottleProfile };
@@ -832,7 +839,7 @@ interface BlockHostsProfile {
  */
 function setBlockHosts(dashboardPort: number, state: BlockHostsProfile): Promise<void> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
     socket.on('open', () => socket.send(JSON.stringify({ type: 'setBlockHosts', state })));
     socket.on('message', (raw) => {
       const message = JSON.parse(raw.toString()) as { type: string; state?: BlockHostsProfile };
@@ -888,7 +895,7 @@ function waitForWsClose(
   url: string,
 ): Promise<{ socket: WebSocket; connection: Promise<DashboardWsConnection> }> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
     const connection = new Promise<DashboardWsConnection>((resolveConnection) => {
       socket.on('message', (raw) => {
         const message = JSON.parse(raw.toString()) as { type: string; connection?: DashboardWsConnection };
@@ -922,7 +929,7 @@ function waitForExchange(
   exchange: Promise<DashboardExchange>;
 }> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
     const exchange = new Promise<DashboardExchange>((resolveExchange) => {
       socket.on('message', (raw) => {
         const message = JSON.parse(raw.toString()) as { type: string; exchange?: DashboardExchange };
@@ -962,7 +969,7 @@ function waitForBreakpoint(
   payload: Promise<BreakpointHitPayload>;
 }> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
     const payload = new Promise<BreakpointHitPayload>((resolvePayload, rejectPayload) => {
       socket.on('message', (raw) => {
         // A malformed/unexpected frame shouldn't throw out of this handler
@@ -1052,7 +1059,7 @@ async function startDetourCli(
   const subprocess = runTsx([cliEntry, 'start', '--port', '0', '--dashboard-port', '0', ...args], {
     cwd,
     reject: false,
-    env: env ? { ...process.env, ...env } : undefined,
+    env: { ...process.env, DETOUR_DASHBOARD_TOKEN: E2E_DASHBOARD_TOKEN, ...env },
   });
 
   let stdout = '';
@@ -1214,7 +1221,7 @@ describe('detour start (CLI, end-to-end)', () => {
     fs.writeFileSync(rulesPath, JSON.stringify({ rules: [{ name: 'bad', match: {}, action: { type: 'bogus' } }] }));
 
     const error = await new Promise<{ errorKind: string; message: string }>((resolve, reject) => {
-      const socket = new WebSocket(`ws://localhost:${cli!.dashboardPort}/ws`);
+      const socket = new WebSocket(`ws://localhost:${cli!.dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
       socket.on('open', () => socket.send(JSON.stringify({ type: 'applyRuleProfile', name: 'nonexistent' })));
       socket.on('message', (raw) => {
         const message = JSON.parse(raw.toString()) as { type: string; event?: { errorKind: string; message: string } };
@@ -1259,7 +1266,7 @@ describe('detour start (CLI, end-to-end)', () => {
     fs.writeFileSync(rulesPath, JSON.stringify({ rules: [] }));
 
     await new Promise<void>((resolve, reject) => {
-      const socket = new WebSocket(`ws://localhost:${cli!.dashboardPort}/ws`);
+      const socket = new WebSocket(`ws://localhost:${cli!.dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
       socket.on('open', () => socket.send(JSON.stringify({ type: 'createRuleProfile', name: 'p', template: 'blank' })));
       socket.on('message', (raw) => {
         const message = JSON.parse(raw.toString()) as { type: string; data?: { $activeProfile?: string } | null };
@@ -1843,7 +1850,7 @@ describe('detour start (CLI, end-to-end)', () => {
     // the rewritten URL and this test would time out instead of failing
     // cleanly. Matching by rule name instead — stable either way — makes a
     // regression here a fast, direct assertion failure.
-    const socket = new WebSocket(`ws://localhost:${cli.dashboardPort}/ws`);
+    const socket = new WebSocket(`ws://localhost:${cli.dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
     const requestExchange = new Promise<DashboardExchange>((resolve) => {
       socket.on('message', (raw) => {
         const message = JSON.parse(raw.toString()) as { type: string; exchange?: DashboardExchange };
@@ -1958,7 +1965,7 @@ describe('detour start (CLI, end-to-end)', () => {
     );
     cli = await startDetourCli(['--rules', rulesPath]);
 
-    const socket = new WebSocket(`ws://localhost:${cli.dashboardPort}/ws`);
+    const socket = new WebSocket(`ws://localhost:${cli.dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
     const narrowRequestExchange = new Promise<DashboardExchange>((resolve) => {
       socket.on('message', (raw) => {
         const message = JSON.parse(raw.toString()) as { type: string; exchange?: DashboardExchange };
@@ -2013,7 +2020,7 @@ describe('detour start (CLI, end-to-end)', () => {
     );
     cli = await startDetourCli(['--rules', rulesPath]);
 
-    const socket = new WebSocket(`ws://localhost:${cli.dashboardPort}/ws`);
+    const socket = new WebSocket(`ws://localhost:${cli.dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
     const requestExchange = new Promise<DashboardExchange>((resolve) => {
       socket.on('message', (raw) => {
         const message = JSON.parse(raw.toString()) as { type: string; exchange?: DashboardExchange };
@@ -2916,7 +2923,9 @@ describe('detour start (CLI, end-to-end)', () => {
 
     function connectDashboardWs(scheme: 'ws' | 'wss', port: number): Promise<unknown> {
       return new Promise((resolve, reject) => {
-        const socket = new WebSocket(`${scheme}://localhost:${port}/ws`, { rejectUnauthorized: false });
+        const socket = new WebSocket(`${scheme}://localhost:${port}/ws?token=${E2E_DASHBOARD_TOKEN}`, {
+          rejectUnauthorized: false,
+        });
         const onMessage = (raw: WebSocket.RawData) => {
           const message = JSON.parse(raw.toString()) as { type: string };
           if (message.type !== 'backlog') return;
@@ -3715,7 +3724,7 @@ async function startDetourCliReady(
   const subprocess = runTsx(['src/cli.ts', 'start', ...args], {
     cwd: REPO_ROOT,
     reject: false,
-    env: env ? { ...process.env, ...env } : undefined,
+    env: { ...process.env, DETOUR_DASHBOARD_TOKEN: E2E_DASHBOARD_TOKEN, ...env },
   });
 
   let stdout = '';
@@ -3955,7 +3964,7 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
           await requestThroughProxy(cli.proxyPort, upstream.port, '/big');
         }
 
-        const socket = new WebSocket(`ws://localhost:${cli.dashboardPort}/ws`);
+        const socket = new WebSocket(`ws://localhost:${cli.dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
         const backlog = await new Promise<{ items: unknown[] }>((resolve, reject) => {
           socket.on('message', (raw) => {
             const message = JSON.parse(raw.toString()) as { type: string; items?: unknown[] };
@@ -3980,7 +3989,7 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
   describe('--dashboard-compress (issue #165)', () => {
     function negotiatedExtensions(dashboardPort: number | undefined): Promise<string | undefined> {
       return new Promise((resolve, reject) => {
-        const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+        const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
         socket.on('upgrade', (res) => {
           resolve(res.headers['sec-websocket-extensions']);
           socket.close();
@@ -4027,7 +4036,7 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
 
     function backlogIds(dashboardPort: number): Promise<string[]> {
       return new Promise((resolve, reject) => {
-        const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws`);
+        const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
         socket.on('message', (raw) => {
           const message = JSON.parse(raw.toString()) as { type: string; items?: { id: string }[] };
           if (message.type !== 'backlog') return;
@@ -5213,5 +5222,88 @@ describe('detour record / detour serve (issue #149, CLI end-to-end)', () => {
       await upstream.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * Issue #205, end to end against a real `detour start`: the dashboard is not
+ * open to whoever can reach it — which, because the proxy listens on every
+ * interface, includes the LAN going *through the proxy*.
+ */
+describe('dashboard access token (issue #205, CLI end-to-end)', () => {
+  let cli: Awaited<ReturnType<typeof startDetourCli>> | undefined;
+
+  afterEach(async () => {
+    await cli?.kill();
+    cli = undefined;
+  });
+
+  /** One raw request to `port`; `target` is the request-target (an absolute URL when talking to a proxy). */
+  function request(
+    host: string,
+    port: number,
+    target: string,
+  ): Promise<{ status: number; headers: http.IncomingHttpHeaders }> {
+    return new Promise((resolve, reject) => {
+      const req = http.request({ host, port, path: target, method: 'GET' }, (res) => {
+        res.resume();
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  /** Every message type the dashboard socket sends during `ms`. */
+  function collectMessages(url: string, ms = 600): Promise<string[]> {
+    return new Promise((resolve, reject) => {
+      const socket = new WebSocket(url);
+      const types: string[] = [];
+      socket.on('message', (raw) => types.push((JSON.parse(raw.toString()) as { type: string }).type));
+      socket.on('error', reject);
+      setTimeout(() => {
+        socket.close();
+        resolve(types);
+      }, ms);
+    });
+  }
+
+  it('prints a Dashboard URL carrying the token, so opening it once signs the browser in', async () => {
+    cli = await startDetourCli();
+    expect(cli.stdout()).toContain(`Dashboard → http://localhost:${cli.dashboardPort}/?token=${E2E_DASHBOARD_TOKEN}`);
+  });
+
+  it('sends nothing but authRequired to a dashboard socket without the token, and the snapshot to one with it', async () => {
+    cli = await startDetourCli();
+
+    expect(await collectMessages(`ws://localhost:${cli.dashboardPort}/ws`)).toEqual(['authRequired']);
+    const authed = await collectMessages(`ws://localhost:${cli.dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
+    expect(authed).toContain('proxyInfo');
+    expect(authed).not.toContain('authRequired');
+  });
+
+  it('trades the token for an HttpOnly cookie on the first visit', async () => {
+    cli = await startDetourCli();
+
+    const ok = await request('localhost', cli.dashboardPort, `/?token=${E2E_DASHBOARD_TOKEN}`);
+    expect(ok.status).toBe(302);
+    expect(String(ok.headers['set-cookie'])).toContain('HttpOnly');
+
+    const wrong = await request('localhost', cli.dashboardPort, '/?token=wrong');
+    expect(wrong.status).toBe(403);
+    expect(wrong.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('refuses to relay to the dashboard through the proxy itself — the way a LAN client reached it before', async () => {
+    cli = await startDetourCli();
+
+    // Even with a valid token in hand, a request that comes *through the
+    // proxy* is not allowed to reach the dashboard.
+    const viaProxy = await request(
+      '127.0.0.1',
+      cli.port,
+      `http://localhost:${cli.dashboardPort}/?token=${E2E_DASHBOARD_TOKEN}`,
+    );
+    expect(viaProxy.status).toBe(403);
   });
 });
