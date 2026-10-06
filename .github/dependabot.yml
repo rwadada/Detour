@@ -19,7 +19,32 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
+      # Vitest and its companion packages must move together: `@vitest/*`
+      # pin the exact `vitest` version as a peer, so bumping one alone
+      # (what a per-package PR does) fails to install. Listed first so it
+      # wins over `minor-and-patch` below for these packages.
+      vitest:
+        patterns: ["vitest", "@vitest/*"]
       minor-and-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # Types should describe the oldest Node we support (`engines.node`,
+      # 22.12), not the newest: @types/node 26 removes/renames APIs this
+      # code uses (e.g. `Http2Stream.respond`) and would let code that only
+      # works on a newer Node type-check. Revisit when the Node floor moves.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # v6 requires Vite 8 (`vite/internal`); the dashboard builds on Vite 7.
+      # Lift together with the Vite major.
+      - dependency-name: "@vitejs/plugin-react"
+        update-types: ["version-update:semver-major"]
+      # steiger >= 0.7 crashes on Node 22.12.0 (the CI floor) with
+      # "Cannot read properties of undefined (reading 'async')" — Node's
+      # require(esm) bug, fixed in later 22.x. 0.x minors are breaking, so
+      # hold the minor until the CI Node version moves past that bug.
+      - dependency-name: "steiger"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "@feature-sliced/steiger-plugin"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     commit-message:
       prefix: "chore"
