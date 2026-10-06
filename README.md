@@ -211,7 +211,7 @@ Once bound to the network, both the terminal's startup banner and the dashboard'
 - Scripted clients can pass it as `?token=` on the WebSocket URL (`ws://localhost:4040/ws?token=…`).
 - The one-click self-update from the dashboard is available only to a client that proved the token (or the dashboard password) — being on loopback no longer counts, since the proxy relays other machines' requests from loopback.
 - With a **dashboard password** configured (below), the password is the secret instead and the URL stays plain; the token alone is then not enough.
-- Treat the URL like a password: anyone holding it can use the dashboard. The terminal banner prints it, so it ends up in your terminal scrollback and, for `--detach`, the log file.
+- Treat the URL like a password: anyone holding it can use the dashboard. The terminal banner prints it, so it ends up in your terminal scrollback and, for `--detach`, the log file (`~/.detour/logs/<port>.log` — created owner-only, `0600` in a `0700` directory).
 
 ### `--proxy-auth`: credentials for the proxy itself
 

@@ -67,9 +67,10 @@ const DEFAULT_DASHBOARD_PORT_OFFSET = 1000;
 
 /** Where a `--detach` daemon's stdout/stderr are appended (~/.detour/logs/<port>.log — one file per tracked port, overwritten across restarts of the same port isn't attempted; it just keeps growing, same as the console output a foreground run would otherwise produce). Mirrors `certStore.ts`'s `resolveCertDir`/`dumpFileWriter.ts`'s `resolveDumpDir`/`runStateStore.ts`'s `resolveRunDir`. */
 function resolveLogFilePath(port: number): string {
-  const dir = path.join(os.homedir(), '.detour', 'logs');
-  fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, `${port}.log`);
+  // Only the path: the file itself (and its directory) is created owner-only
+  // by `spawnDaemonChild`, since the banner it will hold carries the
+  // dashboard's access token (issue #205).
+  return path.join(os.homedir(), '.detour', 'logs', `${port}.log`);
 }
 
 interface StartOptions {
