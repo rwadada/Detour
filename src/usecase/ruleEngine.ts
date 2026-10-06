@@ -82,6 +82,9 @@ export interface RuleEngineOptions {
   allowScripts?: boolean;
 }
 
+/** Default for `RuleEngineOptions.debounceMs`. Read through `RuleEngine.debounceMs` only: `write()`'s fallback reload is timed off the same value and must always fire after the watcher-driven one. */
+const DEFAULT_DEBOUNCE_MS = 150;
+
 /** How long past the debounce window `write()` waits for the watcher before reloading by hand (see `RuleEngine.write`). Long enough that a healthy watcher always wins, short enough that a dropped notification is hardly noticed. */
 const WRITE_RELOAD_GRACE_MS = 100;
 
@@ -229,17 +232,19 @@ export class RuleEngine {
     this.ensureReloadAfterWrite();
   }
 
+  /** The effective debounce window — the single source for both the watcher-driven reload and `write()`'s fallback, so the fallback can never pre-empt a healthy reload. */
+  private get debounceMs(): number {
+    return this.options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+  }
+
   /** See `write()`: reloads by hand when a watcher is running but never reported the change. */
   private ensureReloadAfterWrite(): void {
     if (!this.stopWatching) return; // not watching: edits were never picked up automatically, and still aren't
     const reloadsBefore = this.reloadCount;
     if (this.writeFallbackTimer) clearTimeout(this.writeFallbackTimer);
-    this.writeFallbackTimer = setTimeout(
-      () => {
-        if (this.reloadCount === reloadsBefore) this.reload();
-      },
-      (this.options.debounceMs ?? 150) + WRITE_RELOAD_GRACE_MS,
-    );
+    this.writeFallbackTimer = setTimeout(() => {
+      if (this.reloadCount === reloadsBefore) this.reload();
+    }, this.debounceMs + WRITE_RELOAD_GRACE_MS);
     // Never the reason the process stays alive.
     this.writeFallbackTimer.unref?.();
   }
@@ -257,7 +262,7 @@ export class RuleEngine {
 
   private scheduleReload(): void {
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.debounceTimer = setTimeout(() => this.reload(), this.options.debounceMs ?? 150);
+    this.debounceTimer = setTimeout(() => this.reload(), this.debounceMs);
   }
 
   private reload(): void {
