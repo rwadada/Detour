@@ -2921,11 +2921,24 @@ describe('detour start (CLI, end-to-end)', () => {
       });
     }
 
-    function connectDashboardWs(scheme: 'ws' | 'wss', port: number): Promise<unknown> {
+    /**
+     * Connects over `wss` by *trusting Detour's own CA* (the one `detour start`
+     * printed) rather than turning certificate validation off: the dashboard's
+     * leaf cert is signed by it, so this also proves the cert actually chains.
+     */
+    function connectDashboardWs(
+      scheme: 'ws' | 'wss',
+      cli: { dashboardPort?: number; stdout: () => string },
+    ): Promise<unknown> {
+      const caPath = cli
+        .stdout()
+        .match(/Root CA certificate: (.+)/)?.[1]
+        ?.trim();
       return new Promise((resolve, reject) => {
-        const socket = new WebSocket(`${scheme}://localhost:${port}/ws?token=${E2E_DASHBOARD_TOKEN}`, {
-          rejectUnauthorized: false,
-        });
+        const socket = new WebSocket(
+          `${scheme}://localhost:${cli.dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`,
+          scheme === 'wss' && caPath ? { ca: fs.readFileSync(caPath) } : undefined,
+        );
         const onMessage = (raw: WebSocket.RawData) => {
           const message = JSON.parse(raw.toString()) as { type: string };
           if (message.type !== 'backlog') return;
@@ -2948,7 +2961,7 @@ describe('detour start (CLI, end-to-end)', () => {
         expect(cert.subjectaltname).toMatch(/DNS:\s*localhost\b/);
         expect(cert.subjectaltname).toMatch(/IP Address:\s*127\.0\.0\.1\b/);
 
-        const message = await connectDashboardWs('wss', cli.dashboardPort!);
+        const message = await connectDashboardWs('wss', cli);
         expect(message).toMatchObject({ type: 'backlog' });
       } finally {
         await cli.kill();
@@ -2960,7 +2973,7 @@ describe('detour start (CLI, end-to-end)', () => {
       try {
         expect(cli.stdout()).toContain('Dashboard transport: HTTP (--dashboard-tls on to encrypt)');
         expect(cli.stdout()).toMatch(new RegExp(`Dashboard → http://localhost:${cli.dashboardPort}\\b`));
-        const message = await connectDashboardWs('ws', cli.dashboardPort!);
+        const message = await connectDashboardWs('ws', cli);
         expect(message).toMatchObject({ type: 'backlog' });
       } finally {
         await cli.kill();
@@ -2980,7 +2993,7 @@ describe('detour start (CLI, end-to-end)', () => {
       try {
         expect(cli.stdout()).toContain('Dashboard transport: HTTP (--dashboard-tls on to encrypt)');
         expect(cli.stdout()).toMatch(new RegExp(`Dashboard → http://localhost:${cli.dashboardPort}\\b`));
-        const message = await connectDashboardWs('ws', cli.dashboardPort!);
+        const message = await connectDashboardWs('ws', cli);
         expect(message).toMatchObject({ type: 'backlog' });
       } finally {
         await cli.kill();
@@ -2991,7 +3004,7 @@ describe('detour start (CLI, end-to-end)', () => {
       const cli = await startDetourCliReady(['--port', '0', '--dashboard-port', '0', '--dashboard-tls', 'on']);
       try {
         expect(cli.stdout()).toContain("Dashboard transport: HTTPS (Detour's CA)");
-        const message = await connectDashboardWs('wss', cli.dashboardPort!);
+        const message = await connectDashboardWs('wss', cli);
         expect(message).toMatchObject({ type: 'backlog' });
       } finally {
         await cli.kill();

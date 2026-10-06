@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isValidDashboardToken } from '../../domain/auth/dashboardAccess';
-import { loadOrCreateDashboardToken } from './dashboardAccessStore';
+import { loadOrCreateDashboardToken, resolveDashboardToken } from './dashboardAccessStore';
 
 describe('loadOrCreateDashboardToken', () => {
   let dir: string;
@@ -46,5 +46,28 @@ describe('loadOrCreateDashboardToken', () => {
     const token = loadOrCreateDashboardToken(tokenPath);
     expect(token).not.toBe('too short');
     expect(isValidDashboardToken(token)).toBe(true);
+  });
+
+  describe('resolveDashboardToken (what `detour start` calls)', () => {
+    it('uses DETOUR_DASHBOARD_TOKEN when it is valid, without touching the persisted file', () => {
+      const token = resolveDashboardToken({ DETOUR_DASHBOARD_TOKEN: 'my-chosen-token-0123456789' }, tokenPath);
+      expect(token).toBe('my-chosen-token-0123456789');
+      expect(fs.existsSync(tokenPath)).toBe(false);
+    });
+
+    it.each(['short', 'has space in it 0123456789', 'quote"0123456789abcdef'])(
+      'throws for a set-but-unusable DETOUR_DASHBOARD_TOKEN (%j) instead of silently ignoring it',
+      (bad) => {
+        expect(() => resolveDashboardToken({ DETOUR_DASHBOARD_TOKEN: bad }, tokenPath)).toThrow(
+          /DETOUR_DASHBOARD_TOKEN must be at least 16 characters/,
+        );
+      },
+    );
+
+    it('falls back to the persisted token when the variable is unset or empty', () => {
+      const persisted = loadOrCreateDashboardToken(tokenPath);
+      expect(resolveDashboardToken({}, tokenPath)).toBe(persisted);
+      expect(resolveDashboardToken({ DETOUR_DASHBOARD_TOKEN: '' }, tokenPath)).toBe(persisted);
+    });
   });
 });
