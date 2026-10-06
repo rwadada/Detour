@@ -1,4 +1,3 @@
-import type { IncomingHttpHeaders } from 'node:http';
 import type { WebSocket } from 'ws';
 import type { DashboardServerMessage } from '../../domain/dashboard/protocol';
 import { isNewerVersion } from '../../domain/update/version';
@@ -10,22 +9,15 @@ const START_DEBOUNCE_MS = 3 * 60 * 1000;
 const updateLogHint = '~/.detour/update.log';
 
 export interface SocketTrust {
-  /** The peer address is the loopback interface (the user at this machine's own browser). */
-  isLoopback(socket: WebSocket): boolean;
-  /** The socket proved a dashboard password via `login` — not merely grandfathered in before one was set. */
-  isPasswordVerified(socket: WebSocket): boolean;
-}
-
-export function isLoopbackAddress(address: string | undefined): boolean {
-  if (!address) return false;
-  return address === '::1' || address.startsWith('127.') || address.startsWith('::ffff:127.');
-}
-
-const FORWARDING_HEADERS = ['x-forwarded-for', 'x-forwarded-host', 'x-real-ip', 'forwarded'];
-
-/** A same-host reverse proxy makes every remote client look like loopback; the headers it adds give it away. */
-export function hasForwardingHeaders(headers: IncomingHttpHeaders): boolean {
-  return FORWARDING_HEADERS.some((name) => headers[name] !== undefined);
+  /**
+   * The socket proved a secret — the dashboard password via `login`, or the
+   * access token (issue #205) — rather than merely being grandfathered in
+   * while neither was required. Where the connection came from plays no
+   * part: the proxy relays LAN clients' requests from the loopback
+   * interface, so "the peer is loopback" says nothing about who is at the
+   * keyboard.
+   */
+  isVerified(socket: WebSocket): boolean;
 }
 
 export interface DashboardUpdates {
@@ -41,10 +33,9 @@ export interface DashboardUpdates {
 
 /**
  * Running `brew upgrade` and restarting the process is arbitrary host-level
- * action, so it's offered only to a client that is either at this machine
- * (loopback) or has proven the dashboard password — never to an anonymous
- * client on a `--lan` dashboard, which the rest of the dashboard's commands
- * are otherwise open to.
+ * action, so it's offered only to a client that has proven a secret (the
+ * dashboard password or the access token, issue #205) — never to one that was
+ * merely let in, and never on the strength of coming from loopback.
  */
 export function createDashboardUpdates(
   service: UpdateService | undefined,
@@ -53,8 +44,7 @@ export function createDashboardUpdates(
   /** Called when the updater exits without having restarted this process, so every open tab can stop waiting. */
   onFailed: (message: string) => void = () => {},
 ): DashboardUpdates {
-  const mayUpdate = (socket: WebSocket) =>
-    !!service?.canSelfUpdate && (trust.isLoopback(socket) || trust.isPasswordVerified(socket));
+  const mayUpdate = (socket: WebSocket) => !!service?.canSelfUpdate && trust.isVerified(socket);
   let lastStartedAt = Number.NEGATIVE_INFINITY;
   let updating = false;
 

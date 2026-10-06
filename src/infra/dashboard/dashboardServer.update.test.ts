@@ -6,6 +6,8 @@ import type { UpdateService } from '../../domain/update/updateService';
 import { DetourEventBus } from '../eventBus';
 import { startDashboardServer, type DashboardServerHandle } from './dashboardServer';
 
+const TOKEN = 'update-test-token-0123456789abcdef';
+
 function fakeService(
   overrides: Partial<UpdateService> = {},
 ): UpdateService & { startUpdate: ReturnType<typeof vi.fn> } {
@@ -30,8 +32,8 @@ describe('startDashboardServer — update banner', () => {
     handle = undefined;
   });
 
-  function connect(): WebSocket {
-    const socket = new WebSocket(`ws://localhost:${handle?.port}/ws`);
+  function connect(query = `?token=${TOKEN}`): WebSocket {
+    const socket = new WebSocket(`ws://localhost:${handle?.port}/ws${query}`);
     sockets.push(socket);
     return socket;
   }
@@ -63,8 +65,11 @@ describe('startDashboardServer — update banner', () => {
     expect(seen).not.toContain('updateInfo');
   });
 
-  it('tells a loopback client about the new release and that it may update', async () => {
-    handle = await startDashboardServer({ port: 0, updateService: fakeService() }, new DetourEventBus());
+  it('tells a client that presented the access token about the new release and that it may update', async () => {
+    handle = await startDashboardServer(
+      { port: 0, accessToken: TOKEN, updateService: fakeService() },
+      new DetourEventBus(),
+    );
     const message = await waitForMessage(connect(), (m) => m.type === 'updateInfo');
     expect(message).toEqual({
       type: 'updateInfo',
@@ -77,7 +82,7 @@ describe('startDashboardServer — update banner', () => {
 
   it('launches the updater on startUpdate and acknowledges it', async () => {
     const updateService = fakeService();
-    handle = await startDashboardServer({ port: 0, updateService }, new DetourEventBus());
+    handle = await startDashboardServer({ port: 0, accessToken: TOKEN, updateService }, new DetourEventBus());
     const socket = connect();
     await waitForMessage(socket, (m) => m.type === 'updateInfo');
     socket.send(JSON.stringify({ type: 'startUpdate' }));
@@ -88,7 +93,7 @@ describe('startDashboardServer — update banner', () => {
 
   it('tells every tab when the updater exits without having restarted the server', async () => {
     const updateService = fakeService();
-    handle = await startDashboardServer({ port: 0, updateService }, new DetourEventBus());
+    handle = await startDashboardServer({ port: 0, accessToken: TOKEN, updateService }, new DetourEventBus());
     const socket = connect();
     await waitForMessage(socket, (m) => m.type === 'updateInfo');
     socket.send(JSON.stringify({ type: 'startUpdate' }));
@@ -143,7 +148,7 @@ describe('startDashboardServer — update banner', () => {
 
     it('appends new traffic after the preloaded exchanges', async () => {
       const eventBus = new DetourEventBus();
-      handle = await startDashboardServer({ port: 0, initialBacklog: [finished('old')] }, eventBus);
+      handle = await startDashboardServer({ port: 0, accessToken: TOKEN, initialBacklog: [finished('old')] }, eventBus);
       eventBus.emit('request', finished('new'));
       const message = await waitForMessage(connect(), (m) => m.type === 'backlog');
       expect(message).toMatchObject({ items: [{ id: 'old' }, { id: 'new' }] });
@@ -152,7 +157,7 @@ describe('startDashboardServer — update banner', () => {
     it('offers the backlog for the restart only once an update has been launched', async () => {
       const eventBus = new DetourEventBus();
       const updateService = fakeService();
-      handle = await startDashboardServer({ port: 0, updateService }, eventBus);
+      handle = await startDashboardServer({ port: 0, accessToken: TOKEN, updateService }, eventBus);
       eventBus.emit('request', finished('a'));
       expect(handle.backlogForUpdateRestart()).toBeUndefined();
 
@@ -167,17 +172,23 @@ describe('startDashboardServer — update banner', () => {
     });
   });
 
-  it('does not treat a client behind a same-host reverse proxy as local', async () => {
-    handle = await startDashboardServer({ port: 0, updateService: fakeService() }, new DetourEventBus());
+  it('does not let a client without the token in at all, whatever headers it sends (issue #205)', async () => {
+    handle = await startDashboardServer(
+      { port: 0, accessToken: TOKEN, updateService: fakeService() },
+      new DetourEventBus(),
+    );
     const socket = new WebSocket(`ws://localhost:${handle.port}/ws`, { headers: { 'x-forwarded-for': '203.0.113.9' } });
     sockets.push(socket);
-    const message = await waitForMessage(socket, (m) => m.type === 'updateInfo');
-    expect(message).toMatchObject({ canUpdate: false });
+    const seen: string[] = [];
+    socket.on('message', (raw) => seen.push((JSON.parse(raw.toString()) as DashboardServerMessage).type));
+    await waitForMessage(socket, (m) => m.type === 'authRequired');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(seen).toEqual(['authRequired']);
   });
 
   it('rejects startUpdate for an install that cannot update itself', async () => {
     const updateService = fakeService({ canSelfUpdate: false });
-    handle = await startDashboardServer({ port: 0, updateService }, new DetourEventBus());
+    handle = await startDashboardServer({ port: 0, accessToken: TOKEN, updateService }, new DetourEventBus());
     const socket = connect();
     const info = await waitForMessage(socket, (m) => m.type === 'updateInfo');
     expect(info).toMatchObject({ canUpdate: false, updateAvailable: true });
@@ -185,5 +196,22 @@ describe('startDashboardServer — update banner', () => {
     const status = await waitForMessage(socket, (m) => m.type === 'updateStatus');
     expect(status).toMatchObject({ state: 'rejected' });
     expect(updateService.startUpdate).not.toHaveBeenCalled();
+  });
+
+  describe('who may update (issue #205)', () => {
+    it('refuses a loopback client that holds no secret — the proxy relays LAN clients from loopback', async () => {
+      const updateService = fakeService();
+      // No access token configured: anyone is let in, but being let in is not
+      // proof of anything, and the connection here *is* from loopback.
+      handle = await startDashboardServer({ port: 0, updateService }, new DetourEventBus());
+      const socket = connect('');
+      const info = await waitForMessage(socket, (m) => m.type === 'updateInfo');
+      expect(info).toMatchObject({ canUpdate: false });
+
+      socket.send(JSON.stringify({ type: 'startUpdate' }));
+      const status = await waitForMessage(socket, (m) => m.type === 'updateStatus');
+      expect(status).toMatchObject({ state: 'rejected' });
+      expect(updateService.startUpdate).not.toHaveBeenCalled();
+    });
   });
 });

@@ -48,4 +48,21 @@ describe('createAuthGateStore (issue #66)', () => {
     store.getState().login('hunter2');
     expect(fake.sent).toEqual([{ type: 'login', password: 'hunter2' }]);
   });
+
+  describe('what the server asked for (issue #205)', () => {
+    it('is a password until told otherwise, including for an older server whose authRequired has no method', () => {
+      const fake = fakeDashboardConnection();
+      const store = createAuthGateStore(fake.connection);
+      expect(store.getState().method).toBe('password');
+      fake.emit({ type: 'authRequired' });
+      expect(store.getState().method).toBe('password');
+    });
+
+    it('reads the access-token method from authRequired', () => {
+      const fake = fakeDashboardConnection();
+      const store = createAuthGateStore(fake.connection);
+      fake.emit({ type: 'authRequired', method: 'token' });
+      expect(store.getState()).toMatchObject({ status: 'locked', method: 'token' });
+    });
+  });
 });

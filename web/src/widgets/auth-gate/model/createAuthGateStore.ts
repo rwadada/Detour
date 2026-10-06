@@ -13,6 +13,13 @@ export interface AuthGateState {
   status: 'unknown' | 'locked' | 'unlocked';
   /** Set alongside `authFailed`; cleared on every other transition. */
   error: string | undefined;
+  /**
+   * What the server asked for (issue #205): a typed `password`, or the access
+   * `token` that arrives in the URL of the first visit and cannot be typed
+   * here. An older server's `authRequired` carries no method — it was always
+   * the password.
+   */
+  method: 'password' | 'token';
   /** Submits a password in answer to `authRequired`/`authFailed` (issue #66). */
   login: (password: string) => void;
 }
@@ -32,14 +39,16 @@ export interface AuthGateState {
 export function createAuthGateStore(connection: DashboardConnection) {
   return create<AuthGateState>((set) => {
     connection.onMessage((message) => {
-      if (message.type === 'authRequired') set({ status: 'locked', error: undefined });
-      else if (message.type === 'authFailed') set({ status: 'locked', error: 'Incorrect password' });
+      if (message.type === 'authRequired') {
+        set({ status: 'locked', error: undefined, method: message.method ?? 'password' });
+      } else if (message.type === 'authFailed') set({ status: 'locked', error: 'Incorrect password' });
       else set({ status: 'unlocked', error: undefined });
     });
 
     return {
       status: 'unknown',
       error: undefined,
+      method: 'password',
       login: (password) => connection.send({ type: 'login', password }),
     };
   });

@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import path from 'node:path';
 import { CliExitError } from '../../domain/daemon/errors';
 
 /** How long `spawnDaemonChild` waits for the child to report readiness before giving up and killing it. */
@@ -53,6 +54,26 @@ function safeDisconnect(target: { connected: boolean; disconnect(): void }): voi
 }
 
 /**
+ * Opens (appending) the background process's log file, owner-only.
+ *
+ * The child's startup banner goes into this file, and since issue #205 that
+ * banner carries the dashboard's access token — a credential as strong as the
+ * 0600 `~/.detour/dashboard-token` it comes from. A log left world-readable
+ * (the default for a file created with `open(…, 'a')`) would hand that token to
+ * every other local user, so the file is 0600 and its directory 0700 — an
+ * existing log from an earlier version is tightened too. No-op on Windows,
+ * which has no POSIX permission bits.
+ */
+export function openPrivateLogFile(logFile: string): number {
+  const dir = path.dirname(logFile);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (process.platform !== 'win32') fs.chmodSync(dir, 0o700);
+  const fd = fs.openSync(logFile, 'a', 0o600);
+  if (process.platform !== 'win32') fs.chmodSync(logFile, 0o600);
+  return fd;
+}
+
+/**
  * Spawns `scriptPath args` as a detached background process (daemon mode,
  * issue #20's `--detach`) and waits for it to report readiness over IPC
  * before resolving — so by the time `detour start --detach` itself returns,
@@ -67,7 +88,7 @@ function safeDisconnect(target: { connected: boolean; disconnect(): void }): voi
  * on the parent (already `unref`'d here) staying alive.
  */
 export function spawnDaemonChild(options: SpawnDaemonChildOptions): Promise<DaemonReadyInfo> {
-  const logFd = fs.openSync(options.logFile, 'a');
+  const logFd = openPrivateLogFile(options.logFile);
   let child: ReturnType<typeof spawn>;
   try {
     child = spawn(

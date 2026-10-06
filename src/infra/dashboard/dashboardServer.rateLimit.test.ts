@@ -166,7 +166,7 @@ describe('startDashboardServer — login rate limiting (issue #159)', () => {
     // not an immediate 1008.
     const next = connect();
     const message = await waitForMessage(next, () => true);
-    expect(message).toEqual({ type: 'authRequired' });
+    expect(message).toEqual({ type: 'authRequired', method: 'password' });
   }, 10_000);
 
   it('caps concurrent unauthenticated sockets per IP, rejecting the overflow', async () => {
@@ -197,7 +197,7 @@ describe('startDashboardServer — login rate limiting (issue #159)', () => {
     // instead of overflowing.
     const next = connect();
     const message = await waitForMessage(next, () => true);
-    expect(message).toEqual({ type: 'authRequired' });
+    expect(message).toEqual({ type: 'authRequired', method: 'password' });
   }, 10_000);
 
   it('closing an unauthenticated socket frees its slot too', async () => {
@@ -212,7 +212,7 @@ describe('startDashboardServer — login rate limiting (issue #159)', () => {
 
     const next = connect();
     const message = await waitForMessage(next, () => true);
-    expect(message).toEqual({ type: 'authRequired' });
+    expect(message).toEqual({ type: 'authRequired', method: 'password' });
   }, 10_000);
 
   it('does not rate-limit at all when no password is configured', async () => {

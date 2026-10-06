@@ -13,6 +13,8 @@ import { resolveDumpDir, writeExchangeDumpFile, writeWebSocketDumpFile } from '.
 import { fsRuleProfileStore } from '../infra/fs/ruleProfileStore';
 import { fsFileWatcher, fsRulesFileReader, fsRulesFileWriter } from '../infra/fs/rulesFileSource';
 import { findLiveRunState, removeRunState, reserveRunState, writeRunState } from '../infra/fs/runStateStore';
+import { tokenLandingPath } from '../domain/auth/dashboardAccess';
+import { resolveDashboardToken } from '../infra/fs/dashboardAccessStore';
 import { loadUserConfig } from '../infra/fs/userConfigStore';
 import { buildGrpcExchangeInfo } from '../infra/grpc/grpcExchangeInfo';
 import { ProtoRegistry } from '../infra/grpc/protoRegistry';
@@ -65,9 +67,10 @@ const DEFAULT_DASHBOARD_PORT_OFFSET = 1000;
 
 /** Where a `--detach` daemon's stdout/stderr are appended (~/.detour/logs/<port>.log — one file per tracked port, overwritten across restarts of the same port isn't attempted; it just keeps growing, same as the console output a foreground run would otherwise produce). Mirrors `certStore.ts`'s `resolveCertDir`/`dumpFileWriter.ts`'s `resolveDumpDir`/`runStateStore.ts`'s `resolveRunDir`. */
 function resolveLogFilePath(port: number): string {
-  const dir = path.join(os.homedir(), '.detour', 'logs');
-  fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, `${port}.log`);
+  // Only the path: the file itself (and its directory) is created owner-only
+  // by `spawnDaemonChild`, since the banner it will hold carries the
+  // dashboard's access token (issue #205).
+  return path.join(os.homedir(), '.detour', 'logs', `${port}.log`);
 }
 
 interface StartOptions {
@@ -490,6 +493,12 @@ async function runStartBody({
 
   const dashboardHost = resolveDashboardHost(options);
   const dashboardTls = resolveDashboardTls(options, dashboardHost);
+  // Issue #205. No dashboard under `--headless`, so no token to make or print.
+  const dashboardToken = headless ? undefined : resolveDashboardToken();
+  const dashboardPasswordSet = readDashboardPasswordSet();
+  // What goes into the URLs printed/opened: with a password configured, that
+  // password is the secret instead and the URL stays plain.
+  const bannerToken = dashboardPasswordSet ? undefined : dashboardToken;
   let handle: Awaited<ReturnType<typeof startProxyServer>>;
   try {
     handle = await startProxyServer(
@@ -634,6 +643,9 @@ async function runStartBody({
       dashboardHandle = await startDashboardServer(
         {
           port: requestedDashboardPort,
+          // Issue #205: the dashboard is not open to whoever can reach it
+          // (which, through the proxy, includes the LAN) — see `accessToken`.
+          accessToken: dashboardToken,
           host: dashboardHost,
           proxyPort: handle.port,
           isSelfTarget: handle.isSelfTarget,
@@ -715,7 +727,9 @@ async function runStartBody({
     requestedDashboardPort !== undefined &&
     shouldAutoOpenDashboard({ open: options.open, dashboardPort: requestedDashboardPort, built: isDashboardBuilt() })
   ) {
-    openBrowser(`${dashboardTls ? 'https' : 'http'}://localhost:${dashboardHandle.port}`);
+    openBrowser(
+      `${dashboardTls ? 'https' : 'http'}://localhost:${dashboardHandle.port}${tokenLandingPath(bannerToken)}`,
+    );
   }
 
   printStartupBanner({
@@ -729,7 +743,8 @@ async function runStartBody({
     http2Enabled: options.http2,
     http2UpstreamEnabled: options.http2Upstream,
     protoPaths: options.proto,
-    dashboardPasswordSet: readDashboardPasswordSet(),
+    dashboardPasswordSet,
+    dashboardToken: bannerToken,
     proxyAuthSet: proxyAuth !== undefined,
     historyDbPath,
     // Redacted here rather than inside the banner: credentials can be
@@ -874,7 +889,13 @@ async function runDetached(options: StartOptions): Promise<void> {
 
   console.log(`✔ detour started in the background (pid ${info.pid})`);
   console.log(`  Proxy     → http://localhost:${info.proxyPort}`);
-  if (info.dashboardPort !== undefined) console.log(`  Dashboard → http://localhost:${info.dashboardPort}`);
+  if (info.dashboardPort !== undefined) {
+    // Same token the background process loaded (it is persisted, and the
+    // environment is inherited) — issue #205; omitted when a password is the
+    // secret instead.
+    const linkToken = readDashboardPasswordSet() ? undefined : resolveDashboardToken();
+    console.log(`  Dashboard → http://localhost:${info.dashboardPort}${tokenLandingPath(linkToken)}`);
+  }
   console.log(`  Logs      → ${logFile}`);
   console.log(`  Stop with: detour stop --port ${port}`);
 }

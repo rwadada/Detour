@@ -159,7 +159,7 @@ describe('startDashboardServer — dashboard password (issue #66)', () => {
     const socket = connect();
 
     const message = await waitForMessage(socket, () => true);
-    expect(message).toEqual({ type: 'authRequired' });
+    expect(message).toEqual({ type: 'authRequired', method: 'password' });
     await expectNoMessage(socket, (m) => m.type === 'backlog');
   });
 
@@ -302,7 +302,7 @@ describe('startDashboardServer — dashboard password (issue #66)', () => {
 
     const socket = connect();
     const message = await waitForMessage(socket, () => true);
-    expect(message).toEqual({ type: 'authRequired' });
+    expect(message).toEqual({ type: 'authRequired', method: 'password' });
     await expectNoMessage(socket, (m) => m.type === 'backlog');
   });
 

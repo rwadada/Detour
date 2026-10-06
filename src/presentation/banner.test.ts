@@ -65,6 +65,29 @@ describe('printStartupBanner', () => {
     expect(print({ http2UpstreamEnabled: false })).toContain('HTTP/2: on, upstream HTTP/2: off');
   });
 
+  describe('dashboard access token (issue #205)', () => {
+    const token = 'secret-token-0123456789abcdef';
+
+    it('puts the token in the Dashboard URL, so opening it once signs the browser in', () => {
+      const output = print({ dashboardToken: token });
+      expect(output).toContain(`Dashboard → http://localhost:9080/?token=${token}`);
+      expect(output).toContain('Dashboard access token: required');
+    });
+
+    it('prints the plain URL, and no token line, when a password is the secret instead', () => {
+      const output = print({ dashboardToken: undefined, dashboardPasswordSet: true });
+      expect(output).toContain('Dashboard → http://localhost:9080\n');
+      expect(output).not.toContain('?token=');
+      expect(output).not.toContain('Dashboard access token');
+    });
+
+    it('carries the token on the LAN Dashboard URL too, and names it as the thing protecting a LAN-bound dashboard', () => {
+      const output = print({ dashboardToken: token, lanAddresses: ['lan-host.local'], dashboardHost: '0.0.0.0' });
+      expect(output).toContain(`Dashboard → http://lan-host.local:9080/?token=${token}`);
+      expect(output).toContain('the access token in the Dashboard URL is the only thing standing between');
+    });
+  });
+
   it('says the dashboard is disabled under --headless rather than printing a URL', () => {
     const output = print({ dashboardPort: undefined });
     expect(output).toContain('Dashboard → disabled (--headless)');
