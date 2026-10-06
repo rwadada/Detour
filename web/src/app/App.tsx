@@ -1,4 +1,5 @@
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { ProtocolMismatchBanner } from '@/entities/proxy-config';
 import { HistoryBanner } from '@/features/history';
 import { UpdateBanner } from '@/features/update-notice';
 import { ImportedBanner } from '@/features/log-viewer';
@@ -22,6 +23,7 @@ export default function App() {
       <div className="flex min-w-0 flex-1 flex-col">
         <Toolbar />
         <ContextBar />
+        <ProtocolMismatchBanner />
         <ImportedBanner />
         <UpdateBanner />
         <HistoryBanner />

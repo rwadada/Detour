@@ -16,6 +16,14 @@ import { Button, Input, Select } from '@/shared/ui';
 const METHODS = ['ALL', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 const STATUS_CLASSES = ['ALL', 'pending', '2xx', '3xx', '4xx', '5xx'];
 
+/** Hover help for the search box (issue #213) — the expression syntax lives in `entities/exchange/lib/filterExpression.ts`. */
+const FILTER_HELP = [
+  'Plain text matches the URL. Combine terms with spaces (AND); prefix a term with - to negate it (plain words only alongside a key:value term).',
+  'Keys: url host method status type header reqheader resheader body reqbody resbody duration size process rule proto',
+  'Examples: status:4xx  -method:OPTIONS  host:api.example.com  header:authorization  type:json  duration:>1000  size:>=1mb  body:"error_code"',
+  'header:name = has the header; header:name=text = its value contains text. Bodies are searched only as far as they were captured.',
+].join('\n');
+
 /**
  * The main area's top toolbar (issue #24's layout refresh): search/filters,
  * Group by host, Pause/Tail, Intercept/Focus/Throttle/Block Hosts, and
@@ -37,7 +45,8 @@ export function Toolbar() {
         <Input
           value={filters.query}
           onChange={(e) => setFilters({ query: e.target.value })}
-          placeholder="Filter by URL…"
+          placeholder="Filter by URL or status:4xx duration:>1000…"
+          title={FILTER_HELP}
           className="pl-7"
         />
       </div>

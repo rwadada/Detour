@@ -119,6 +119,8 @@ export interface ProxyServerHandle {
    * automatically.
    */
   protectLocalPort(port: number): void;
+  /** Whether `host:port` is one of this process's own listeners (the proxy, the dashboard, …) — see `ProxyEngine.isSelfTarget`. */
+  isSelfTarget(host: string, port: number): Promise<boolean>;
   stop(): Promise<void>;
 }
 
@@ -406,6 +408,7 @@ export async function startProxyServer(
               ruleEngine = engine;
             },
             protectLocalPort: (port) => proxy.protectLocalPort(port),
+            isSelfTarget: (host, port) => proxy.isSelfTarget(host, port),
             stop: () =>
               new Promise<void>((res) => {
                 eventBus.off('breakpointResume', handleBreakpointResume);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { fakeDashboardConnection } from '@/shared/api';
-import { createProxyInfoStore } from './createProxyInfoStore';
+import { fakeDashboardConnection, PROTOCOL_VERSION } from '@/shared/api';
+import { createProxyInfoStore, isProtocolMismatch } from './createProxyInfoStore';
 
 describe('createProxyInfoStore', () => {
   it('starts with proxyPort null before any message arrives', () => {
@@ -85,5 +85,35 @@ describe('createProxyInfoStore', () => {
     const store = createProxyInfoStore(fake.connection);
     fake.emit({ type: 'proxyInfo', proxyPort: 8080 });
     expect(store.getState().insecureUpstream).toBe(false);
+  });
+
+  describe('protocol version (issue #209)', () => {
+    it('is not a mismatch before proxyInfo has arrived', () => {
+      const store = createProxyInfoStore(fakeDashboardConnection().connection);
+      expect(isProtocolMismatch(store.getState())).toBe(false);
+    });
+
+    it("is not a mismatch when the server reports this page's own version", () => {
+      const fake = fakeDashboardConnection();
+      const store = createProxyInfoStore(fake.connection);
+      fake.emit({ type: 'proxyInfo', proxyPort: 8080, protocolVersion: PROTOCOL_VERSION });
+      expect(store.getState().serverProtocolVersion).toBe(PROTOCOL_VERSION);
+      expect(isProtocolMismatch(store.getState())).toBe(false);
+    });
+
+    it('is a mismatch when the server reports a different version', () => {
+      const fake = fakeDashboardConnection();
+      const store = createProxyInfoStore(fake.connection);
+      fake.emit({ type: 'proxyInfo', proxyPort: 8080, protocolVersion: PROTOCOL_VERSION + 1 });
+      expect(isProtocolMismatch(store.getState())).toBe(true);
+    });
+
+    it('treats a server that sends no version at all as a mismatch (it predates the check)', () => {
+      const fake = fakeDashboardConnection();
+      const store = createProxyInfoStore(fake.connection);
+      fake.emit({ type: 'proxyInfo', proxyPort: 8080 });
+      expect(store.getState().serverProtocolVersion).toBeNull();
+      expect(isProtocolMismatch(store.getState())).toBe(true);
+    });
   });
 });

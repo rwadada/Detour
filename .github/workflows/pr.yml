@@ -24,13 +24,12 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          # Matches release.yml: the CLI's own engines.node stays >=18, but
-          # the dashboard workspace's Vite 7 needs 20.19+/22.12+. Pinned to
-          # the exact floor of that range so a resolver change can't
+          # Matches release.yml and `engines.node` (>=22.12, also Vite 7's
+          # floor). Pinned to the exact floor so a resolver change can't
           # silently pick an early-22.x that predates it.
           node-version: "22.12.0"
           cache: "npm"
@@ -38,6 +37,42 @@ jobs:
       - run: npm ci
 
       - run: npm run verify
+
+  # Everything `verify` doesn't already cover of the supported range (issue
+  # #210): `engines.node` is >=22.12 and macOS is the main target (Homebrew,
+  # `detour setup --target mac`, lsof-based client lookup), so run the
+  # behavioural suites on Node 24 (ubuntu) and on macOS for both ends of the
+  # range. Static checks (format/lint/typecheck/dep-cruise/dup-check) don't
+  # depend on the platform, so they stay in `verify` only.
+  compat:
+    name: compat (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: "24"
+          - os: macos-latest
+            node: "22.12.0"
+          - os: macos-latest
+            node: "24"
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: "npm"
+
+      - run: npm ci
+
+      - run: npm test
+
+      - run: npm run test:web
+
+      - run: npm run test:e2e
 
   # Deliberately its own job, not a step inside `verify` (issue #163): the
   # benchmark is timing-sensitive, so sharing a runner with the e2e suite
@@ -61,9 +96,9 @@ jobs:
     # this PR's first run. A full --quick run is well under two minutes.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22.12.0"
           cache: "npm"

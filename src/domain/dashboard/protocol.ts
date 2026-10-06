@@ -80,6 +80,32 @@ export interface UserConfigState {
 }
 
 /**
+ * What "Edit & Send" (issue #214) changes before re-sending a captured
+ * exchange; every field is optional and an absent one keeps the original's
+ * value. `headers` replaces the whole header set (it is the edited list, not
+ * a patch); `body` is base64, like every other body on the wire. Purely
+ * additive to `replay`, so a client that never sends it is unchanged.
+ */
+export interface ReplayOverrides {
+  method?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+/**
+ * Version of the `/ws` wire protocol (issue #209), sent in `proxyInfo` so a
+ * dashboard page can tell it is talking to a server it wasn't built for — a
+ * cached PWA outliving a self-update is the realistic case. Bump it on any
+ * change an older (or newer) page can't cope with: a removed/renamed message
+ * or field, a changed meaning. Purely additive optional fields don't need
+ * one. The dashboard keeps its own copy in `web/src/shared/api/protocol.ts`
+ * (a test in `src/domain/dashboard/protocolVersion.test.ts` fails if the two
+ * drift apart).
+ */
+export const PROTOCOL_VERSION = 1;
+
+/**
  * Messages sent from the dashboard server to a connected browser client over
  * the `/ws` WebSocket. Kept in one place so the wire format has a single
  * source of truth; the frontend (web/src/lib/protocol.ts) mirrors this shape
@@ -104,7 +130,7 @@ export type DashboardServerMessage =
    * this entire session, and that's not something a user should be able to
    * miss by looking away for a moment.
    */
-  | { type: 'proxyInfo'; proxyPort: number; insecureUpstream: boolean }
+  | { type: 'proxyInfo'; proxyPort: number; insecureUpstream: boolean; protocolVersion: number }
   /**
    * Sent once, right after connecting (issue #66): every non-internal IPv4
    * address this machine has. Non-empty regardless of `--lan`/`lanAccess` —
@@ -328,7 +354,7 @@ export type DashboardClientMessage =
    * have already fallen out of its own backlog. The result appears as a
    * normal new `request`/`response` pair, not a dedicated message type.
    */
-  | { type: 'replay'; exchange: WireExchange }
+  | { type: 'replay'; exchange: WireExchange; overrides?: ReplayOverrides }
   /**
    * Persists a change to `~/.detour/config.json` (see `UserConfigState`) —
    * merged into the existing file the same way `detour config` does, so

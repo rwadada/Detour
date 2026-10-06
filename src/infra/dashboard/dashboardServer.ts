@@ -16,7 +16,11 @@ import { SAMPLE_RULES_FILE } from '../../domain/rules/sample';
 import { findRejectedScriptWrites } from '../../domain/rules/scriptGate';
 import type { RulesFile } from '../../domain/rules/types';
 import { RingBuffer } from '../../domain/shared/ringBuffer';
-import type { DashboardClientMessage, DashboardServerMessage } from '../../domain/dashboard/protocol';
+import {
+  PROTOCOL_VERSION,
+  type DashboardClientMessage,
+  type DashboardServerMessage,
+} from '../../domain/dashboard/protocol';
 import type { HttpRequester } from '../../usecase/ports/httpRequester';
 import type { RuleProfileStore } from '../../usecase/ports/ruleProfileStore';
 import { replayExchange } from '../../usecase/replayExchange';
@@ -29,6 +33,7 @@ import type { HistoryStore } from '../persistence/historyStore';
 import { nodeHttpRequester } from '../proxy/nodeHttpRequester';
 import { hashPassword, verifyPassword } from '../../domain/auth/passwordHash';
 import type { UpdateService } from '../../domain/update/updateService';
+import { parseClientMessage } from '../../domain/dashboard/clientMessage';
 import { createDashboardUpdates, hasForwardingHeaders, isLoopbackAddress } from './dashboardUpdates';
 import { serveStatic } from './staticServer';
 
@@ -129,6 +134,13 @@ export interface DashboardServerOptions {
    * same as no `--proto` at all) when this session has none configured.
    */
   protoRegistry?: ProtoRegistry;
+  /**
+   * Whether `host:port` is one of this process's own listeners. `replay`
+   * (issue #214: its URL is now editable) refuses such a target, the same
+   * way the proxy refuses to relay to one (issue #205). Omitted in tests
+   * that don't need it: nothing is then refused.
+   */
+  isSelfTarget?: (host: string, port: number) => Promise<boolean>;
   /** Performs the real outbound request for `replay` (issue #19). Injectable for tests; defaults to a real `node:http`/`node:https` request. */
   httpRequester?: HttpRequester;
   /** Backs `userConfig`/`setUserConfig` (the dashboard Settings panel's `defaultDetach`/`lanAccess` toggles). Injectable for tests; defaults to `~/.detour/config.json` (`resolveUserConfigPath()`). */
@@ -728,6 +740,30 @@ export async function startDashboardServer(
   };
   const broadcastError = (errorKind: string, message: string) =>
     broadcast({ type: 'error', event: { errorKind, message } });
+  /** Whether `url` points at one of this process's own listeners (issue #214 — the URL is now editable, so Replay could otherwise be aimed at the dashboard itself, see #205). Unparseable URLs aren't refused here: the request fails on its own and says why. */
+  const targetsOwnListener = async (url: string): Promise<boolean> => {
+    if (!options.isSelfTarget) return false;
+    try {
+      const target = new URL(url);
+      const defaultPort = target.protocol === 'https:' ? 443 : 80;
+      return await options.isSelfTarget(target.hostname, target.port ? Number(target.port) : defaultPort);
+    } catch {
+      return false;
+    }
+  };
+  const handleReplayMessage = async (message: Extract<DashboardClientMessage, { type: 'replay' }>) => {
+    const url = message.overrides?.url?.trim() || message.exchange.url;
+    if (await targetsOwnListener(url)) {
+      broadcastError('REPLAY_REJECTED', `Refused to replay to ${url}: it is one of Detour's own listeners.`);
+      return;
+    }
+    // Fire-and-forget: `replayExchange` never rejects (network failures land
+    // in the replayed exchange's own `error` field, see its doc comment) —
+    // this catch only guards against a genuine bug.
+    void replayExchange(message.exchange, eventBus, httpRequester, message.overrides).catch((err) =>
+      broadcastError('REPLAY_ERROR', describeError(err)),
+    );
+  };
   // Fires after *any* rules.json reload — whether triggered by `setRules`/
   // `applyRuleProfile` (which write the file, then wait for the same
   // fs.watch-driven reload a hand-edit would trigger) or an actual hand-edit
@@ -780,6 +816,7 @@ export async function startDashboardServer(
         type: 'proxyInfo',
         proxyPort: options.proxyPort,
         insecureUpstream: options.insecureUpstream ?? false,
+        protocolVersion: PROTOCOL_VERSION,
       };
       socket.send(JSON.stringify(proxyInfoMessage));
     }
@@ -884,9 +921,23 @@ export async function startDashboardServer(
     // nothing here needs the caller to wait on it.
     socket.on('message', async (raw) => {
       try {
-        const message = JSON.parse(raw.toString()) as DashboardClientMessage;
+        const parsed = parseClientMessage(raw.toString());
+        const authenticated = authenticatedSockets.has(socket);
+        if (!parsed.ok) {
+          // Reported only for an authenticated socket (issue #209): before
+          // login a frame is just noise from a stranger, and logging each
+          // one would hand them a way to flood this process's log.
+          if (authenticated) {
+            eventBus.emit('error', {
+              errorKind: 'DASHBOARD_BAD_MESSAGE',
+              message: `Rejected a malformed dashboard message — ${parsed.reason}`,
+            });
+          }
+          return;
+        }
+        const message = parsed.message;
 
-        if (!authenticatedSockets.has(socket)) {
+        if (!authenticated) {
           // Nothing but `login` is honored before authenticating — a
           // malicious device on the network that skipped straight to
           // `setRules`/`replay`/etc. without ever proving it knows the
@@ -905,12 +956,7 @@ export async function startDashboardServer(
           await dashboardUpdates.refresh();
           sendUpdateInfoToAll();
         } else if (message.type === 'replay') {
-          // Fire-and-forget: `replayExchange` never rejects (network
-          // failures land in the replayed exchange's own `error` field, see
-          // its doc comment) — this catch only guards against a genuine bug.
-          void replayExchange(message.exchange, eventBus, httpRequester).catch((err) =>
-            broadcastError('REPLAY_ERROR', describeError(err)),
-          );
+          await handleReplayMessage(message);
         } else if (message.type === 'setUserConfig') {
           try {
             writeUserConfig(message.state, options.userConfigPath);
@@ -969,8 +1015,14 @@ export async function startDashboardServer(
           };
           socket.send(JSON.stringify(reply));
         } else handleRulesMessage(message);
-      } catch {
-        // Ignore malformed frames rather than crashing the dashboard.
+      } catch (err) {
+        // Frames are validated above, so reaching here means the handler
+        // itself threw — a bug, not a bad client. Surfaced rather than
+        // swallowed (issue #209), and it still can't crash the dashboard.
+        eventBus.emit('error', {
+          errorKind: 'DASHBOARD_HANDLER_ERROR',
+          message: `A dashboard message handler failed — ${describeError(err)}`,
+        });
       }
     });
   });

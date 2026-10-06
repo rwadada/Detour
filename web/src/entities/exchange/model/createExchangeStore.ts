@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { RingBuffer } from '@/shared/lib/ringBuffer';
 import type { CapturedExchange, DashboardConnection, ExchangeResponsePatch } from '@/shared/api';
+import { compileFilterQuery } from '../lib/filterExpression';
 
 /** Bounds memory by count alone — see `MAX_CAPTURE_MEMORY_BYTES` below for the byte cap that actually matters once bodies aren't trivial (issue #165): 5000 exchanges each carrying a couple of base64'd 256 KB bodies would be well over a gigabyte before this count is ever reached. */
 const MAX_EXCHANGES = 5000;
@@ -263,7 +264,7 @@ function statusClass(exchange: CapturedExchange): string {
 export function matchesFilters(exchange: CapturedExchange, filters: Filters): boolean {
   if (filters.method !== 'ALL' && exchange.method !== filters.method) return false;
   if (filters.status !== 'ALL' && statusClass(exchange) !== filters.status) return false;
-  if (filters.query && !exchange.url.toLowerCase().includes(filters.query.toLowerCase())) return false;
+  if (filters.query && !compileFilterQuery(filters.query)(exchange)) return false;
   return true;
 }
 

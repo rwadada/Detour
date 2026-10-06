@@ -4,7 +4,7 @@ import { isPassthroughDone, MethodBadge, StatusBadge, useExchangeStore } from '@
 import { isGrpcContentType, parseGrpcPath } from '@/entities/grpc';
 import { BreakpointEditor, useBreakpointResumeStore } from '@/features/breakpoint-resume';
 import { CopyAsCurlButton } from '@/features/copy-as-curl';
-import { ReplayButton } from '@/features/replay';
+import { EditAndSendButton, ReplayButton } from '@/features/replay';
 import {
   cn,
   findHeaderValue,
@@ -110,13 +110,24 @@ export function InspectorPanel() {
     <div className="flex h-full flex-col">
       <div className="flex items-start justify-between gap-2 border-b border-[var(--border)] p-3">
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <MethodBadge method={exchange.method} />
             <StatusBadge status={exchange.statusCode} error={exchange.error} />
             {exchange.ruleName && (
               <span className="rounded bg-[var(--row-hover)] px-1.5 py-0.5 text-xs text-[var(--muted)]">
                 rule: {exchange.ruleName}
               </span>
+            )}
+            {exchange.replayOf && (
+              <button
+                type="button"
+                className="whitespace-nowrap rounded bg-[var(--row-hover)] px-1.5 py-0.5 text-xs text-[var(--muted)] hover:text-[var(--foreground)] disabled:cursor-default disabled:hover:text-[var(--muted)]"
+                disabled={!exchanges.some((e) => e.id === exchange.replayOf)}
+                onClick={() => select(exchange.replayOf ?? null)}
+                title="Select the request this was replayed from (then Ctrl/⌘-click this one to compare the two)"
+              >
+                ↺ replay ↗
+              </button>
             )}
             {exchange.clientProcess && (
               <span
@@ -137,6 +148,7 @@ export function InspectorPanel() {
         <div className="flex shrink-0 items-center">
           <CopyAsCurlButton exchange={exchange} />
           <ReplayButton exchange={exchange} />
+          <EditAndSendButton exchange={exchange} />
           <CreateRuleButton exchange={exchange} />
           <Button variant="ghost" size="icon" onClick={() => select(null)} title="Close">
             <X className="h-4 w-4" />

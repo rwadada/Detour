@@ -41,18 +41,16 @@ jobs:
   build-and-publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag }}
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          # The CLI's own `engines.node` stays >=18 (esbuild targets node18,
-          # and that's all end users need to *run* the release build) — but
-          # building the dashboard SPA needs Vite 7, which requires Node
-          # 20.19+/22.12+. Pinned to the exact floor of that range (rather
-          # than a bare "22") so a resolver change can't silently pick an
-          # early-22.x that predates it.
+          # `engines.node` (>=22.12) is the floor of Vite 7's own range for
+          # the dashboard SPA build, and the esbuild target. Pinned to that
+          # exact floor (rather than a bare "22") so a resolver change can't
+          # silently pick an early-22.x that predates it.
           node-version: "22.12.0"
 
       - name: Verify tag matches package.json version

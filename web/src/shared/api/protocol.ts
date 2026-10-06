@@ -69,6 +69,8 @@ export interface CapturedExchange {
 
   error?: string;
   ruleName?: string;
+  /** Set on an exchange produced by Replay / Edit & Send (issue #214): the `id` of the exchange it was sent from. */
+  replayOf?: string;
   /** Set only on the transient snapshot sent alongside a `breakpoint` message: which phase this exchange is currently paused at. Cleared on the next `request`/`response` update once resumed/aborted. */
   breakpoint?: 'request' | 'response';
   /** A raw TLS passthrough tunnel (Intercept off / host outside Focus) rather than a decrypted exchange — see `src/domain/exchange/types.ts`'s `CapturedExchange.passthrough`. Every field beyond the identifying/timing ones is a meaningless placeholder when this is set. */
@@ -345,9 +347,27 @@ export interface UserConfigState {
   dashboardPasswordSet: boolean;
 }
 
+/**
+ * Mirrors `src/domain/dashboard/protocol.ts`'s `PROTOCOL_VERSION` (issue
+ * #209): the wire-protocol version this page was built for. The server sends
+ * its own in `proxyInfo`; a difference means a stale (cached/PWA) page or an
+ * older server, and the dashboard says so instead of misbehaving silently.
+ * A test on the CLI side (`protocolVersion.test.ts`) fails if the two drift.
+ */
+export const PROTOCOL_VERSION = 1;
+
+/** Mirrors `src/domain/dashboard/protocol.ts`'s `ReplayOverrides` (issue #214): what Edit & Send changes before re-sending; absent fields keep the original's value. */
+export interface ReplayOverrides {
+  method?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  /** Base64. */
+  body?: string;
+}
+
 export type DashboardServerMessage =
   /** Sent once, right after connecting: the proxy port this dashboard session is fronting (issue #24's sidebar Proxy URL / QR code). `insecureUpstream` (issue #160) is this session's `--insecure-upstream` setting, fixed for its whole lifetime — optional since an older server predating this field won't send it, in which case it's safe to read as `false` (that server build had no such flag to turn on). */
-  | { type: 'proxyInfo'; proxyPort: number; insecureUpstream?: boolean }
+  | { type: 'proxyInfo'; proxyPort: number; insecureUpstream?: boolean; protocolVersion?: number }
   /** Sent once, right after connecting (issue #66): every LAN address this machine has — the proxy always binds to every interface, so this is non-empty regardless of `--lan`/`lanAccess`. `dashboardOnLan` says whether the dashboard is *also* bound to every interface right now (only then does a Dashboard URL, not just a Proxy one, make sense for each address) — optional since an older server predating that field won't send it (see `createProxyInfoStore`'s fallback for how that's handled). Powers the sidebar's LAN Access section. */
   | { type: 'lanInfo'; addresses: string[]; dashboardOnLan?: boolean }
   /** Sent instead of the usual just-connected snapshot when a dashboard password is configured and this socket hasn't supplied it yet (issue #66) — reply with `login`. Never sent at all when no password is configured. */
@@ -421,7 +441,7 @@ export type DashboardClientMessage =
   /** Loads a saved profile's rules into the currently active rules.json. */
   | { type: 'applyRuleProfile'; name: string }
   /** Re-sends a previously captured exchange for real (Replay). The result appears as a normal new `request`/`response` pair, not a dedicated message type. */
-  | { type: 'replay'; exchange: CapturedExchange }
+  | { type: 'replay'; exchange: CapturedExchange; overrides?: ReplayOverrides }
   /** Persists a change to `~/.detour/config.json`, merged into the existing file (setting one field never clobbers the other). */
   | { type: 'setUserConfig'; state: Partial<UserConfigState> }
   /** Sets (or, with `null`, clears) the dashboard password (issue #66). Only meaningful from an already-authenticated socket. */
