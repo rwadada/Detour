@@ -636,6 +636,7 @@ async function runStartBody({
           port: requestedDashboardPort,
           host: dashboardHost,
           proxyPort: handle.port,
+          isSelfTarget: handle.isSelfTarget,
           ruleEngine,
           ruleProfileStore: fsRuleProfileStore,
           tlsKeyCert,

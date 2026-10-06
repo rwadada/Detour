@@ -121,4 +121,62 @@ describe('replayExchange', () => {
     expect(responsePhase?.error).toBe('ECONNREFUSED');
     expect(responsePhase?.statusCode).toBeUndefined();
   });
+
+  describe('Edit & Send overrides (issue #214)', () => {
+    async function send(overrides: Parameters<typeof replayExchange>[3], base: WireExchange = original()) {
+      const eventBus = new DetourEventBus();
+      let sent: Parameters<HttpRequester['request']>[0] | undefined;
+      let broadcast: CapturedExchange | undefined;
+      eventBus.on('request', (exchange) => {
+        broadcast = exchange;
+      });
+      const requester: HttpRequester = {
+        request: async (req) => {
+          sent = req;
+          return { statusCode: 200, statusMessage: 'OK', headers: {}, body: Buffer.alloc(0) };
+        },
+      };
+      await replayExchange(base, eventBus, requester, overrides);
+      return { sent: sent!, broadcast: broadcast! };
+    }
+
+    it('records which exchange it was sent from, with or without edits', async () => {
+      expect((await send(undefined)).broadcast.replayOf).toBe('original-1');
+      expect((await send({ method: 'PUT' })).broadcast.replayOf).toBe('original-1');
+    });
+
+    it('changes only what is overridden', async () => {
+      const { sent, broadcast } = await send({ method: 'put' });
+      expect(sent.method).toBe('put');
+      expect(sent.url).toBe('https://api.example.com/widgets');
+      expect(broadcast.host).toBe('api.example.com');
+      expect(sent.body?.toString()).toBe('{"name":"x"}');
+    });
+
+    it('replaces the header set wholesale (still dropping hop-by-hop ones)', async () => {
+      const { sent } = await send({ headers: { 'x-only': '1', host: 'evil', 'content-length': '999' } });
+      expect(sent.headers).toEqual({ 'x-only': '1' });
+    });
+
+    it('re-derives host and scheme from an edited URL', async () => {
+      const { sent, broadcast } = await send({ url: 'http://localhost:3000/v2/widgets' });
+      expect(sent.url).toBe('http://localhost:3000/v2/widgets');
+      expect(broadcast.host).toBe('localhost:3000');
+      expect(broadcast.isSSL).toBe(false);
+    });
+
+    it('sends an edited body and records its real size', async () => {
+      const body = Buffer.from('{"name":"changed!"}');
+      const { sent, broadcast } = await send({ body: body.toString('base64') });
+      expect(sent.body?.toString()).toBe('{"name":"changed!"}');
+      expect(broadcast.requestBodySize).toBe(body.length);
+      expect(broadcast.requestBodyTruncated).toBe(false);
+    });
+
+    it('an empty edited body removes the body', async () => {
+      const { sent, broadcast } = await send({ body: '' });
+      expect(sent.body).toBeUndefined();
+      expect(broadcast.requestBodySize).toBe(0);
+    });
+  });
 });

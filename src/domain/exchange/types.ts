@@ -178,6 +178,8 @@ export interface CapturedExchange {
   error?: string;
   /** Name of the rules.json rule that handled this exchange, if any. */
   ruleName?: string;
+  /** Set on an exchange produced by the dashboard's Replay / Edit & Send (issues #19, #214): the `id` of the captured exchange it was sent from, so the two can be found and compared. */
+  replayOf?: string;
   /**
    * Set only on the transient snapshot broadcast alongside a `breakpoint`
    * dashboard message: which phase this exchange is currently paused at,

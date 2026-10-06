@@ -71,9 +71,25 @@ function validateBreakpointResume(command: unknown): string | null {
   );
 }
 
+function validateReplayOverrides(o: unknown): string | null {
+  if (o === undefined) return null;
+  if (!isObject(o)) return 'overrides must be an object';
+  return check(
+    [
+      o.method === undefined || (isString(o.method) && o.method.trim() !== ''),
+      'overrides.method must be a non-empty string',
+    ],
+    [o.url === undefined || (isString(o.url) && o.url.trim() !== ''), 'overrides.url must be a non-empty string'],
+    [o.headers === undefined || isStringRecord(o.headers), 'overrides.headers must map strings to strings'],
+    [o.body === undefined || isString(o.body), 'overrides.body must be a string'],
+  );
+}
+
 function validateReplay(m: Json): string | null {
   const ex = m.exchange;
   if (!isObject(ex)) return 'exchange must be an object';
+  const overridesProblem = validateReplayOverrides(m.overrides);
+  if (overridesProblem) return overridesProblem;
   return check(
     [isString(ex.method), 'exchange.method must be a string'],
     [isString(ex.url), 'exchange.url must be a string'],

@@ -80,6 +80,20 @@ export interface UserConfigState {
 }
 
 /**
+ * What "Edit & Send" (issue #214) changes before re-sending a captured
+ * exchange; every field is optional and an absent one keeps the original's
+ * value. `headers` replaces the whole header set (it is the edited list, not
+ * a patch); `body` is base64, like every other body on the wire. Purely
+ * additive to `replay`, so a client that never sends it is unchanged.
+ */
+export interface ReplayOverrides {
+  method?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+/**
  * Version of the `/ws` wire protocol (issue #209), sent in `proxyInfo` so a
  * dashboard page can tell it is talking to a server it wasn't built for — a
  * cached PWA outliving a self-update is the realistic case. Bump it on any
@@ -340,7 +354,7 @@ export type DashboardClientMessage =
    * have already fallen out of its own backlog. The result appears as a
    * normal new `request`/`response` pair, not a dedicated message type.
    */
-  | { type: 'replay'; exchange: WireExchange }
+  | { type: 'replay'; exchange: WireExchange; overrides?: ReplayOverrides }
   /**
    * Persists a change to `~/.detour/config.json` (see `UserConfigState`) —
    * merged into the existing file the same way `detour config` does, so
