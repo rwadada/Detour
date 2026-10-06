@@ -269,6 +269,8 @@ const UPDATE_INFO_REFRESH_MS = 60 * 60 * 1000;
 export interface DashboardServerHandle {
   /** Port the dashboard actually bound to (relevant when options.port is 0). */
   port: number;
+  /** Address it actually bound to (`::1`, `127.0.0.1`, `0.0.0.0`, …) — what `localhost` resolved to, for the default bind. */
+  address: string;
   /**
    * The live backlog, but only while a dashboard-initiated update is about to
    * stop this process (otherwise `undefined`) — what to write out for the
@@ -1289,6 +1291,7 @@ export async function startDashboardServer(
       boundPort = typeof address === 'object' && address ? address.port : options.port;
       resolve({
         port: boundPort,
+        address: typeof address === 'object' && address ? address.address : host,
         backlogForUpdateRestart: () => (dashboardUpdates.isUpdating() ? backlog.toArray() : undefined),
         stop: () =>
           new Promise<void>((res) => {
