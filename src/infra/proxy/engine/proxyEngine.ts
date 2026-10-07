@@ -444,9 +444,12 @@ export class ProxyEngine {
       this.attachWebSocketServer(this.httpServer, false);
 
       await listenAsync(this.httpServer, options.port, options.host);
-      this.httpPort = (this.httpServer.address() as net.AddressInfo).port;
-      this.selfTargets.protectPort(this.httpPort);
-      this.selfTargets.protectPort(internalPort);
+      const bound = this.httpServer.address() as net.AddressInfo;
+      this.httpPort = bound.port;
+      // With the address each is actually bound to, so a server elsewhere on
+      // the same port number but the other IP family is not taken for ours.
+      this.selfTargets.protectPort(this.httpPort, bound.address);
+      this.selfTargets.protectPort(internalPort, '127.0.0.1');
       callback();
     } catch (err) {
       // `this.tlsServer` (and, further along, `this.httpServer`) can already
@@ -467,9 +470,9 @@ export class ProxyEngine {
     return this.selfTargets.isSelfTarget(host, port);
   }
 
-  /** Marks a port some other listener in this process owns (the dashboard) as off-limits to relayed traffic (issue #205). */
-  protectLocalPort(port: number): void {
-    this.selfTargets.protectPort(port);
+  /** Marks a port some other listener in this process owns (the dashboard) as off-limits to relayed traffic (issue #205). `address` is what that listener is bound to — see `SelfTargetGuard.protectPort`. */
+  protectLocalPort(port: number, address?: string): void {
+    this.selfTargets.protectPort(port, address);
   }
 
   /**

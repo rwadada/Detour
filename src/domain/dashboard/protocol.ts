@@ -291,7 +291,15 @@ export type DashboardServerMessage =
    * trigger it (loopback, or a password-authenticated session) — otherwise
    * the UI can only point the user at `detour update` in a terminal.
    */
-  | { type: 'updateInfo'; current: string; latest: string | null; updateAvailable: boolean; canUpdate: boolean }
+  | {
+      type: 'updateInfo';
+      current: string;
+      latest: string | null;
+      updateAvailable: boolean;
+      canUpdate: boolean;
+      /** Why `latest` is null — what the release lookup failed on ("GitHub returned HTTP 403 …"). Absent when the lookup worked. */
+      failure?: string;
+    }
   /** Answer to `startUpdate`, sent to the requesting socket only. `started` means the detached updater was launched; this process is about to be stopped and relaunched by it. */
   | { type: 'updateStatus'; state: 'started' | 'rejected' | 'failed'; message?: string }
   /**

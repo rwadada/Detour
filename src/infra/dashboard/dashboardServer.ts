@@ -283,6 +283,8 @@ export interface DashboardServerHandle {
   port: number;
   /** The control API's port, when `controlPort` was given (the real one even for `0`). */
   controlPort?: number;
+  /** Address it actually bound to (`::1`, `127.0.0.1`, `0.0.0.0`, …) — what `localhost` resolved to, for the default bind. */
+  address: string;
   /**
    * The live backlog, but only while a dashboard-initiated update is about to
    * stop this process (otherwise `undefined`) — what to write out for the
@@ -1304,6 +1306,7 @@ export async function startDashboardServer(
       const buildHandle = (control: ControlServerHandle | undefined): DashboardServerHandle => ({
         port: boundPort,
         ...(control ? { controlPort: control.port } : {}),
+        address: typeof address === 'object' && address ? address.address : host,
         backlogForUpdateRestart: () => (dashboardUpdates.isUpdating() ? backlog.toArray() : undefined),
         stop: () =>
           new Promise<void>((res) => {

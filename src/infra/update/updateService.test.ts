@@ -27,6 +27,17 @@ describe('createUpdateService', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it('remembers why the lookup failed, and forgets it once one works', async () => {
+    const fetch = vi.fn<() => Promise<string>>().mockRejectedValueOnce(new Error('offline')).mockResolvedValue('1.6.1');
+    const { service, advance } = setup(fetch);
+    expect(service.lastFailure()).toBeNull();
+    expect(await service.getLatestVersion()).toBeNull();
+    expect(service.lastFailure()).toBe('offline');
+    advance(10 * 60 * 1000);
+    expect(await service.getLatestVersion()).toBe('1.6.1');
+    expect(service.lastFailure()).toBeNull();
+  });
+
   it('returns null on failure and retries only after a short backoff', async () => {
     const fetch = vi.fn<() => Promise<string>>().mockRejectedValueOnce(new Error('offline')).mockResolvedValue('1.6.1');
     const { service, advance } = setup(fetch);

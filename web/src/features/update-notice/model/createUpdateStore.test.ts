@@ -28,6 +28,24 @@ describe('createUpdateStore', () => {
     });
   });
 
+  it('keeps the reason a lookup failed, and drops it once one works', () => {
+    const fake = fakeDashboardConnection();
+    const store = createUpdateStore(fake.connection, { reload: vi.fn() });
+    fake.emit(
+      info('1.0.0', {
+        latest: null,
+        updateAvailable: false,
+        failure: 'GitHub returned HTTP 403 when checking for updates',
+      }),
+    );
+    expect(store.getState().info).toMatchObject({
+      latest: null,
+      failure: 'GitHub returned HTTP 403 when checking for updates',
+    });
+    fake.emit(info('1.0.0'));
+    expect(store.getState().info).not.toHaveProperty('failure');
+  });
+
   it('sends startUpdate once and ignores further clicks while updating', () => {
     const fake = fakeDashboardConnection();
     const store = createUpdateStore(fake.connection, { reload: vi.fn() });

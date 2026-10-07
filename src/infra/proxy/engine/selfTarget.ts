@@ -32,19 +32,51 @@ function isLoopbackOrUnspecified(address: string): boolean {
   return address.startsWith('127.') || address === '0.0.0.0' || address === '::1' || address === '::';
 }
 
+/** Where a connection to an unspecified address (`0.0.0.0`, `::`: "any address") actually goes — that family's loopback. Any other address is itself. */
+function loopbackEquivalent(address: string): string {
+  if (address === '0.0.0.0') return '127.0.0.1';
+  if (address === '::') return '::1';
+  return address;
+}
+
+/**
+ * Whether a connection to `target` (an IP) lands on a socket bound to
+ * `listener`.
+ *
+ * - No known address, or the wildcard `::` (which Node binds dual-stack): any
+ *   local address of either family reaches it — this machine's loopback, its
+ *   unspecified address, or one of its interface addresses.
+ * - The wildcard `0.0.0.0`: the same, but IPv4 only.
+ * - A specific address (`::1`, `127.0.0.1`, a LAN IP): only that exact address.
+ *   An IPv4 server on `127.0.0.1:P` is not what `[::1]:P` reaches, and vice
+ *   versa — they are different sockets that happen to share a port number.
+ */
+function reachesListener(target: string, listener: string | undefined, own: Set<string>): boolean {
+  const local = isLoopbackOrUnspecified(target) || own.has(target);
+  if (listener === undefined || listener === '::') return local;
+  if (listener === '0.0.0.0') return local && net.isIPv4(target);
+  return loopbackEquivalent(target) === listener;
+}
+
 export interface SelfTargetGuard {
-  /** Marks a port this process listens on (the proxy itself, the dashboard, …) as one the proxy must never relay to. */
-  protectPort(port: number): void;
   /**
-   * Whether `host:port` is one of this process's own listeners — a port in
-   * `protectPort`'s set whose host resolves to this machine (loopback, the
-   * unspecified address, or any of its interface addresses).
+   * Marks a port this process listens on (the proxy itself, the dashboard, …)
+   * as one the proxy must never relay to. `address` is what that listener is
+   * actually bound to (`server.address().address`); give it whenever it is
+   * known, so that an unrelated server sharing the port number on the *other*
+   * address family is not mistaken for it. Omitted, any local address matches.
+   */
+  protectPort(port: number, address?: string): void;
+  /**
+   * Whether `host:port` is one of this process's own listeners — a protected
+   * listener whose port matches and whose address the host resolves to (see
+   * `reachesListener`).
    *
    * Judged on the *resolved* addresses rather than the literal name, so a
    * hostname that only points at `127.0.0.1` (`localtest.me`, a DNS-rebinding
-   * record, …) is caught too. If any one answer is local the target counts
-   * as self. A name that doesn't resolve is `false` — the relay itself fails
-   * for it anyway.
+   * record, …) is caught too. If any one answer reaches a listener the target
+   * counts as self. A name that doesn't resolve is `false` — the relay itself
+   * fails for it anyway.
    *
    * Only the target's own listeners are refused: loopback in general stays
    * reachable (a phone using the proxy to hit a dev server on
@@ -57,13 +89,14 @@ export function createSelfTargetGuard(
   resolve: HostResolver = defaultResolver,
   localAddresses: LocalAddressSource = defaultLocalAddresses,
 ): SelfTargetGuard {
-  const ports = new Set<number>();
+  const listeners: Array<{ port: number; address: string | undefined }> = [];
   return {
-    protectPort: (port) => {
-      ports.add(port);
+    protectPort: (port, address) => {
+      listeners.push({ port, address: address === undefined ? undefined : unmapIPv4(stripBrackets(address)) });
     },
     async isSelfTarget(host, port) {
-      if (!ports.has(port)) return false;
+      const onPort = listeners.filter((l) => l.port === port);
+      if (onPort.length === 0) return false;
       const bare = stripBrackets(host);
       let addresses: string[];
       if (net.isIP(bare)) {
@@ -76,7 +109,8 @@ export function createSelfTargetGuard(
         }
       }
       const own = new Set(localAddresses().map(unmapIPv4));
-      return addresses.map(unmapIPv4).some((address) => isLoopbackOrUnspecified(address) || own.has(address));
+      const targets = addresses.map(unmapIPv4);
+      return onPort.some((l) => targets.some((target) => reachesListener(target, l.address, own)));
     },
   };
 }
