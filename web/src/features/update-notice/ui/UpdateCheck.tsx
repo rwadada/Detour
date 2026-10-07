@@ -3,6 +3,12 @@ import { useUpdateStore } from '../model/store';
 const BUTTON =
   'rounded-md border border-[var(--border)] px-2 py-1 text-xs hover:bg-[var(--row-hover)] disabled:opacity-50';
 
+/** The server's own words for what failed ("could not reach GitHub … (ENOTFOUND)", "GitHub returned HTTP 403 …"), capitalised; a generic line when it sent none. */
+function unreachableMessage(failure: string | undefined): string {
+  if (!failure) return "Couldn't check for updates.";
+  return `${failure.charAt(0).toUpperCase()}${failure.slice(1)}.`;
+}
+
 /**
  * Sidebar row showing the running version with a "Check for updates" button —
  * the way to re-check on demand, since the server otherwise caches the release
@@ -22,7 +28,7 @@ export function UpdateCheck() {
   let result: string | null = null;
   if (checkState === 'timeout') result = 'No answer from Detour. Try again.';
   else if (checkState === 'checked') {
-    if (info.latest === null) result = "Couldn't reach GitHub to check for updates.";
+    if (info.latest === null) result = unreachableMessage(info.failure);
     else if (info.updateAvailable) result = `Detour ${info.latest} is available.`;
     else result = "You're up to date.";
   }

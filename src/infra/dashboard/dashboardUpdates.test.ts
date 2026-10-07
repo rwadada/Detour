@@ -5,13 +5,16 @@ import { createDashboardUpdates } from './dashboardUpdates';
 
 const socket = {} as WebSocket;
 
-function setup(opts: { verified?: boolean; canSelfUpdate?: boolean; latest?: string | null } = {}) {
+function setup(
+  opts: { verified?: boolean; canSelfUpdate?: boolean; latest?: string | null; failure?: string | null } = {},
+) {
   const startUpdate = vi.fn(async (_onExit: (exitCode: number | null) => void) => {});
   const onFailed = vi.fn();
   const service: UpdateService = {
     currentVersion: '1.0.0',
     canSelfUpdate: opts.canSelfUpdate ?? true,
     getLatestVersion: async () => (opts.latest === undefined ? '1.6.1' : opts.latest),
+    lastFailure: () => opts.failure ?? null,
     startUpdate,
   };
   let clock = 0;
@@ -44,12 +47,24 @@ describe('createDashboardUpdates', () => {
     expect(await offline.updates.infoFor(socket)).toMatchObject({ latest: null, updateAvailable: false });
   });
 
+  it('says why the lookup failed, so "couldn\'t reach GitHub" is not all the user gets', async () => {
+    const failed = setup({ latest: null, failure: 'GitHub returned HTTP 403 when checking for updates' });
+    expect(await failed.updates.infoFor(socket)).toMatchObject({
+      latest: null,
+      failure: 'GitHub returned HTTP 403 when checking for updates',
+    });
+    // No `failure` key at all when the lookup worked — and none when it failed for an unknown reason.
+    expect(await setup().updates.infoFor(socket)).not.toHaveProperty('failure');
+    expect(await setup({ latest: null }).updates.infoFor(socket)).not.toHaveProperty('failure');
+  });
+
   it('refresh forces a fresh release lookup, and is harmless without an update service', async () => {
     const getLatestVersion = vi.fn(async (_options?: { force?: boolean }) => '1.6.1');
     const service: UpdateService = {
       currentVersion: '1.0.0',
       canSelfUpdate: true,
       getLatestVersion,
+      lastFailure: () => null,
       startUpdate: vi.fn(async () => {}),
     };
     const updates = createDashboardUpdates(service, { isVerified: () => true });
