@@ -15,6 +15,7 @@ function fakeService(
     currentVersion: '1.0.0',
     canSelfUpdate: true,
     getLatestVersion: async () => '1.6.1',
+    lastFailure: () => null,
     startUpdate: vi.fn(async () => {}),
     ...overrides,
   } as UpdateService & { startUpdate: ReturnType<typeof vi.fn> };

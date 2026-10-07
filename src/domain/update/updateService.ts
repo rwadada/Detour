@@ -8,6 +8,8 @@ export interface UpdateService {
    * `force` skips the cache for a user-requested re-check (still rate limited, so it can't be used to hammer GitHub).
    */
   getLatestVersion(options?: { force?: boolean }): Promise<string | null>;
+  /** Why the last lookup returned null ("GitHub returned HTTP 403 …"), or null when it succeeded or hasn't run. The dashboard shows it so "couldn't reach GitHub" says which of the ways that happens. */
+  lastFailure(): string | null;
   /**
    * Launches the detached updater (`detour update --yes`); resolves once it's spawned, not once the update has finished.
    * `onExit` fires only if the updater exits while this process is still alive — a successful update stops this

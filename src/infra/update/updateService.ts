@@ -16,17 +16,24 @@ export interface UpdateServiceDeps {
 /** Wraps the release lookup in a cache (long for success, short for failure so an offline machine isn't re-polled per connection). */
 export function createUpdateService(deps: UpdateServiceDeps): UpdateService {
   const now = deps.now ?? Date.now;
-  let cached: { latest: string | null; expiresAt: number; fetchedAt: number } | undefined;
+  let cached: { latest: string | null; failure: string | null; expiresAt: number; fetchedAt: number } | undefined;
   let inFlight: Promise<string | null> | undefined;
 
   const refresh = async (): Promise<string | null> => {
     let latest: string | null;
+    let failure: string | null = null;
     try {
       latest = await deps.fetchLatestVersion();
-    } catch {
+    } catch (err) {
       latest = null;
+      failure = err instanceof Error ? err.message : String(err);
     }
-    cached = { latest, expiresAt: now() + (latest === null ? FAILURE_TTL_MS : SUCCESS_TTL_MS), fetchedAt: now() };
+    cached = {
+      latest,
+      failure,
+      expiresAt: now() + (latest === null ? FAILURE_TTL_MS : SUCCESS_TTL_MS),
+      fetchedAt: now(),
+    };
     return latest;
   };
 
@@ -42,6 +49,7 @@ export function createUpdateService(deps: UpdateServiceDeps): UpdateService {
       });
       return inFlight;
     },
+    lastFailure: () => cached?.failure ?? null,
     startUpdate: deps.startUpdater,
   };
 }

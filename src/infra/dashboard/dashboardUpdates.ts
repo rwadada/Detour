@@ -53,12 +53,14 @@ export function createDashboardUpdates(
     async infoFor(socket) {
       if (!service) return null;
       const latest = await service.getLatestVersion();
+      const failure = latest === null ? service.lastFailure() : null;
       return {
         type: 'updateInfo',
         current: service.currentVersion,
         latest,
         updateAvailable: latest !== null && isNewerVersion(latest, service.currentVersion),
         canUpdate: mayUpdate(socket),
+        ...(failure ? { failure } : {}),
       };
     },
     async refresh() {

@@ -6,6 +6,8 @@ export interface UpdateInfo {
   latest: string | null;
   updateAvailable: boolean;
   canUpdate: boolean;
+  /** Why `latest` is null, as the server reports it. */
+  failure?: string;
 }
 
 export type UpdatePhase = 'idle' | 'updating' | 'failed';
@@ -78,6 +80,7 @@ export function createUpdateStore(connection: DashboardConnection, options: Upda
             latest: message.latest,
             updateAvailable: message.updateAvailable,
             canUpdate: message.canUpdate,
+            ...(message.failure ? { failure: message.failure } : {}),
           },
         });
         if (get().phase === 'updating' && previous && previous.current !== message.current) {
