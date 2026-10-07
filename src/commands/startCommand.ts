@@ -360,7 +360,7 @@ async function runStart(options: StartOptions): Promise<void> {
   }
 
   try {
-    await runStartBody({ port, headless, exitOnIdleMs, trackRunState, options });
+    await runStartBody({ port, headless, exitOnIdleMs, trackRunState, controlPort, options });
   } catch (err) {
     if (reservedRunState) removeRunState(port);
     throw err;
@@ -377,6 +377,8 @@ interface RunStartBodyContext {
   headless: boolean;
   exitOnIdleMs: number | undefined;
   trackRunState: boolean;
+  /** `--control-port`, already parsed (issue #212); undefined when not given. */
+  controlPort: number | undefined;
   options: StartOptions;
 }
 
@@ -385,6 +387,7 @@ async function runStartBody({
   headless,
   exitOnIdleMs,
   trackRunState,
+  controlPort,
   options,
 }: RunStartBodyContext): Promise<void> {
   // Without `--resume-backlog`, a snapshot left by an update that never got to
@@ -659,7 +662,7 @@ async function runStartBody({
           // Issue #205: the dashboard is not open to whoever can reach it
           // (which, through the proxy, includes the LAN) — see `accessToken`.
           accessToken: dashboardToken,
-          controlPort: options.controlPort !== undefined ? parsePort(options.controlPort, '--control-port') : undefined,
+          controlPort,
           version: pkg.version,
           host: dashboardHost,
           proxyPort: handle.port,
