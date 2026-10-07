@@ -121,8 +121,15 @@ released matters as much as its own code:
 - **Release tarballs carry a SLSA build-provenance attestation** (GitHub
   Artifact Attestations). Verify one with
   `gh attestation verify detour-<version>.tar.gz --repo rwadada/Detour`.
-  The sha256 in the release notes remains the quick integrity check;
-  `detour update` itself does not run the attestation check yet.
+  The sha256 in the release notes remains the quick integrity check.
+  `detour update` (and the dashboard's one-click update, which runs it) checks
+  the attestation itself: after `brew update` it fetches the release tarball,
+  runs `gh attestation verify` on it, and only then runs `brew upgrade`. A
+  tarball that does not verify is refused before anything is installed or any
+  running instance is stopped. If `gh` is not installed or not signed in the
+  check cannot run, so the update continues on Homebrew's sha256 check alone
+  and says so — run `gh auth login` to have it verified. Any other failure of
+  the check, including a network error, aborts the update (it is cheap to retry).
 - **GitHub Actions are pinned to commit SHAs**, and Dependabot keeps both
   those pins and the npm dependencies current (weekly).
 - **CodeQL** (`javascript-typescript`) runs on every pull request, on
