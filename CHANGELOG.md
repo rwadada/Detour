@@ -6,18 +6,14 @@
 ### Features
 
 * control API (--control-port) for driving a running Detour from a test ([#212](https://github.com/rwadada/Detour/issues/212)) ([07ea84b](https://github.com/rwadada/Detour/commit/07ea84b3c9d93041b8f5f22fd40cbc38dbb5f4e1))
-* 実行中の Detour を外部から操作する制御 API（--control-port）を追加する ([#212](https://github.com/rwadada/Detour/issues/212)) ([42ca479](https://github.com/rwadada/Detour/commit/42ca479c274261901ce9289a01055721e1d77ffa))
 
 
 ### Bug Fixes
 
-* **dashboard:** 「Check for updates」が失敗した理由を表示する（常に couldn't reach GitHub と出ていた） ([65aeb35](https://github.com/rwadada/Detour/commit/65aeb35c57a4705b6d8e95c4932fcbe1586e766e))
 * **dashboard:** say why "Check for updates" failed instead of always "couldn't reach GitHub" ([baf6380](https://github.com/rwadada/Detour/commit/baf6380cb962ac10ea26905bd8170b2b7f88809e))
 * keep the proxy from relaying to the control API port ([#212](https://github.com/rwadada/Detour/issues/212)) ([dff0ca5](https://github.com/rwadada/Detour/commit/dff0ca529d2d3ac23718325e6ac92902116ea908))
 * **proxy:** judge self-targets by the address each listener is bound to, not just its port ([#205](https://github.com/rwadada/Detour/issues/205)) ([e3edc09](https://github.com/rwadada/Detour/commit/e3edc09ba9d389117d59426501ad7131a501ed71))
-* **proxy:** 自己宛て判定を、ポート番号だけでなく listener の bind アドレスで行う ([#205](https://github.com/rwadada/Detour/issues/205)) ([c517ad1](https://github.com/rwadada/Detour/commit/c517ad19c2be67eff710c4f8878c168797d0635e))
 * reload after a rules write even when fs.watch drops the notification; fix a lost-listener race in the history test ([8b2de8c](https://github.com/rwadada/Detour/commit/8b2de8c05198482efb45752cf91e96ae06b99e3e))
-* ルール保存後の再読み込みを fs.watch の取りこぼしに依存させない／history テストの競合を直す ([6d68433](https://github.com/rwadada/Detour/commit/6d684339bca1f4311f313f2a481e76ad5edb04f1))
 
 ## [2.0.1](https://github.com/rwadada/Detour/compare/v2.0.0...v2.0.1) (2026-10-06)
 
