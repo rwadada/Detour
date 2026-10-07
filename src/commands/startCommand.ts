@@ -676,7 +676,7 @@ async function runStartBody({
       );
       // Issue #205: the proxy listens on every interface, the dashboard may
       // not — never let the former relay to the latter.
-      handle.protectLocalPort(dashboardHandle.port);
+      handle.protectLocalPort(dashboardHandle.port, dashboardHandle.address);
     } catch (err) {
       // The proxy is already up and intercepting traffic at this point — don't
       // leave it running (and the process alive) just because the dashboard

@@ -118,7 +118,7 @@ export interface ProxyServerHandle {
    * to the localhost-only dashboard. The proxy's own ports are protected
    * automatically.
    */
-  protectLocalPort(port: number): void;
+  protectLocalPort(port: number, address?: string): void;
   /** Whether `host:port` is one of this process's own listeners (the proxy, the dashboard, …) — see `ProxyEngine.isSelfTarget`. */
   isSelfTarget(host: string, port: number): Promise<boolean>;
   stop(): Promise<void>;
@@ -407,7 +407,7 @@ export async function startProxyServer(
             setRuleEngine: (engine) => {
               ruleEngine = engine;
             },
-            protectLocalPort: (port) => proxy.protectLocalPort(port),
+            protectLocalPort: (port, address) => proxy.protectLocalPort(port, address),
             isSelfTarget: (host, port) => proxy.isSelfTarget(host, port),
             stop: () =>
               new Promise<void>((res) => {

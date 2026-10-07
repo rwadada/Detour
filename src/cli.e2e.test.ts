@@ -1137,7 +1137,7 @@ describe('detour start (CLI, end-to-end)', () => {
     cli = await startDetourCli();
 
     const result = await requestThroughProxy(cli.port, echo.port, '/hello');
-    expect(result.status).toBe(200);
+    expect(result.status, `unexpected response body: ${result.body}`).toBe(200);
     expect(JSON.parse(result.body)).toEqual({ method: 'GET', path: '/hello', body: '' });
   });
 
@@ -1160,7 +1160,7 @@ describe('detour start (CLI, end-to-end)', () => {
     cli = await startDetourCli(['--rules', rulesPath]);
 
     const result = await requestThroughProxy(cli.port, echo.port, '/mocked');
-    expect(result.status).toBe(200);
+    expect(result.status, `unexpected response body: ${result.body}`).toBe(200);
     expect(JSON.parse(result.body)).toEqual({ mocked: true });
   });
 
