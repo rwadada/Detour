@@ -36,7 +36,11 @@ function buildDeps(): UpdateDeps {
     manualUpgradeHint: MANUAL_UPGRADE_HINT,
     fetchLatestVersion: fetchLatestReleaseVersion,
     listRunningInstances: listLiveRunStates,
-    upgradePackage: () => brewUpgradeDetour(prefix),
+    upgradePackage: () =>
+      brewUpgradeDetour(prefix, {
+        log: (message) => console.log(message),
+        warn: (message) => console.warn(`⚠ ${message}`),
+      }),
     readInstalledVersion: () => readInstalledBrewVersion(prefix),
     stopInstance: (state) => stopInstance(state),
     startInstance: (state) => startInstanceViaBrew(prefix, state),
