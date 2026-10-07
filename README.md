@@ -305,6 +305,72 @@ A handful of `start` flags and top-level commands exist specifically for running
 
 If you always want `start` to run detached, `detour config --default-detach on` persists that to `~/.detour/config.json` so plain `detour start` (no `--detach`) runs detached from then on — override it back for one run with `--foreground`, or turn it off again with `detour config --default-detach off`. Running `detour config` alone prints the current value.
 
+### The control API: driving a running Detour from a test (issue #212)
+
+A scenario test (a mobile CI run, an end-to-end suite) needs to change what Detour does *between cases* — switch the rules, start a mock sequence over, then check what went through — without restarting it or rewriting `rules.json` and hoping the file watcher caught up. `--control-port` turns on a small REST API for that:
+
+```bash
+detour start --port 8080 --no-open --control-port 8090
+# → "Control API → http://127.0.0.1:8090 (…)"      (and DETOUR_READY … pid=<n> controlPort=8090)
+```
+
+It is **off by default** and, when on, deliberately narrow: bound to `127.0.0.1` only, **every request needs the dashboard's access token** as `Authorization: Bearer <token>` (the one in `~/.detour/dashboard-token`, or whatever `DETOUR_DASHBOARD_TOKEN` is set to — one secret, not two), and it is not a browser API (a request carrying an `Origin` header, or a `Host` that is not loopback, is refused, and no CORS headers are ever sent). Like the dashboard, it can't be reached by asking the proxy to relay to it (that is refused with `403`), so a device on your LAN that uses Detour as its proxy can't get to it. It needs the dashboard server, so it can't be combined with `--headless` (use `--no-open` to keep a browser from opening). Writes answer **only once they have taken effect**, so traffic sent right after `PUT /rules` is never a race.
+
+| Request | What it does |
+| --- | --- |
+| `GET /health` | `{ ok, version }` |
+| `GET /rules` | the active rules and `activeProfile` |
+| `PUT /rules` `{ "rules": [...] }` | replaces the rules (validated like `rules.json`; a `script` rule can't be added or have its path changed, same as the dashboard). `400` with every problem if they're invalid — the old rules keep serving; `409` if the session has no rules file (start with `--rules`) |
+| `GET /profiles` | saved rule profiles (name, rule count, last modified) |
+| `POST /profiles/<name>/activate` | applies a saved profile; `404` if there's no such profile |
+| `POST /reset` | starts every sequential mock (`responses`) over from its first step and forgets the captured exchanges — what a test wants between cases |
+| `GET /exchanges?url=…&method=…&status=…&since=<epoch ms>&limit=<n>` | what went through, oldest first (`url` is a case-insensitive substring; `limit` keeps the most recent *n*). Bodies are base64, as in the dashboard |
+| `PUT /throttle` `{ enabled, downKbps, upKbps, latencyMs, packetLossPct }` | sets the network-conditions profile |
+| `PUT /block-hosts` `{ "hosts": [...], "mode": "forbidden" \| "reset" }` | sets the Block Hosts list (patterns match `host`, or `host:port` for a non-default port) |
+
+With `curl`:
+
+```bash
+TOKEN=$(cat ~/.detour/dashboard-token)
+AUTH="Authorization: Bearer $TOKEN"
+
+# switch to a saved profile for this test case, and make sure nothing from the last one is left over
+curl -sf -X POST -H "$AUTH" http://127.0.0.1:8090/profiles/checkout-failure/activate
+curl -sf -X POST -H "$AUTH" http://127.0.0.1:8090/reset
+
+# ... run the app under test through the proxy on :8080 ...
+
+# assert on what it actually sent
+curl -sf -H "$AUTH" 'http://127.0.0.1:8090/exchanges?url=/api/orders&method=POST' | jq '.exchanges | length'
+```
+
+With Node (18+, global `fetch`):
+
+```js
+const control = 'http://127.0.0.1:8090';
+const headers = { Authorization: `Bearer ${process.env.DETOUR_DASHBOARD_TOKEN}`, 'Content-Type': 'application/json' };
+
+async function call(method, path, body) {
+  const res = await fetch(`${control}${path}`, { method, headers, body: body && JSON.stringify(body) });
+  if (!res.ok) throw new Error(`${method} ${path}: ${res.status} ${(await res.json()).error}`);
+  return res.json();
+}
+
+beforeEach(async () => {
+  await call('POST', '/reset');
+  await call('PUT', '/rules', { rules: [{ name: 'orders-fail-once', match: { url: 'https://api.example.com/orders' },
+    action: { type: 'mock', status: 200, responses: [{ status: 503 }, { status: 200, body: { ok: true } }] } }] });
+});
+
+it('retries a failed order', async () => {
+  await placeOrder(); // the app under test, proxied through Detour
+  const { exchanges } = await call('GET', '/exchanges?url=/orders');
+  expect(exchanges.map((e) => e.statusCode)).toEqual([503, 200]);
+});
+```
+
+Set `DETOUR_DASHBOARD_TOKEN` to a value you choose (16+ characters from `A-Z a-z 0-9 . _ ~ -`) when starting Detour and again in the test process, so neither has to read `~/.detour/dashboard-token`.
+
 ## Communication contract tests (`detour test`, issue #148)
 
 `detour test` checks real captured traffic against a set of assertions — a communication contract test suitable for CI, rather than a debugging session:

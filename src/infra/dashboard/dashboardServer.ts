@@ -42,6 +42,8 @@ import {
 import { hashPassword, verifyPassword } from '../../domain/auth/passwordHash';
 import type { UpdateService } from '../../domain/update/updateService';
 import { parseClientMessage } from '../../domain/dashboard/clientMessage';
+import { createControlDeps } from './controlBridge';
+import { startControlServer, type ControlServerHandle } from './controlServer';
 import { createDashboardUpdates } from './dashboardUpdates';
 import { serveStatic } from './staticServer';
 
@@ -201,6 +203,16 @@ export interface DashboardServerOptions {
    */
   accessToken?: string;
   /**
+   * Port for the control API (issue #212) — a small REST interface a test
+   * runner uses to drive this running Detour (see `controlServer.ts`). Off
+   * when omitted. Bound to `127.0.0.1`, and every request needs the access
+   * token as a bearer token, so `accessToken` must be set with it. `0` picks
+   * a free port; the handle reports it.
+   */
+  controlPort?: number;
+  /** Reported by the control API's `GET /health`. */
+  version?: string;
+  /**
    * Whether this session was started with `--insecure-upstream` (issue
    * #160) — sent to every connecting client as `proxyInfo`'s own field, for
    * the dashboard's persistent header indicator. Defaults to `false`
@@ -269,6 +281,8 @@ const UPDATE_INFO_REFRESH_MS = 60 * 60 * 1000;
 export interface DashboardServerHandle {
   /** Port the dashboard actually bound to (relevant when options.port is 0). */
   port: number;
+  /** The control API's port, when `controlPort` was given (the real one even for `0`). */
+  controlPort?: number;
   /** Address it actually bound to (`::1`, `127.0.0.1`, `0.0.0.0`, …) — what `localhost` resolved to, for the default bind. */
   address: string;
   /**
@@ -1289,12 +1303,18 @@ export async function startDashboardServer(
       // ephemeral `port: 0` resolving to a real OS-assigned port here is
       // what `isAllowedOrigin` checks handshakes against from this point on.
       boundPort = typeof address === 'object' && address ? address.port : options.port;
-      resolve({
+      const buildHandle = (control: ControlServerHandle | undefined): DashboardServerHandle => ({
         port: boundPort,
+        ...(control ? { controlPort: control.port } : {}),
         address: typeof address === 'object' && address ? address.address : host,
         backlogForUpdateRestart: () => (dashboardUpdates.isUpdating() ? backlog.toArray() : undefined),
         stop: () =>
           new Promise<void>((res) => {
+            // Awaited, not fired and forgotten: a caller that treats a resolved
+            // `stop()` as "every port is released" (a test restarting Detour on
+            // a fixed `--control-port`) must not find the control listener
+            // still bound.
+            const controlStopped = control?.stop() ?? Promise.resolve();
             eventBus.off('request', onRequest);
             eventBus.off('response', onResponse);
             eventBus.off('error', onError);
@@ -1321,11 +1341,44 @@ export async function startDashboardServer(
             wss.close(() =>
               httpServer.close(() => {
                 clearTimeout(force);
-                res();
+                void controlStopped.then(() => res());
               }),
             );
           }),
       });
+      // The control API (issue #212) comes up with the dashboard, or not at
+      // all: if it cannot bind, the whole start fails rather than leaving a
+      // session whose test runner has nothing to talk to.
+      if (options.controlPort === undefined) {
+        resolve(buildHandle(undefined));
+        return;
+      }
+      if (!options.accessToken) {
+        // Unreachable from `detour start`; guards a direct caller. The API is
+        // never offered without the secret that protects it.
+        httpServer.close();
+        reject(new Error('The control API needs an access token'));
+        return;
+      }
+      startControlServer(
+        { port: options.controlPort, token: options.accessToken },
+        createControlDeps({
+          eventBus,
+          getRuleEngine: () => ruleEngine,
+          ensureRuleEngine,
+          profiles: () => ruleProfileStore,
+          backlog,
+          version: options.version,
+        }),
+      ).then(
+        (control) => resolve(buildHandle(control)),
+        (err: unknown) => {
+          // The dashboard is already listening; release it so the caller is
+          // not left holding half a start — and only then report the failure,
+          // so "the start failed" can be trusted to mean "no port is held".
+          wss.close(() => httpServer.close(() => reject(err)));
+        },
+      );
     });
   });
 }
