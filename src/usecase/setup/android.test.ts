@@ -148,7 +148,7 @@ describe('runAndroidSetup', () => {
       ),
     ).toBe(true);
     // A USB device reaches this machine through `adb reverse`, not over the LAN.
-    expect(calls.some((c) => c.join(' ') === 'adb -s ABCD1234 reverse tcp:8080 tcp:8080')).toBe(true);
+    expect(calls.some((c) => c.join(' ') === 'adb -s ABCD1234 reverse --no-rebind tcp:8080 tcp:8080')).toBe(true);
     expect(
       calls.some((c) => c.join(' ') === 'adb -s ABCD1234 shell settings put global http_proxy localhost:8080'),
     ).toBe(true);
@@ -182,6 +182,38 @@ describe('runAndroidSetup', () => {
       ),
     ).toBe(true);
     expect(outcome.steps.map((s) => s.status)).toEqual(['manual', 'done']);
+  });
+
+  it('does not treat a wireless-debugging (mDNS) device name as USB: LAN address, no adb reverse', async () => {
+    const serial = 'adb-35121FDJH000R8-xyMD0H._adb-tls-connect._tcp';
+    const calls: string[][] = [];
+    const runner = fakeRunner((command, args) => {
+      calls.push([command, ...args]);
+      if (command === 'adb' && args[0] === 'devices') {
+        return { stdout: `List of devices attached\n${serial}\tdevice\n`, stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+
+    await runAndroidSetup(ctxWith(runner));
+
+    expect(calls.some((c) => c.includes('reverse'))).toBe(false);
+    expect(
+      calls.some((c) => c.join(' ') === `adb -s ${serial} shell settings put global http_proxy 203.0.113.5:8080`),
+    ).toBe(true);
+  });
+
+  it('does not take over a port another tool already forwards: --no-rebind makes it fail, so it falls back to the LAN address', async () => {
+    const runner = fakeRunner((command, args) => {
+      if (command === 'adb' && args[0] === 'devices') return { stdout: ONE_DEVICE, stderr: '' };
+      if (args.includes('reverse')) {
+        if (!args.includes('--no-rebind')) return { stdout: '', stderr: '' }; // would have silently rebound
+        throw new CommandRunError("adb: error: cannot rebind existing socket 'tcp:8080'", 'adb');
+      }
+      return { stdout: '', stderr: '' };
+    });
+    const outcome = await runAndroidSetup(ctxWith(runner));
+    expect(outcome.steps.some((s) => s.message.includes("Couldn't set up `adb reverse`"))).toBe(true);
   });
 
   it('falls back to the LAN address — and says why — when adb reverse fails on a USB device', async () => {
@@ -363,6 +395,25 @@ describe('runAndroidDoctor — a USB device set up through adb reverse', () => {
     expect(outcome.steps.some((s) => s.status === 'failed')).toBe(false);
   });
 
+  it('reads the reverse list with Windows line endings and several mappings', async () => {
+    const outcome = await runAndroidDoctor(
+      ctxWith(
+        doctorRunner({
+          proxy: 'localhost:8080',
+          reverseList: 'ABCD1234 tcp:9000 tcp:9000\r\nABCD1234 tcp:8080 tcp:8080\r\n',
+        }),
+      ),
+    );
+    expect(outcome.steps.some((s) => s.status === 'failed')).toBe(false);
+  });
+
+  it('does not take a different port for the proxy port', async () => {
+    const outcome = await runAndroidDoctor(
+      ctxWith(doctorRunner({ proxy: 'localhost:8080', reverseList: 'ABCD1234 tcp:18080 tcp:18080\n' })),
+    );
+    expect(outcome.steps.some((s) => s.message.includes('no longer forwarding'))).toBe(true);
+  });
+
   it('fails — telling the user to re-run setup — when the proxy says localhost but the reverse has been lost', async () => {
     const outcome = await runAndroidDoctor(ctxWith(doctorRunner({ proxy: 'localhost:8080', reverseList: '' })));
     const failed = outcome.steps.find((s) => s.status === 'failed');
@@ -532,26 +583,35 @@ describe('runAndroidDoctor', () => {
 });
 
 describe('runAndroidCleanup — adb reverse', () => {
-  it('removes the reverse for a USB device along with the proxy', async () => {
-    const calls: string[][] = [];
-    const runner = fakeRunner((command, args) => {
+  function cleanupRunner(calls: string[][], currentProxy: string, removeThrows = false) {
+    return fakeRunner((command, args) => {
       calls.push([command, ...args]);
-      return command === 'adb' && args[0] === 'devices'
-        ? { stdout: ONE_DEVICE, stderr: '' }
-        : { stdout: '', stderr: '' };
+      if (command === 'adb' && args[0] === 'devices') return { stdout: ONE_DEVICE, stderr: '' };
+      if (args.join(' ').includes('settings get global http_proxy')) return { stdout: `${currentProxy}\n`, stderr: '' };
+      if (removeThrows && args.includes('--remove')) {
+        throw new CommandRunError("error: listener 'tcp:8080' not found", 'adb');
+      }
+      return { stdout: '', stderr: '' };
     });
-    await runAndroidCleanup(ctxWith(runner));
+  }
+
+  it('removes the reverse for a USB device whose proxy is the localhost one setup wrote', async () => {
+    const calls: string[][] = [];
+    await runAndroidCleanup(ctxWith(cleanupRunner(calls, 'localhost:8080')));
     expect(calls.some((c) => c.join(' ') === 'adb -s ABCD1234 shell settings put global http_proxy :0')).toBe(true);
     expect(calls.some((c) => c.join(' ') === 'adb -s ABCD1234 reverse --remove tcp:8080')).toBe(true);
   });
 
-  it('does not report a failure when there was no reverse to remove', async () => {
-    const runner = fakeRunner((command, args) => {
-      if (command === 'adb' && args[0] === 'devices') return { stdout: ONE_DEVICE, stderr: '' };
-      if (args.includes('--remove')) throw new CommandRunError("error: listener 'tcp:8080' not found", 'adb');
-      return { stdout: '', stderr: '' };
-    });
-    const outcome = await runAndroidCleanup(ctxWith(runner));
+  it('leaves the reverse alone when setup fell back to the LAN address — it may belong to another tool', async () => {
+    const calls: string[][] = [];
+    await runAndroidCleanup(ctxWith(cleanupRunner(calls, '203.0.113.5:8080')));
+    expect(calls.some((c) => c.includes('--remove'))).toBe(false);
+    expect(calls.some((c) => c.join(' ') === 'adb -s ABCD1234 shell settings put global http_proxy :0')).toBe(true);
+  });
+
+  it('does not report a failure when the reverse was already gone', async () => {
+    const calls: string[][] = [];
+    const outcome = await runAndroidCleanup(ctxWith(cleanupRunner(calls, 'localhost:8080', true)));
     expect(outcome.steps.some((s) => s.status === 'failed')).toBe(false);
   });
 
@@ -562,7 +622,7 @@ describe('runAndroidCleanup — adb reverse', () => {
       if (command === 'adb' && args[0] === 'devices') {
         return { stdout: 'List of devices attached\n192.168.1.20:41234\tdevice\n', stderr: '' };
       }
-      return { stdout: '', stderr: '' };
+      return { stdout: 'localhost:8080\n', stderr: '' };
     });
     await runAndroidCleanup(ctxWith(runner));
     expect(calls.some((c) => c.includes('reverse'))).toBe(false);
