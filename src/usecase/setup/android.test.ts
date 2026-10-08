@@ -5,6 +5,7 @@ import { CommandRunError } from '../ports/commandRunner';
 import type { DeviceChoice, DevicePicker } from '../ports/devicePicker';
 import {
   classifyDeviceKind,
+  describeProxyWriteFailure,
   isWifiActiveNetwork,
   parseAdbDevices,
   runAndroidCleanup,
@@ -83,7 +84,46 @@ function ctxWith(runner: CommandRunner, overrides: Partial<SetupContext> = {}): 
   };
 }
 
+const SECURE_SETTINGS_TRACE = [
+  "Exception occurred while executing 'put':",
+  'java.lang.SecurityException: Permission denial: writing to settings requires:android.permission.WRITE_SECURE_SETTINGS',
+  '\tat com.android.providers.settings.SettingsProvider.enforceWritePermission(SettingsProvider.java:2622)',
+  '\tat android.os.Binder.execTransact(Binder.java:1268)',
+].join('\n');
+
+describe('describeProxyWriteFailure', () => {
+  it('turns the WRITE_SECURE_SETTINGS stack trace into a short message that names the fix', () => {
+    const message = describeProxyWriteFailure(new CommandRunError(SECURE_SETTINGS_TRACE, 'adb'));
+    expect(message).toContain('USB debugging (Security settings)');
+    expect(message).toContain('Proxy → Manual');
+    expect(message).not.toContain('java.lang');
+    expect(message).not.toContain('\n');
+  });
+
+  it('leaves every other failure as the runner worded it', () => {
+    expect(describeProxyWriteFailure(new CommandRunError('device offline', 'adb'))).toBe(
+      "Couldn't set the device's proxy: device offline",
+    );
+    expect(describeProxyWriteFailure('plain string')).toBe("Couldn't set the device's proxy: plain string");
+  });
+});
+
 describe('runAndroidSetup', () => {
+  it('reports the secure-settings refusal as a failed step with the short hint, after the cert step still went through', async () => {
+    const runner = fakeRunner((command, args) => {
+      if (command === 'adb' && args[0] === 'devices') return { stdout: ONE_DEVICE, stderr: '' };
+      if (args.join(' ').includes('settings put global http_proxy'))
+        throw new CommandRunError(SECURE_SETTINGS_TRACE, 'adb');
+      return { stdout: '', stderr: '' };
+    });
+
+    const outcome = await runAndroidSetup(ctxWith(runner));
+
+    expect(outcome.steps.map((s) => s.status)).toEqual(['manual', 'failed']);
+    expect(outcome.steps[1]?.message).toContain('USB debugging (Security settings)');
+    expect(outcome.steps[1]?.message).not.toContain('java.lang');
+  });
+
   it('pushes the cert, opens settings, and sets the proxy for the one connected device', async () => {
     const calls: string[][] = [];
     const runner = fakeRunner((command, args) => {

@@ -258,6 +258,26 @@ async function wifiPairingFallback(ctx: SetupContext): Promise<SetupStep[]> {
   }
 }
 
+/**
+ * The message for a failed `adb shell settings put global http_proxy`.
+ *
+ * `adb shell` normally holds `WRITE_SECURE_SETTINGS`, but some vendor builds
+ * (Xiaomi MIUI/HyperOS and other Chinese OEM skins) withhold it until the
+ * "USB debugging (Security settings)" developer option is on, and then `adb`
+ * answers with a ~15-line Java stack trace. Left as is, the one line that says
+ * what to do is buried in it — so that case gets a short, actionable message
+ * and the rest of the failures keep the runner's own text.
+ */
+export function describeProxyWriteFailure(err: unknown): string {
+  const message = errorMessage(err);
+  if (!message.includes('WRITE_SECURE_SETTINGS')) return `Couldn't set the device's proxy: ${message}`;
+  return (
+    "Couldn't set the device's proxy: the device refused the write (android.permission.WRITE_SECURE_SETTINGS). " +
+    'On Xiaomi / other vendor builds, turn on "USB debugging (Security settings)" in Developer options (it may ask you to sign in and confirm), then run this again. ' +
+    'If your device has no such option, set the proxy by hand: Settings → Wi-Fi → this network → Proxy → Manual.'
+  );
+}
+
 export async function runAndroidSetup(ctx: SetupContext): Promise<TargetOutcome> {
   const hostError = invalidProxyHostError(ctx);
   if (hostError) return { steps: [hostError] };
@@ -315,7 +335,7 @@ export async function runAndroidSetup(ctx: SetupContext): Promise<TargetOutcome>
     await ctx.runner.run('adb', ['-s', serial, 'shell', 'settings', 'put', 'global', 'http_proxy', proxyValue(ctx)]);
     steps.push({ status: 'done', message: `Set the device's global HTTP proxy to ${proxyValue(ctx)}.` });
   } catch (err) {
-    steps.push({ status: 'failed', message: `Couldn't set the device's proxy: ${errorMessage(err)}` });
+    steps.push({ status: 'failed', message: describeProxyWriteFailure(err) });
   }
 
   return { steps };
