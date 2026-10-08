@@ -94,7 +94,9 @@ const SECURE_SETTINGS_TRACE = [
 describe('describeProxyWriteFailure', () => {
   it('turns the WRITE_SECURE_SETTINGS stack trace into a short message that names the fix', () => {
     const message = describeProxyWriteFailure(new CommandRunError(SECURE_SETTINGS_TRACE, 'adb'));
-    expect(message).toContain('USB debugging (Security settings)');
+    expect(message).toContain('USB debugging (Security settings)'); // Xiaomi
+    expect(message).toContain('Disable permission monitoring'); // OPPO / OnePlus / Realme
+    expect(message).toContain('Disable system optimization'); // newer ColorOS
     expect(message).toContain('Proxy → Manual');
     expect(message).not.toContain('java.lang');
     expect(message).not.toContain('\n');
