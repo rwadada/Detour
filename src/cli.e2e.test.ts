@@ -5489,7 +5489,8 @@ describe('--adb-reverse (CLI end-to-end)', () => {
       `echo "$@" >> '${log}'`,
       'if [ "$1" = "track-devices" ]; then',
       `  printf '%s' '${frame}'`,
-      '  sleep 30',
+      // `exec`: the shell becomes the sleep, so killing `adb track-devices` kills it too — a child left behind would outlive the test.
+      '  exec sleep 20',
       'fi',
       'exit 0',
       '',
