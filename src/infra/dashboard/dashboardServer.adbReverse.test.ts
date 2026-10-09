@@ -1,3 +1,4 @@
+import net from 'node:net';
 import WebSocket from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DashboardServerMessage } from '../../domain/dashboard/protocol';
@@ -174,5 +175,24 @@ describe('startDashboardServer — adb reverse switch', () => {
       ),
     ).rejects.toThrow(/access token/);
     expect(start).not.toHaveBeenCalled();
+  });
+
+  it('does not leave a watcher behind when the control API cannot bind its port', async () => {
+    const start = vi.fn(() => fakeWatcher());
+    // The dashboard is up by then; only the control API's port is taken.
+    const blocker = net.createServer();
+    await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve));
+    const taken = (blocker.address() as net.AddressInfo).port;
+    try {
+      await expect(
+        startDashboardServer(
+          { port: 0, accessToken: TOKEN, controlPort: taken, adbReverse: { port: 8080, start, enabledAtStart: true } },
+          new DetourEventBus(),
+        ),
+      ).rejects.toThrow(/EADDRINUSE/);
+      expect(start).not.toHaveBeenCalled();
+    } finally {
+      blocker.close();
+    }
   });
 });
