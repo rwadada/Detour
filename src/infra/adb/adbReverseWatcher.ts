@@ -106,6 +106,9 @@ export function startAdbReverseWatcher(options: AdbReverseWatcherOptions): AdbRe
   };
 
   const onList = (list: string) => {
+    // Data `adb track-devices` had already written when it was killed can still arrive after
+    // `stop()`; it must not put a reverse back that the user just switched off.
+    if (stopped) return;
     const devices = usbDevicesIn(list);
     const changed = devices.length !== usbCount;
     usbCount = devices.length;
