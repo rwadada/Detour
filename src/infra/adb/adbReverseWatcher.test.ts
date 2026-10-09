@@ -198,6 +198,19 @@ describe('startAdbReverseWatcher', () => {
     expect(adb.processes).toHaveLength(1);
   });
 
+  it('ignores a list that arrives after stop(): data already in flight must not put a reverse back', async () => {
+    const adb = fakeAdb();
+    const { runner, calls } = recordingRunner();
+    const watcher = startAdbReverseWatcher({ port: 8080, runner, spawn: adb.spawn });
+
+    watcher.stop();
+    adb.processes[0]!.emit(frame('RFCW10F9EEX\tdevice\n'));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(reverseCalls(calls)).toEqual([]);
+    expect(watcher.connectedUsbDevices()).toBe(0);
+  });
+
   it('stop() also cancels a restart that was already scheduled', async () => {
     const adb = fakeAdb();
     const watcher = startAdbReverseWatcher({
