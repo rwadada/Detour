@@ -44,6 +44,14 @@ export default defineConfig([
     rules: { 'fsd/insignificant-slice': 'off' },
   },
   {
+    // `adb-reverse` (the sidebar switch for `--adb-reverse`) has one consumer
+    // today (widgets/sidebar), like the blocks above. Kept as its own slice: it
+    // owns a store that mirrors one server message and sends one command, which
+    // is unit-tested without mounting the sidebar.
+    files: ['./src/features/adb-reverse/**'],
+    rules: { 'fsd/insignificant-slice': 'off' },
+  },
+  {
     // `session` (issue #24's toolbar Save/Load) and `settings-panel` (issue
     // #24's sidebar Settings) each currently have one consumer too — same
     // reasoning as the blocks above.

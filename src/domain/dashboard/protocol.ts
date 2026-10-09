@@ -300,6 +300,13 @@ export type DashboardServerMessage =
       /** Why `latest` is null — what the release lookup failed on ("GitHub returned HTTP 403 …"). Absent when the lookup worked. */
       failure?: string;
     }
+  /**
+   * Whether this process is keeping `adb reverse` in place for USB Android devices (`--adb-reverse`),
+   * and how many are connected right now. Sent to a client on connect and to every client when it changes.
+   * `canChange` is per socket: only a client that proved the dashboard password or access token may turn it
+   * on or off (it runs `adb` on this machine), everyone else sees the state read-only.
+   */
+  | { type: 'adbReverseState'; enabled: boolean; usbDevices: number; port: number; canChange: boolean }
   /** Answer to `startUpdate`, sent to the requesting socket only. `started` means the detached updater was launched; this process is about to be stopped and relaunched by it. */
   | { type: 'updateStatus'; state: 'started' | 'rejected' | 'failed'; message?: string }
   /**
@@ -392,4 +399,6 @@ export type DashboardClientMessage =
   /** Runs `detour update --yes` detached (stop, `brew upgrade`, relaunch on the new version). Only honored for a loopback or password-authenticated socket on an install that can update itself; answered by `updateStatus`. */
   | { type: 'startUpdate' }
   /** Re-runs the release lookup now instead of waiting out the cache; answered by a fresh `updateInfo`. No-op when update checking isn't configured. */
-  | { type: 'checkUpdate' };
+  | { type: 'checkUpdate' }
+  /** Turns keeping `adb reverse` in place for USB Android devices on or off. Honored only for a socket that proved the password or access token; answered by an `adbReverseState` to every client. */
+  | { type: 'setAdbReverse'; enabled: boolean };
