@@ -5462,3 +5462,68 @@ describe('control API (issue #212, CLI end-to-end)', () => {
     expect(await control(controlPort, 'PUT', '/throttle', throttle)).toMatchObject({ status: 200, json: throttle });
   });
 });
+
+/**
+ * `--adb-reverse`, end to end: a real `detour start` with a fake `adb` first on
+ * PATH. The fake logs every call; `track-devices` answers with a device list (4
+ * hex digits of length, then the list) and then stays open, like the real one.
+ */
+describe('--adb-reverse (CLI end-to-end)', () => {
+  let cli: Awaited<ReturnType<typeof startDetourCli>> | undefined;
+  let tmpDir: string | undefined;
+
+  afterEach(async () => {
+    await cli?.kill();
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    cli = undefined;
+    tmpDir = undefined;
+  });
+
+  /** A directory holding an `adb` that appends its arguments to `calls.log`; `track-devices` prints `list` and waits. */
+  function fakeAdbDir(list: string): { dir: string; calls: () => string[] } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-fake-adb-'));
+    const log = path.join(dir, 'calls.log');
+    const frame = `${list.length.toString(16).padStart(4, '0')}${list}`;
+    const script = [
+      '#!/bin/sh',
+      `echo "$@" >> '${log}'`,
+      'if [ "$1" = "track-devices" ]; then',
+      `  printf '%s' '${frame}'`,
+      '  sleep 30',
+      'fi',
+      'exit 0',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(dir, 'adb'), script, { mode: 0o755 });
+    tmpDir = dir;
+    return { dir, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean) : []) };
+  }
+
+  async function waitFor(condition: () => boolean, what: string) {
+    const deadline = Date.now() + 15_000;
+    while (!condition()) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  it('follows adb track-devices and puts the reverse on a USB device that shows up', async () => {
+    const fake = fakeAdbDir('RFCW10F9EEX\tdevice\nemulator-5554\tdevice\n');
+    cli = await startDetourCli(['--adb-reverse'], { PATH: `${fake.dir}:${process.env.PATH}` });
+
+    await waitFor(() => fake.calls().some((c) => c.startsWith('-s RFCW10F9EEX reverse')), 'the reverse to be applied');
+    expect(fake.calls()).toContain('track-devices');
+    expect(fake.calls()).toContain(`-s RFCW10F9EEX reverse --no-rebind tcp:${cli.port} tcp:${cli.port}`);
+    // Not an emulator.
+    expect(fake.calls().some((c) => c.includes('emulator-5554'))).toBe(false);
+    expect(cli.stdout()).toContain('--adb-reverse');
+  });
+
+  it('does not touch adb at all without the flag', async () => {
+    const fake = fakeAdbDir('RFCW10F9EEX\tdevice\n');
+    cli = await startDetourCli([], { PATH: `${fake.dir}:${process.env.PATH}` });
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(fake.calls()).toEqual([]);
+    expect(cli.stdout()).not.toContain('--adb-reverse');
+  });
+});

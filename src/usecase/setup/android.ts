@@ -1,5 +1,6 @@
 import type { DeviceChoice } from '../ports/devicePicker';
 import { errorMessage } from './errorMessage';
+import { classifyDeviceKind, isUsbDevice, parseAdbDevices } from '../../domain/adbReverse/devices';
 import type { SetupContext, SetupStep, TargetOutcome } from './types';
 
 /**
@@ -64,39 +65,12 @@ function invalidProxyHostError(ctx: SetupContext): SetupStep | undefined {
   return undefined;
 }
 
-/**
- * Parses `adb devices` output into the serials that are actually usable —
- * drops the "List of devices attached" header and any device reporting
- * `unauthorized` (hasn't accepted this host's RSA key yet) or `offline`.
- */
-export function parseAdbDevices(stdout: string): string[] {
-  return stdout
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith('List of devices'))
-    .filter((line) => line.endsWith('\tdevice'))
-    .map((line) => line.split('\t')[0]!);
-}
-
 /** Thrown by `requireOneDevice` specifically for zero devices — distinguished from "ambiguous, more than one" so `runAndroidSetup` can catch just this case and fall back to Wi-Fi/QR pairing instead of failing outright. */
 class NoDeviceError extends Error {}
 
 async function connectedDevices(ctx: SetupContext): Promise<string[]> {
   const { stdout } = await ctx.runner.run('adb', ['devices']);
   return parseAdbDevices(stdout);
-}
-
-/**
- * How a serial is classified for a human picking between several — no `adb`
- * call needed, the serial's own shape already says this: `adb`'s emulators
- * are always named `emulator-<port>`, and a Wi-Fi-paired device's serial is
- * always its `<ip>:<port>` (what `adb connect` was given) rather than a
- * hardware serial number.
- */
-export function classifyDeviceKind(serial: string): string {
-  if (serial.startsWith('emulator-')) return 'emulator';
-  if (/^\d+\.\d+\.\d+\.\d+:\d+$/.test(serial)) return 'Wi-Fi (adb over network)';
-  return 'USB';
 }
 
 /**
@@ -489,20 +463,6 @@ function proxyValue(ctx: SetupContext, viaAdbReverse = false): string {
 }
 
 /**
- * A device that is certainly USB-attached — the only kind `adb reverse` is
- * relied on for. `classifyDeviceKind` already rules out emulators and
- * `<ip>:<port>` network serials, but calls everything else "USB", and that
- * includes the name `adb` gives a device found through Android 11+ wireless
- * debugging (mDNS): `adb-<hardware serial>-<random>` (the instance name in
- * Google's own `adb mdns` examples). Treating that as USB would swap a working
- * LAN proxy for a `localhost` one that reaches nothing without a reverse — so
- * anything that looks like it falls back to the LAN address instead.
- */
-function isUsbDevice(serial: string): boolean {
-  return classifyDeviceKind(serial) === 'USB' && !serial.startsWith('adb-');
-}
-
-/**
  * Makes this machine's proxy port reachable at the device's own
  * `localhost:<port>` through the `adb` connection (`adb reverse`), so a USB
  * device does not have to reach this machine over the LAN at all.
@@ -554,3 +514,6 @@ async function isAdbReverseActive(ctx: SetupContext, serial: string): Promise<bo
     return undefined;
   }
 }
+
+// Kept importable from here: `android.test.ts` and `orchestrator.ts` read them from this module.
+export { classifyDeviceKind, parseAdbDevices };
