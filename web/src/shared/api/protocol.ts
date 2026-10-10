@@ -1,9 +1,17 @@
 /**
- * Mirrors `src/types.ts` (`CapturedExchange`) and `src/dashboard/protocol.ts`
- * (`DashboardServerMessage`) on the backend. Duplicated by hand rather than
+ * Mirrors `src/domain/dashboard/protocol.ts` (`DashboardServerMessage`,
+ * `DashboardClientMessage`) and `src/domain/exchange/types.ts`
+ * (`CapturedExchange`) on the backend. Duplicated by hand rather than
  * imported across the package boundary — the dashboard builds standalone
  * with Vite and isn't set up with TS project references into the CLI
- * package. Keep this in sync when the wire format changes.
+ * package.
+ *
+ * Keep it in sync when the wire format changes: `npm run typecheck` runs
+ * `tsconfig.protocol-parity.json` (see `protocol-parity/check.ts`), which
+ * fails — naming the message `type` — when a message or one of its fields
+ * differs between the two copies, or is missing from one. The page may be
+ * the looser side (an optional field an older server does not send), never
+ * the other way.
  */
 /** A Node-style headers object (values may be a string or multi-value string array, e.g. `set-cookie`). */
 export type HeaderMap = Record<string, string | string[] | undefined>;

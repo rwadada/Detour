@@ -1,0 +1,17 @@
+{
+  // Type-checks protocol-parity/check.ts only. It imports both copies of the dashboard WebSocket
+  // protocol (src/domain/dashboard/protocol.ts and web/src/shared/api/protocol.ts), which the main
+  // tsconfig (rootDir: src) and the dashboard's own tsconfig (include: web/src) can each see only
+  // half of. `npm run typecheck` runs it, so a copy that drifts from the other fails the build.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    // The server side of the protocol uses Node's types (`Buffer`, `node:http`); TypeScript 6 no
+    // longer loads @types/node on its own.
+    "types": ["node"],
+    "noEmit": true,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["protocol-parity/check.ts"]
+}
