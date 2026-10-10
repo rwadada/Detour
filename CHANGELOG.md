@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.2.0](https://github.com/rwadada/Detour/compare/v2.1.0...v2.2.0) (2026-10-10)
+
+
+### Features
+
+* **dashboard:** a sidebar switch for keeping adb reverse in place for USB Android devices ([36b8206](https://github.com/rwadada/Detour/commit/36b820650a837be1a2327c32972bccf067df9cc6))
+* **dashboard:** a sidebar switch for keeping adb reverse in place for USB Android devices ([ad58a9a](https://github.com/rwadada/Detour/commit/ad58a9af58d3cc363e46d53d13d87059205a71fb))
+* **setup:** reach a USB android device through adb reverse instead of the LAN address ([3fb5f8b](https://github.com/rwadada/Detour/commit/3fb5f8bc01b5c0c5b0c86b65449098ff91e223ad))
+* **setup:** reach a USB android device through adb reverse instead of the LAN address ([5a3aa97](https://github.com/rwadada/Detour/commit/5a3aa97cf2dfb4b21e1c399803d27fba4080ff5b))
+* **start:** --adb-reverse keeps adb reverse in place for USB Android devices as they reconnect ([bdda51b](https://github.com/rwadada/Detour/commit/bdda51b6cf109505b6ec8f40af2fc48015e39b2a))
+* **start:** --adb-reverse keeps adb reverse in place for USB Android devices as they reconnect ([722e2da](https://github.com/rwadada/Detour/commit/722e2da34f53cb7d5019559d54db5ea371e3884f))
+* **update:** verify the release's build attestation before `detour update` installs it ([#211](https://github.com/rwadada/Detour/issues/211)) ([8560f2f](https://github.com/rwadada/Detour/commit/8560f2f8ce59ef8d12e6bddc75e6401be2ecad59))
+* **update:** verify the release's build attestation before detour update installs it ([592f0c2](https://github.com/rwadada/Detour/commit/592f0c28f0f821b21ef6e56cf5b9dc2d9aa68019))
+
+
+### Bug Fixes
+
+* **adb:** ignore a track-devices list that arrives after the watcher was stopped ([9dba761](https://github.com/rwadada/Detour/commit/9dba761c8aad36876a5f63ce69da974b0b0874b6))
+* **dashboard:** put the StartupDefaultsSection doc back above it, and test onDevicesChanged ([4d73aa7](https://github.com/rwadada/Detour/commit/4d73aa7a7252c6803187a0582b7fa57c5ac35908))
+* **setup:** name the OPPO/OnePlus/Realme developer option in the android secure-settings hint ([fbbf6a4](https://github.com/rwadada/Detour/commit/fbbf6a4dab294e773597087e30fc36d46996d528))
+* **setup:** only treat a certain USB device as one, never rebind or remove another tool's adb reverse ([f2dc45d](https://github.com/rwadada/Detour/commit/f2dc45dede6ef17fa4897864ebb0db6795a72e06))
+* **setup:** turn the android WRITE_SECURE_SETTINGS stack trace into a short hint ([ba243d3](https://github.com/rwadada/Detour/commit/ba243d385cecbdea5869e326972a927c13250b41))
+* **setup:** turn the android WRITE_SECURE_SETTINGS stack trace into a short hint ([3d5ced7](https://github.com/rwadada/Detour/commit/3d5ced7ce34102091e9442a01cbee1ac47e57b97))
+
 ## [2.1.0](https://github.com/rwadada/Detour/compare/v2.0.1...v2.1.0) (2026-10-07)
 
 
