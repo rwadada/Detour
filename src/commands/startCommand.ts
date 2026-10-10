@@ -226,6 +226,9 @@ function resolveShouldDetach(options: StartOptions): boolean {
  */
 const PROXY_HOST = '0.0.0.0';
 
+/** What the `--adb-reverse` watcher prints when it restores a reverse (`adbReverseWatcher.ts`). */
+const logAdbReverse = (message: string) => console.log(`ℹ ${message}`);
+
 /** Upper bound on how long `shutdown` waits for the servers to stop before exiting anyway (issue #206); above the servers' own 3s drain, below `STOP_GRACE_PERIOD_MS`. */
 const SHUTDOWN_TIMEOUT_MS = 6000;
 
@@ -668,6 +671,19 @@ async function runStartBody({
           accessToken: dashboardToken,
           controlPort,
           version: pkg.version,
+          // The dashboard owns the watcher when there is one — `--adb-reverse` starts it on, and
+          // the sidebar switch turns it off and on — so the flag and the switch can't disagree.
+          adbReverse: {
+            port: handle.port,
+            enabledAtStart: options.adbReverse ?? false,
+            start: (onDevicesChanged) =>
+              startAdbReverseWatcher({
+                port: handle.port,
+                runner: nodeCommandRunner,
+                log: logAdbReverse,
+                onDevicesChanged,
+              }),
+          },
           host: dashboardHost,
           proxyPort: handle.port,
           isSelfTarget: handle.isSelfTarget,
@@ -821,14 +837,11 @@ async function runStartBody({
 
   // `--adb-reverse`: only now that everything that can fail at startup has
   // passed, so a failed start never leaves an `adb track-devices` behind.
-  const adbReverseWatcher = options.adbReverse
-    ? startAdbReverseWatcher({
-        port: handle.port,
-        runner: nodeCommandRunner,
-        log: (message) => console.log(`ℹ ${message}`),
-      })
-    : undefined;
-  if (adbReverseWatcher) {
+  const adbReverseWatcher =
+    options.adbReverse && !dashboardHandle
+      ? startAdbReverseWatcher({ port: handle.port, runner: nodeCommandRunner, log: logAdbReverse })
+      : undefined;
+  if (options.adbReverse) {
     console.log(`  adb reverse → keeping tcp:${handle.port} forwarded to every USB Android device (--adb-reverse)`);
   }
 

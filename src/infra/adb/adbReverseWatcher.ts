@@ -46,6 +46,8 @@ export interface AdbReverseWatcherOptions {
   restartDelayMs?: number;
   /** One line per event worth telling the user about (a device got its reverse); never throws. */
   log?: (message: string) => void;
+  /** Called whenever the number of connected USB devices changes (the dashboard shows it). */
+  onDevicesChanged?: () => void;
 }
 
 export interface AdbReverseWatcher {
@@ -108,7 +110,9 @@ export function startAdbReverseWatcher(options: AdbReverseWatcherOptions): AdbRe
     // `stop()`; it must not put a reverse back that the user just switched off.
     if (stopped) return;
     const devices = usbDevicesIn(list);
+    const changed = devices.length !== usbCount;
     usbCount = devices.length;
+    if (changed) options.onDevicesChanged?.();
     for (const serial of [...logged]) if (!devices.includes(serial)) logged.delete(serial);
     for (const serial of devices) void apply(serial);
   };
@@ -125,8 +129,10 @@ export function startAdbReverseWatcher(options: AdbReverseWatcherOptions): AdbRe
     });
     process.onExit(() => {
       if (current === process) current = undefined;
+      const changed = usbCount !== 0;
       usbCount = 0;
       logged.clear();
+      if (changed && !stopped) options.onDevicesChanged?.();
       if (stopped) return;
       restartTimer = setTimeout(start, restartDelayMs);
       restartTimer.unref?.();

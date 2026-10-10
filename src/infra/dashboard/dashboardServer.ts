@@ -44,6 +44,8 @@ import type { UpdateService } from '../../domain/update/updateService';
 import { parseClientMessage } from '../../domain/dashboard/clientMessage';
 import { createControlDeps } from './controlBridge';
 import { startControlServer, type ControlServerHandle } from './controlServer';
+import type { AdbReverseWatcher } from '../adb/adbReverseWatcher';
+import { createDashboardAdbReverse } from './dashboardAdbReverse';
 import { createDashboardUpdates } from './dashboardUpdates';
 import { serveStatic } from './staticServer';
 
@@ -267,6 +269,18 @@ export interface DashboardServerOptions {
    * rejected.
    */
   updateService?: UpdateService;
+  /**
+   * The dashboard's switch for keeping `adb reverse` in place for USB Android devices
+   * (`--adb-reverse`, see `adbReverseWatcher.ts`). `start` creates a watcher — called when
+   * the switch is turned on, and its result is stopped when it is turned off or the server
+   * stops; `enabledAtStart` is `detour start --adb-reverse`, so the flag and the switch
+   * are one thing. Omitted → no `adbReverseState` is sent and `setAdbReverse` is ignored.
+   */
+  adbReverse?: {
+    port: number;
+    start: (onDevicesChanged: () => void) => AdbReverseWatcher;
+    enabledAtStart?: boolean;
+  };
   /**
    * Exchanges to preload into the live backlog before the first client
    * connects — what a Detour update carries across its restart so the open
@@ -621,6 +635,26 @@ export async function startDashboardServer(
       if (client.readyState === WebSocket.OPEN && authenticatedSockets.has(client)) void sendUpdateInfo(client);
     }
   };
+  const adbReverseOptions = options.adbReverse;
+  const sendAdbReverseState = (socket: WebSocket) => {
+    if (adbReverse && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(adbReverse.stateFor(socket)));
+  };
+  const sendAdbReverseStateToAll = () => {
+    for (const client of wss.clients) {
+      if (authenticatedSockets.has(client)) sendAdbReverseState(client);
+    }
+  };
+  const adbReverse = adbReverseOptions
+    ? createDashboardAdbReverse({
+        port: adbReverseOptions.port,
+        startWatcher: () => adbReverseOptions.start(sendAdbReverseStateToAll),
+        enabledAtStart: adbReverseOptions.enabledAtStart,
+        trust: {
+          isVerified: (socket) => passwordVerifiedSockets.has(socket) || tokenVerifiedSockets.has(socket),
+        },
+        onChange: sendAdbReverseStateToAll,
+      })
+    : undefined;
   // Sockets with a `login` currently awaiting `verifyPassword` —
   // guards against two `login` frames racing each other: both would pass
   // the `!authenticatedSockets.has(socket)` check below before either
@@ -920,6 +954,7 @@ export async function startDashboardServer(
     // Last and unawaited: the release lookup may hit the network, and must
     // never delay the snapshot above.
     void sendUpdateInfo(socket);
+    sendAdbReverseState(socket);
   };
 
   wss.on('connection', (socket: WebSocket, req: IncomingMessage) => {
@@ -1025,7 +1060,10 @@ export async function startDashboardServer(
         else if (message.type === 'setThrottle') eventBus.emit('setThrottle', message.state);
         else if (message.type === 'setBlockHosts') eventBus.emit('setBlockHosts', message.state);
         else if (message.type === 'startUpdate') socket.send(JSON.stringify(await dashboardUpdates.start(socket)));
-        else if (message.type === 'checkUpdate') {
+        else if (message.type === 'setAdbReverse') {
+          // `set` answers every client when it changes something; a refused one gets the state back so its switch snaps back.
+          if (!adbReverse?.setEnabled(socket, message.enabled)) sendAdbReverseState(socket);
+        } else if (message.type === 'checkUpdate') {
           await dashboardUpdates.refresh();
           sendUpdateInfoToAll();
         } else if (message.type === 'replay') {
@@ -1303,49 +1341,54 @@ export async function startDashboardServer(
       // ephemeral `port: 0` resolving to a real OS-assigned port here is
       // what `isAllowedOrigin` checks handshakes against from this point on.
       boundPort = typeof address === 'object' && address ? address.port : options.port;
-      const buildHandle = (control: ControlServerHandle | undefined): DashboardServerHandle => ({
-        port: boundPort,
-        ...(control ? { controlPort: control.port } : {}),
-        address: typeof address === 'object' && address ? address.address : host,
-        backlogForUpdateRestart: () => (dashboardUpdates.isUpdating() ? backlog.toArray() : undefined),
-        stop: () =>
-          new Promise<void>((res) => {
-            // Awaited, not fired and forgotten: a caller that treats a resolved
-            // `stop()` as "every port is released" (a test restarting Detour on
-            // a fixed `--control-port`) must not find the control listener
-            // still bound.
-            const controlStopped = control?.stop() ?? Promise.resolve();
-            eventBus.off('request', onRequest);
-            eventBus.off('response', onResponse);
-            eventBus.off('error', onError);
-            eventBus.off('breakpointHit', onBreakpointHit);
-            eventBus.off('interceptChanged', onInterceptChanged);
-            eventBus.off('focusChanged', onFocusChanged);
-            eventBus.off('throttleChanged', onThrottleChanged);
-            eventBus.off('blockHostsChanged', onBlockHostsChanged);
-            eventBus.off('wsOpen', onWsOpen);
-            eventBus.off('wsFrame', onWsFrame);
-            eventBus.off('wsClose', onWsClose);
-            eventBus.off('rulesReloaded', onRulesReloaded);
-            if (updateTimer) clearInterval(updateTimer);
-            for (const client of wss.clients) client.close();
-            // `httpServer.close()` waits for every connection, so one client
-            // that never answers the close handshake (or a stray keep-alive)
-            // would block shutdown forever (issue #206) — cut what remains
-            // after a short drain.
-            const force = setTimeout(() => {
-              for (const client of wss.clients) client.terminate();
-              httpServer.closeAllConnections();
-            }, SHUTDOWN_DRAIN_MS);
-            force.unref();
-            wss.close(() =>
-              httpServer.close(() => {
-                clearTimeout(force);
-                void controlStopped.then(() => res());
-              }),
-            );
-          }),
-      });
+      const buildHandle = (control: ControlServerHandle | undefined): DashboardServerHandle => {
+        adbReverse?.begin();
+        return {
+          port: boundPort,
+          ...(control ? { controlPort: control.port } : {}),
+          address: typeof address === 'object' && address ? address.address : host,
+          backlogForUpdateRestart: () => (dashboardUpdates.isUpdating() ? backlog.toArray() : undefined),
+          stop: () =>
+            new Promise<void>((res) => {
+              // Awaited, not fired and forgotten: a caller that treats a resolved
+              // `stop()` as "every port is released" (a test restarting Detour on
+              // a fixed `--control-port`) must not find the control listener
+              // still bound.
+              const controlStopped = control?.stop() ?? Promise.resolve();
+              // The dashboard's switch may have started a watcher `detour start` never saw — stop whichever is running.
+              adbReverse?.stop();
+              eventBus.off('request', onRequest);
+              eventBus.off('response', onResponse);
+              eventBus.off('error', onError);
+              eventBus.off('breakpointHit', onBreakpointHit);
+              eventBus.off('interceptChanged', onInterceptChanged);
+              eventBus.off('focusChanged', onFocusChanged);
+              eventBus.off('throttleChanged', onThrottleChanged);
+              eventBus.off('blockHostsChanged', onBlockHostsChanged);
+              eventBus.off('wsOpen', onWsOpen);
+              eventBus.off('wsFrame', onWsFrame);
+              eventBus.off('wsClose', onWsClose);
+              eventBus.off('rulesReloaded', onRulesReloaded);
+              if (updateTimer) clearInterval(updateTimer);
+              for (const client of wss.clients) client.close();
+              // `httpServer.close()` waits for every connection, so one client
+              // that never answers the close handshake (or a stray keep-alive)
+              // would block shutdown forever (issue #206) — cut what remains
+              // after a short drain.
+              const force = setTimeout(() => {
+                for (const client of wss.clients) client.terminate();
+                httpServer.closeAllConnections();
+              }, SHUTDOWN_DRAIN_MS);
+              force.unref();
+              wss.close(() =>
+                httpServer.close(() => {
+                  clearTimeout(force);
+                  void controlStopped.then(() => res());
+                }),
+              );
+            }),
+        };
+      };
       // The control API (issue #212) comes up with the dashboard, or not at
       // all: if it cannot bind, the whole start fails rather than leaving a
       // session whose test runner has nothing to talk to.

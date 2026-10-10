@@ -1,10 +1,17 @@
 import { getDashboardConnection } from '@/shared/api';
+import { createAdbReverseStore } from './model/createAdbReverseStore';
 import { createBlockHostsStore } from './model/createBlockHostsStore';
 import { createFocusStore } from './model/createFocusStore';
 import { createInterceptStore } from './model/createInterceptStore';
 import { createThrottleStore } from './model/createThrottleStore';
 import { useProxyInfoStore } from './model/proxyInfoStore';
 
+export {
+  createAdbReverseStore,
+  PENDING_TIMEOUT_MS,
+  type AdbReverseInfo,
+  type AdbReverseStoreState,
+} from './model/createAdbReverseStore';
 export {
   createBlockHostsStore,
   DEFAULT_BLOCK_HOSTS_STATE,
@@ -26,7 +33,7 @@ export { useProxyInfoStore };
 
 /**
  * The live proxy configuration entity (issue #24): Intercept/Focus/
- * Throttle/Block Hosts/proxy-info state, each mirroring the same-named
+ * Throttle/Block Hosts/Adb reverse/proxy-info state, each mirroring the same-named
  * `DashboardServerMessage` from the server. Consolidated here — rather
  * than living inside `features/intercept-toggle` etc. as before — because
  * it's genuine domain state read by more than one feature/widget (each
@@ -40,3 +47,4 @@ export const useInterceptStore = createInterceptStore(getDashboardConnection());
 export const useFocusStore = createFocusStore(getDashboardConnection());
 export const useThrottleStore = createThrottleStore(getDashboardConnection());
 export const useBlockHostsStore = createBlockHostsStore(getDashboardConnection());
+export const useAdbReverseStore = createAdbReverseStore(getDashboardConnection());

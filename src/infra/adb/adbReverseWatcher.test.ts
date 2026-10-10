@@ -225,6 +225,68 @@ describe('startAdbReverseWatcher', () => {
     expect(adb.processes).toHaveLength(1);
   });
 
+  describe("onDevicesChanged (what keeps the dashboard's device count current)", () => {
+    it('fires when the number of USB devices changes, and not when a list leaves it as it was', async () => {
+      const adb = fakeAdb();
+      const onDevicesChanged = vi.fn();
+      startAdbReverseWatcher({ port: 8080, runner: recordingRunner().runner, spawn: adb.spawn, onDevicesChanged });
+      const send = (body: string) => adb.processes[0]!.emit(frame(body));
+
+      send(''); // nothing connected, and still nothing
+      expect(onDevicesChanged).not.toHaveBeenCalled();
+
+      send('AAA\tdevice\n'); // 0 -> 1
+      expect(onDevicesChanged).toHaveBeenCalledTimes(1);
+
+      send('AAA\tdevice\nBBB\tunauthorized\n'); // another device changed state: still 1 USB device
+      send('AAA\tdevice\nemulator-5554\tdevice\n'); // an emulator is not a USB device
+      expect(onDevicesChanged).toHaveBeenCalledTimes(1);
+
+      send('AAA\tdevice\nBBB\tdevice\n'); // 1 -> 2
+      send(''); // 2 -> 0
+      expect(onDevicesChanged).toHaveBeenCalledTimes(3);
+    });
+
+    it('fires when adb track-devices ends with devices counted, since they are no longer known', async () => {
+      const adb = fakeAdb();
+      const onDevicesChanged = vi.fn();
+      startAdbReverseWatcher({
+        port: 8080,
+        runner: recordingRunner().runner,
+        spawn: adb.spawn,
+        restartDelayMs: 1000,
+        onDevicesChanged,
+      });
+      adb.processes[0]!.emit(frame('AAA\tdevice\n'));
+      onDevicesChanged.mockClear();
+
+      adb.processes[0]!.end(); // the adb server went away: the count drops to 0
+      expect(onDevicesChanged).toHaveBeenCalledTimes(1);
+
+      adb.processes[0]!.end(); // nothing counted any more, so nothing to announce
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(onDevicesChanged).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays quiet once stopped: the dashboard is being shut down with it', () => {
+      const adb = fakeAdb();
+      const onDevicesChanged = vi.fn();
+      const watcher = startAdbReverseWatcher({
+        port: 8080,
+        runner: recordingRunner().runner,
+        spawn: adb.spawn,
+        onDevicesChanged,
+      });
+      adb.processes[0]!.emit(frame('AAA\tdevice\n'));
+      onDevicesChanged.mockClear();
+
+      watcher.stop();
+      adb.processes[0]!.emit(frame('AAA\tdevice\nBBB\tdevice\n')); // a list already in flight
+      adb.processes[0]!.end(); // the kill takes effect
+      expect(onDevicesChanged).not.toHaveBeenCalled();
+    });
+  });
+
   it('counts the USB devices connected right now', async () => {
     const adb = fakeAdb();
     const watcher = startAdbReverseWatcher({ port: 8080, runner: recordingRunner().runner, spawn: adb.spawn });
