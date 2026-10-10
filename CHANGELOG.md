@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.3.0](https://github.com/rwadada/Detour/compare/v2.2.0...v2.3.0) (2026-10-10)
+
+
+### Features
+
+* **setup:** say how to clear a conflicting adb reverse, and flag a USB device still on the LAN address ([3de05b3](https://github.com/rwadada/Detour/commit/3de05b3ffa8db796ae6bb91a6a2f62a1c48f4bda))
+
+
+### Bug Fixes
+
+* **setup:** an adb reverse already in place counts as a success, and a failed one says why ([e8a772d](https://github.com/rwadada/Detour/commit/e8a772dadb1483d650d0aec18c559c9ae5ac4364))
+* **setup:** an adb reverse that is already in place is a success, and a failed one says why ([10026b7](https://github.com/rwadada/Detour/commit/10026b7a3635db8c7851741f91b09010a2008ee8))
+
 ## [2.2.0](https://github.com/rwadada/Detour/compare/v2.1.0...v2.2.0) (2026-10-10)
 
 
