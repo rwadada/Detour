@@ -23,5 +23,7 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Needs Node's types; checked by tsconfig.node-tests.json instead (see there).
+  "exclude": ["src/shared/lib/utils.test.ts"]
 }
