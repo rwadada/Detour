@@ -216,6 +216,47 @@ describe('runAndroidSetup', () => {
     expect(outcome.steps.some((s) => s.message.includes("Couldn't set up `adb reverse`"))).toBe(true);
   });
 
+  describe('when --no-rebind refuses because a reverse is already on the proxy port', () => {
+    const REFUSAL = "adb: error: cannot rebind existing socket 'tcp:8080'";
+
+    function runnerWithExistingReverse(list: string) {
+      const calls: string[][] = [];
+      const runner = fakeRunner((command, args) => {
+        calls.push([command, ...args]);
+        if (command === 'adb' && args[0] === 'devices') return { stdout: ONE_DEVICE, stderr: '' };
+        if (args.includes('--no-rebind')) throw new CommandRunError(REFUSAL, 'adb');
+        if (args.includes('--list')) return { stdout: list, stderr: '' };
+        return { stdout: '', stderr: '' };
+      });
+      return { runner, calls };
+    }
+
+    it('counts a reverse that is already exactly tcp:<port> -> tcp:<port> (set by hand, or by an earlier run) as in place', async () => {
+      const { runner, calls } = runnerWithExistingReverse('ABCD1234 tcp:8080 tcp:8080\n');
+
+      const outcome = await runAndroidSetup(ctxWith(runner));
+
+      expect(
+        calls.some((c) => c.join(' ') === 'adb -s ABCD1234 shell settings put global http_proxy localhost:8080'),
+      ).toBe(true);
+      expect(outcome.steps.some((s) => s.message.includes("Couldn't set up `adb reverse`"))).toBe(false);
+      expect(outcome.steps.at(-1)).toMatchObject({ status: 'done', message: expect.stringContaining('adb reverse') });
+    });
+
+    it('does not count a different port, nor the same port forwarded to somewhere else, and says what adb said', async () => {
+      for (const list of ['ABCD1234 tcp:9000 tcp:9000\n', 'ABCD1234 tcp:8080 tcp:3000\n', '']) {
+        const { runner, calls } = runnerWithExistingReverse(list);
+
+        const outcome = await runAndroidSetup(ctxWith(runner));
+
+        expect(calls.some((c) => c.join(' ').includes('localhost:8080'))).toBe(false);
+        const warning = outcome.steps.find((s) => s.message.includes("Couldn't set up `adb reverse`"));
+        expect(warning?.message).toContain(REFUSAL);
+        expect(warning?.message).toContain('203.0.113.5:8080');
+      }
+    });
+  });
+
   it('falls back to the LAN address — and says why — when adb reverse fails on a USB device', async () => {
     const calls: string[][] = [];
     const runner = fakeRunner((command, args) => {

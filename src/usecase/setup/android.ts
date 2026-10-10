@@ -310,11 +310,12 @@ export async function runAndroidSetup(ctx: SetupContext): Promise<TargetOutcome>
   // `enableAdbReverse`), so the proxy value is `localhost:<port>` there; if the
   // reverse cannot be set up it falls back to the LAN address like any other
   // device, and says so.
-  const viaAdbReverse = isUsbDevice(serial) && (await enableAdbReverse(ctx, serial));
-  if (isUsbDevice(serial) && !viaAdbReverse) {
+  const reverse = isUsbDevice(serial) ? await enableAdbReverse(ctx, serial) : undefined;
+  const viaAdbReverse = reverse?.ok === true;
+  if (reverse && !reverse.ok) {
     steps.push({
       status: 'manual',
-      message: `Couldn't set up \`adb reverse\` for this USB device, so its proxy points at this machine's LAN address (${proxyValue(ctx)}) — the device has to be able to reach this machine over the network (a VPN on this machine that blocks local-network traffic would stop that).`,
+      message: `Couldn't set up \`adb reverse\` for this USB device (${reverse.reason}), so its proxy points at this machine's LAN address (${proxyValue(ctx)}) — the device has to be able to reach this machine over the network (a VPN on this machine that blocks local-network traffic would stop that).`,
     });
   }
   const proxy = proxyValue(ctx, viaAdbReverse);
@@ -474,20 +475,29 @@ function proxyValue(ctx: SetupContext, viaAdbReverse = false): string {
  * nothing, with no error anywhere). `adb`'s own connection is initiated from
  * this machine and travels over USB, so neither is affected.
  *
- * `true` once the reverse is in place; `false` when `adb reverse` failed (old
- * `adb`/device, a vendor build refusing it, or the port already being forwarded
- * by something else), so the caller falls back to the LAN address instead of
- * leaving the device pointing at a `localhost` that goes nowhere.
+ * `ok` once the reverse is in place — made now, or already there the same way. Otherwise
+ * `adb`'s own reason (old `adb`/device, a vendor build refusing it, the port already
+ * forwarded to somewhere else), so the caller can fall back to the LAN address instead of
+ * leaving the device pointing at a `localhost` that goes nowhere, and say why.
  */
-async function enableAdbReverse(ctx: SetupContext, serial: string): Promise<boolean> {
+async function enableAdbReverse(
+  ctx: SetupContext,
+  serial: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
   const port = `tcp:${ctx.proxyPort}`;
   try {
     // `--no-rebind`: fail rather than silently take over a reverse another tool
     // already holds on this port (and that `cleanup` would then tear down).
     await ctx.runner.run('adb', ['-s', serial, 'reverse', '--no-rebind', port, port]);
-    return true;
-  } catch {
-    return false;
+    return { ok: true };
+  } catch (err) {
+    // `--no-rebind` also refuses a reverse that is already exactly what is wanted — one set
+    // up by hand (`adb reverse tcp:8080 tcp:8080`), by an earlier `detour setup`, or still
+    // in place from `--adb-reverse`. Forwarding the same port to the same port is
+    // harmless to whoever made it, so that is a success, not a reason to fall back to the
+    // LAN address. (Only a port forwarded to somewhere *else* is a real conflict.)
+    if ((await isAdbReverseActive(ctx, serial)) === true) return { ok: true };
+    return { ok: false, reason: errorMessage(err) };
   }
 }
 
