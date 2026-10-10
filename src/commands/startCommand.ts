@@ -18,7 +18,9 @@ import { resolveDashboardToken } from '../infra/fs/dashboardAccessStore';
 import { loadUserConfig } from '../infra/fs/userConfigStore';
 import { buildGrpcExchangeInfo } from '../infra/grpc/grpcExchangeInfo';
 import { ProtoRegistry } from '../infra/grpc/protoRegistry';
+import { startAdbReverseWatcher } from '../infra/adb/adbReverseWatcher';
 import { lanAddresses } from '../infra/network/lanAddresses';
+import { nodeCommandRunner } from '../infra/process/nodeCommandRunner';
 import { isHistoryPersistenceSupported, openHistoryStore, type HistoryStore } from '../infra/persistence/historyStore';
 import { isDaemonChild, signalDaemonError, signalDaemonReady, spawnDaemonChild } from '../infra/process/daemonize';
 import { openBrowser } from '../infra/process/openBrowser';
@@ -92,6 +94,8 @@ interface StartOptions {
   proto: string[];
   /** `--control-port` (issue #212): port for the control API a test runner drives this instance with. Undefined (the default) leaves it off. */
   controlPort?: string;
+  /** `--adb-reverse`: keep `adb reverse` in place for every USB Android device that is (re)connected while this runs (see `adbReverseWatcher.ts`). Off by default. */
+  adbReverse?: boolean;
   /** `--headless` (issue #20): skip starting the web dashboard entirely — proxy-only, for CI/scripted use. */
   headless?: boolean;
   /** `--exit-on-idle <ms>` (issue #20), unparsed. */
@@ -815,6 +819,19 @@ async function runStartBody({
     }
   };
 
+  // `--adb-reverse`: only now that everything that can fail at startup has
+  // passed, so a failed start never leaves an `adb track-devices` behind.
+  const adbReverseWatcher = options.adbReverse
+    ? startAdbReverseWatcher({
+        port: handle.port,
+        runner: nodeCommandRunner,
+        log: (message) => console.log(`ℹ ${message}`),
+      })
+    : undefined;
+  if (adbReverseWatcher) {
+    console.log(`  adb reverse → keeping tcp:${handle.port} forwarded to every USB Android device (--adb-reverse)`);
+  }
+
   const shutdown = async (reason: NodeJS.Signals | 'idle') => {
     console.log(
       reason === 'idle'
@@ -822,6 +839,7 @@ async function runStartBody({
         : `\nReceived ${reason}. Stopping the proxy…`,
     );
     idleWatcher?.stop();
+    adbReverseWatcher?.stop();
     // Taken before either server stops: exchanges still in flight now aren't
     // carried over (see `isResumable`), so there's nothing to wait for.
     saveBacklogForUpdateRestart();
@@ -1015,6 +1033,10 @@ export function registerStartCommand(program: Command): void {
     .option(
       '--control-port <port>',
       'Turn on the control API (REST, 127.0.0.1 only, bearer token required) a test runner uses to swap rules, switch profiles, reset and read back traffic. Off by default; needs the dashboard (not --headless). 0 picks a free port',
+    )
+    .option(
+      '--adb-reverse',
+      "Keep `adb reverse` in place for every USB Android device connected while this runs: re-applied each time a device is plugged back in or the adb server restarts, so a phone set up with `detour setup --target android` over USB keeps reaching this proxy (a reverse is lost whenever the cable is pulled). Off by default; starts the adb server if it isn't running.",
     )
     .option(
       '--rules <path>',
