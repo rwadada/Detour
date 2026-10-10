@@ -244,8 +244,8 @@ describe('runAndroidSetup', () => {
       expect(outcome.steps.at(-1)).toMatchObject({ status: 'done', message: expect.stringContaining('adb reverse') });
     });
 
-    it('does not count a different port, nor the same port forwarded to somewhere else, and says what adb said', async () => {
-      for (const list of ['ABCD1234 tcp:9000 tcp:9000\n', 'ABCD1234 tcp:8080 tcp:3000\n', '']) {
+    it('does not count a different port, or no reverse at all, and says what adb said', async () => {
+      for (const list of ['UsbFfs tcp:9000 tcp:9000\n', '']) {
         const { runner, calls } = runnerWithExistingReverse(list);
 
         const outcome = await runAndroidSetup(ctxWith(runner));
@@ -255,6 +255,18 @@ describe('runAndroidSetup', () => {
         expect(warning?.message).toContain(REFUSAL);
         expect(warning?.message).toContain('203.0.113.5:8080');
       }
+    });
+
+    it('when the port is forwarded to somewhere else, says where and gives the command that clears it', async () => {
+      const { runner, calls } = runnerWithExistingReverse('UsbFfs tcp:8080 tcp:3000\n');
+
+      const outcome = await runAndroidSetup(ctxWith(runner));
+
+      expect(calls.some((c) => c.join(' ').includes('localhost:8080'))).toBe(false);
+      const warning = outcome.steps.find((s) => s.message.includes("Couldn't set up `adb reverse`"));
+      expect(warning?.message).toContain('already forwarded to tcp:3000');
+      expect(warning?.message).toContain('adb -s ABCD1234 reverse --remove tcp:8080');
+      expect(warning?.message).toContain('203.0.113.5:8080'); // and it still says it fell back
     });
   });
 
@@ -426,6 +438,24 @@ describe('runAndroidDoctor — a USB device set up through adb reverse', () => {
       return { stdout: '', stderr: '' };
     });
   }
+
+  it('points out that a USB device on the LAN address goes through the network, and that setup fixes it', async () => {
+    const outcome = await runAndroidDoctor(ctxWith(doctorRunner({ proxy: '203.0.113.5:8080', reverseList: '' })));
+
+    // Not a failure: it works while this machine is on the same network.
+    expect(outcome.steps.some((s) => s.status === 'failed')).toBe(false);
+    const hint = outcome.steps.find((s) => s.message.includes('over the network'));
+    expect(hint?.status).toBe('manual');
+    expect(hint?.message).toContain('detour setup --target android');
+    expect(hint?.message).toContain('VPN');
+  });
+
+  it('says nothing of the kind once the device is on localhost through the reverse', async () => {
+    const outcome = await runAndroidDoctor(
+      ctxWith(doctorRunner({ proxy: 'localhost:8080', reverseList: 'UsbFfs tcp:8080 tcp:8080\n' })),
+    );
+    expect(outcome.steps.some((s) => s.message.includes('over the network'))).toBe(false);
+  });
 
   it('accepts localhost:<port> as the right value while the reverse is active', async () => {
     const outcome = await runAndroidDoctor(
