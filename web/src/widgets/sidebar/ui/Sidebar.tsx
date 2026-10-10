@@ -1,7 +1,6 @@
 import { BookOpen, Check, ChevronLeft, ChevronRight, Copy, QrCode as QrCodeIcon } from 'lucide-react';
 import { useState } from 'react';
 import { useProxyInfoStore } from '@/entities/proxy-config';
-import { AdbReverseSwitch } from '@/features/adb-reverse';
 import { RulesEditorButton } from '@/features/rules-editor';
 import { RuleProfilesControl } from '@/features/rules-profiles';
 import { SettingsButton } from '@/features/settings-panel';
@@ -78,7 +77,6 @@ export function Sidebar() {
             <h2 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">Settings</h2>
             <SettingsButton />
           </section>
-          <AdbReverseSwitch />
           <UpdateCheck />
           <a
             href="https://github.com/rwadada/Detour#readme"

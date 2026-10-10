@@ -3,6 +3,7 @@ import {
   PRESETS,
   presetFor,
   ThrottleFields,
+  useAdbReverseStore,
   useBlockHostsStore,
   useFocusStore,
   useInterceptStore,
@@ -32,6 +33,7 @@ export function SettingsPanel() {
       <FocusSection />
       <ThrottleSection />
       <BlockHostsSection />
+      <AdbReverseSection />
       <StartupDefaultsSection />
       <DashboardPasswordSection />
     </div>
@@ -196,6 +198,68 @@ function BlockHostsSection() {
  * update both together if the wording (or the security posture it
  * describes) changes.
  */
+/**
+ * Keep `adb reverse` in place for USB Android devices (`detour start --adb-reverse`): a phone set
+ * up over USB keeps reaching this proxy after the cable is pulled and plugged back in. Absent when
+ * the server has no such switch (no `adbReverseState` ever arrives).
+ *
+ * A client that did not prove the dashboard password or access token sees the state but cannot
+ * change it — turning it on runs `adb` on the machine running Detour, which the server only allows
+ * for such a client — so the switch is disabled and says why, rather than looking clickable and
+ * doing nothing.
+ */
+function AdbReverseSection() {
+  const info = useAdbReverseStore((s) => s.info);
+  const pending = useAdbReverseStore((s) => s.pending);
+  const setEnabled = useAdbReverseStore((s) => s.setEnabled);
+
+  if (!info) return null;
+
+  const devices = info.usbDevices === 1 ? '1 USB device' : `${info.usbDevices} USB devices`;
+  return (
+    <section>
+      <SectionHeading>Android (USB)</SectionHeading>
+      <p className="mb-2 text-xs text-[var(--muted)]">
+        An <code>adb reverse</code> is lost whenever the cable is pulled or the adb server restarts. With this on,
+        Detour puts <code>tcp:{info.port}</code> back on every USB device that connects (the same as{' '}
+        <code>detour start --adb-reverse</code>).
+      </p>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          role="switch"
+          aria-checked={info.enabled}
+          aria-label="Keep adb reverse in place for USB Android devices"
+          disabled={!info.canChange || pending}
+          onClick={() => setEnabled(!info.enabled)}
+          className={cn(
+            'relative h-4 w-7 shrink-0 rounded-full border transition-colors disabled:opacity-50',
+            info.enabled ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-[var(--muted)] bg-transparent',
+          )}
+        >
+          <span
+            className={cn(
+              'absolute top-0.5 h-2.5 w-2.5 rounded-full transition-all',
+              info.enabled ? 'left-3.5 bg-[var(--bg)]' : 'left-0.5 bg-[var(--muted)]',
+            )}
+          />
+        </button>
+        <span className="text-xs">Keep adb reverse</span>
+      </div>
+      <p role="status" className="mt-1.5 text-xs text-[var(--muted)]">
+        {info.enabled
+          ? `On — ${devices} connected now.`
+          : 'Off — unplugging the cable drops it until detour setup is run again.'}
+      </p>
+      {!info.canChange && (
+        <p className="mt-1 text-xs text-[var(--muted)]">
+          Open the Dashboard URL that detour start printed (with the access token) to change this.
+        </p>
+      )}
+    </section>
+  );
+}
+
 function StartupDefaultsSection() {
   const userConfig = useUserConfigStore((s) => s.userConfig);
   const setUserConfig = useUserConfigStore((s) => s.setUserConfig);
