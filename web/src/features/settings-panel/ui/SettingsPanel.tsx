@@ -182,23 +182,6 @@ function BlockHostsSection() {
 }
 
 /**
- * Persistent `detour start` defaults (`defaultDetach`/`lanAccess`) — the
- * dashboard-side counterpart to `detour config`. Unlike every section
- * above, these aren't live proxy behavior a toggle here changes instantly:
- * both take effect on the *next* `detour start`, never this running
- * session, since a process's foreground/detached mode and a bound TCP
- * server's address are both fixed at spawn time. `userConfig` starts
- * `undefined` until the server's first message arrives right after
- * connecting — the toggles disable themselves until then rather than
- * guessing a value that might immediately flip.
- *
- * The LAN warning text below is hand-matched to the CLI's own
- * `LAN_ACCESS_WARNING` constant (`src/presentation/banner.ts`) — this is a
- * separate, standalone-built package with no access to that constant, so
- * update both together if the wording (or the security posture it
- * describes) changes.
- */
-/**
  * Keep `adb reverse` in place for USB Android devices (`detour start --adb-reverse`): a phone set
  * up over USB keeps reaching this proxy after the cable is pulled and plugged back in. Absent when
  * the server has no such switch (no `adbReverseState` ever arrives).
@@ -260,6 +243,23 @@ function AdbReverseSection() {
   );
 }
 
+/**
+ * Persistent `detour start` defaults (`defaultDetach`/`lanAccess`) — the
+ * dashboard-side counterpart to `detour config`. Unlike every section
+ * above, these aren't live proxy behavior a toggle here changes instantly:
+ * both take effect on the *next* `detour start`, never this running
+ * session, since a process's foreground/detached mode and a bound TCP
+ * server's address are both fixed at spawn time. `userConfig` starts
+ * `undefined` until the server's first message arrives right after
+ * connecting — the toggles disable themselves until then rather than
+ * guessing a value that might immediately flip.
+ *
+ * The LAN warning text below is hand-matched to the CLI's own
+ * `LAN_ACCESS_WARNING` constant (`src/presentation/banner.ts`) — this is a
+ * separate, standalone-built package with no access to that constant, so
+ * update both together if the wording (or the security posture it
+ * describes) changes.
+ */
 function StartupDefaultsSection() {
   const userConfig = useUserConfigStore((s) => s.userConfig);
   const setUserConfig = useUserConfigStore((s) => s.setUserConfig);
