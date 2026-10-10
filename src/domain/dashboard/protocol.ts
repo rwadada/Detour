@@ -100,16 +100,18 @@ export interface ReplayOverrides {
  * change an older (or newer) page can't cope with: a removed/renamed message
  * or field, a changed meaning. Purely additive optional fields don't need
  * one. The dashboard keeps its own copy in `web/src/shared/api/protocol.ts`
- * (a test in `src/domain/dashboard/protocolVersion.test.ts` fails if the two
- * drift apart).
+ * (`protocol-parity/check.ts`, part of `npm run typecheck`, and a test in
+ * `src/domain/dashboard/protocolVersion.test.ts` both fail if the two drift
+ * apart).
  */
 export const PROTOCOL_VERSION = 1;
 
 /**
  * Messages sent from the dashboard server to a connected browser client over
  * the `/ws` WebSocket. Kept in one place so the wire format has a single
- * source of truth; the frontend (web/src/lib/protocol.ts) mirrors this shape
- * by hand since it's built as a separate, standalone package.
+ * source of truth; the frontend (web/src/shared/api/protocol.ts) mirrors this
+ * shape by hand since it's built as a separate, standalone package;
+ * `protocol-parity/check.ts` fails the typecheck when the two drift.
  */
 export type DashboardServerMessage =
   /**

@@ -6,7 +6,16 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["src/**", "web/src/**", "*.{js,mjs,ts}", "!coverage/**", "!web-dist/**", "!dist/**", "!**/*.css"]
+    "includes": [
+      "src/**",
+      "web/src/**",
+      "protocol-parity/**",
+      "*.{js,mjs,ts}",
+      "!coverage/**",
+      "!web-dist/**",
+      "!dist/**",
+      "!**/*.css"
+    ]
   },
   "formatter": {
     "enabled": true,

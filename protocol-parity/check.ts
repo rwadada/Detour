@@ -16,7 +16,12 @@
  * sender can send that the receiver does not know, or a message `type` only one side has, fails here.
  *
  * Assignability alone cannot see a field one side has and the other lacks (TypeScript lets an object with
- * extra properties through), so each message's set of field NAMES is compared as well.
+ * extra properties through), so each message's set of field NAMES is compared as well — and likewise the
+ * top-level field names of the exported helper shapes below.
+ *
+ * Limit: field names are compared one level deep. A field added inside a nested payload (`CapturedExchange`,
+ * a rules entry, ...) is caught only when the receiver would reject it (a new required field the receiver
+ * lacks); an optional field added to one copy only is not. Review nested shapes by hand when editing them.
  *
  * A failure names the message `type` (or the type) that differs.
  */
@@ -55,6 +60,9 @@ type ClientFieldNames = {
   [T in ClientMessage['type']]: SameKeys<KeysOf<ClientMessage, T>, KeysOf<PageClientMessage, T>>;
 };
 
+/** `true` for a literal type such as `1`, `false` once it has been widened to `number`. */
+type IsLiteral<T extends number> = number extends T ? false : true;
+
 /** The names of the `false` entries (`never` when every one is `true`), for a readable error. */
 type Failing<M extends Record<string, boolean>> = { [K in keyof M]: M[K] extends true ? never : K }[keyof M];
 type NoneFailing<M extends Record<string, boolean>> = [Failing<M>] extends [never] ? true : Failing<M>;
@@ -77,6 +85,14 @@ export type Checks = [
   Assert<Sendable<Web.ReplayOverrides, Server.ReplayOverrides>>,
   Assert<Sendable<Server.UserConfigState, Web.UserConfigState>>,
   Assert<Sendable<Web.UserConfigState, Server.UserConfigState>>,
-  // The version the server stamps on `proxyInfo` is the one the page compares against.
-  Assert<Sendable<typeof Server.PROTOCOL_VERSION, typeof Web.PROTOCOL_VERSION>>,
+  // ...and the same top-level field names (an optional field on one side only passes assignability).
+  Assert<SameKeys<keyof Server.HistoryFilters, keyof Web.HistoryFilters>>,
+  Assert<SameKeys<keyof Server.HistoryQuery, keyof Web.HistoryQuery>>,
+  Assert<SameKeys<keyof Server.ReplayOverrides, keyof Web.ReplayOverrides>>,
+  Assert<SameKeys<keyof Server.UserConfigState, keyof Web.UserConfigState>>,
+  // The version the server stamps on `proxyInfo` is the one the page compares against. Both must stay
+  // literal types: if either were widened to `number`, the comparison below would pass for any pair.
+  Assert<IsLiteral<typeof Server.PROTOCOL_VERSION>>,
+  Assert<IsLiteral<typeof Web.PROTOCOL_VERSION>>,
+  Assert<SameKeys<typeof Server.PROTOCOL_VERSION, typeof Web.PROTOCOL_VERSION>>,
 ];
