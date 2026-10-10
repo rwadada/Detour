@@ -1,0 +1,14 @@
+{
+  // Tests that build their fixtures with Node's own modules (`zlib`, `Buffer`) — kept out of
+  // tsconfig.app.json so the dashboard's browser code is type-checked against browser types only:
+  // were `@types/node` visible there, `Buffer` or `process` in app code would pass the type check
+  // and then fail in the browser. TypeScript 6 no longer loads every installed `@types/*` on its
+  // own, so Node's types are asked for here, and only here.
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node-tests.tsbuildinfo"
+  },
+  "include": ["src/shared/lib/utils.test.ts"],
+  "exclude": []
+}

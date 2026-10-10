@@ -37,7 +37,7 @@ describe('WEB_DIST_DIR', () => {
       const overridePath = path.join(os.tmpdir(), 'some-other-web-dist');
       process.env.DETOUR_WEB_DIST_DIR = overridePath;
       vi.resetModules();
-      const { WEB_DIST_DIR: overridden } = await import('./dashboardServer');
+      const { WEB_DIST_DIR: overridden } = await import('./dashboardServer.js');
       expect(overridden).toBe(path.resolve(overridePath));
     });
   });
