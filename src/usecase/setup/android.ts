@@ -310,11 +310,12 @@ export async function runAndroidSetup(ctx: SetupContext): Promise<TargetOutcome>
   // `enableAdbReverse`), so the proxy value is `localhost:<port>` there; if the
   // reverse cannot be set up it falls back to the LAN address like any other
   // device, and says so.
-  const viaAdbReverse = isUsbDevice(serial) && (await enableAdbReverse(ctx, serial));
-  if (isUsbDevice(serial) && !viaAdbReverse) {
+  const reverse = isUsbDevice(serial) ? await enableAdbReverse(ctx, serial) : undefined;
+  const viaAdbReverse = reverse?.ok === true;
+  if (reverse && !reverse.ok) {
     steps.push({
       status: 'manual',
-      message: `Couldn't set up \`adb reverse\` for this USB device, so its proxy points at this machine's LAN address (${proxyValue(ctx)}) — the device has to be able to reach this machine over the network (a VPN on this machine that blocks local-network traffic would stop that).`,
+      message: `Couldn't set up \`adb reverse\` for this USB device (${reverse.reason}), so its proxy points at this machine's LAN address (${proxyValue(ctx)}) — the device has to be able to reach this machine over the network (a VPN on this machine that blocks local-network traffic would stop that).`,
     });
   }
   const proxy = proxyValue(ctx, viaAdbReverse);
@@ -380,6 +381,14 @@ export async function runAndroidDoctor(ctx: SetupContext): Promise<TargetOutcome
         ? { status: 'done', message: `Device proxy is ${current}.` }
         : { status: 'failed', message: `Device proxy is "${current}", expected ${proxyValue(ctx)}.` },
     );
+    if (isUsbDevice(serial) && current === proxyValue(ctx)) {
+      // Not wrong — it works while this machine is on the same network — but a USB device does not
+      // need the network, and a VPN on this machine that blocks local-network traffic stops it.
+      steps.push({
+        status: 'manual',
+        message: `This USB device reaches this machine over the network (${current}). Re-run \`detour setup --target android\` to go through \`adb reverse\` over USB instead — it keeps working when a VPN blocks local-network traffic.`,
+      });
+    }
     if (usbViaReverse && (await isAdbReverseActive(ctx, serial)) === false) {
       proxyValueMatches = false;
       steps.push({
@@ -474,20 +483,37 @@ function proxyValue(ctx: SetupContext, viaAdbReverse = false): string {
  * nothing, with no error anywhere). `adb`'s own connection is initiated from
  * this machine and travels over USB, so neither is affected.
  *
- * `true` once the reverse is in place; `false` when `adb reverse` failed (old
- * `adb`/device, a vendor build refusing it, or the port already being forwarded
- * by something else), so the caller falls back to the LAN address instead of
- * leaving the device pointing at a `localhost` that goes nowhere.
+ * `ok` once the reverse is in place — made now, or already there the same way. Otherwise
+ * `adb`'s own reason (old `adb`/device, a vendor build refusing it, the port already
+ * forwarded to somewhere else), so the caller can fall back to the LAN address instead of
+ * leaving the device pointing at a `localhost` that goes nowhere, and say why.
  */
-async function enableAdbReverse(ctx: SetupContext, serial: string): Promise<boolean> {
+async function enableAdbReverse(
+  ctx: SetupContext,
+  serial: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
   const port = `tcp:${ctx.proxyPort}`;
   try {
     // `--no-rebind`: fail rather than silently take over a reverse another tool
     // already holds on this port (and that `cleanup` would then tear down).
     await ctx.runner.run('adb', ['-s', serial, 'reverse', '--no-rebind', port, port]);
-    return true;
-  } catch {
-    return false;
+    return { ok: true };
+  } catch (err) {
+    // `--no-rebind` also refuses a reverse that is already exactly what is wanted — one set
+    // up by hand (`adb reverse tcp:8080 tcp:8080`), by an earlier `detour setup`, or still
+    // in place from `--adb-reverse`. Forwarding the same port to the same port is
+    // harmless to whoever made it, so that is a success, not a reason to fall back to the
+    // LAN address. (Only a port forwarded to somewhere *else* is a real conflict.)
+    const reverses = await listAdbReverses(ctx, serial);
+    if (reverses?.some((r) => r.remote === port && r.local === port)) return { ok: true };
+    const conflicting = reverses?.find((r) => r.remote === port);
+    if (conflicting) {
+      return {
+        ok: false,
+        reason: `port ${port} on the device is already forwarded to ${conflicting.local} on this machine — clear it with \`adb -s ${serial} reverse --remove ${port}\` and run this again`,
+      };
+    }
+    return { ok: false, reason: errorMessage(err) };
   }
 }
 
@@ -501,18 +527,33 @@ async function currentDeviceProxy(ctx: SetupContext, serial: string): Promise<st
   }
 }
 
-/** Whether `adb reverse` currently forwards this machine's proxy port for `serial` (`adb reverse --list` prints `<serial> tcp:<port> tcp:<port>` per mapping). */
-async function isAdbReverseActive(ctx: SetupContext, serial: string): Promise<boolean | undefined> {
+/**
+ * What `adb reverse --list` says is forwarded for `serial`: `remote` is the port on the device, `local` the
+ * address on this machine it goes to. One `<transport> tcp:<remote> tcp:<local>` per mapping — the first column
+ * is the transport's name (e.g. `UsbFfs`), not the device serial, so only the last two columns are read.
+ * `undefined` when it could not be listed.
+ */
+async function listAdbReverses(
+  ctx: SetupContext,
+  serial: string,
+): Promise<Array<{ remote: string; local: string }> | undefined> {
   try {
     const { stdout } = await ctx.runner.run('adb', ['-s', serial, 'reverse', '--list']);
-    const port = `tcp:${ctx.proxyPort}`;
-    return stdout.split('\n').some((line) => {
-      const [, remote, local] = line.trim().split(/\s+/);
-      return remote === port && local === port;
-    });
+    return stdout
+      .split('\n')
+      .map((line) => line.trim().split(/\s+/))
+      .filter((columns) => columns.length >= 3)
+      .map(([, remote, local]) => ({ remote: remote!, local: local! }));
   } catch {
     return undefined;
   }
+}
+
+/** Whether `adb reverse` currently forwards this machine's proxy port for `serial`, to the same port here. */
+async function isAdbReverseActive(ctx: SetupContext, serial: string): Promise<boolean | undefined> {
+  const port = `tcp:${ctx.proxyPort}`;
+  const reverses = await listAdbReverses(ctx, serial);
+  return reverses?.some((r) => r.remote === port && r.local === port);
 }
 
 // Kept importable from here: `android.test.ts` and `orchestrator.ts` read them from this module.
