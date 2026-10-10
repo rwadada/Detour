@@ -232,7 +232,8 @@ describe('runAndroidSetup', () => {
     }
 
     it('counts a reverse that is already exactly tcp:<port> -> tcp:<port> (set by hand, or by an earlier run) as in place', async () => {
-      const { runner, calls } = runnerWithExistingReverse('ABCD1234 tcp:8080 tcp:8080\n');
+      // As a real device printed it: the first column is the transport (`UsbFfs`), not the serial.
+      const { runner, calls } = runnerWithExistingReverse('UsbFfs tcp:8080 tcp:8080\n');
 
       const outcome = await runAndroidSetup(ctxWith(runner));
 

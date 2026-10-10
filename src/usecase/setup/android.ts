@@ -511,7 +511,7 @@ async function currentDeviceProxy(ctx: SetupContext, serial: string): Promise<st
   }
 }
 
-/** Whether `adb reverse` currently forwards this machine's proxy port for `serial` (`adb reverse --list` prints `<serial> tcp:<port> tcp:<port>` per mapping). */
+/** Whether `adb reverse` currently forwards this machine's proxy port for `serial` (`adb reverse --list` prints one `<transport> tcp:<remote> tcp:<local>` per mapping — the first column is the transport's name, e.g. `UsbFfs`, not the device serial — so only the last two columns are read). */
 async function isAdbReverseActive(ctx: SetupContext, serial: string): Promise<boolean | undefined> {
   try {
     const { stdout } = await ctx.runner.run('adb', ['-s', serial, 'reverse', '--list']);
