@@ -332,9 +332,26 @@ export async function runAndroidSetup(ctx: SetupContext): Promise<TargetOutcome>
     });
   }
 
+  // A USB device reaches this machine through `adb reverse` (see
+  // `enableAdbReverse`), so the proxy value is `localhost:<port>` there; if the
+  // reverse cannot be set up it falls back to the LAN address like any other
+  // device, and says so.
+  const viaAdbReverse = isUsbDevice(serial) && (await enableAdbReverse(ctx, serial));
+  if (isUsbDevice(serial) && !viaAdbReverse) {
+    steps.push({
+      status: 'manual',
+      message: `Couldn't set up \`adb reverse\` for this USB device, so its proxy points at this machine's LAN address (${proxyValue(ctx)}) — the device has to be able to reach this machine over the network (a VPN on this machine that blocks local-network traffic would stop that).`,
+    });
+  }
+  const proxy = proxyValue(ctx, viaAdbReverse);
   try {
-    await ctx.runner.run('adb', ['-s', serial, 'shell', 'settings', 'put', 'global', 'http_proxy', proxyValue(ctx)]);
-    steps.push({ status: 'done', message: `Set the device's global HTTP proxy to ${proxyValue(ctx)}.` });
+    await ctx.runner.run('adb', ['-s', serial, 'shell', 'settings', 'put', 'global', 'http_proxy', proxy]);
+    steps.push({
+      status: 'done',
+      message: viaAdbReverse
+        ? `Set the device's global HTTP proxy to ${proxy}, reaching this machine through \`adb reverse\` over USB (no LAN or VPN in the way).`
+        : `Set the device's global HTTP proxy to ${proxy}.`,
+    });
   } catch (err) {
     steps.push({ status: 'failed', message: describeProxyWriteFailure(err) });
   }
@@ -378,12 +395,24 @@ export async function runAndroidDoctor(ctx: SetupContext): Promise<TargetOutcome
   try {
     const { stdout } = await ctx.runner.run('adb', ['-s', serial, 'shell', 'settings', 'get', 'global', 'http_proxy']);
     const current = stdout.trim();
-    proxyValueMatches = current === proxyValue(ctx);
+    // A USB device is set up through `adb reverse` (`localhost:<port>`), so that
+    // is a correct value for it too — as long as the reverse is still in place
+    // (it does not survive an `adb` server restart or the cable being pulled).
+    const reverseValue = proxyValue(ctx, true);
+    const usbViaReverse = isUsbDevice(serial) && current === reverseValue;
+    proxyValueMatches = current === proxyValue(ctx) || usbViaReverse;
     steps.push(
       proxyValueMatches
         ? { status: 'done', message: `Device proxy is ${current}.` }
         : { status: 'failed', message: `Device proxy is "${current}", expected ${proxyValue(ctx)}.` },
     );
+    if (usbViaReverse && (await isAdbReverseActive(ctx, serial)) === false) {
+      proxyValueMatches = false;
+      steps.push({
+        status: 'failed',
+        message: `The device's proxy is ${current}, but \`adb reverse\` is no longer forwarding port ${ctx.proxyPort} (it is lost when the \`adb\` server restarts or the cable is unplugged). Re-run \`detour setup --target android\`.`,
+      });
+    }
   } catch (err) {
     steps.push({ status: 'failed', message: `Couldn't read the device's proxy: ${errorMessage(err)}` });
   }
@@ -421,8 +450,20 @@ export async function runAndroidCleanup(ctx: SetupContext): Promise<TargetOutcom
   try {
     // ":0" is the documented reset value for this global setting — `settings
     // delete` isn't reliable across Android versions the way this is.
+    // Read before clearing: a proxy of `localhost:<port>` is what `setup` writes
+    // when it set up `adb reverse` for this device, so only then is that reverse
+    // ours to remove. If setup fell back to the LAN address (the port was already
+    // forwarded by something else, say), tearing it down would break that tool.
+    const ownedReverse = isUsbDevice(serial) && (await currentDeviceProxy(ctx, serial)) === proxyValue(ctx, true);
     await ctx.runner.run('adb', ['-s', serial, 'shell', 'settings', 'put', 'global', 'http_proxy', ':0']);
     steps.push({ status: 'done', message: "Cleared the device's global HTTP proxy." });
+    if (ownedReverse) {
+      try {
+        await ctx.runner.run('adb', ['-s', serial, 'reverse', '--remove', `tcp:${ctx.proxyPort}`]);
+      } catch {
+        // Already gone (cable pulled, `adb` restarted) — not worth a failed step.
+      }
+    }
   } catch (err) {
     steps.push({ status: 'failed', message: `Couldn't clear the device's proxy: ${errorMessage(err)}` });
   }
@@ -436,6 +477,80 @@ export async function runAndroidCleanup(ctx: SetupContext): Promise<TargetOutcom
   return { steps };
 }
 
-function proxyValue(ctx: SetupContext): string {
-  return `${ctx.proxyHost}:${ctx.proxyPort}`;
+/**
+ * The `host:port` this device's proxy setting should hold — `localhost` for a USB
+ * device that reaches this machine through `adb reverse`, this machine's LAN
+ * address otherwise. (`localhost`, not `127.0.0.1`: it is the usual form for an
+ * `adb reverse` proxy, and the value that was confirmed working by hand on a real
+ * USB device.)
+ */
+function proxyValue(ctx: SetupContext, viaAdbReverse = false): string {
+  return `${viaAdbReverse ? 'localhost' : ctx.proxyHost}:${ctx.proxyPort}`;
+}
+
+/**
+ * A device that is certainly USB-attached — the only kind `adb reverse` is
+ * relied on for. `classifyDeviceKind` already rules out emulators and
+ * `<ip>:<port>` network serials, but calls everything else "USB", and that
+ * includes the name `adb` gives a device found through Android 11+ wireless
+ * debugging (mDNS): `adb-<hardware serial>-<random>` (the instance name in
+ * Google's own `adb mdns` examples). Treating that as USB would swap a working
+ * LAN proxy for a `localhost` one that reaches nothing without a reverse — so
+ * anything that looks like it falls back to the LAN address instead.
+ */
+function isUsbDevice(serial: string): boolean {
+  return classifyDeviceKind(serial) === 'USB' && !serial.startsWith('adb-');
+}
+
+/**
+ * Makes this machine's proxy port reachable at the device's own
+ * `localhost:<port>` through the `adb` connection (`adb reverse`), so a USB
+ * device does not have to reach this machine over the LAN at all.
+ *
+ * Why that matters: the LAN address is what a Wi-Fi device needs, but for a USB
+ * device it is a needless dependency — and one that breaks as soon as
+ * something between the phone and this machine's LAN interface does, e.g. a
+ * VPN on this machine that blocks local-network traffic (the phone then reaches
+ * nothing, with no error anywhere). `adb`'s own connection is initiated from
+ * this machine and travels over USB, so neither is affected.
+ *
+ * `true` once the reverse is in place; `false` when `adb reverse` failed (old
+ * `adb`/device, a vendor build refusing it, or the port already being forwarded
+ * by something else), so the caller falls back to the LAN address instead of
+ * leaving the device pointing at a `localhost` that goes nowhere.
+ */
+async function enableAdbReverse(ctx: SetupContext, serial: string): Promise<boolean> {
+  const port = `tcp:${ctx.proxyPort}`;
+  try {
+    // `--no-rebind`: fail rather than silently take over a reverse another tool
+    // already holds on this port (and that `cleanup` would then tear down).
+    await ctx.runner.run('adb', ['-s', serial, 'reverse', '--no-rebind', port, port]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The device's current global proxy value, or `undefined` if it could not be read. */
+async function currentDeviceProxy(ctx: SetupContext, serial: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await ctx.runner.run('adb', ['-s', serial, 'shell', 'settings', 'get', 'global', 'http_proxy']);
+    return stdout.trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether `adb reverse` currently forwards this machine's proxy port for `serial` (`adb reverse --list` prints `<serial> tcp:<port> tcp:<port>` per mapping). */
+async function isAdbReverseActive(ctx: SetupContext, serial: string): Promise<boolean | undefined> {
+  try {
+    const { stdout } = await ctx.runner.run('adb', ['-s', serial, 'reverse', '--list']);
+    const port = `tcp:${ctx.proxyPort}`;
+    return stdout.split('\n').some((line) => {
+      const [, remote, local] = line.trim().split(/\s+/);
+      return remote === port && local === port;
+    });
+  } catch {
+    return undefined;
+  }
 }
