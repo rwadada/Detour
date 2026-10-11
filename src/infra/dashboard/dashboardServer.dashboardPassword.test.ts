@@ -260,7 +260,7 @@ describe('startDashboardServer — dashboard password (issue #66)', () => {
 
     // A real password hash can't be forged from the client side, so this
     // exercises the guard the same way a stray/malicious message would: it
-    // must never reach `handleRulesMessage`/`writeUserConfig`/etc. before
+    // must never reach a message handler/`writeUserConfig`/etc. before
     // `login` has succeeded.
     socket.send(JSON.stringify({ type: 'setUserConfig', state: { lanAccess: true } }));
     await expectNoMessage(socket, (m) => m.type === 'userConfig' || m.type === 'error');

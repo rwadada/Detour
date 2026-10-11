@@ -5,12 +5,13 @@ import type { CapturedExchange } from '../../domain/exchange/types';
 import { toWireExchange } from '../../domain/exchange/wireExchange';
 import type { DetourEventBus } from '../eventBus';
 import type { writeUserConfig } from '../fs/userConfigStore';
-import { describeError, type RulesHandlers } from './dashboardRulesHandlers';
+import type { RulesHandlers } from './dashboardRulesHandlers';
+import { describeError } from './describeError';
 
 type MessageOf<T extends DashboardClientMessage['type']> = Extract<DashboardClientMessage, { type: T }>;
 
 /** Every message an authenticated socket may send (`login` is answered before authentication, never here). */
-export type AuthenticatedMessageType = Exclude<DashboardClientMessage['type'], 'login'>;
+type AuthenticatedMessageType = Exclude<DashboardClientMessage['type'], 'login'>;
 
 /**
  * One handler per authenticated message `type`. A `Record` over the whole union, so a message type added to the

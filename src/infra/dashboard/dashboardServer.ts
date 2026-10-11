@@ -44,7 +44,8 @@ import { startControlServer, type ControlServerHandle } from './controlServer';
 import type { AdbReverseWatcher } from '../adb/adbReverseWatcher';
 import { createDashboardAdbReverse } from './dashboardAdbReverse';
 import { createMessageHandlers, dispatchMessage } from './dashboardMessageHandlers';
-import { createRulesHandlers, describeError } from './dashboardRulesHandlers';
+import { createRulesHandlers } from './dashboardRulesHandlers';
+import { describeError } from './describeError';
 import { createDashboardUpdates } from './dashboardUpdates';
 import { serveStatic } from './staticServer';
 
@@ -1010,22 +1011,15 @@ export async function startDashboardServer(
       socket.send(JSON.stringify(authRequiredMessage));
     }
 
-    // The only browser → server traffic on this socket: resuming/aborting a
-    // paused breakpoint, toggling intercept on/off, editing the Focus host
-    // allowlist, editing the Throttle profile, and editing the Block Hosts
-    // denylist. All are relayed onto the event bus, where the proxy server
-    // is waiting on them (see proxyServer.ts's
-    // `waitForBreakpoint`/`handleSetIntercept`/`handleSetFocus`/`handleSetThrottle`/`handleSetBlockHosts`).
-    // Rules editing/profiles (issue #19) are the one exception: handled
-    // directly here rather than via the event bus, since they need
-    // synchronous validation and per-attempt error feedback that a fire-and-
-    // forget event emit can't give — see `handleRulesMessage` below.
-    // `async`, not sync: `verifyPassword`/`hashPassword`
-    // below are async precisely so scrypt's work runs off the main thread
-    // (see `domain/auth/passwordHash.ts`) — awaiting them here is what actually
-    // gets that benefit, rather than serializing right back onto this
-    // handler anyway. `ws` doesn't care that the listener returns a promise;
-    // nothing here needs the caller to wait on it.
+    // Browser → server traffic on this socket: `login` before authenticating, then every other client
+    // message through the handler table (`dashboardMessageHandlers.ts`). Control messages (breakpoint,
+    // intercept, focus, throttle, block hosts) are relayed onto the event bus, where the proxy server is
+    // waiting on them; rules editing/profiles (issue #19) live in `dashboardRulesHandlers.ts` and are handled
+    // directly, since they need synchronous validation and per-attempt error feedback that a
+    // fire-and-forget event emit cannot give.
+    // `async`, not sync: `verifyPassword`/`hashPassword` are async precisely so scrypt's work runs off the
+    // main thread (see `domain/auth/passwordHash.ts`) — awaiting them is what actually gets that benefit.
+    // `ws` doesn't care that the listener returns a promise; nothing here needs the caller to wait on it.
     socket.on('message', async (raw) => {
       try {
         const parsed = parseClientMessage(raw.toString());

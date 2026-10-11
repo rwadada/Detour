@@ -4,6 +4,7 @@ import { findRejectedScriptWrites } from '../../domain/rules/scriptGate';
 import type { RulesFile } from '../../domain/rules/types';
 import type { RuleProfileStore } from '../../usecase/ports/ruleProfileStore';
 import type { RuleEngine } from '../../usecase/ruleEngine';
+import { describeError } from './describeError';
 
 /** What the rules-editing handlers need from the dashboard server (issue #207: no reaching into its closure). */
 export interface RulesHandlerDeps {
@@ -28,10 +29,6 @@ export interface RulesHandlers {
   createRuleProfile: (message: MessageOf<'createRuleProfile'>) => void;
   saveActiveRulesAsProfile: (message: MessageOf<'saveActiveRulesAsProfile'>) => void;
   applyRuleProfile: (message: MessageOf<'applyRuleProfile'>) => void;
-}
-
-export function describeError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /**
