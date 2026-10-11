@@ -8,8 +8,7 @@ import { DetourEventBus } from '../eventBus';
 import { startDashboardServer, type DashboardServerHandle } from './dashboardServer';
 
 /**
- * Login rate limiting (issue #159): `loginInFlight` (see
- * `dashboardServer.dashboardPassword.test.ts`) only ever guarded two
+ * Login rate limiting (issue #159): `loginInFlight` (in `dashboardAuth.ts`) only ever guarded two
  * `login` frames racing each other on the *same* socket — sequential
  * attempts, or attempts spread across several sockets, had nothing slowing
  * them down. These tests cover the two acceptance criteria that close that:

@@ -97,8 +97,8 @@ describe('startDashboardServer — adb reverse switch', () => {
     );
     const mine = connect();
     const other = connect();
-    await waitForMessage(mine, isState);
-    await waitForMessage(other, isState);
+    // Both listeners first: awaiting `mine` alone lets `other`'s initial state arrive with nobody listening.
+    await Promise.all([waitForMessage(mine, isState), waitForMessage(other, isState)]);
 
     const heardByOther = waitForMessage(other, (m) => m.type === 'adbReverseState' && m.enabled);
     mine.send(JSON.stringify({ type: 'setAdbReverse', enabled: true }));

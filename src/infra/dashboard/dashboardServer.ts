@@ -12,9 +12,6 @@ import type {
   ThrottleState,
 } from '../../domain/exchange/types';
 import { toResponsePatch, toWireExchange } from '../../domain/exchange/wireExchange';
-import { SAMPLE_RULES_FILE } from '../../domain/rules/sample';
-import { findRejectedScriptWrites } from '../../domain/rules/scriptGate';
-import type { RulesFile } from '../../domain/rules/types';
 import { RingBuffer } from '../../domain/shared/ringBuffer';
 import {
   PROTOCOL_VERSION,
@@ -33,19 +30,21 @@ import type { HistoryStore } from '../persistence/historyStore';
 import { nodeHttpRequester } from '../proxy/nodeHttpRequester';
 import {
   DASHBOARD_SESSION_COOKIE,
-  requestHasValidToken,
   sessionCookieValue,
   tokenFromUrl,
   tokensEqual,
   urlWithoutToken,
 } from '../../domain/auth/dashboardAccess';
-import { hashPassword, verifyPassword } from '../../domain/auth/passwordHash';
 import type { UpdateService } from '../../domain/update/updateService';
 import { parseClientMessage } from '../../domain/dashboard/clientMessage';
 import { createControlDeps } from './controlBridge';
 import { startControlServer, type ControlServerHandle } from './controlServer';
 import type { AdbReverseWatcher } from '../adb/adbReverseWatcher';
 import { createDashboardAdbReverse } from './dashboardAdbReverse';
+import { createDashboardAuth } from './dashboardAuth';
+import { createMessageHandlers, dispatchMessage } from './dashboardMessageHandlers';
+import { createRulesHandlers } from './dashboardRulesHandlers';
+import { describeError } from './describeError';
 import { createDashboardUpdates } from './dashboardUpdates';
 import { serveStatic } from './staticServer';
 
@@ -603,26 +602,15 @@ export async function startDashboardServer(
       : false,
   });
 
-  // Issue #66's optional dashboard password: sockets that have proven they
-  // know the current password (or connected while none was configured — see
-  // `wss.on('connection', ...)` below) live in this set. A `WeakSet` rather
-  // than a plain property on the socket so nothing here needs to remember to
-  // clean up on close — an unreachable socket just falls out of it.
-  const authenticatedSockets = new WeakSet<WebSocket>();
-  // The subset of `authenticatedSockets` that really proved a secret — a
-  // password via `login`, or the access token (issue #205) — as opposed to
-  // being grandfathered in while neither was required. This is what decides
-  // who may trigger a self-update (see `createDashboardUpdates`); where a
-  // connection came *from* (loopback) deliberately plays no part, since the
-  // proxy relays LAN clients' requests from loopback.
-  // `let` so that changing the password can revoke every earlier proof at once.
-  let passwordVerifiedSockets = new WeakSet<WebSocket>();
-  const tokenVerifiedSockets = new WeakSet<WebSocket>();
+  // Who is authenticated, who proved a secret, the login rate limits (issues #66, #159, #205).
+  const auth = createDashboardAuth({
+    accessToken: options.accessToken,
+    loadPasswordHash: () => loadUserConfig(options.userConfigPath).dashboardPasswordHash ?? null,
+    sendInitialPayload: (socket) => sendInitialPayload(socket),
+  });
   const dashboardUpdates = createDashboardUpdates(
     options.updateService,
-    {
-      isVerified: (socket) => passwordVerifiedSockets.has(socket) || tokenVerifiedSockets.has(socket),
-    },
+    { isVerified: auth.isVerified },
     Date.now,
     (message) => broadcast({ type: 'updateStatus', state: 'failed', message }),
   );
@@ -632,7 +620,7 @@ export async function startDashboardServer(
   };
   const sendUpdateInfoToAll = () => {
     for (const client of wss.clients) {
-      if (client.readyState === WebSocket.OPEN && authenticatedSockets.has(client)) void sendUpdateInfo(client);
+      if (client.readyState === WebSocket.OPEN && auth.isAuthenticated(client)) void sendUpdateInfo(client);
     }
   };
   const adbReverseOptions = options.adbReverse;
@@ -641,7 +629,7 @@ export async function startDashboardServer(
   };
   const sendAdbReverseStateToAll = () => {
     for (const client of wss.clients) {
-      if (authenticatedSockets.has(client)) sendAdbReverseState(client);
+      if (auth.isAuthenticated(client)) sendAdbReverseState(client);
     }
   };
   const adbReverse = adbReverseOptions
@@ -649,119 +637,17 @@ export async function startDashboardServer(
         port: adbReverseOptions.port,
         startWatcher: () => adbReverseOptions.start(sendAdbReverseStateToAll),
         enabledAtStart: adbReverseOptions.enabledAtStart,
-        trust: {
-          isVerified: (socket) => passwordVerifiedSockets.has(socket) || tokenVerifiedSockets.has(socket),
-        },
+        trust: { isVerified: auth.isVerified },
         onChange: sendAdbReverseStateToAll,
       })
     : undefined;
-  // Sockets with a `login` currently awaiting `verifyPassword` —
-  // guards against two `login` frames racing each other: both would pass
-  // the `!authenticatedSockets.has(socket)` check below before either
-  // resolves, and depending on which `await` settles second, that one could
-  // send `authFailed` after the socket was already authenticated by the
-  // first, or duplicate the initial snapshot. A `login` that arrives while
-  // one's already in flight for that socket is dropped rather than queued —
-  // a real client only ever has one outstanding attempt at a time.
-  const loginInFlight = new WeakSet<WebSocket>();
-  // Login rate limiting (issue #159): `dashboardServer.ts` had nothing
-  // beyond `loginInFlight`'s single-socket concurrency guard, so a `--lan`-
-  // exposed password could be brute-forced at whatever rate a client's own
-  // sequential attempts (or however many parallel sockets it opened)
-  // allowed. Tracked by *IP*, not per-socket — closing a socket and opening
-  // a fresh one is free, so a per-socket counter would reset on every
-  // reconnect and defend nothing. In-memory only: resetting on a `detour
-  // start` restart is fine, nothing here needs to survive one.
-  const MAX_LOGIN_FAILURES = 5;
-  const MAX_UNAUTHENTICATED_SOCKETS_PER_IP = 3;
-  const LOGIN_BACKOFF_BASE_MS = 20;
-  const LOGIN_BACKOFF_MAX_MS = 320;
-  // Bounds how many distinct IPs `loginFailuresByIp` tracks at once (Copilot
-  // review, PR #175) — unlike `unauthenticatedSocketCountByIp` (an entry is
-  // always removed on auth/close, so it can never outgrow the number of
-  // sockets actually open right now), a failure record has no such natural
-  // ceiling: it lives until that IP eventually logs in successfully, which
-  // an attacker has no reason to ever do. Enough distinct source IPs
-  // failing once would otherwise grow this map forever. `recordLoginFailure`
-  // evicts the oldest-inserted entry once at this cap, rather than refusing
-  // new ones — a memory ceiling matters more here than perfect fairness
-  // toward whichever IP happens to hit it first.
-  const MAX_TRACKED_LOGIN_FAILURE_IPS = 1000;
-  const loginFailuresByIp = new Map<string, number>();
-  const unauthenticatedSocketCountByIp = new Map<string, number>();
-  // Which sockets currently hold a counted slot in
-  // `unauthenticatedSocketCountByIp` — released (see `releaseUnauthenticatedSlot`)
-  // exactly once, whichever of "authenticated" or "closed" happens first,
-  // so the count never double-decrements if both eventually fire for the
-  // same socket.
-  const unauthenticatedSlotSockets = new WeakSet<WebSocket>();
-
-  /** The IP a connection's rate-limit counters are tracked under — the raw socket address, not anything a client-controlled header could spoof. */
-  function clientIp(req: IncomingMessage): string {
-    return req.socket.remoteAddress ?? 'unknown';
-  }
-
-  /** Releases `socket`'s counted slot in `unauthenticatedSocketCountByIp` (idempotent — a no-op if it never held one, or already released it). */
-  function releaseUnauthenticatedSlot(socket: WebSocket, ip: string): void {
-    if (!unauthenticatedSlotSockets.has(socket)) return;
-    unauthenticatedSlotSockets.delete(socket);
-    const current = unauthenticatedSocketCountByIp.get(ip) ?? 0;
-    if (current <= 1) unauthenticatedSocketCountByIp.delete(ip);
-    else unauthenticatedSocketCountByIp.set(ip, current - 1);
-  }
-
-  function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  /** Records one more login failure for `ip` and returns its new total, evicting the oldest-tracked IP first if `loginFailuresByIp` is already at its cap (see that map's own doc comment). */
-  function recordLoginFailure(ip: string): number {
-    const failures = (loginFailuresByIp.get(ip) ?? 0) + 1;
-    if (!loginFailuresByIp.has(ip) && loginFailuresByIp.size >= MAX_TRACKED_LOGIN_FAILURE_IPS) {
-      const oldestIp = loginFailuresByIp.keys().next().value;
-      if (oldestIp !== undefined) loginFailuresByIp.delete(oldestIp);
-    }
-    loginFailuresByIp.set(ip, failures);
-    return failures;
-  }
-
-  // Read fresh on every check (connect, login attempt, `setDashboardPassword`)
-  // rather than cached once at startup — same "no other writer to stay in
-  // sync with, so just read the file" reasoning as `userConfigMessage`
-  // below, and it's what lets a password set via the Settings panel or
-  // `detour config` start applying to new connections without a restart.
-  //
-  // On a read failure (invalid JSON, a validation failure — same cases
-  // `userConfigMessage` below falls back to defaults for), this returns the
-  // last value a *successful* read actually produced, rather than `null`:
-  // `null` means "no password configured" everywhere it's checked below, so
-  // falling back to it unconditionally on error would fail *open* — waving
-  // every new connection straight through the moment `~/.detour/config.json`
-  // gets corrupted while a password happens to be set (a hand-edit of some
-  // unrelated field is enough; `loadUserConfig` fails the whole file, not
-  // just the bad key). Falling back to the last-known value instead keeps a
-  // real password honored across a transient corruption, while a config
-  // that never had one to begin with — most read failures, and every one of
-  // them before the very first successful read — still resolves to `null`
-  // exactly as before, matching `userConfigMessage`'s own "don't lock
-  // anything up over a broken config" posture for every other field.
-  let lastKnownPasswordHash: string | null = null;
-  const currentPasswordHash = (): string | null => {
-    try {
-      lastKnownPasswordHash = loadUserConfig(options.userConfigPath).dashboardPasswordHash ?? null;
-    } catch {
-      // Keep `lastKnownPasswordHash` as it was — see the doc comment above.
-    }
-    return lastKnownPasswordHash;
-  };
-
   const broadcast = (message: DashboardServerMessage) => {
     const payload = JSON.stringify(message);
     for (const client of wss.clients) {
       // Skips a socket still waiting on `authRequired` — the whole point of
       // gating it is that it never sees live traffic, rule contents, or any
       // other state until it's proven it knows the password.
-      if (client.readyState === WebSocket.OPEN && authenticatedSockets.has(client)) client.send(payload);
+      if (client.readyState === WebSocket.OPEN && auth.isAuthenticated(client)) client.send(payload);
     }
   };
 
@@ -832,7 +718,7 @@ export async function startDashboardServer(
         // Deriving this from the same fail-closed-aware getter that
         // `login`/connection-gating actually uses keeps what a client is
         // told in sync with whether a password is genuinely still required.
-        dashboardPasswordSet: !!currentPasswordHash(),
+        dashboardPasswordSet: !!auth.currentPasswordHash(),
       },
     };
   };
@@ -958,79 +844,24 @@ export async function startDashboardServer(
   };
 
   wss.on('connection', (socket: WebSocket, req: IncomingMessage) => {
-    // No password configured: grandfather this socket in permanently, even
-    // if a password gets set later while it's still open — same "changing
-    // the Wi-Fi password doesn't kick already-connected devices" posture as
-    // `--lan`'s own bind-at-spawn-time semantics. Only *new* connections
-    // made after that point are asked for it.
-    if (!currentPasswordHash()) {
-      if (!options.accessToken) {
-        authenticatedSockets.add(socket);
-      } else if (requestHasValidToken(options.accessToken, { url: req.url, cookieHeader: req.headers.cookie })) {
-        authenticatedSockets.add(socket);
-        tokenVerifiedSockets.add(socket);
-      }
-    }
+    const admission = auth.admitConnection(socket, req);
+    if (admission === 'rejected') return;
+    if (admission === 'authenticated') sendInitialPayload(socket);
+    else socket.send(JSON.stringify(auth.authRequiredMessage()));
 
-    const ip = clientIp(req);
-    if (!authenticatedSockets.has(socket)) {
-      // An IP that's already exhausted its attempts (see
-      // `handleLoginMessage`) doesn't get a fresh set just by reconnecting —
-      // closing a socket and opening a new one is free, so a per-socket-only
-      // limit would defend nothing.
-      if ((loginFailuresByIp.get(ip) ?? 0) >= MAX_LOGIN_FAILURES) {
-        socket.close(1008, 'Too many failed login attempts');
-        return;
-      }
-      // Bounds how many *unauthenticated* sockets one IP can hold open at
-      // once (issue #159) — without this, one client could open many
-      // parallel connections to run scrypt verifications concurrently
-      // (`login`'s KDF work runs on libuv's shared threadpool — see
-      // `domain/auth/passwordHash.ts` — so enough parallel attempts starve
-      // every other `fs`-backed operation sharing that pool, rules/dump/
-      // cert reads included) or to spread brute-force attempts across more
-      // sockets than the per-socket concurrency guard (`loginInFlight`)
-      // alone limits.
-      const unauthenticatedCount = unauthenticatedSocketCountByIp.get(ip) ?? 0;
-      if (unauthenticatedCount >= MAX_UNAUTHENTICATED_SOCKETS_PER_IP) {
-        socket.close(1008, 'Too many concurrent unauthenticated connections');
-        return;
-      }
-      unauthenticatedSocketCountByIp.set(ip, unauthenticatedCount + 1);
-      unauthenticatedSlotSockets.add(socket);
-      socket.once('close', () => releaseUnauthenticatedSlot(socket, ip));
-    }
-
-    if (authenticatedSockets.has(socket)) {
-      sendInitialPayload(socket);
-    } else {
-      const authRequiredMessage: DashboardServerMessage = {
-        type: 'authRequired',
-        method: currentPasswordHash() ? 'password' : 'token',
-      };
-      socket.send(JSON.stringify(authRequiredMessage));
-    }
-
-    // The only browser → server traffic on this socket: resuming/aborting a
-    // paused breakpoint, toggling intercept on/off, editing the Focus host
-    // allowlist, editing the Throttle profile, and editing the Block Hosts
-    // denylist. All are relayed onto the event bus, where the proxy server
-    // is waiting on them (see proxyServer.ts's
-    // `waitForBreakpoint`/`handleSetIntercept`/`handleSetFocus`/`handleSetThrottle`/`handleSetBlockHosts`).
-    // Rules editing/profiles (issue #19) are the one exception: handled
-    // directly here rather than via the event bus, since they need
-    // synchronous validation and per-attempt error feedback that a fire-and-
-    // forget event emit can't give — see `handleRulesMessage` below.
-    // `async`, not sync: `verifyPassword`/`hashPassword`
-    // below are async precisely so scrypt's work runs off the main thread
-    // (see `domain/auth/passwordHash.ts`) — awaiting them here is what actually
-    // gets that benefit, rather than serializing right back onto this
-    // handler anyway. `ws` doesn't care that the listener returns a promise;
-    // nothing here needs the caller to wait on it.
+    // Browser → server traffic on this socket: `login` before authenticating, then every other client
+    // message through the handler table (`dashboardMessageHandlers.ts`). Control messages (breakpoint,
+    // intercept, focus, throttle, block hosts) are relayed onto the event bus, where the proxy server is
+    // waiting on them; rules editing/profiles (issue #19) live in `dashboardRulesHandlers.ts` and are handled
+    // directly, since they need synchronous validation and per-attempt error feedback that a
+    // fire-and-forget event emit cannot give.
+    // `async`, not sync: `verifyPassword`/`hashPassword` are async precisely so scrypt's work runs off the
+    // main thread (see `domain/auth/passwordHash.ts`) — awaiting them is what actually gets that benefit.
+    // `ws` doesn't care that the listener returns a promise; nothing here needs the caller to wait on it.
     socket.on('message', async (raw) => {
       try {
         const parsed = parseClientMessage(raw.toString());
-        const authenticated = authenticatedSockets.has(socket);
+        const authenticated = auth.isAuthenticated(socket);
         if (!parsed.ok) {
           // Reported only for an authenticated socket (issue #209): before
           // login a frame is just noise from a stranger, and logging each
@@ -1050,82 +881,13 @@ export async function startDashboardServer(
           // malicious device on the network that skipped straight to
           // `setRules`/`replay`/etc. without ever proving it knows the
           // password gets silently ignored, same as a malformed frame.
-          if (message.type === 'login') await handleLoginMessage(socket, ip, message);
+          if (message.type === 'login') await auth.handleLogin(socket, req, message);
           return;
         }
 
-        if (message.type === 'breakpointResume') eventBus.emit('breakpointResume', message.command);
-        else if (message.type === 'setIntercept') eventBus.emit('setIntercept', message.enabled);
-        else if (message.type === 'setFocus') eventBus.emit('setFocus', message.hosts);
-        else if (message.type === 'setThrottle') eventBus.emit('setThrottle', message.state);
-        else if (message.type === 'setBlockHosts') eventBus.emit('setBlockHosts', message.state);
-        else if (message.type === 'startUpdate') socket.send(JSON.stringify(await dashboardUpdates.start(socket)));
-        else if (message.type === 'setAdbReverse') {
-          // `set` answers every client when it changes something; a refused one gets the state back so its switch snaps back.
-          if (!adbReverse?.setEnabled(socket, message.enabled)) sendAdbReverseState(socket);
-        } else if (message.type === 'checkUpdate') {
-          await dashboardUpdates.refresh();
-          sendUpdateInfoToAll();
-        } else if (message.type === 'replay') {
-          await handleReplayMessage(message);
-        } else if (message.type === 'setUserConfig') {
-          try {
-            writeUserConfig(message.state, options.userConfigPath);
-            broadcast(userConfigMessage());
-          } catch (err) {
-            broadcastError('USER_CONFIG_WRITE_ERROR', describeError(err));
-          }
-        } else if (message.type === 'setDashboardPassword') {
-          try {
-            if (message.password === '') {
-              // Silently accepting this would set a real, trivially-guessable
-              // password while `dashboardPasswordSet` reports "on" — worse
-              // than not setting one at all, since it looks protected.
-              throw new Error('Dashboard password must not be empty — pass null to remove it.');
-            }
-            const dashboardPasswordHash = message.password === null ? null : await hashPassword(message.password);
-            writeUserConfig({ dashboardPasswordHash }, options.userConfigPath);
-            // Updates `lastKnownPasswordHash` immediately rather than
-            // waiting for some future `currentPasswordHash()` call to catch
-            // up: without this, a password set here has no effect on
-            // `lastKnownPasswordHash`'s fail-closed fallback (see its own
-            // doc comment) until the next connect/login attempt happens to
-            // read it back successfully — leaving a window, right after
-            // setting a password, where the config becoming unreadable
-            // before that next read would still fail open.
-            lastKnownPasswordHash = dashboardPasswordHash;
-            // A session that logged in with the old password must not keep
-            // the right to run a host-level update after it's been changed.
-            passwordVerifiedSockets = new WeakSet<WebSocket>();
-            sendUpdateInfoToAll();
-            broadcast(userConfigMessage());
-          } catch (err) {
-            broadcastError('USER_CONFIG_WRITE_ERROR', describeError(err));
-          }
-        } else if (message.type === 'queryHistory') {
-          // Sent to the requesting socket only (never `broadcast`) — this
-          // answers one tab's own query, not a shared-state change every
-          // connected tab needs to hear about. Answered even with no
-          // `historyStore` (empty/`hasMore: false`) rather than dropped —
-          // see the wire type's own doc comment for why. A query failure
-          // (e.g. a corrupt DB file) must still answer with something,
-          // same reasoning — otherwise the requester's History UI is stuck
-          // showing `loading: true` forever with no way to know why.
-          let result: { items: CapturedExchange[]; hasMore: boolean };
-          try {
-            result = options.historyStore?.query(message.query) ?? { items: [], hasMore: false };
-          } catch (err) {
-            eventBus.emit('error', { errorKind: 'HISTORY_QUERY_ERROR', message: describeError(err) });
-            result = { items: [], hasMore: false };
-          }
-          const reply: DashboardServerMessage = {
-            type: 'historyResult',
-            requestId: message.requestId,
-            items: result.items.map(toWireExchange),
-            hasMore: result.hasMore,
-          };
-          socket.send(JSON.stringify(reply));
-        } else handleRulesMessage(message);
+        // Already authenticated: a further `login` has nothing left to do.
+        if (message.type === 'login') return;
+        await dispatchMessage(messageHandlers, message, socket);
       } catch (err) {
         // Frames are validated above, so reaching here means the handler
         // itself threw — a bug, not a bad client. Surfaced rather than
@@ -1137,70 +899,6 @@ export async function startDashboardServer(
       }
     });
   });
-
-  /**
-   * Answers a `login` attempt from a not-yet-authenticated socket — pulled
-   * out of the `socket.on('message', ...)` handler both for its own sake
-   * (that handler was getting long) and to keep `loginInFlight`'s
-   * add/try/finally/delete dance visually separate from the message
-   * dispatch it's guarding.
-   */
-  async function handleLoginMessage(
-    socket: WebSocket,
-    ip: string,
-    message: Extract<DashboardClientMessage, { type: 'login' }>,
-  ): Promise<void> {
-    if (loginInFlight.has(socket)) return;
-    loginInFlight.add(socket);
-    try {
-      const hash = currentPasswordHash();
-      let verified: boolean;
-      try {
-        // No password configured: nothing to verify against, so `login` can
-        // only succeed where the dashboard is open — never where the access
-        // token is what protects it (issue #205), or a `login` with any
-        // string would get past it.
-        verified = hash ? await verifyPassword(message.password, hash) : !options.accessToken;
-      } catch {
-        // A crypto failure verifying the password is the server's problem,
-        // not proof the client is wrong — but it still needs *some*
-        // response. The outer `socket.on('message', ...)` handler's own
-        // catch would otherwise swallow this silently, stranding the socket
-        // locked out with no `authFailed` to prompt a retry.
-        verified = false;
-      }
-      if (verified) {
-        loginFailuresByIp.delete(ip);
-        releaseUnauthenticatedSlot(socket, ip);
-        authenticatedSockets.add(socket);
-        passwordVerifiedSockets.add(socket);
-        sendInitialPayload(socket);
-        return;
-      }
-      // Exponential backoff (issue #159) before even answering: makes each
-      // successive wrong guess from this IP slower than the last, on top of
-      // scrypt's own ~20ms+ per attempt — friction a plain
-      // `Math.min`-capped delay adds cheaply, well before the hard cutoff
-      // below ever kicks in.
-      const failures = recordLoginFailure(ip);
-      await sleep(Math.min(LOGIN_BACKOFF_BASE_MS * 2 ** (failures - 1), LOGIN_BACKOFF_MAX_MS));
-      // The socket (or the whole server) could have gone away during that
-      // delay — nothing left to answer or disconnect.
-      if (socket.readyState !== WebSocket.OPEN) return;
-      const authFailedMessage: DashboardServerMessage = { type: 'authFailed' };
-      socket.send(JSON.stringify(authFailedMessage));
-      // Issue #159's acceptance criterion: the 5th consecutive failure from
-      // an IP ends that socket outright, rather than leaving it free to
-      // keep guessing indefinitely — reconnecting doesn't help either,
-      // since `wss.on('connection', ...)` checks this same counter before a
-      // new socket is ever handed an `authRequired` at all.
-      if (failures >= MAX_LOGIN_FAILURES) {
-        socket.close(1008, 'Too many failed login attempts');
-      }
-    } finally {
-      loginInFlight.delete(socket);
-    }
-  }
 
   /**
    * Returns the session's `ruleEngine`, provisioning one via
@@ -1220,96 +918,29 @@ export async function startDashboardServer(
     return ruleEngine;
   }
 
-  function handleRulesMessage(message: DashboardClientMessage): void {
-    if (message.type === 'setRules') {
-      if (!ruleEngine) return broadcastError('RULES_WRITE_ERROR', 'No rules file is configured for this session.');
-      // Issue #161: refuse a `setRules` write that adds a brand-new `script`
-      // rule or changes an existing one's `path`, regardless of whether
-      // `--allow-scripts` is on — this closes the network-reachable half of
-      // the `setRules` → `script` → `require()` chain without touching the
-      // read side (a `script` rule already in rules.json keeps running,
-      // subject to `--allow-scripts`, however it got there). Checked before
-      // the `try` below since this is a validation failure, not a write
-      // failure — nothing has been written yet either way.
-      const scriptViolations = findRejectedScriptWrites(ruleEngine.getRules(), message.data.rules);
-      if (scriptViolations.length > 0) {
-        return broadcastError('RULES_WRITE_ERROR', scriptViolations.join('; '));
-      }
-      try {
-        // No `activeProfile` — clears `$activeProfile` on the written file
-        // even if `message.data` (the editor's own draft, synced from an
-        // earlier `rules` broadcast) still happened to carry one along.
-        // Editing and saving makes this a different, unnamed ruleset,
-        // regardless of what it used to match — see
-        // `RulesFile.$activeProfile`'s doc comment.
-        ruleEngine.write(message.data.rules);
-      } catch (err) {
-        broadcastError('RULES_WRITE_ERROR', describeError(err));
-      }
-    } else if (message.type === 'createRuleProfile') {
-      if (!ruleProfileStore) return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
-      try {
-        const data: RulesFile =
-          message.template === 'sample' ? (JSON.parse(SAMPLE_RULES_FILE) as RulesFile) : { rules: [] };
-        ruleProfileStore.write(message.name, data);
-        broadcast(ruleProfilesMessage());
-      } catch (err) {
-        broadcastError('RULE_PROFILE_ERROR', describeError(err));
-      }
-    } else if (message.type === 'saveActiveRulesAsProfile') {
-      if (!ruleEngine || !ruleProfileStore)
-        return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
-      try {
-        const rules = [...ruleEngine.getRules()];
-        ruleProfileStore.write(message.name, { rules });
-        // The active rules.json's *content* doesn't change here — only a
-        // new profile file, snapshotting it, does — but that content now
-        // does correspond to a named profile where a moment ago it may not
-        // have, so this marks it as such (see `RulesFile.$activeProfile`).
-        ruleEngine.write(rules, { activeProfile: message.name });
-        broadcast(ruleProfilesMessage());
-      } catch (err) {
-        broadcastError('RULE_PROFILE_ERROR', describeError(err));
-      }
-    } else if (message.type === 'applyRuleProfile') {
-      // Checked *before* `ensureRuleEngine()` — that call can have the real
-      // side effect of writing a rules file and starting a watcher on it
-      // (see `DashboardServerOptions.createRuleEngine`'s own doc comment);
-      // nothing about this request can succeed without `ruleProfileStore`
-      // regardless, so there's no reason to provision an engine only to
-      // then reject it.
-      if (!ruleProfileStore) return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
-      try {
-        // Inside the `try`, not before it: `ensureRuleEngine()` can throw
-        // (a `createRuleEngine` factory failing to write/load its rules
-        // file) just as readily as `engine.write()`/`ruleProfileStore.read()`
-        // below can — leaving it uncaught would silently drop the whole
-        // message (the outer `socket.on('message', ...)` handler's own
-        // catch exists only to survive a malformed frame, not to report a
-        // real failure), leaving the client with no `RULE_PROFILE_ERROR`
-        // and the dashboard looking stuck rather than told why.
-        const engine = ensureRuleEngine();
-        if (!engine) return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
-        const profileRules = ruleProfileStore.read(message.name).rules;
-        // Same reasoning as `setRules`'s own check above (issue #161):
-        // `applyRuleProfile` is an equally network-reachable way to change
-        // what's active, so it has to be gated the same way — a saved
-        // profile can (validly, and without any check of its own) carry a
-        // `script` rule from a time it was legitimately active, e.g. via
-        // `saveActiveRulesAsProfile` or a profile saved before this gate
-        // existed. Applying it back must not resurrect a `script` rule (or
-        // change its path) that isn't already active right now, exactly as
-        // `setRules` itself can't.
-        const scriptViolations = findRejectedScriptWrites(engine.getRules(), profileRules);
-        if (scriptViolations.length > 0) {
-          return broadcastError('RULE_PROFILE_ERROR', scriptViolations.join('; '));
-        }
-        engine.write(profileRules, { activeProfile: message.name });
-      } catch (err) {
-        broadcastError('RULE_PROFILE_ERROR', describeError(err));
-      }
-    }
-  }
+  const messageHandlers = createMessageHandlers({
+    eventBus,
+    rules: createRulesHandlers({
+      getRuleEngine: () => ruleEngine,
+      ensureRuleEngine,
+      ruleProfileStore,
+      broadcast,
+      broadcastError,
+      ruleProfilesMessage,
+    }),
+    broadcast,
+    broadcastError,
+    userConfigMessage,
+    sendUpdateInfoToAll,
+    persistUserConfig: (patch) => writeUserConfig(patch, options.userConfigPath),
+    onDashboardPasswordChanged: auth.onPasswordChanged,
+    startUpdate: (socket) => dashboardUpdates.start(socket),
+    refreshUpdateInfo: () => dashboardUpdates.refresh(),
+    setAdbReverse: (socket, enabled) => adbReverse?.setEnabled(socket, enabled) ?? false,
+    sendAdbReverseState,
+    replay: handleReplayMessage,
+    queryHistory: (query) => options.historyStore?.query(query),
+  });
 
   return new Promise((resolve, reject) => {
     httpServer.on('error', reject);
@@ -1424,8 +1055,4 @@ export async function startDashboardServer(
       );
     });
   });
-}
-
-function describeError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
