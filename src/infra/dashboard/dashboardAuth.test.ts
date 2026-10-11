@@ -36,6 +36,7 @@ function setup(overrides: Partial<DashboardAuthDeps> = {}) {
     accessToken: undefined,
     loadPasswordHash: () => null,
     sendInitialPayload,
+    sleep: async () => {},
     ...overrides,
   });
   return { auth, sendInitialPayload };
@@ -156,7 +157,29 @@ describe('dashboard auth (issue #207)', () => {
       const { auth, socket, req } = await admitted();
       for (let i = 0; i < 4; i++) await auth.handleLogin(socket, req, login('wrong'));
       await auth.handleLogin(socket, req, login('correct horse'));
+      // 4 + 4 failures would lock the IP out (limit 5) if the first 4 were still counted.
+      const next = socketOf();
+      const nextReq = requestFrom('10.0.0.1');
+      expect(auth.admitConnection(next, nextReq)).toBe('needs-login');
+      for (let i = 0; i < 4; i++) await auth.handleLogin(next, nextReq, login('wrong'));
       expect(auth.admitConnection(socketOf(), requestFrom('10.0.0.1'))).toBe('needs-login');
+    });
+
+    it('charges failures to the IP the socket was admitted under, even if `req` no longer says so', async () => {
+      const { auth, socket } = await admitted();
+      const gone = { url: '/ws', headers: {}, socket: {} } as unknown as IncomingMessage;
+      for (let i = 0; i < 5; i++) await auth.handleLogin(socket, gone, login('wrong'));
+      expect(auth.admitConnection(socketOf(), requestFrom('10.0.0.1'))).toBe('rejected');
+    });
+
+    it('does not let a login that began under the old password succeed after the password changed', async () => {
+      const { auth, socket, req, sendInitialPayload } = await admitted();
+      const attempt = auth.handleLogin(socket, req, login('correct horse'));
+      auth.onPasswordChanged('new-hash');
+      await attempt;
+      expect(auth.isAuthenticated(socket)).toBe(false);
+      expect(auth.isVerified(socket)).toBe(false);
+      expect(sendInitialPayload).not.toHaveBeenCalled();
     });
   });
 

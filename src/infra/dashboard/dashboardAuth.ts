@@ -28,6 +28,8 @@ export interface DashboardAuthDeps {
   loadPasswordHash: () => string | null;
   /** Sends the just-connected snapshot to a socket that has just authenticated. */
   sendInitialPayload: (socket: WebSocket) => void;
+  /** The wait before a failed login is answered (issue #159's backoff). Injectable so tests need not really wait. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** What `admitConnection` decided for a new socket. */
@@ -63,11 +65,12 @@ function clientIp(req: IncomingMessage): string {
   return req.socket.remoteAddress ?? 'unknown';
 }
 
-function sleep(ms: number): Promise<void> {
+function realSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
+  const sleep = deps.sleep ?? realSleep;
   // Issue #66's optional dashboard password: sockets that have proven they know the current password (or connected
   // while none was configured) live in this set. A `WeakSet` rather than a plain property on the socket so nothing
   // here needs to remember to clean up on close — an unreachable socket just falls out of it.
@@ -86,6 +89,11 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
   // Which sockets currently hold a counted slot in `unauthenticatedSocketCountByIp` — released exactly once,
   // whichever of "authenticated" or "closed" happens first, so the count never double-decrements.
   const unauthenticatedSlotSockets = new WeakSet<WebSocket>();
+  // The IP each admitted socket was counted under, fixed at admission: login must charge failures and release the
+  // slot against that same key, whatever `req` looks like by then.
+  const ipBySocket = new WeakMap<WebSocket, string>();
+  // Bumped on every password change, so a `login` that began under the old password can tell it has been revoked.
+  let passwordGeneration = 0;
 
   /** Releases `socket`'s counted slot (idempotent — a no-op if it never held one, or already released it). */
   function releaseUnauthenticatedSlot(socket: WebSocket, ip: string): void {
@@ -161,6 +169,7 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
     }
     unauthenticatedSocketCountByIp.set(ip, unauthenticatedCount + 1);
     unauthenticatedSlotSockets.add(socket);
+    ipBySocket.set(socket, ip);
     socket.once('close', () => releaseUnauthenticatedSlot(socket, ip));
     return 'needs-login';
   }
@@ -172,9 +181,10 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
   ): Promise<void> {
     if (loginInFlight.has(socket)) return;
     loginInFlight.add(socket);
-    const ip = clientIp(req);
+    const ip = ipBySocket.get(socket) ?? clientIp(req);
     try {
       const hash = currentPasswordHash();
+      const generation = passwordGeneration;
       let verified: boolean;
       try {
         // No password configured: nothing to verify against, so `login` can only succeed where the dashboard is open
@@ -186,6 +196,9 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
         // still needs *some* response, or the socket is stranded locked out with no `authFailed` to prompt a retry.
         verified = false;
       }
+      // The password was changed while this attempt was being verified: a proof against the old one is already
+      // revoked, so it must not authenticate the socket (or earn the right to a host-level update).
+      if (generation !== passwordGeneration) verified = false;
       if (verified) {
         loginFailuresByIp.delete(ip);
         releaseUnauthenticatedSlot(socket, ip);
@@ -223,12 +236,15 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
       // read happens to succeed — leaving a window, right after setting a password, where the config becoming
       // unreadable would still fail open.
       lastKnownPasswordHash = hash;
+      passwordGeneration++;
       // A session that logged in with the old password must not keep the right to run a host-level update after
       // it's been changed.
       passwordVerifiedSockets = new WeakSet<WebSocket>();
     },
     admitConnection,
-    authRequiredMessage: () => ({ type: 'authRequired', method: currentPasswordHash() ? 'password' : 'token' }),
+    // Uses the hash `admitConnection` just read, not a second read: the answer must agree with the admission
+    // decision even if the config changes in between.
+    authRequiredMessage: () => ({ type: 'authRequired', method: lastKnownPasswordHash ? 'password' : 'token' }),
     handleLogin,
   };
 }

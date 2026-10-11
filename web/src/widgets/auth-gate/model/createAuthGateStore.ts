@@ -6,8 +6,8 @@ export interface AuthGateState {
    * `'unknown'` until the very first server message arrives (indistinguishable
    * from "unlocked" for rendering purposes — see `AuthGate`'s doc comment).
    * `'locked'` once an `authRequired`/`authFailed` message arrives — no other
-   * message is ever sent to a socket in that state (see `dashboardServer.ts`'s
-   * `authenticatedSockets` gating), so anything else flips this to
+   * message is ever sent to a socket in that state (the server only sends to
+   * sockets `dashboardAuth.ts` has authenticated), so anything else flips this to
    * `'unlocked'` for good.
    */
   status: 'unknown' | 'locked' | 'unlocked';
