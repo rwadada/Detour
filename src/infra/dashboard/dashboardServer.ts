@@ -12,9 +12,6 @@ import type {
   ThrottleState,
 } from '../../domain/exchange/types';
 import { toResponsePatch, toWireExchange } from '../../domain/exchange/wireExchange';
-import { SAMPLE_RULES_FILE } from '../../domain/rules/sample';
-import { findRejectedScriptWrites } from '../../domain/rules/scriptGate';
-import type { RulesFile } from '../../domain/rules/types';
 import { RingBuffer } from '../../domain/shared/ringBuffer';
 import {
   PROTOCOL_VERSION,
@@ -39,13 +36,15 @@ import {
   tokensEqual,
   urlWithoutToken,
 } from '../../domain/auth/dashboardAccess';
-import { hashPassword, verifyPassword } from '../../domain/auth/passwordHash';
+import { verifyPassword } from '../../domain/auth/passwordHash';
 import type { UpdateService } from '../../domain/update/updateService';
 import { parseClientMessage } from '../../domain/dashboard/clientMessage';
 import { createControlDeps } from './controlBridge';
 import { startControlServer, type ControlServerHandle } from './controlServer';
 import type { AdbReverseWatcher } from '../adb/adbReverseWatcher';
 import { createDashboardAdbReverse } from './dashboardAdbReverse';
+import { createMessageHandlers, dispatchMessage } from './dashboardMessageHandlers';
+import { createRulesHandlers, describeError } from './dashboardRulesHandlers';
 import { createDashboardUpdates } from './dashboardUpdates';
 import { serveStatic } from './staticServer';
 
@@ -1054,78 +1053,9 @@ export async function startDashboardServer(
           return;
         }
 
-        if (message.type === 'breakpointResume') eventBus.emit('breakpointResume', message.command);
-        else if (message.type === 'setIntercept') eventBus.emit('setIntercept', message.enabled);
-        else if (message.type === 'setFocus') eventBus.emit('setFocus', message.hosts);
-        else if (message.type === 'setThrottle') eventBus.emit('setThrottle', message.state);
-        else if (message.type === 'setBlockHosts') eventBus.emit('setBlockHosts', message.state);
-        else if (message.type === 'startUpdate') socket.send(JSON.stringify(await dashboardUpdates.start(socket)));
-        else if (message.type === 'setAdbReverse') {
-          // `set` answers every client when it changes something; a refused one gets the state back so its switch snaps back.
-          if (!adbReverse?.setEnabled(socket, message.enabled)) sendAdbReverseState(socket);
-        } else if (message.type === 'checkUpdate') {
-          await dashboardUpdates.refresh();
-          sendUpdateInfoToAll();
-        } else if (message.type === 'replay') {
-          await handleReplayMessage(message);
-        } else if (message.type === 'setUserConfig') {
-          try {
-            writeUserConfig(message.state, options.userConfigPath);
-            broadcast(userConfigMessage());
-          } catch (err) {
-            broadcastError('USER_CONFIG_WRITE_ERROR', describeError(err));
-          }
-        } else if (message.type === 'setDashboardPassword') {
-          try {
-            if (message.password === '') {
-              // Silently accepting this would set a real, trivially-guessable
-              // password while `dashboardPasswordSet` reports "on" — worse
-              // than not setting one at all, since it looks protected.
-              throw new Error('Dashboard password must not be empty — pass null to remove it.');
-            }
-            const dashboardPasswordHash = message.password === null ? null : await hashPassword(message.password);
-            writeUserConfig({ dashboardPasswordHash }, options.userConfigPath);
-            // Updates `lastKnownPasswordHash` immediately rather than
-            // waiting for some future `currentPasswordHash()` call to catch
-            // up: without this, a password set here has no effect on
-            // `lastKnownPasswordHash`'s fail-closed fallback (see its own
-            // doc comment) until the next connect/login attempt happens to
-            // read it back successfully — leaving a window, right after
-            // setting a password, where the config becoming unreadable
-            // before that next read would still fail open.
-            lastKnownPasswordHash = dashboardPasswordHash;
-            // A session that logged in with the old password must not keep
-            // the right to run a host-level update after it's been changed.
-            passwordVerifiedSockets = new WeakSet<WebSocket>();
-            sendUpdateInfoToAll();
-            broadcast(userConfigMessage());
-          } catch (err) {
-            broadcastError('USER_CONFIG_WRITE_ERROR', describeError(err));
-          }
-        } else if (message.type === 'queryHistory') {
-          // Sent to the requesting socket only (never `broadcast`) — this
-          // answers one tab's own query, not a shared-state change every
-          // connected tab needs to hear about. Answered even with no
-          // `historyStore` (empty/`hasMore: false`) rather than dropped —
-          // see the wire type's own doc comment for why. A query failure
-          // (e.g. a corrupt DB file) must still answer with something,
-          // same reasoning — otherwise the requester's History UI is stuck
-          // showing `loading: true` forever with no way to know why.
-          let result: { items: CapturedExchange[]; hasMore: boolean };
-          try {
-            result = options.historyStore?.query(message.query) ?? { items: [], hasMore: false };
-          } catch (err) {
-            eventBus.emit('error', { errorKind: 'HISTORY_QUERY_ERROR', message: describeError(err) });
-            result = { items: [], hasMore: false };
-          }
-          const reply: DashboardServerMessage = {
-            type: 'historyResult',
-            requestId: message.requestId,
-            items: result.items.map(toWireExchange),
-            hasMore: result.hasMore,
-          };
-          socket.send(JSON.stringify(reply));
-        } else handleRulesMessage(message);
+        // Already authenticated: a further `login` has nothing left to do.
+        if (message.type === 'login') return;
+        await dispatchMessage(messageHandlers, message, socket);
       } catch (err) {
         // Frames are validated above, so reaching here means the handler
         // itself threw — a bug, not a bad client. Surfaced rather than
@@ -1220,96 +1150,39 @@ export async function startDashboardServer(
     return ruleEngine;
   }
 
-  function handleRulesMessage(message: DashboardClientMessage): void {
-    if (message.type === 'setRules') {
-      if (!ruleEngine) return broadcastError('RULES_WRITE_ERROR', 'No rules file is configured for this session.');
-      // Issue #161: refuse a `setRules` write that adds a brand-new `script`
-      // rule or changes an existing one's `path`, regardless of whether
-      // `--allow-scripts` is on — this closes the network-reachable half of
-      // the `setRules` → `script` → `require()` chain without touching the
-      // read side (a `script` rule already in rules.json keeps running,
-      // subject to `--allow-scripts`, however it got there). Checked before
-      // the `try` below since this is a validation failure, not a write
-      // failure — nothing has been written yet either way.
-      const scriptViolations = findRejectedScriptWrites(ruleEngine.getRules(), message.data.rules);
-      if (scriptViolations.length > 0) {
-        return broadcastError('RULES_WRITE_ERROR', scriptViolations.join('; '));
-      }
-      try {
-        // No `activeProfile` — clears `$activeProfile` on the written file
-        // even if `message.data` (the editor's own draft, synced from an
-        // earlier `rules` broadcast) still happened to carry one along.
-        // Editing and saving makes this a different, unnamed ruleset,
-        // regardless of what it used to match — see
-        // `RulesFile.$activeProfile`'s doc comment.
-        ruleEngine.write(message.data.rules);
-      } catch (err) {
-        broadcastError('RULES_WRITE_ERROR', describeError(err));
-      }
-    } else if (message.type === 'createRuleProfile') {
-      if (!ruleProfileStore) return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
-      try {
-        const data: RulesFile =
-          message.template === 'sample' ? (JSON.parse(SAMPLE_RULES_FILE) as RulesFile) : { rules: [] };
-        ruleProfileStore.write(message.name, data);
-        broadcast(ruleProfilesMessage());
-      } catch (err) {
-        broadcastError('RULE_PROFILE_ERROR', describeError(err));
-      }
-    } else if (message.type === 'saveActiveRulesAsProfile') {
-      if (!ruleEngine || !ruleProfileStore)
-        return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
-      try {
-        const rules = [...ruleEngine.getRules()];
-        ruleProfileStore.write(message.name, { rules });
-        // The active rules.json's *content* doesn't change here — only a
-        // new profile file, snapshotting it, does — but that content now
-        // does correspond to a named profile where a moment ago it may not
-        // have, so this marks it as such (see `RulesFile.$activeProfile`).
-        ruleEngine.write(rules, { activeProfile: message.name });
-        broadcast(ruleProfilesMessage());
-      } catch (err) {
-        broadcastError('RULE_PROFILE_ERROR', describeError(err));
-      }
-    } else if (message.type === 'applyRuleProfile') {
-      // Checked *before* `ensureRuleEngine()` — that call can have the real
-      // side effect of writing a rules file and starting a watcher on it
-      // (see `DashboardServerOptions.createRuleEngine`'s own doc comment);
-      // nothing about this request can succeed without `ruleProfileStore`
-      // regardless, so there's no reason to provision an engine only to
-      // then reject it.
-      if (!ruleProfileStore) return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
-      try {
-        // Inside the `try`, not before it: `ensureRuleEngine()` can throw
-        // (a `createRuleEngine` factory failing to write/load its rules
-        // file) just as readily as `engine.write()`/`ruleProfileStore.read()`
-        // below can — leaving it uncaught would silently drop the whole
-        // message (the outer `socket.on('message', ...)` handler's own
-        // catch exists only to survive a malformed frame, not to report a
-        // real failure), leaving the client with no `RULE_PROFILE_ERROR`
-        // and the dashboard looking stuck rather than told why.
-        const engine = ensureRuleEngine();
-        if (!engine) return broadcastError('RULE_PROFILE_ERROR', 'Rule profiles are unavailable.');
-        const profileRules = ruleProfileStore.read(message.name).rules;
-        // Same reasoning as `setRules`'s own check above (issue #161):
-        // `applyRuleProfile` is an equally network-reachable way to change
-        // what's active, so it has to be gated the same way — a saved
-        // profile can (validly, and without any check of its own) carry a
-        // `script` rule from a time it was legitimately active, e.g. via
-        // `saveActiveRulesAsProfile` or a profile saved before this gate
-        // existed. Applying it back must not resurrect a `script` rule (or
-        // change its path) that isn't already active right now, exactly as
-        // `setRules` itself can't.
-        const scriptViolations = findRejectedScriptWrites(engine.getRules(), profileRules);
-        if (scriptViolations.length > 0) {
-          return broadcastError('RULE_PROFILE_ERROR', scriptViolations.join('; '));
-        }
-        engine.write(profileRules, { activeProfile: message.name });
-      } catch (err) {
-        broadcastError('RULE_PROFILE_ERROR', describeError(err));
-      }
-    }
-  }
+  const messageHandlers = createMessageHandlers({
+    eventBus,
+    rules: createRulesHandlers({
+      getRuleEngine: () => ruleEngine,
+      ensureRuleEngine,
+      ruleProfileStore,
+      broadcast,
+      broadcastError,
+      ruleProfilesMessage,
+    }),
+    broadcast,
+    broadcastError,
+    userConfigMessage,
+    sendUpdateInfoToAll,
+    persistUserConfig: (patch) => writeUserConfig(patch, options.userConfigPath),
+    onDashboardPasswordChanged: (hash) => {
+      // Updates `lastKnownPasswordHash` immediately rather than waiting for some future `currentPasswordHash()`
+      // call to catch up: without this, a password set here has no effect on `lastKnownPasswordHash`'s
+      // fail-closed fallback (see its own doc comment) until the next connect/login attempt happens to read it
+      // back successfully — leaving a window, right after setting a password, where the config becoming
+      // unreadable before that next read would still fail open.
+      lastKnownPasswordHash = hash;
+      // A session that logged in with the old password must not keep the right to run a host-level update
+      // after it's been changed.
+      passwordVerifiedSockets = new WeakSet<WebSocket>();
+    },
+    startUpdate: (socket) => dashboardUpdates.start(socket),
+    refreshUpdateInfo: () => dashboardUpdates.refresh(),
+    setAdbReverse: (socket, enabled) => adbReverse?.setEnabled(socket, enabled) ?? false,
+    sendAdbReverseState,
+    replay: handleReplayMessage,
+    queryHistory: (query) => options.historyStore?.query(query),
+  });
 
   return new Promise((resolve, reject) => {
     httpServer.on('error', reject);
@@ -1424,8 +1297,4 @@ export async function startDashboardServer(
       );
     });
   });
-}
-
-function describeError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
