@@ -650,17 +650,12 @@ async function dashboardTlsKeyCert(
 }
 
 /**
- * `--headless` (issue #20) skips this entirely: CI/scripted use has no need for the web dashboard. The *requested*
- * port (0 for an ephemeral `--dashboard-port 0` or `--port 0`) is returned separately from the handle's real
- * OS-assigned port — `shouldAutoOpenDashboard` needs the former to recognize the ephemeral-port case it excludes.
+ * `--headless` (issue #20) skips this entirely: CI/scripted use has no need for the web dashboard.
+ * `requestedDashboardPort` is what `runStartBody` resolved up front (0 for an ephemeral `--dashboard-port 0` or
+ * `--port 0`); the handle's own port is the real OS-assigned one.
  */
-async function startDashboard(
-  ctx: SessionContext,
-): Promise<{ dashboardHandle: DashboardHandle; requestedDashboardPort: number }> {
-  const { port, controlPort, options, eventBus, resources, ruleEngine, handle } = ctx;
-  // Resolved only when actually needed: eagerly (outside the headless check), a `--port` close enough to 65535
-  // that only its +1000 offset would overflow could fail this validation even under `--headless`.
-  const requestedDashboardPort = resolveDashboardPort(port, options.dashboardPort);
+async function startDashboard(ctx: SessionContext, requestedDashboardPort: number): Promise<DashboardHandle> {
+  const { controlPort, options, eventBus, resources, ruleEngine, handle } = ctx;
   try {
     // Inside the `try` so a failure here — the CA load or the leaf keygen — hits the same "proxy's already up,
     // don't leave it running" cleanup below as a `startDashboardServer` failure does, instead of leaking the proxy.
@@ -715,7 +710,7 @@ async function startDashboard(
     // something a LAN client should be able to reach by asking the proxy to relay to it. It always binds
     // 127.0.0.1, so that is the address (and no other family's listener on the same port number is mistaken for it).
     if (dashboardHandle.controlPort !== undefined) handle.protectLocalPort(dashboardHandle.controlPort, '127.0.0.1');
-    return { dashboardHandle, requestedDashboardPort };
+    return dashboardHandle;
   } catch (err) {
     // The proxy is already up and intercepting traffic at this point — don't leave it running (and the process
     // alive) just because the dashboard failed to bind its port.
@@ -883,57 +878,66 @@ async function runStartBody({
   const eventBus = new DetourEventBus();
   attachConsoleLogging(eventBus, resources);
   const ruleEngine = loadStartupRuleEngine(options, eventBus);
+  // From here on, a failed startup must close the rule engine: its file watcher would otherwise keep the process
+  // alive on its own, with nothing listening — "failed to start" has to end the process, not leave it hanging.
+  try {
+    const dashboardHost = resolveDashboardHost(options);
+    const dashboardTls = resolveDashboardTls(options, dashboardHost);
+    // Issue #205. No dashboard under `--headless`, so no token to make or print.
+    const dashboardToken = headless ? undefined : resolveDashboardToken();
+    const dashboardPasswordSet = readDashboardPasswordSet();
+    // Resolved (and validated) before the proxy binds, so a bad `--dashboard-port` — or a `--port` close enough to
+    // 65535 that only its +1000 offset overflows — fails startup with nothing left running. Not under `--headless`,
+    // where no dashboard port is ever bound and such a `--port` must keep working.
+    const requestedDashboardPort = headless ? undefined : resolveDashboardPort(port, options.dashboardPort);
+    const handle = await startProxy({ port, options, eventBus, resources }, ruleEngine);
 
-  const dashboardHost = resolveDashboardHost(options);
-  const dashboardTls = resolveDashboardTls(options, dashboardHost);
-  // Issue #205. No dashboard under `--headless`, so no token to make or print.
-  const dashboardToken = headless ? undefined : resolveDashboardToken();
-  const dashboardPasswordSet = readDashboardPasswordSet();
-  const handle = await startProxy({ port, options, eventBus, resources }, ruleEngine);
+    const ctx: SessionContext = {
+      port,
+      headless,
+      trackRunState,
+      controlPort,
+      options,
+      eventBus,
+      resources,
+      ruleEngine,
+      handle,
+      dashboardHost,
+      dashboardTls,
+      dashboardToken,
+      bannerToken: dashboardPasswordSet ? undefined : dashboardToken,
+      dashboardPasswordSet,
+      lanAddrs: lanAddresses(),
+    };
+    const dashboardHandle =
+      requestedDashboardPort === undefined ? undefined : await startDashboard(ctx, requestedDashboardPort);
 
-  const ctx: SessionContext = {
-    port,
-    headless,
-    trackRunState,
-    controlPort,
-    options,
-    eventBus,
-    resources,
-    ruleEngine,
-    handle,
-    dashboardHost,
-    dashboardTls,
-    dashboardToken,
-    bannerToken: dashboardPasswordSet ? undefined : dashboardToken,
-    dashboardPasswordSet,
-    lanAddrs: lanAddresses(),
-  };
-  const { dashboardHandle, requestedDashboardPort } = headless
-    ? { dashboardHandle: undefined, requestedDashboardPort: undefined }
-    : await startDashboard(ctx);
+    if (trackRunState) await recordRunState(ctx, dashboardHandle);
 
-  if (trackRunState) await recordRunState(ctx, dashboardHandle);
+    // Single-use: removed only now that every fallible startup step has succeeded, so a start that fails partway
+    // loses nothing (under `--headless` there is no dashboard to resume into, so it is just dropped).
+    if (resources.resumingBacklog) discardBacklogSnapshot(port);
 
-  // Single-use: removed only now that every fallible startup step has succeeded, so a start that fails partway
-  // loses nothing (under `--headless` there is no dashboard to resume into, so it is just dropped).
-  if (resources.resumingBacklog) discardBacklogSnapshot(port);
+    // Deliberately after every fallible startup step above (dashboard bind, run-state write) has committed —
+    // opening a browser tab and then tearing the dashboard back down moments later because one of those failed
+    // would just leave the user staring at a connection-refused page.
+    if (
+      dashboardHandle &&
+      requestedDashboardPort !== undefined &&
+      shouldAutoOpenDashboard({ open: options.open, dashboardPort: requestedDashboardPort, built: isDashboardBuilt() })
+    ) {
+      openBrowser(
+        `${dashboardTls ? 'https' : 'http'}://localhost:${dashboardHandle.port}${tokenLandingPath(ctx.bannerToken)}`,
+      );
+    }
 
-  // Deliberately after every fallible startup step above (dashboard bind, run-state write) has committed —
-  // opening a browser tab and then tearing the dashboard back down moments later because one of those failed
-  // would just leave the user staring at a connection-refused page.
-  if (
-    dashboardHandle &&
-    requestedDashboardPort !== undefined &&
-    shouldAutoOpenDashboard({ open: options.open, dashboardPort: requestedDashboardPort, built: isDashboardBuilt() })
-  ) {
-    openBrowser(
-      `${dashboardTls ? 'https' : 'http'}://localhost:${dashboardHandle.port}${tokenLandingPath(ctx.bannerToken)}`,
-    );
+    printBanner(ctx, dashboardHandle);
+    announceReady(handle, dashboardHandle);
+    installShutdown(ctx, dashboardHandle, exitOnIdleMs);
+  } catch (err) {
+    ruleEngine?.close();
+    throw err;
   }
-
-  printBanner(ctx, dashboardHandle);
-  announceReady(handle, dashboardHandle);
-  installShutdown(ctx, dashboardHandle, exitOnIdleMs);
 }
 
 /** Whether `npm run build` has produced a dashboard SPA to serve — shared by the startup banner's "not built yet" message and the `--open` auto-launch's decision not to open a blank page. */
