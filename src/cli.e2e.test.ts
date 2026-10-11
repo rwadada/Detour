@@ -2875,6 +2875,20 @@ describe('detour start (CLI, end-to-end)', () => {
       expect(result.stderr).toContain('--proxy-auth must be in the form <user>:<pass>');
     });
 
+    it('rejects a dashboard port that cannot be derived before any server is up, so nothing is left listening (#207)', async () => {
+      // `--port 65000` + 1000 overflows. The failure used to surface only after the proxy had bound 65000, leaving
+      // a process alive on it; `runTsx` resolving at all (the run ends) is part of what this asserts.
+      const result = await runTsx(['src/cli.ts', 'start', '--port', '65000', '--no-open'], {
+        cwd: REPO_ROOT,
+        reject: false,
+        timeout: 15_000,
+      });
+      expect(result.timedOut).toBeFalsy();
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain('would exceed the maximum port 65535');
+      expect(result.stdout).not.toContain('DETOUR_READY');
+    });
+
     it('persists credentials via `detour config --proxy-auth` (hashed) and applies them to a later start', async () => {
       home = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-proxy-auth-e2e-'));
       const env = { HOME: home, USERPROFILE: home };

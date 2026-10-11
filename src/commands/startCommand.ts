@@ -389,18 +389,61 @@ interface RunStartBodyContext {
   options: StartOptions;
 }
 
-async function runStartBody({
-  port,
-  headless,
-  exitOnIdleMs,
-  trackRunState,
-  controlPort,
-  options,
-}: RunStartBodyContext): Promise<void> {
-  // Without `--resume-backlog`, a snapshot left by an update that never got to
-  // relaunch is dropped rather than left on disk holding decrypted traffic.
-  // With it, the file is only removed once startup has succeeded (see below),
-  // so a start that fails to bind doesn't lose the traffic it was meant to resume.
+type ProxyHandle = Awaited<ReturnType<typeof startProxyServer>>;
+type DashboardHandle = Awaited<ReturnType<typeof startDashboardServer>>;
+
+/**
+ * What `runStartBody` reads or opens before any server comes up. Every step validates eagerly, for the same
+ * reason: a bad flag, file or schema should fail CLI startup with a clear error, rather than every request or
+ * exchange thereafter silently degrading.
+ */
+interface StartResources {
+  resumingBacklog: boolean;
+  resumedBacklog: ReturnType<typeof readBacklogSnapshot> | undefined;
+  dumpLevel: ReturnType<typeof parseDumpLevel>;
+  dumpDir: string | undefined;
+  protoRegistry: ProtoRegistry | undefined;
+  upstreamTls: ReturnType<typeof resolveUpstreamTlsOptions>;
+  proxyAuth: ProxyAuthCredentials | undefined;
+  historyStore: HistoryStore | undefined;
+  historyDbPath: string | undefined;
+}
+
+/** What every step after the proxy is up needs to know — assembled once by `runStartBody`. */
+interface SessionContext {
+  port: number;
+  headless: boolean;
+  trackRunState: boolean;
+  controlPort: number | undefined;
+  options: StartOptions;
+  eventBus: DetourEventBus;
+  resources: StartResources;
+  ruleEngine: RuleEngine | undefined;
+  handle: ProxyHandle;
+  dashboardHost: string;
+  dashboardTls: boolean;
+  /** The access token (issue #205); undefined under `--headless`, which has no dashboard to protect. */
+  dashboardToken: string | undefined;
+  /** What goes into the URLs printed/opened: with a password configured, that password is the secret instead and the URL stays plain. */
+  bannerToken: string | undefined;
+  dashboardPasswordSet: boolean;
+  /**
+   * Computed once and reused everywhere (Copilot review, PR #175) — the dashboard's TLS cert SAN, the CSWSH
+   * allowlist `startDashboardServer` builds from its own `lanAddresses` option, and the startup banner's
+   * "Reachable on your network at" list all need to agree on the exact same set. `os.networkInterfaces()` is a
+   * live snapshot; reading it separately could observe a NIC coming up or down in between.
+   */
+  lanAddrs: ReturnType<typeof lanAddresses>;
+}
+
+async function prepareStartResources(
+  port: number,
+  trackRunState: boolean,
+  options: StartOptions,
+): Promise<StartResources> {
+  // Without `--resume-backlog`, a snapshot left by an update that never got to relaunch is dropped rather than
+  // left on disk holding decrypted traffic. With it, the file is only removed once startup has succeeded (see
+  // `runStartBody`), so a start that fails to bind doesn't lose the traffic it was meant to resume.
   const resumingBacklog = trackRunState && (options.resumeBacklog ?? false);
   const resumedBacklog = resumingBacklog ? readBacklogSnapshot(port) : undefined;
   if (trackRunState && !resumingBacklog) discardBacklogSnapshot(port);
@@ -408,22 +451,15 @@ async function runStartBody({
   const dumpLevel = parseDumpLevel(options.dump);
   const dumpDir = dumpLevel === 'file' ? resolveDumpDir() : undefined;
 
-  // Loaded eagerly (like rules.json below) so a broken .proto schema fails
-  // CLI startup with a clear error, rather than every gRPC exchange
-  // silently falling back to "no --proto configured" for the whole session.
+  // A broken .proto schema fails startup, rather than every gRPC exchange silently falling back to "no --proto".
   const protoRegistry = options.proto.length > 0 ? await ProtoRegistry.load(options.proto) : undefined;
 
-  // Validated eagerly (same reasoning) so a malformed/unsupported
-  // `--upstream-proxy` URL fails CLI startup with a clear error rather than
-  // every proxied request thereafter silently failing to connect.
+  // A malformed/unsupported `--upstream-proxy` URL fails startup rather than every proxied request failing to connect.
   if (options.upstreamProxy) validateUpstreamProxyUrl(options.upstreamProxy);
 
-  // Reads (and validates) every `--upstream-ca`/`--client-cert`/
-  // `--client-key` file eagerly, same reasoning as `--upstream-proxy` above
-  // (issue #160) — a missing/unreadable file, or a lone `--client-cert`
-  // without its `--client-key`, fails CLI startup loudly instead of every
-  // HTTPS request thereafter silently not getting the trust/identity it was
-  // told to have.
+  // Reads (and validates) every `--upstream-ca`/`--client-cert`/`--client-key` file (issue #160) — a missing or
+  // unreadable file, or a lone `--client-cert` without its `--client-key`, fails startup loudly instead of every
+  // HTTPS request thereafter silently not getting the trust/identity it was told to have.
   const upstreamTls = resolveUpstreamTlsOptions({
     upstreamCaPaths: options.upstreamCa,
     insecureUpstream: options.insecureUpstream,
@@ -431,15 +467,12 @@ async function runStartBody({
     clientKeyPath: options.clientKey,
   });
 
-  // Resolved (and validated) eagerly for the same reason: a malformed
-  // `--proxy-auth` value should fail CLI startup loudly rather than start a
-  // proxy nobody — including its owner — can authenticate against.
+  // A malformed `--proxy-auth` value should fail loudly rather than start a proxy nobody — including its owner —
+  // can authenticate against.
   const proxyAuth = await resolveProxyAuth(options);
 
-  // Opened eagerly (same reasoning as rules.json/`.proto` above) so a bad
-  // `--persist` path (unwritable directory, an unsupported Node runtime)
-  // fails CLI startup with a clear error rather than every exchange
-  // thereafter silently going unpersisted.
+  // A bad `--persist` path (unwritable directory, an unsupported Node runtime) fails startup rather than every
+  // exchange thereafter silently going unpersisted.
   let historyStore: HistoryStore | undefined;
   let historyDbPath: string | undefined;
   if (options.persist) {
@@ -450,32 +483,45 @@ async function runStartBody({
     historyStore = openHistoryStore(historyDbPath);
   }
 
-  const eventBus = new DetourEventBus();
+  return {
+    resumingBacklog,
+    resumedBacklog,
+    dumpLevel,
+    dumpDir,
+    protoRegistry,
+    upstreamTls,
+    proxyAuth,
+    historyStore,
+    historyDbPath,
+  };
+}
+
+/** Console output, dump files and history recording for what flows through the proxy. */
+function attachConsoleLogging(
+  eventBus: DetourEventBus,
+  { dumpLevel, dumpDir, protoRegistry, historyStore }: StartResources,
+): void {
   eventBus.on('response', (exchange) => {
     logExchange(exchange);
-    // Decoding (and, for a compressed frame, decompressing) every gRPC
-    // message is real work — skip it entirely at the default `summary`
-    // level, where the result would never be printed or written anyway.
+    // Decoding (and, for a compressed frame, decompressing) every gRPC message is real work — skip it entirely at
+    // the default `summary` level, where the result would never be printed or written anyway.
     const grpcInfo = dumpLevel !== 'summary' ? buildGrpcExchangeInfo(exchange, protoRegistry) : undefined;
     if (dumpLevel === 'full') {
       logExchangeFull(exchange);
       if (grpcInfo) logGrpcSection(grpcInfo);
     }
     if (dumpDir) writeExchangeDumpFile(exchange, dumpDir, grpcInfo);
-    // A write failure here (disk full, corrupt/locked DB) must not throw
-    // out of this listener — it runs synchronously inside the proxy's own
-    // 'response' emit, so an uncaught exception would crash the whole
-    // running proxy and drop the live session over a feature that is only
-    // supposed to be a side effect of it.
+    // A write failure here (disk full, corrupt/locked DB) must not throw out of this listener — it runs
+    // synchronously inside the proxy's own 'response' emit, so an uncaught exception would crash the whole
+    // running proxy and drop the live session over a feature that is only supposed to be a side effect of it.
     try {
       historyStore?.record(exchange);
     } catch (err) {
       eventBus.emit('error', { errorKind: 'HISTORY_RECORD_ERROR', message: describeError(err) });
     }
   });
-  // Logged once the WebSocket connection closes (its one clear "done"
-  // point), mirroring 'response' above — not on every frame, which would
-  // spam the console for a chatty socket.
+  // Logged once the WebSocket connection closes (its one clear "done" point), mirroring 'response' above — not on
+  // every frame, which would spam the console for a chatty socket.
   eventBus.on('wsClose', (connection) => {
     logWebSocketConnection(connection);
     if (dumpLevel === 'full') logWebSocketFull(connection);
@@ -487,44 +533,77 @@ async function runStartBody({
     logUnreachableRuleWarnings(unreachableWarnings);
     logScriptGateWarnings(scriptWarnings);
   });
+}
 
-  let ruleEngine: RuleEngine | undefined;
+/** Loads `filePath` as the session's rules and reports reloads on the event bus. */
+function loadRuleEngine(filePath: string, options: StartOptions, eventBus: DetourEventBus): RuleEngine {
+  const engine: RuleEngine = RuleEngine.load({
+    filePath,
+    reader: fsRulesFileReader,
+    writer: fsRulesFileWriter,
+    watcher: fsFileWatcher,
+    allowExternalScriptPaths: options.allowExternalScriptPaths ?? false,
+    allowScripts: options.allowScripts ?? false,
+    onReload: (info) =>
+      eventBus.emit('rulesReloaded', {
+        filePath: engine.filePath,
+        ruleCount: info.ruleCount,
+        unreachableWarnings: info.unreachableWarnings,
+        scriptWarnings: info.scriptWarnings,
+      }),
+    onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
+  });
+  return engine;
+}
+
+/** `--rules`, or a `DEFAULT_RULES_FILENAME` found in the working directory. Loaded eagerly so a broken file fails startup. */
+function loadStartupRuleEngine(options: StartOptions, eventBus: DetourEventBus): RuleEngine | undefined {
   const autoDetected = !options.rules && fs.existsSync(path.resolve(process.cwd(), DEFAULT_RULES_FILENAME));
   const rulesPath = options.rules ?? (autoDetected ? DEFAULT_RULES_FILENAME : undefined);
-  if (rulesPath) {
-    if (autoDetected)
-      console.log(`ℹ Found ${DEFAULT_RULES_FILENAME}, loading it as rules (pass --rules to use a different file)`);
-    // Load eagerly so a broken rules.json fails CLI startup with a clear
-    // error, rather than the proxy silently starting without any rules.
-    ruleEngine = RuleEngine.load({
-      filePath: rulesPath,
-      reader: fsRulesFileReader,
-      writer: fsRulesFileWriter,
-      watcher: fsFileWatcher,
-      allowExternalScriptPaths: options.allowExternalScriptPaths ?? false,
-      allowScripts: options.allowScripts ?? false,
-      onReload: (info) =>
-        eventBus.emit('rulesReloaded', {
-          filePath: ruleEngine!.filePath,
-          ruleCount: info.ruleCount,
-          unreachableWarnings: info.unreachableWarnings,
-          scriptWarnings: info.scriptWarnings,
-        }),
-      onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
-    });
-  }
+  if (!rulesPath) return undefined;
+  if (autoDetected)
+    console.log(`ℹ Found ${DEFAULT_RULES_FILENAME}, loading it as rules (pass --rules to use a different file)`);
+  // Load eagerly so a broken rules.json fails CLI startup with a clear error, rather than the proxy silently
+  // starting without any rules.
+  return loadRuleEngine(rulesPath, options, eventBus);
+}
 
-  const dashboardHost = resolveDashboardHost(options);
-  const dashboardTls = resolveDashboardTls(options, dashboardHost);
-  // Issue #205. No dashboard under `--headless`, so no token to make or print.
-  const dashboardToken = headless ? undefined : resolveDashboardToken();
-  const dashboardPasswordSet = readDashboardPasswordSet();
-  // What goes into the URLs printed/opened: with a password configured, that
-  // password is the secret instead and the URL stays plain.
-  const bannerToken = dashboardPasswordSet ? undefined : dashboardToken;
-  let handle: Awaited<ReturnType<typeof startProxyServer>>;
+/**
+ * Provisions a `RuleEngine` for a session that started with none — see `DashboardServerOptions.createRuleEngine`'s
+ * own doc comment (issue #123). Bootstraps `DEFAULT_RULES_FILENAME` with an empty ruleset so `RuleEngine.load`
+ * (which reads its file eagerly) has something valid to read *only if the file doesn't already exist* — a session
+ * with no rules just means its own startup didn't load one, not that nothing has been written there since (by hand,
+ * or another process) with content this shouldn't clobber. Whatever's already there, valid or not, is what
+ * `RuleEngine.load` sees; a validation failure now surfaces as a normal `RULE_PROFILE_ERROR` instead of being
+ * silently overwritten. Once loaded, the caller's very next `RuleEngine.write()` (applying the profile that
+ * triggered this in the first place) overwrites it with real content regardless. Also wires the new engine into
+ * the already-running proxy (see `ProxyServerHandle.setRuleEngine`) — without that, the dashboard would show a
+ * profile as "applied" while the proxy quietly kept treating every request as ruleless passthrough.
+ */
+function createDefaultRuleEngine(options: StartOptions, eventBus: DetourEventBus, handle: ProxyHandle): RuleEngine {
+  const filePath = path.resolve(process.cwd(), DEFAULT_RULES_FILENAME);
+  // Tracked rather than assumed: the file may already exist if something other than this session created it
+  // between startup and now — the log message shouldn't claim to have "created" it when it just picked it up.
+  const bootstrapped = !fs.existsSync(filePath);
+  if (bootstrapped) fsRulesFileWriter.write(filePath, { rules: [] });
+  const engine = loadRuleEngine(filePath, options, eventBus);
+  console.log(
+    bootstrapped
+      ? `ℹ Created ${DEFAULT_RULES_FILENAME} to apply this rule profile (auto-loaded from now on; pass --rules to use a different file)`
+      : `ℹ Loaded existing ${DEFAULT_RULES_FILENAME} to apply this rule profile (auto-loaded from now on; pass --rules to use a different file)`,
+  );
+  logUnreachableRuleWarnings(engine.getUnreachableWarnings());
+  logScriptGateWarnings(engine.getScriptWarnings());
+  handle.setRuleEngine(engine);
+  return engine;
+}
+
+async function startProxy(
+  { port, options, eventBus, resources }: Pick<SessionContext, 'port' | 'options' | 'eventBus' | 'resources'>,
+  ruleEngine: RuleEngine | undefined,
+): Promise<ProxyHandle> {
   try {
-    handle = await startProxyServer(
+    return await startProxyServer(
       {
         port,
         host: PROXY_HOST,
@@ -532,297 +611,196 @@ async function runStartBody({
         http2Enabled: options.http2,
         http2UpstreamEnabled: options.http2Upstream,
         upstreamProxyUrl: options.upstreamProxy,
-        proxyAuth,
-        upstreamTls,
+        proxyAuth: resources.proxyAuth,
+        upstreamTls: resources.upstreamTls,
         scriptTimeoutMs: parseScriptTimeoutMs(options.scriptTimeoutMs),
       },
       eventBus,
     );
   } catch (err) {
-    // `historyStore` was opened above, before the proxy itself — a bind
-    // failure here (e.g. the port's already in use) shouldn't leave its
-    // SQLite file handle open (and, on some platforms, locked) for a
-    // startup that's about to fail outright. Same shutdown-before-rethrow
-    // shape as the dashboard bind/run-state-write failures below.
-    historyStore?.close();
+    // `historyStore` was opened before the proxy itself — a bind failure here (e.g. the port's already in use)
+    // shouldn't leave its SQLite file handle open (and, on some platforms, locked) for a startup that's about to
+    // fail outright. Same shutdown-before-rethrow shape as the dashboard bind/run-state-write failures.
+    resources.historyStore?.close();
     throw err;
   }
+}
 
-  /**
-   * Provisions a `RuleEngine` for a session that started with none — see
-   * `DashboardServerOptions.createRuleEngine`'s own doc comment (issue
-   * #123). Bootstraps `DEFAULT_RULES_FILENAME` with an empty ruleset so
-   * `RuleEngine.load` (which reads its file eagerly) has something valid to
-   * read *only if the file doesn't already exist* — `!rulesPath` above just
-   * means this session's own startup didn't load one, not that nothing has
-   * been written there since (by hand, or another process) with content
-   * this shouldn't clobber. Whatever's already there, valid or not, is what
-   * `RuleEngine.load` sees; a validation failure now surfaces as a normal
-   * `RULE_PROFILE_ERROR` (see `ensureRuleEngine`'s own doc comment in
-   * dashboardServer.ts) instead of being silently overwritten. Once loaded,
-   * the caller's very next `RuleEngine.write()` (applying the profile that
-   * triggered this in the first place) overwrites it with real content
-   * regardless, so an empty ruleset bootstrapped here is never actually
-   * visible to a client. Also wires the new engine into the already-running
-   * proxy (see `ProxyServerHandle.setRuleEngine`'s own doc comment) —
-   * without that, the dashboard would show a profile as "applied" while the
-   * proxy quietly kept treating every request as ruleless passthrough.
-   */
-  function createDefaultRuleEngine(): RuleEngine {
-    const filePath = path.resolve(process.cwd(), DEFAULT_RULES_FILENAME);
-    // Tracked rather than assumed: the file may already exist (see the
-    // `!fs.existsSync` guard just below, and its own doc comment above) if
-    // something other than this session created it between startup and now
-    // — the log message right after this shouldn't claim to have "created"
-    // it when it actually just picked up what was already there.
-    const bootstrapped = !fs.existsSync(filePath);
-    if (bootstrapped) fsRulesFileWriter.write(filePath, { rules: [] });
-    const engine = RuleEngine.load({
-      filePath,
-      reader: fsRulesFileReader,
-      writer: fsRulesFileWriter,
-      watcher: fsFileWatcher,
-      allowExternalScriptPaths: options.allowExternalScriptPaths ?? false,
-      allowScripts: options.allowScripts ?? false,
-      onReload: (info) =>
-        eventBus.emit('rulesReloaded', {
-          filePath,
-          ruleCount: info.ruleCount,
-          unreachableWarnings: info.unreachableWarnings,
-          scriptWarnings: info.scriptWarnings,
-        }),
-      onReloadError: (message) => eventBus.emit('error', { errorKind: 'RULES_RELOAD_ERROR', message }),
-    });
-    console.log(
-      bootstrapped
-        ? `ℹ Created ${DEFAULT_RULES_FILENAME} to apply this rule profile (auto-loaded from now on; pass --rules to use a different file)`
-        : `ℹ Loaded existing ${DEFAULT_RULES_FILENAME} to apply this rule profile (auto-loaded from now on; pass --rules to use a different file)`,
-    );
-    logUnreachableRuleWarnings(engine.getUnreachableWarnings());
-    logScriptGateWarnings(engine.getScriptWarnings());
-    handle.setRuleEngine(engine);
-    return engine;
-  }
+/**
+ * The dashboard's own leaf certificate, when `--dashboard-tls` is on: reuses the same on-disk CA the proxy already
+ * loaded/created (`CertAuthority.load` is a plain disk read once it exists — see `resolveCertDir`), minted into one
+ * leaf cert whose SAN covers every LAN address this dashboard might be reached at, alongside localhost/127.0.0.1/::1
+ * — matching `computeAllowedHostnames`'s own allowlist (issue #159). LAN addresses are only actually reachable when
+ * the dashboard is bound to every interface (`--lan`), so they are not added otherwise (Copilot review, PR #175).
+ */
+async function dashboardTlsKeyCert(
+  dashboardHost: string,
+  lanAddrs: ReturnType<typeof lanAddresses>,
+): Promise<{ key: string; cert: string }> {
+  const dashboardCa = await CertAuthority.load(resolveCertDir());
+  // A separate `CertAuthority` instance from the proxy's own — its leaf keypair isn't shared, so it needs its own
+  // `warmUp()` before minting (issue #164's `getLeafKeys()` throws otherwise).
+  await dashboardCa.warmUp();
+  return dashboardCa.getMultiHostKeyCert([
+    'localhost',
+    '127.0.0.1',
+    '::1',
+    ...(dashboardHost === '0.0.0.0' ? lanAddrs : []),
+  ]);
+}
 
-  // Computed once and reused everywhere below (Copilot review, PR #175) —
-  // the dashboard's TLS cert SAN, the CSWSH allowlist `startDashboardServer`
-  // builds from its own `lanAddresses` option, and the startup banner's
-  // "Reachable on your network at" list all need to agree on the exact same
-  // set. `os.networkInterfaces()` is a live snapshot; calling it three
-  // separate times could in principle observe a NIC coming up or down
-  // between calls (unlikely in the few milliseconds this all takes, but a
-  // real inconsistency if it happened) and mint a cert whose SAN doesn't
-  // match what the allowlist or banner then claims.
-  const lanAddrs = lanAddresses();
-
-  // `--headless` (issue #20): CI/scripted use has no need for the web
-  // dashboard — skip starting it entirely rather than starting it and just
-  // not opening a browser to it.
-  let dashboardHandle: Awaited<ReturnType<typeof startDashboardServer>> | undefined;
-  // The *requested* dashboard port (0 for an ephemeral `--dashboard-port 0`
-  // or `--port 0`), kept separate from `dashboardHandle.port` (the real
-  // OS-assigned port once bound, never 0) — `shouldAutoOpenDashboard` needs
-  // the former to actually recognize the ephemeral-port case it's meant to
-  // exclude.
-  let requestedDashboardPort: number | undefined;
-  if (!headless) {
-    // Resolved only when actually needed: computed eagerly (outside this
-    // `if`), a `--port` close enough to 65535 that only its +1000 offset
-    // would overflow could fail this validation even under `--headless`,
-    // where no dashboard port is ever bound at all.
-    requestedDashboardPort = resolveDashboardPort(port, options.dashboardPort);
-    // Loaded only when actually needed: reuses the same on-disk CA the
-    // proxy above already loaded/created (`CertAuthority.load` is a plain
-    // disk read once it exists — see `resolveCertDir`'s doc comment), minted
-    // into one leaf cert whose SAN covers every LAN address this dashboard
-    // might be reached at, alongside localhost/127.0.0.1/::1 — matching
-    // `computeAllowedHostnames`'s own allowlist (issue #159). LAN addresses
-    // are only actually reachable when `dashboardHost` is bound to every
-    // interface (`--lan`) — a `--dashboard-tls on` with no `--lan` still
-    // binds `localhost`-only, so including them there would pad the SAN
-    // with addresses this dashboard was never going to accept a connection
-    // on anyway (Copilot review, PR #175).
-    try {
-      let tlsKeyCert: { key: string; cert: string } | undefined;
-      if (dashboardTls) {
-        const dashboardCa = await CertAuthority.load(resolveCertDir());
-        // A separate `CertAuthority` instance from the proxy's own — its leaf
-        // keypair isn't shared, so it needs its own `warmUp()` before minting
-        // (issue #164's `getLeafKeys()` throws otherwise). Pre-existing
-        // one-keypair-per-instance behavior, unchanged by that issue: async
-        // `node:crypto` generation just means this no longer blocks the event
-        // loop while it happens. Inside this `try` (not before it) so a
-        // failure here — the CA load or the leaf keygen — hits the same
-        // "proxy's already up, don't leave it running" cleanup below as a
-        // `startDashboardServer` failure does, instead of leaking the proxy.
-        await dashboardCa.warmUp();
-        tlsKeyCert = dashboardCa.getMultiHostKeyCert([
-          'localhost',
-          '127.0.0.1',
-          '::1',
-          ...(dashboardHost === '0.0.0.0' ? lanAddrs : []),
-        ]);
-      }
-      dashboardHandle = await startDashboardServer(
-        {
-          port: requestedDashboardPort,
-          // Issue #205: the dashboard is not open to whoever can reach it
-          // (which, through the proxy, includes the LAN) — see `accessToken`.
-          accessToken: dashboardToken,
-          controlPort,
-          version: pkg.version,
-          // The dashboard owns the watcher when there is one — `--adb-reverse` starts it on, and
-          // the sidebar switch turns it off and on — so the flag and the switch can't disagree.
-          adbReverse: {
-            port: handle.port,
-            enabledAtStart: options.adbReverse ?? false,
-            start: (onDevicesChanged) =>
-              startAdbReverseWatcher({
-                port: handle.port,
-                runner: nodeCommandRunner,
-                log: logAdbReverse,
-                onDevicesChanged,
-              }),
-          },
-          host: dashboardHost,
-          proxyPort: handle.port,
-          isSelfTarget: handle.isSelfTarget,
-          ruleEngine,
-          ruleProfileStore: fsRuleProfileStore,
-          tlsKeyCert,
-          // Lets the dashboard provision a `RuleEngine` itself the first time
-          // one's actually needed (issue #123: applying a just-created Rule
-          // Profile from a session that started with no rules file at all —
-          // `ruleEngine` above is `undefined` in exactly that case). Omitted
-          // when one already exists; see `DashboardServerOptions.createRuleEngine`'s
-          // own doc comment for why only that one case needs this.
-          createRuleEngine: ruleEngine ? undefined : () => createDefaultRuleEngine(),
-          protoRegistry,
-          historyStore,
-          // Passed regardless of `dashboardHost` — the proxy this dashboard
-          // fronts always binds to every interface, so its LAN address(es)
-          // are always worth knowing. See `DashboardServerOptions.lanAddresses`'s
-          // doc comment (issue #66).
-          lanAddresses: lanAddrs,
-          insecureUpstream: options.insecureUpstream ?? false,
-          maxCaptureMemoryBytes: parseMaxCaptureMemoryBytes(options.maxCaptureMemory),
-          dashboardCompression: options.dashboardCompress ?? false,
-          updateService: createDefaultUpdateService(trackRunState),
-          initialBacklog: resumedBacklog,
+/**
+ * `--headless` (issue #20) skips this entirely: CI/scripted use has no need for the web dashboard.
+ * `requestedDashboardPort` is what `runStartBody` resolved up front (0 for an ephemeral `--dashboard-port 0` or
+ * `--port 0`); the handle's own port is the real OS-assigned one.
+ */
+async function startDashboard(ctx: SessionContext, requestedDashboardPort: number): Promise<DashboardHandle> {
+  const { controlPort, options, eventBus, resources, ruleEngine, handle } = ctx;
+  try {
+    // Inside the `try` so a failure here — the CA load or the leaf keygen — hits the same "proxy's already up,
+    // don't leave it running" cleanup below as a `startDashboardServer` failure does, instead of leaking the proxy.
+    const tlsKeyCert = ctx.dashboardTls ? await dashboardTlsKeyCert(ctx.dashboardHost, ctx.lanAddrs) : undefined;
+    const dashboardHandle = await startDashboardServer(
+      {
+        port: requestedDashboardPort,
+        // Issue #205: the dashboard is not open to whoever can reach it (which, through the proxy, includes the
+        // LAN) — see `accessToken`.
+        accessToken: ctx.dashboardToken,
+        controlPort,
+        version: pkg.version,
+        // The dashboard owns the watcher when there is one — `--adb-reverse` starts it on, and the sidebar switch
+        // turns it off and on — so the flag and the switch can't disagree.
+        adbReverse: {
+          port: handle.port,
+          enabledAtStart: options.adbReverse ?? false,
+          start: (onDevicesChanged) =>
+            startAdbReverseWatcher({
+              port: handle.port,
+              runner: nodeCommandRunner,
+              log: logAdbReverse,
+              onDevicesChanged,
+            }),
         },
-        eventBus,
-      );
-      // Issue #205: the proxy listens on every interface, the dashboard may
-      // not — never let the former relay to the latter.
-      handle.protectLocalPort(dashboardHandle.port, dashboardHandle.address);
-      // The control API (issue #212) is the same kind of listener: loopback
-      // only, behind a token, and still not something a LAN client should be
-      // able to reach by asking the proxy to relay to it. It always binds
-      // 127.0.0.1, so that is the address (and no other family's listener on
-      // the same port number is mistaken for it).
-      if (dashboardHandle.controlPort !== undefined) handle.protectLocalPort(dashboardHandle.controlPort, '127.0.0.1');
-    } catch (err) {
-      // The proxy is already up and intercepting traffic at this point — don't
-      // leave it running (and the process alive) just because the dashboard
-      // failed to bind its port.
-      historyStore?.close();
-      await handle.stop();
-      throw err;
-    }
-  }
-
-  if (trackRunState) {
-    try {
-      writeRunState({
-        pid: process.pid,
-        requestedPort: port,
+        host: ctx.dashboardHost,
         proxyPort: handle.port,
-        dashboardPort: dashboardHandle?.port,
-        headless,
-        detached: isDaemonChild(),
-        startedAt: Date.now(),
-        logFile: process.env.DETOUR_LOG_FILE,
-        ...relaunchInfo(),
-      });
-    } catch (err) {
-      // The proxy (and dashboard) are already up at this point — an
-      // unwritable ~/.detour/run (e.g. disk full, permissions) shouldn't
-      // leave them running with no corresponding run-state entry: `detour
-      // status`/`stop`/`--fail-on-running` would then have no way to find
-      // this process at all. Same shutdown-before-rethrow shape as the
-      // dashboard bind failure above.
-      historyStore?.close();
-      await Promise.all([handle.stop(), dashboardHandle?.stop()]);
-      throw err;
-    }
-  }
-
-  // Single-use: removed only now that every fallible startup step has
-  // succeeded, so a start that fails partway loses nothing (under
-  // `--headless` there is no dashboard to resume into, so it is just dropped).
-  if (resumingBacklog) discardBacklogSnapshot(port);
-
-  // Deliberately after every fallible startup step above (dashboard bind,
-  // run-state write) has committed — opening a browser tab and then tearing
-  // the dashboard back down moments later because one of those failed would
-  // just leave the user staring at a connection-refused page.
-  if (
-    dashboardHandle &&
-    requestedDashboardPort !== undefined &&
-    shouldAutoOpenDashboard({ open: options.open, dashboardPort: requestedDashboardPort, built: isDashboardBuilt() })
-  ) {
-    openBrowser(
-      `${dashboardTls ? 'https' : 'http'}://localhost:${dashboardHandle.port}${tokenLandingPath(bannerToken)}`,
+        isSelfTarget: handle.isSelfTarget,
+        ruleEngine,
+        ruleProfileStore: fsRuleProfileStore,
+        tlsKeyCert,
+        // Lets the dashboard provision a `RuleEngine` itself the first time one's actually needed (issue #123:
+        // applying a just-created Rule Profile from a session that started with no rules file at all). Omitted
+        // when one already exists; see `DashboardServerOptions.createRuleEngine`'s own doc comment.
+        createRuleEngine: ruleEngine ? undefined : () => createDefaultRuleEngine(options, eventBus, handle),
+        protoRegistry: resources.protoRegistry,
+        historyStore: resources.historyStore,
+        // Passed regardless of the dashboard host — the proxy this dashboard fronts always binds to every
+        // interface, so its LAN address(es) are always worth knowing (issue #66).
+        lanAddresses: ctx.lanAddrs,
+        insecureUpstream: options.insecureUpstream ?? false,
+        maxCaptureMemoryBytes: parseMaxCaptureMemoryBytes(options.maxCaptureMemory),
+        dashboardCompression: options.dashboardCompress ?? false,
+        updateService: createDefaultUpdateService(ctx.trackRunState),
+        initialBacklog: resources.resumedBacklog,
+      },
+      eventBus,
     );
+    // Issue #205: the proxy listens on every interface, the dashboard may not — never let the former relay to the latter.
+    handle.protectLocalPort(dashboardHandle.port, dashboardHandle.address);
+    // The control API (issue #212) is the same kind of listener: loopback only, behind a token, and still not
+    // something a LAN client should be able to reach by asking the proxy to relay to it. It always binds
+    // 127.0.0.1, so that is the address (and no other family's listener on the same port number is mistaken for it).
+    if (dashboardHandle.controlPort !== undefined) handle.protectLocalPort(dashboardHandle.controlPort, '127.0.0.1');
+    return dashboardHandle;
+  } catch (err) {
+    // The proxy is already up and intercepting traffic at this point — don't leave it running (and the process
+    // alive) just because the dashboard failed to bind its port.
+    resources.historyStore?.close();
+    await handle.stop();
+    throw err;
   }
+}
 
+async function recordRunState(ctx: SessionContext, dashboardHandle: DashboardHandle | undefined): Promise<void> {
+  try {
+    writeRunState({
+      pid: process.pid,
+      requestedPort: ctx.port,
+      proxyPort: ctx.handle.port,
+      dashboardPort: dashboardHandle?.port,
+      headless: ctx.headless,
+      detached: isDaemonChild(),
+      startedAt: Date.now(),
+      logFile: process.env.DETOUR_LOG_FILE,
+      ...relaunchInfo(),
+    });
+  } catch (err) {
+    // The proxy (and dashboard) are already up at this point — an unwritable ~/.detour/run (e.g. disk full,
+    // permissions) shouldn't leave them running with no corresponding run-state entry: `detour status`/`stop`/
+    // `--fail-on-running` would then have no way to find this process at all. Same shutdown-before-rethrow shape
+    // as the dashboard bind failure.
+    ctx.resources.historyStore?.close();
+    await Promise.all([ctx.handle.stop(), dashboardHandle?.stop()]);
+    throw err;
+  }
+}
+
+function printBanner(ctx: SessionContext, dashboardHandle: DashboardHandle | undefined): void {
+  const { options, resources, handle } = ctx;
   printStartupBanner({
-    dashboardHost,
-    dashboardTls,
+    dashboardHost: ctx.dashboardHost,
+    dashboardTls: ctx.dashboardTls,
     proxyPort: handle.port,
     caCertPath: handle.caCertPath,
     dashboardPort: dashboardHandle?.port,
-    ruleEngine,
-    dumpDir,
+    ruleEngine: ctx.ruleEngine,
+    dumpDir: resources.dumpDir,
     http2Enabled: options.http2,
     http2UpstreamEnabled: options.http2Upstream,
     protoPaths: options.proto,
-    dashboardPasswordSet,
-    dashboardToken: bannerToken,
+    dashboardPasswordSet: ctx.dashboardPasswordSet,
+    dashboardToken: ctx.bannerToken,
     controlPort: dashboardHandle?.controlPort,
-    proxyAuthSet: proxyAuth !== undefined,
-    historyDbPath,
-    // Redacted here rather than inside the banner: credentials can be
-    // embedded in the URL, and `presentation/` may not import the `infra/`
-    // module that knows how to strip them (see `printStartupBanner`).
+    proxyAuthSet: resources.proxyAuth !== undefined,
+    historyDbPath: resources.historyDbPath,
+    // Redacted here rather than inside the banner: credentials can be embedded in the URL, and `presentation/`
+    // may not import the `infra/` module that knows how to strip them (see `printStartupBanner`).
     upstreamProxyUrl: options.upstreamProxy ? redactProxyUrlCredentials(options.upstreamProxy) : undefined,
     dashboardBuilt: isDashboardBuilt(),
-    lanAddresses: lanAddrs,
+    lanAddresses: ctx.lanAddrs,
     insecureUpstream: options.insecureUpstream ?? false,
     upstreamCaCount: options.upstreamCa.length,
-    clientCertSet: !!upstreamTls?.cert,
+    clientCertSet: !!resources.upstreamTls?.cert,
     caExpiryWarning: caExpiryWarningLine(handle.caCertPath),
   });
+}
 
-  // DETOUR_READY (issue #20): a stable, greppable line a CI script can wait
-  // on to know the proxy (and dashboard, unless --headless) actually
-  // finished binding its port(s) — printed unconditionally, not just under
-  // --headless, since a foreground non-CI run benefits from it too. When
-  // running as a `--detach` daemon child (see `isDaemonChild`), this also
-  // unblocks the parent's `spawnDaemonChild` handshake — a no-op otherwise.
+/**
+ * DETOUR_READY (issue #20): a stable, greppable line a CI script can wait on to know the proxy (and dashboard,
+ * unless --headless) actually finished binding its port(s) — printed unconditionally, not just under --headless,
+ * since a foreground non-CI run benefits from it too. When running as a `--detach` daemon child (see
+ * `isDaemonChild`), this also unblocks the parent's `spawnDaemonChild` handshake — a no-op otherwise.
+ */
+function announceReady(handle: ProxyHandle, dashboardHandle: DashboardHandle | undefined): void {
   const dashboardPortSegment = dashboardHandle ? ` dashboardPort=${dashboardHandle.port}` : '';
-  // `controlPort` (issue #212) goes *after* pid, so a parser reading
-  // `proxyPort=… [dashboardPort=…] pid=…` keeps working unchanged.
+  // `controlPort` (issue #212) goes *after* pid, so a parser reading `proxyPort=… [dashboardPort=…] pid=…` keeps
+  // working unchanged.
   const controlPortSegment =
     dashboardHandle?.controlPort !== undefined ? ` controlPort=${dashboardHandle.controlPort}` : '';
   console.log(`DETOUR_READY proxyPort=${handle.port}${dashboardPortSegment} pid=${process.pid}${controlPortSegment}`);
   signalDaemonReady({ proxyPort: handle.port, dashboardPort: dashboardHandle?.port });
+}
 
+/** SIGINT/SIGTERM (and `--exit-on-idle`) stop both servers, save the backlog for an update restart, and exit. */
+function installShutdown(
+  ctx: SessionContext,
+  dashboardHandle: DashboardHandle | undefined,
+  exitOnIdleMs: number | undefined,
+): void {
+  const { port, trackRunState, options, eventBus, handle, resources } = ctx;
   let idleWatcher: ReturnType<typeof startIdleWatcher> | undefined;
 
-  // When a dashboard-initiated update is what's stopping this process, leave
-  // the captured traffic behind for the relaunched instance (see
-  // `--resume-backlog`). Best effort: losing the list must never block a stop.
+  // When a dashboard-initiated update is what's stopping this process, leave the captured traffic behind for the
+  // relaunched instance (see `--resume-backlog`). Best effort: losing the list must never block a stop.
   const saveBacklogForUpdateRestart = () => {
     const items = trackRunState ? dashboardHandle?.backlogForUpdateRestart() : undefined;
     if (!items) return;
@@ -835,8 +813,8 @@ async function runStartBody({
     }
   };
 
-  // `--adb-reverse`: only now that everything that can fail at startup has
-  // passed, so a failed start never leaves an `adb track-devices` behind.
+  // `--adb-reverse`: only now that everything that can fail at startup has passed, so a failed start never leaves
+  // an `adb track-devices` behind.
   const adbReverseWatcher =
     options.adbReverse && !dashboardHandle
       ? startAdbReverseWatcher({ port: handle.port, runner: nodeCommandRunner, log: logAdbReverse })
@@ -853,14 +831,13 @@ async function runStartBody({
     );
     idleWatcher?.stop();
     adbReverseWatcher?.stop();
-    // Taken before either server stops: exchanges still in flight now aren't
-    // carried over (see `isResumable`), so there's nothing to wait for.
+    // Taken before either server stops: exchanges still in flight now aren't carried over (see `isResumable`), so
+    // there's nothing to wait for.
     saveBacklogForUpdateRestart();
     let stopError: unknown;
     try {
-      // Backstop (issue #206): each server already cuts stragglers after its
-      // own drain, but a stop that never settles must not turn SIGTERM into
-      // a SIGKILL — `shutdown`'s remaining cleanup (history close, run-state
+      // Backstop (issue #206): each server already cuts stragglers after its own drain, but a stop that never
+      // settles must not turn SIGTERM into a SIGKILL — `shutdown`'s remaining cleanup (history close, run-state
       // removal) only runs if this returns.
       await Promise.race([
         Promise.all([handle.stop(), dashboardHandle?.stop()]),
@@ -869,12 +846,11 @@ async function runStartBody({
     } catch (err) {
       stopError = err;
     } finally {
-      historyStore?.close();
+      resources.historyStore?.close();
     }
-    // Removed only once the stop attempt has actually settled (success or
-    // failure), not before — removing it first would let a concurrent
-    // `detour status`/`--fail-on-running` briefly see "not running" while
-    // the servers (and this process) are still very much alive.
+    // Removed only once the stop attempt has actually settled (success or failure), not before — removing it first
+    // would let a concurrent `detour status`/`--fail-on-running` briefly see "not running" while the servers (and
+    // this process) are still very much alive.
     if (trackRunState) removeRunState(port);
     if (stopError) {
       console.error(`✖ ${stopError instanceof Error ? stopError.message : String(stopError)}`);
@@ -887,6 +863,80 @@ async function runStartBody({
 
   if (exitOnIdleMs !== undefined) {
     idleWatcher = startIdleWatcher(eventBus, exitOnIdleMs, () => void shutdown('idle'));
+  }
+}
+
+async function runStartBody({
+  port,
+  headless,
+  exitOnIdleMs,
+  trackRunState,
+  controlPort,
+  options,
+}: RunStartBodyContext): Promise<void> {
+  const resources = await prepareStartResources(port, trackRunState, options);
+  const eventBus = new DetourEventBus();
+  attachConsoleLogging(eventBus, resources);
+  const ruleEngine = loadStartupRuleEngine(options, eventBus);
+  // From here on, a failed startup must close the rule engine: its file watcher would otherwise keep the process
+  // alive on its own, with nothing listening — "failed to start" has to end the process, not leave it hanging.
+  try {
+    const dashboardHost = resolveDashboardHost(options);
+    const dashboardTls = resolveDashboardTls(options, dashboardHost);
+    // Issue #205. No dashboard under `--headless`, so no token to make or print.
+    const dashboardToken = headless ? undefined : resolveDashboardToken();
+    const dashboardPasswordSet = readDashboardPasswordSet();
+    // Resolved (and validated) before the proxy binds, so a bad `--dashboard-port` — or a `--port` close enough to
+    // 65535 that only its +1000 offset overflows — fails startup with nothing left running. Not under `--headless`,
+    // where no dashboard port is ever bound and such a `--port` must keep working.
+    const requestedDashboardPort = headless ? undefined : resolveDashboardPort(port, options.dashboardPort);
+    const handle = await startProxy({ port, options, eventBus, resources }, ruleEngine);
+
+    const ctx: SessionContext = {
+      port,
+      headless,
+      trackRunState,
+      controlPort,
+      options,
+      eventBus,
+      resources,
+      ruleEngine,
+      handle,
+      dashboardHost,
+      dashboardTls,
+      dashboardToken,
+      bannerToken: dashboardPasswordSet ? undefined : dashboardToken,
+      dashboardPasswordSet,
+      lanAddrs: lanAddresses(),
+    };
+    const dashboardHandle =
+      requestedDashboardPort === undefined ? undefined : await startDashboard(ctx, requestedDashboardPort);
+
+    if (trackRunState) await recordRunState(ctx, dashboardHandle);
+
+    // Single-use: removed only now that every fallible startup step has succeeded, so a start that fails partway
+    // loses nothing (under `--headless` there is no dashboard to resume into, so it is just dropped).
+    if (resources.resumingBacklog) discardBacklogSnapshot(port);
+
+    // Deliberately after every fallible startup step above (dashboard bind, run-state write) has committed —
+    // opening a browser tab and then tearing the dashboard back down moments later because one of those failed
+    // would just leave the user staring at a connection-refused page.
+    if (
+      dashboardHandle &&
+      requestedDashboardPort !== undefined &&
+      shouldAutoOpenDashboard({ open: options.open, dashboardPort: requestedDashboardPort, built: isDashboardBuilt() })
+    ) {
+      openBrowser(
+        `${dashboardTls ? 'https' : 'http'}://localhost:${dashboardHandle.port}${tokenLandingPath(ctx.bannerToken)}`,
+      );
+    }
+
+    printBanner(ctx, dashboardHandle);
+    announceReady(handle, dashboardHandle);
+    installShutdown(ctx, dashboardHandle, exitOnIdleMs);
+  } catch (err) {
+    ruleEngine?.close();
+    throw err;
   }
 }
 

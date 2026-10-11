@@ -21,6 +21,8 @@ const LOGIN_BACKOFF_MAX_MS = 320;
  */
 const MAX_TRACKED_LOGIN_FAILURE_IPS = 1000;
 
+const AUTH_FAILED: DashboardServerMessage = { type: 'authFailed' };
+
 export interface DashboardAuthDeps {
   /** The access token (issue #205) that protects the dashboard when no password is set; `undefined` = open. */
   accessToken: string | undefined;
@@ -52,12 +54,8 @@ export interface DashboardAuth {
   admitConnection: (socket: WebSocket, req: IncomingMessage) => Admission;
   /** The message that tells a not-yet-authenticated client how to authenticate. */
   authRequiredMessage: () => DashboardServerMessage;
-  /** Answers a `login` attempt from a not-yet-authenticated socket. */
-  handleLogin: (
-    socket: WebSocket,
-    req: IncomingMessage,
-    message: Extract<DashboardClientMessage, { type: 'login' }>,
-  ) => Promise<void>;
+  /** Answers a `login` attempt from a socket `admitConnection` let stay for it; any other socket is ignored. */
+  handleLogin: (socket: WebSocket, message: Extract<DashboardClientMessage, { type: 'login' }>) => Promise<void>;
 }
 
 /** The IP a connection's rate-limit counters are tracked under — the raw socket address, not anything a client-controlled header could spoof. */
@@ -176,12 +174,13 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
 
   async function handleLogin(
     socket: WebSocket,
-    req: IncomingMessage,
     message: Extract<DashboardClientMessage, { type: 'login' }>,
   ): Promise<void> {
-    if (loginInFlight.has(socket)) return;
+    // Failures and the slot are charged to the IP fixed at admission. A socket with none was never admitted to
+    // log in (it cannot reach here through the server), and re-deriving an address could charge a different key.
+    const ip = ipBySocket.get(socket);
+    if (ip === undefined || loginInFlight.has(socket)) return;
     loginInFlight.add(socket);
-    const ip = ipBySocket.get(socket) ?? clientIp(req);
     try {
       const hash = currentPasswordHash();
       const generation = passwordGeneration;
@@ -197,8 +196,13 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
         verified = false;
       }
       // The password was changed while this attempt was being verified: a proof against the old one is already
-      // revoked, so it must not authenticate the socket (or earn the right to a host-level update).
-      if (generation !== passwordGeneration) verified = false;
+      // revoked, so it must not authenticate the socket (or earn the right to a host-level update). The client is
+      // told to try again, but the attempt is not charged to the IP — it was answered against a credential that
+      // no longer exists, so it says nothing about whether the client is guessing.
+      if (generation !== passwordGeneration) {
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(AUTH_FAILED));
+        return;
+      }
       if (verified) {
         loginFailuresByIp.delete(ip);
         releaseUnauthenticatedSlot(socket, ip);
@@ -213,8 +217,7 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
       await sleep(Math.min(LOGIN_BACKOFF_BASE_MS * 2 ** (failures - 1), LOGIN_BACKOFF_MAX_MS));
       // The socket (or the whole server) could have gone away during that delay — nothing left to answer.
       if (socket.readyState !== WebSocket.OPEN) return;
-      const authFailedMessage: DashboardServerMessage = { type: 'authFailed' };
-      socket.send(JSON.stringify(authFailedMessage));
+      socket.send(JSON.stringify(AUTH_FAILED));
       // Issue #159's acceptance criterion: the 5th consecutive failure from an IP ends that socket outright, rather
       // than leaving it free to keep guessing — reconnecting doesn't help either, since `admitConnection` checks
       // this same counter before a new socket is ever handed an `authRequired` at all.

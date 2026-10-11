@@ -106,45 +106,45 @@ describe('dashboard auth (issue #207)', () => {
     }
 
     it('authenticates with the right password, sends the snapshot, and marks the socket verified', async () => {
-      const { auth, socket, req, sendInitialPayload } = await admitted();
-      await auth.handleLogin(socket, req, login('correct horse'));
+      const { auth, socket, sendInitialPayload } = await admitted();
+      await auth.handleLogin(socket, login('correct horse'));
       expect(auth.isAuthenticated(socket)).toBe(true);
       expect(auth.isVerified(socket)).toBe(true);
       expect(sendInitialPayload).toHaveBeenCalledWith(socket);
     });
 
     it('answers a wrong password with authFailed and stays unauthenticated', async () => {
-      const { auth, socket, req, sendInitialPayload } = await admitted();
-      await auth.handleLogin(socket, req, login('wrong'));
+      const { auth, socket, sendInitialPayload } = await admitted();
+      await auth.handleLogin(socket, login('wrong'));
       expect(JSON.parse(socket.send.mock.calls[0]![0])).toEqual({ type: 'authFailed' });
       expect(auth.isAuthenticated(socket)).toBe(false);
       expect(sendInitialPayload).not.toHaveBeenCalled();
     });
 
     it('never lets a login succeed on a token-protected dashboard with no password (issue #205)', async () => {
-      const { auth, socket, req } = await admitted({ accessToken: TOKEN, loadPasswordHash: () => null });
-      await auth.handleLogin(socket, req, login('anything'));
+      const { auth, socket } = await admitted({ accessToken: TOKEN, loadPasswordHash: () => null });
+      await auth.handleLogin(socket, login('anything'));
       expect(auth.isAuthenticated(socket)).toBe(false);
     });
 
     it('treats a failure to verify as a failed login rather than leaving the client hanging', async () => {
-      const { auth, socket, req } = await admitted({ loadPasswordHash: () => 'not-a-valid-hash' });
-      await auth.handleLogin(socket, req, login('x'));
+      const { auth, socket } = await admitted({ loadPasswordHash: () => 'not-a-valid-hash' });
+      await auth.handleLogin(socket, login('x'));
       expect(JSON.parse(socket.send.mock.calls[0]![0])).toEqual({ type: 'authFailed' });
     });
 
     it('drops a second login that arrives while one is still in flight', async () => {
-      const { auth, socket, req, sendInitialPayload } = await admitted();
+      const { auth, socket, sendInitialPayload } = await admitted();
       await Promise.all([
-        auth.handleLogin(socket, req, login('correct horse')),
-        auth.handleLogin(socket, req, login('correct horse')),
+        auth.handleLogin(socket, login('correct horse')),
+        auth.handleLogin(socket, login('correct horse')),
       ]);
       expect(sendInitialPayload).toHaveBeenCalledTimes(1);
     });
 
     it('closes the socket on the 5th consecutive failure, and refuses that IP even on a fresh connection', async () => {
-      const { auth, socket, req } = await admitted();
-      for (let i = 0; i < 5; i++) await auth.handleLogin(socket, req, login('wrong'));
+      const { auth, socket } = await admitted();
+      for (let i = 0; i < 5; i++) await auth.handleLogin(socket, login('wrong'));
       expect(socket.close).toHaveBeenCalledWith(1008, 'Too many failed login attempts');
 
       const reconnect = socketOf();
@@ -154,32 +154,49 @@ describe('dashboard auth (issue #207)', () => {
     });
 
     it('forgives earlier failures once the right password is given', async () => {
-      const { auth, socket, req } = await admitted();
-      for (let i = 0; i < 4; i++) await auth.handleLogin(socket, req, login('wrong'));
-      await auth.handleLogin(socket, req, login('correct horse'));
+      const { auth, socket } = await admitted();
+      for (let i = 0; i < 4; i++) await auth.handleLogin(socket, login('wrong'));
+      await auth.handleLogin(socket, login('correct horse'));
       // 4 + 4 failures would lock the IP out (limit 5) if the first 4 were still counted.
       const next = socketOf();
       const nextReq = requestFrom('10.0.0.1');
       expect(auth.admitConnection(next, nextReq)).toBe('needs-login');
-      for (let i = 0; i < 4; i++) await auth.handleLogin(next, nextReq, login('wrong'));
+      for (let i = 0; i < 4; i++) await auth.handleLogin(next, login('wrong'));
       expect(auth.admitConnection(socketOf(), requestFrom('10.0.0.1'))).toBe('needs-login');
     });
 
-    it('charges failures to the IP the socket was admitted under, even if `req` no longer says so', async () => {
-      const { auth, socket } = await admitted();
-      const gone = { url: '/ws', headers: {}, socket: {} } as unknown as IncomingMessage;
-      for (let i = 0; i < 5; i++) await auth.handleLogin(socket, gone, login('wrong'));
-      expect(auth.admitConnection(socketOf(), requestFrom('10.0.0.1'))).toBe('rejected');
+    it('ignores a login from a socket that was never admitted to log in', async () => {
+      const { auth, sendInitialPayload } = setup({ loadPasswordHash: () => passwordHash });
+      const stranger = socketOf();
+      await auth.handleLogin(stranger, login('correct horse'));
+      expect(auth.isAuthenticated(stranger)).toBe(false);
+      expect(stranger.send).not.toHaveBeenCalled();
+      expect(sendInitialPayload).not.toHaveBeenCalled();
     });
 
     it('does not let a login that began under the old password succeed after the password changed', async () => {
-      const { auth, socket, req, sendInitialPayload } = await admitted();
-      const attempt = auth.handleLogin(socket, req, login('correct horse'));
+      const { auth, socket, sendInitialPayload } = await admitted();
+      const attempt = auth.handleLogin(socket, login('correct horse'));
       auth.onPasswordChanged('new-hash');
       await attempt;
       expect(auth.isAuthenticated(socket)).toBe(false);
       expect(auth.isVerified(socket)).toBe(false);
       expect(sendInitialPayload).not.toHaveBeenCalled();
+      // The client is told to retry.
+      expect(JSON.parse(socket.send.mock.calls[0]![0])).toEqual({ type: 'authFailed' });
+    });
+
+    it('does not charge such a superseded attempt to the IP', async () => {
+      const { auth, socket } = await admitted();
+      for (let i = 0; i < 3; i++) await auth.handleLogin(socket, login('wrong'));
+      const attempt = auth.handleLogin(socket, login('correct horse'));
+      auth.onPasswordChanged(passwordHash);
+      await attempt;
+      await auth.handleLogin(socket, login('wrong'));
+      // 3 + 1 failures counted (the superseded one is not): still below the limit of 5.
+      expect(auth.admitConnection(socketOf(), requestFrom('10.0.0.1'))).toBe('needs-login');
+      await auth.handleLogin(socket, login('wrong'));
+      expect(auth.admitConnection(socketOf(), requestFrom('10.0.0.1'))).toBe('rejected');
     });
   });
 
@@ -190,7 +207,7 @@ describe('dashboard auth (issue #207)', () => {
         const socket = socketOf();
         const req = requestFrom('10.0.0.1');
         ctx.auth.admitConnection(socket, req);
-        await ctx.auth.handleLogin(socket, req, login('correct horse'));
+        await ctx.auth.handleLogin(socket, login('correct horse'));
         return { ...ctx, socket };
       })();
       expect(byPassword.auth.isVerified(byPassword.socket)).toBe(true);

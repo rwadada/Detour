@@ -881,7 +881,7 @@ export async function startDashboardServer(
           // malicious device on the network that skipped straight to
           // `setRules`/`replay`/etc. without ever proving it knows the
           // password gets silently ignored, same as a malformed frame.
-          if (message.type === 'login') await auth.handleLogin(socket, req, message);
+          if (message.type === 'login') await auth.handleLogin(socket, message);
           return;
         }
 
