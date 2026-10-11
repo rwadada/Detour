@@ -119,18 +119,18 @@ describe('dashboard message handlers (issue #207)', () => {
     const query = { type: 'queryHistory', requestId: 7, query: {} } as never;
 
     it('answers only the asking socket, with wire-format items', () => {
-      const exchange = { id: 'e1' } as unknown as CapturedExchange;
-      const { handlers, deps } = setup({ queryHistory: vi.fn(() => ({ items: [], hasMore: true })) });
+      const exchange = { id: 'e1', responseBody: Buffer.from('hi') } as unknown as CapturedExchange;
+      const { handlers, deps } = setup({ queryHistory: vi.fn(() => ({ items: [exchange], hasMore: true })) });
       const { socket, send } = fakeSocket();
       handlers.queryHistory(query, socket);
+      // The body crosses the wire as base64 (`toWireExchange`), not as a serialized Buffer.
       expect(JSON.parse(send.mock.calls[0]![0])).toEqual({
         type: 'historyResult',
         requestId: 7,
-        items: [],
+        items: [{ id: 'e1', responseBody: 'aGk=' }],
         hasMore: true,
       });
       expect(deps.broadcast).not.toHaveBeenCalled();
-      expect(exchange).toBeDefined();
     });
 
     it('answers with an empty result when there is no history store', () => {
