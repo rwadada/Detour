@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.3.1](https://github.com/rwadada/Detour/compare/v2.3.0...v2.3.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **dashboard:** do not charge a login superseded by a password change to the IP ([#207](https://github.com/rwadada/Detour/issues/207)) ([b2298f3](https://github.com/rwadada/Detour/commit/b2298f39f88738da8e79b80a1b8631c984dcebdd))
+* **dashboard:** refuse a login that began under a password that was changed meanwhile ([#207](https://github.com/rwadada/Detour/issues/207)) ([a71ec97](https://github.com/rwadada/Detour/commit/a71ec9722f66cf301ea36d83489acd5431544a68))
+* **start:** leave nothing running when startup fails after the rules are loaded ([#207](https://github.com/rwadada/Detour/issues/207)) ([8af752d](https://github.com/rwadada/Detour/commit/8af752d37b421d4d3a864931d282b197f54f15cb))
+
 ## [2.3.0](https://github.com/rwadada/Detour/compare/v2.2.0...v2.3.0) (2026-10-10)
 
 
