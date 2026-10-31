@@ -47,7 +47,7 @@
     "commander": "^15.0.0",
     "http-proxy-agent": "^9.1.0",
     "https-proxy-agent": "^9.1.0",
-    "node-forge": "^1.4.0",
+    "node-forge": "^1.4.1",
     "protobufjs": "^8.8.1",
     "qrcode-terminal": "^0.12.0",
     "socks-proxy-agent": "^10.1.0",
