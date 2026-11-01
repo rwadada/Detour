@@ -328,6 +328,14 @@ function mulberry32(seed) {
 }
 
 /**
+ * Upper bound on `/bytes/<n>` and `/json-bytes/<n>` (the largest scenario,
+ * scenario 6's `HTTPS streaming (10 MB body)`, requests 10 MiB) so `size`
+ * parsed from `req.url` cannot allocate an arbitrarily large buffer (CodeQL
+ * `js/resource-exhaustion`).
+ */
+const MAX_BENCH_BODY_BYTES = 16 * MB;
+
+/**
  * Serves `/bytes/<n>` with exactly n bytes. Bodies are pre-allocated once and
  * reused so the upstream never becomes the bottleneck being measured — the
  * point is to time Detour, not this server's allocator.
@@ -335,6 +343,7 @@ function mulberry32(seed) {
 function startUpstream({ tls, certs }) {
   const bodies = new Map();
   const bodyFor = (size) => {
+    if (!Number.isInteger(size) || size < 0 || size > MAX_BENCH_BODY_BYTES) throw new RangeError(`Bad size: ${size}`);
     let body = bodies.get(size);
     if (!body) {
       body = Buffer.alloc(size, 'a');
@@ -353,6 +362,7 @@ function startUpstream({ tls, certs }) {
   // `size` bytes.
   const jsonBodies = new Map();
   const jsonBodyFor = (size) => {
+    if (!Number.isInteger(size) || size < 0 || size > MAX_BENCH_BODY_BYTES) throw new RangeError(`Bad size: ${size}`);
     let body = jsonBodies.get(size);
     if (!body) {
       const random = mulberry32(42);

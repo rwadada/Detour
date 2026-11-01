@@ -94,12 +94,12 @@ describe('startDashboardServer — TLS (issue #159)', () => {
     const tlsKeyCert = ca.getMultiHostKeyCert(['localhost', '127.0.0.1']);
     handle = await startDashboardServer({ port: 0, tlsKeyCert, userConfigPath: configPath }, eventBus);
 
-    // `rejectUnauthorized: false`: this test's throwaway CertAuthority isn't
-    // in any trust store, same as a real one is until a user installs it —
-    // the point here is that the handshake completes and traffic flows at
-    // all, not re-testing certificate trust (CertAuthority.test.ts already
-    // covers the cert itself being validly CA-signed).
-    const socket = new WebSocket(`wss://localhost:${handle.port}/ws`, { rejectUnauthorized: false });
+    // Trust this test's throwaway CertAuthority explicitly (not in the OS/Node
+    // default root store, same as a real one until a user installs it) so the
+    // handshake verifies the CA chain without disabling certificate validation.
+    const socket = new WebSocket(`wss://localhost:${handle.port}/ws`, {
+      ca: fs.readFileSync(ca.getCACertPath()),
+    });
     sockets.push(socket);
     const message = await waitForMessage(socket, (m) => m.type === 'backlog');
     expect(message.type).toBe('backlog');
@@ -109,9 +109,10 @@ describe('startDashboardServer — TLS (issue #159)', () => {
     const ca = await loadWarmCa(certDir);
     const tlsKeyCert = ca.getMultiHostKeyCert(['localhost', '127.0.0.1']);
     handle = await startDashboardServer({ port: 0, tlsKeyCert, userConfigPath: configPath }, eventBus);
+    const caCert = fs.readFileSync(ca.getCACertPath());
 
     const cert = await new Promise<tls.PeerCertificate>((resolve, reject) => {
-      const socket = tls.connect({ host: 'localhost', port: handle!.port, rejectUnauthorized: false }, () => {
+      const socket = tls.connect({ host: 'localhost', port: handle!.port, ca: caCert }, () => {
         resolve(socket.getPeerCertificate());
         socket.destroy();
       });

@@ -15,19 +15,26 @@ import { findInstalledPwaApp } from './findInstalledPwa';
  * dashboard down, nor block `runStartBody`'s caller.
  */
 export function openBrowser(url: string): void {
-  // On macOS, prefer the installed dashboard PWA (same origin) over a browser tab.
-  const pwaApp = process.platform === 'darwin' ? findInstalledPwaApp(url) : undefined;
-  const { command, args } = pwaApp
-    ? { command: 'open', args: ['-a', pwaApp] }
-    : browserCommandFor(process.platform, url);
+  // `detached: true` + `unref()`: the browser launcher (`open`/`start`/
+  // `xdg-open`) shouldn't be a child detour has to wait on or clean up —
+  // once it's spawned, its lifetime is entirely up to the OS. `windowsHide`
+  // (Windows-only, harmless elsewhere) stops the `cmd` we spawn there from
+  // flashing a visible console window for the instant it takes to hand off
+  // to `start`.
+  const spawnOptions = { detached: true, stdio: 'ignore', windowsHide: true } as const;
   try {
-    // `detached: true` + `unref()`: the browser launcher (`open`/`start`/
-    // `xdg-open`) shouldn't be a child detour has to wait on or clean up —
-    // once it's spawned, its lifetime is entirely up to the OS. `windowsHide`
-    // (Windows-only, harmless elsewhere) stops the `cmd` we spawn there from
-    // flashing a visible console window for the instant it takes to hand off
-    // to `start`.
-    const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true });
+    // On macOS, prefer the installed dashboard PWA (same origin) over a browser
+    // tab. Spawned in its own branch so `pwaApp` (derived from `readdirSync` in
+    // `findInstalledPwaApp`) never shares a `spawn(command, args)` call site
+    // with `browserCommandFor`'s `win32` `cmd /c` branch (CodeQL
+    // `js/shell-command-injection-from-environment`).
+    const pwaApp = process.platform === 'darwin' ? findInstalledPwaApp(url) : undefined;
+    const child = pwaApp
+      ? spawn('/usr/bin/open', ['-a', pwaApp], spawnOptions)
+      : (() => {
+          const { command, args } = browserCommandFor(process.platform, url);
+          return spawn(command, args, spawnOptions);
+        })();
     child.on('error', (err) => {
       console.warn(`⚠ Couldn't open the dashboard in a browser automatically: ${err.message}`);
     });

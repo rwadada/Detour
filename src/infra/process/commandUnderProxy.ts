@@ -20,7 +20,7 @@ export function resolveCaCertsForCommand(caCertPath: string): { path: string; cl
     existingContents = fs.readFileSync(existing, 'utf8');
   } catch (err) {
     throw new Error(
-      `Could not read the existing NODE_EXTRA_CA_CERTS bundle to merge it with detour's own CA: ${existing}\n  ${err instanceof Error ? err.message : String(err)}`,
+      `Could not read the existing NODE_EXTRA_CA_CERTS bundle to merge it with detour's own CA:\n  ${err instanceof Error ? err.message : String(err)}`,
       { cause: err },
     );
   }

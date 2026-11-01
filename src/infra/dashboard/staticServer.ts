@@ -47,11 +47,13 @@ export function serveStatic(root: string, req: IncomingMessage, res: ServerRespo
     return;
   }
   const hasExtension = path.extname(requestedPath) !== '';
-  const relative = requestedPath === '/' ? 'index.html' : requestedPath.replace(/^\/+/, '');
+  const stripped = requestedPath.replace(/^\/+/, '');
+  const relative = stripped === '' ? 'index.html' : stripped;
 
   // Resolve within `root` and reject any path (e.g. via `..`) that escapes it.
-  const resolved = path.resolve(root, relative);
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+  const rootDir = path.resolve(root);
+  const resolved = path.resolve(rootDir, relative);
+  if (!resolved.startsWith(rootDir + path.sep)) {
     res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Bad Request');
     return;
@@ -63,7 +65,7 @@ export function serveStatic(root: string, req: IncomingMessage, res: ServerRespo
       res.end('Not Found');
       return;
     }
-    sendFile(path.join(root, 'index.html'), req, res, true);
+    sendFile(path.join(rootDir, 'index.html'), req, res, true);
   };
 
   fs.stat(resolved, (err, stat) => {
