@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.2](https://github.com/rwadada/Detour/compare/v2.3.1...v2.3.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* **security:** resolve Dependabot and CodeQL alerts ([6c6ad59](https://github.com/rwadada/Detour/commit/6c6ad59413711acf75bd309e7135820e35e62b1d))
+* **security:** resolve Dependabot and CodeQL security alerts ([0de7490](https://github.com/rwadada/Detour/commit/0de74908a62c41ae10a3be27e3a386cd30f1f7e8))
+
 ## [2.3.1](https://github.com/rwadada/Detour/compare/v2.3.0...v2.3.1) (2026-10-15)
 
 
