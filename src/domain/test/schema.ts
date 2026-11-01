@@ -69,6 +69,7 @@ function formatAjvError(err: ErrorObject): string {
 }
 
 /** Rules a schema alone can't express (duplicate names, an invalid regex). */
+// eslint-disable-next-line sonarjs/cognitive-complexity -- linear per-assertion semantic validation checks (issue #207)
 function validateSemantics(data: TestFile): string[] {
   const errors: string[] = [];
   const seenNames = new Set<string>();

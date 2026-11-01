@@ -20,9 +20,11 @@ export interface RequestBreakpointDeps {
  * editing from the dashboard, then either aborts it (502 to the client) or
  * resumes it — with any edits applied — to continue toward upstream.
  */
+// eslint-disable-next-line max-lines-per-function -- request breakpoint handler factory; tracked under issue #208 (issue #207)
 export function createRequestBreakpointHandler(deps: RequestBreakpointDeps) {
   const { eventBus, breakpoints, inFlight, ruleContexts, rewriteContexts } = deps;
 
+  // eslint-disable-next-line max-lines-per-function -- request breakpoint body capture + resume flow; tracked under issue #208 (issue #207)
   return function handleRequestBreakpoint(
     ctx: IContext,
     rule: Rule,

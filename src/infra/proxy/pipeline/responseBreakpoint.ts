@@ -32,9 +32,11 @@ export interface ResponseBreakpointDeps {
  * `installResponseBodyRewrite` — since the upstream stream was already
  * fully drained here.
  */
+// eslint-disable-next-line max-lines-per-function -- response breakpoint handler factory; tracked under issue #208 (issue #207)
 export function createResponseBreakpointHandler(deps: ResponseBreakpointDeps) {
   const { eventBus, breakpoints, inFlight, ruleContexts, rewriteContexts } = deps;
 
+  // eslint-disable-next-line max-lines-per-function -- response breakpoint body capture + resume flow; tracked under issue #208 (issue #207)
   return function handleResponseBreakpoint(ctx: IContext, rule: Rule, callback: ErrorCallback): void {
     const exchange = inFlight.get(ctx.uuid);
     const res = ctx.serverToProxyResponse;
@@ -62,6 +64,7 @@ export function createResponseBreakpointHandler(deps: ResponseBreakpointDeps) {
     // wait below deadlocks forever (same reasoning as the mock branch above).
     res.resume();
 
+    // eslint-disable-next-line max-lines-per-function -- response breakpoint pause/resume closure; tracked under issue #208 (issue #207)
     const pause = () => {
       const rawBody = Buffer.concat(chunks);
       // See handleRequestBreakpoint's identical fix above: without this,

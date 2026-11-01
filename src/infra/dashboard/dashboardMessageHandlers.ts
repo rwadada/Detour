@@ -54,6 +54,30 @@ export function dispatchMessage(
   return handler(message, socket);
 }
 
+function createQueryHistoryHandler(deps: MessageHandlerDeps): MessageHandlerTable['queryHistory'] {
+  return (message, socket) => {
+    // Sent to the requesting socket only (never `broadcast`) — this answers one tab's own query, not a
+    // shared-state change every connected tab needs to hear about. Answered even with no `historyStore`
+    // (empty/`hasMore: false`) rather than dropped — see the wire type's own doc comment for why. A query
+    // failure (e.g. a corrupt DB file) must still answer with something, same reasoning — otherwise the
+    // requester's History UI is stuck showing `loading: true` forever with no way to know why.
+    let result: { items: CapturedExchange[]; hasMore: boolean };
+    try {
+      result = deps.queryHistory(message.query) ?? { items: [], hasMore: false };
+    } catch (err) {
+      deps.eventBus.emit('error', { errorKind: 'HISTORY_QUERY_ERROR', message: describeError(err) });
+      result = { items: [], hasMore: false };
+    }
+    const reply: DashboardServerMessage = {
+      type: 'historyResult',
+      requestId: message.requestId,
+      items: result.items.map(toWireExchange),
+      hasMore: result.hasMore,
+    };
+    socket.send(JSON.stringify(reply));
+  };
+}
+
 export function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerTable {
   const { eventBus, rules, broadcast, broadcastError } = deps;
 
@@ -109,27 +133,7 @@ export function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerT
       }
     },
 
-    queryHistory: (message, socket) => {
-      // Sent to the requesting socket only (never `broadcast`) — this answers one tab's own query, not a
-      // shared-state change every connected tab needs to hear about. Answered even with no `historyStore`
-      // (empty/`hasMore: false`) rather than dropped — see the wire type's own doc comment for why. A query
-      // failure (e.g. a corrupt DB file) must still answer with something, same reasoning — otherwise the
-      // requester's History UI is stuck showing `loading: true` forever with no way to know why.
-      let result: { items: CapturedExchange[]; hasMore: boolean };
-      try {
-        result = deps.queryHistory(message.query) ?? { items: [], hasMore: false };
-      } catch (err) {
-        eventBus.emit('error', { errorKind: 'HISTORY_QUERY_ERROR', message: describeError(err) });
-        result = { items: [], hasMore: false };
-      }
-      const reply: DashboardServerMessage = {
-        type: 'historyResult',
-        requestId: message.requestId,
-        items: result.items.map(toWireExchange),
-        hasMore: result.hasMore,
-      };
-      socket.send(JSON.stringify(reply));
-    },
+    queryHistory: createQueryHistoryHandler(deps),
 
     setRules: rules.setRules,
     createRuleProfile: rules.createRuleProfile,

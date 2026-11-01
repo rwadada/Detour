@@ -35,9 +35,11 @@ export interface InterceptOffConnectDeps {
  * below), so a passthrough connection still shows up in the log table
  * instead of vanishing without a trace the moment Intercept is off.
  */
+// eslint-disable-next-line max-lines-per-function -- CONNECT passthrough handler factory; tracked under issue #208 (issue #207)
 export function createInterceptOffConnectHandler(deps: InterceptOffConnectDeps) {
   const { eventBus, getRuleEngine, getThrottleState } = deps;
 
+  // eslint-disable-next-line max-lines-per-function -- CONNECT passthrough lifecycle; tracked under issue #208 (issue #207)
   return function handleInterceptOffConnect(req: IncomingMessage, socket: Duplex, head: Buffer): void {
     const target = ProxyEngine.parseHostAndPort(req, 443);
     if (!target?.host) {

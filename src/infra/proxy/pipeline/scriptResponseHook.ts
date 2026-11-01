@@ -40,6 +40,7 @@ export interface ScriptResponseHookDeps {
  * dashboard's own display copy is (see `finish`'s `BodyCapture.of` call,
  * which caps *that* copy on purpose).
  */
+// eslint-disable-next-line max-lines-per-function -- script response hook factory; tracked under issue #208 (issue #207)
 export function createScriptResponseHookHandler(deps: ScriptResponseHookDeps) {
   const {
     eventBus,
@@ -50,6 +51,7 @@ export function createScriptResponseHookHandler(deps: ScriptResponseHookDeps) {
     scriptTimeoutMs = DEFAULT_SCRIPT_TIMEOUT_MS,
   } = deps;
 
+  // eslint-disable-next-line max-lines-per-function -- script response hook body capture + execution; tracked under issue #208 (issue #207)
   return function handleScriptResponseHook(
     ctx: IContext,
     rule: Rule,

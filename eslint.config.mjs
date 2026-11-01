@@ -125,11 +125,12 @@ export default tseslint.config(
       'boundaries/files': [{ category: 'test', pattern: 'src/**/*.test.ts' }],
     },
     rules: {
-      // The rule engine's action handlers intentionally build up largish,
-      // sequential functions (e.g. proxyServer.ts's onRequest/onResponse
-      // hooks) that read more clearly kept together than artificially
-      // split apart — flag genuinely tangled logic via complexity instead.
-      'sonarjs/cognitive-complexity': ['warn', 25],
+      // Issue #207: promote function-length and cognitive-complexity limits from
+      // advisory warnings to hard errors on `src/**` so new god functions cannot
+      // slip back in silently. Pre-existing exceptions carry an explicit
+      // `eslint-disable-next-line` comment citing their tracking issue.
+      'max-lines-per-function': ['error', { max: 60, skipBlankLines: true, skipComments: true }],
+      'sonarjs/cognitive-complexity': ['error', 25],
       // Wrapping Node's callback-based listen()/close() APIs in a Promise
       // inherently nests a couple of levels deep (executor → listen
       // callback → resolve({ stop: () => new Promise(...) })) — this is a

@@ -41,9 +41,11 @@ export interface ScriptRequestHookDeps {
  * exactly that. `chunks` below is the real (uncapped) body; `displayCapture`
  * is a second, capped copy purely for `exchange.requestBody`.
  */
+// eslint-disable-next-line max-lines-per-function -- script request hook factory; tracked under issue #208 (issue #207)
 export function createScriptRequestHookHandler(deps: ScriptRequestHookDeps) {
   const { eventBus, scriptRequestBodies, scriptTimeoutMs = DEFAULT_SCRIPT_TIMEOUT_MS } = deps;
 
+  // eslint-disable-next-line max-lines-per-function -- script request hook body capture + execution; tracked under issue #208 (issue #207)
   return function handleScriptRequestHook(
     ctx: IContext,
     matched: { rule: Rule; module: ScriptModule },

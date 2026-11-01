@@ -67,6 +67,7 @@ function realSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// eslint-disable-next-line max-lines-per-function -- cohesive per-IP rate-limit + session state closure extracted from dashboardServer (issue #207)
 export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
   const sleep = deps.sleep ?? realSleep;
   // Issue #66's optional dashboard password: sockets that have proven they know the current password (or connected

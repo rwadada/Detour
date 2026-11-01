@@ -240,6 +240,7 @@ function validateReplaceSteps(
 }
 
 /** Rules a schema alone can't express (duplicate names, ambiguous mock body). */
+// eslint-disable-next-line max-lines-per-function, sonarjs/cognitive-complexity -- linear per-rule semantic validation table (issue #207)
 function validateSemantics(data: RulesFile): string[] {
   const errors: string[] = [];
   const seenNames = new Set<string>();

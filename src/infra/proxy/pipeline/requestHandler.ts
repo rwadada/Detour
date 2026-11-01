@@ -168,6 +168,7 @@ export interface RequestHandlerDeps {
  * (including a `mock` rule's own response) shares the same simulated
  * round-trip cost.
  */
+// eslint-disable-next-line max-lines-per-function -- request pipeline stage factory; tracked under issue #208 (issue #207)
 export function createRequestHandler(deps: RequestHandlerDeps): OnRequestParams {
   const {
     eventBus,
@@ -184,7 +185,9 @@ export function createRequestHandler(deps: RequestHandlerDeps): OnRequestParams 
     handleScriptRequestHook,
   } = deps;
 
+  // eslint-disable-next-line max-lines-per-function -- request pipeline stage; tracked under issue #208 (issue #207)
   return function handleRequest(ctx: IContext, callback: ErrorCallback): void {
+    // eslint-disable-next-line max-lines-per-function, sonarjs/cognitive-complexity -- sequential request rule evaluation; tracked under issue #208 (issue #207)
     const run = () => {
       const { url, host: reqHost } = resolveUrl(ctx);
       const method = ctx.clientToProxyRequest.method ?? 'GET';

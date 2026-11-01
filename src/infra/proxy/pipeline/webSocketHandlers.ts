@@ -58,6 +58,7 @@ function toBuffer(data: unknown): Buffer {
  * them touch `data`/`flags` before calling back, so the actual proxied
  * traffic is never altered by recording it.
  */
+// eslint-disable-next-line max-lines-per-function -- WebSocket lifecycle hook bundle; tracked under issue #208 (issue #207)
 export function createWebSocketHandlers(deps: WebSocketHandlersDeps): {
   onConnection: OnWebsocketRequestParams;
   onFrame: OnWebSocketFrameParams;
