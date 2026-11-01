@@ -2929,10 +2929,19 @@ describe('detour start (CLI, end-to-end)', () => {
    * (not just "some TLS handshake succeeded").
    */
   describe('dashboard HTTPS (issue #159)', () => {
-    /** The dashboard cert is CA-signed but the CA itself isn't in this test process's trust store — same as a real one until a user installs it. */
-    function connectDashboardTls(port: number): Promise<tls.PeerCertificate> {
+    function caBufferFromBanner(cli: { stdout: () => string }): Buffer | undefined {
+      const caPath = cli
+        .stdout()
+        .match(/Root CA certificate: (.+)/)?.[1]
+        ?.trim();
+      return caPath ? fs.readFileSync(caPath) : undefined;
+    }
+
+    /** Trusts Detour's own CA (printed in the startup banner) rather than disabling certificate verification. */
+    function connectDashboardTls(cli: { dashboardPort?: number; stdout: () => string }): Promise<tls.PeerCertificate> {
+      const ca = caBufferFromBanner(cli);
       return new Promise((resolve, reject) => {
-        const socket = tls.connect({ host: 'localhost', port, rejectUnauthorized: false }, () => {
+        const socket = tls.connect({ host: 'localhost', port: cli.dashboardPort!, ca }, () => {
           resolve(socket.getPeerCertificate());
           socket.destroy();
         });
@@ -2949,14 +2958,11 @@ describe('detour start (CLI, end-to-end)', () => {
       scheme: 'ws' | 'wss',
       cli: { dashboardPort?: number; stdout: () => string },
     ): Promise<unknown> {
-      const caPath = cli
-        .stdout()
-        .match(/Root CA certificate: (.+)/)?.[1]
-        ?.trim();
+      const ca = scheme === 'wss' ? caBufferFromBanner(cli) : undefined;
       return new Promise((resolve, reject) => {
         const socket = new WebSocket(
           `${scheme}://localhost:${cli.dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`,
-          scheme === 'wss' && caPath ? { ca: fs.readFileSync(caPath) } : undefined,
+          ca ? { ca } : undefined,
         );
         const onMessage = (raw: WebSocket.RawData) => {
           const message = JSON.parse(raw.toString()) as { type: string };
@@ -2976,7 +2982,7 @@ describe('detour start (CLI, end-to-end)', () => {
         expect(cli.stdout()).toContain("Dashboard transport: HTTPS (Detour's CA)");
         expect(cli.stdout()).toMatch(new RegExp(`Dashboard → https://localhost:${cli.dashboardPort}\\b`));
 
-        const cert = await connectDashboardTls(cli.dashboardPort!);
+        const cert = await connectDashboardTls(cli);
         expect(cert.subjectaltname).toMatch(/DNS:\s*localhost\b/);
         expect(cert.subjectaltname).toMatch(/IP Address:\s*127\.0\.0\.1\b/);
 
