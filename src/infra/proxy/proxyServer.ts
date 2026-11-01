@@ -129,6 +129,7 @@ export interface ProxyServerHandle {
  * per-host leaf certs signed by our local CA) traffic and publishes a
  * `request`/`response` event for every exchange on the given event bus.
  */
+// eslint-disable-next-line max-lines-per-function -- proxy server wiring + pipeline assembly; tracked under issue #208 (issue #207)
 export async function startProxyServer(
   options: ProxyServerOptions,
   eventBus: DetourEventBus,

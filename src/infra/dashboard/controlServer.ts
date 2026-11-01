@@ -198,10 +198,12 @@ function activeRulesBody(engine: RuleEngineLike | undefined): { rules: readonly 
   return { rules: engine?.getRules() ?? [], activeProfile: engine?.getActiveProfile() ?? null };
 }
 
+// eslint-disable-next-line max-lines-per-function -- control API server setup + route table (issue #207)
 export async function startControlServer(
   options: ControlServerOptions,
   deps: ControlDeps,
 ): Promise<ControlServerHandle> {
+  // eslint-disable-next-line max-lines-per-function, sonarjs/cognitive-complexity -- flat REST endpoint dispatch table (issue #207)
   async function route(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const method = req.method ?? 'GET';

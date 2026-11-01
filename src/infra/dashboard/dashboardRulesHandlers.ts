@@ -31,6 +31,30 @@ export interface RulesHandlers {
   applyRuleProfile: (message: MessageOf<'applyRuleProfile'>) => void;
 }
 
+function createSetRulesHandler(deps: RulesHandlerDeps): RulesHandlers['setRules'] {
+  return (message) => {
+    const ruleEngine = deps.getRuleEngine();
+    if (!ruleEngine) return deps.broadcastError('RULES_WRITE_ERROR', 'No rules file is configured for this session.');
+    // Issue #161: refuse a `setRules` write that adds a brand-new `script` rule or changes an existing one's
+    // `path`, regardless of whether `--allow-scripts` is on — this closes the network-reachable half of the
+    // `setRules` → `script` → `require()` chain without touching the read side (a `script` rule already in
+    // rules.json keeps running, subject to `--allow-scripts`, however it got there). Checked before the `try`
+    // below since this is a validation failure, not a write failure — nothing has been written yet either way.
+    const scriptViolations = findRejectedScriptWrites(ruleEngine.getRules(), message.data.rules);
+    if (scriptViolations.length > 0) {
+      return deps.broadcastError('RULES_WRITE_ERROR', scriptViolations.join('; '));
+    }
+    try {
+      // No `activeProfile` — clears `$activeProfile` on the written file even if `message.data` (the editor's
+      // own draft, synced from an earlier `rules` broadcast) still happened to carry one along. Editing and
+      // saving makes this a different, unnamed ruleset — see `RulesFile.$activeProfile`'s doc comment.
+      ruleEngine.write(message.data.rules);
+    } catch (err) {
+      deps.broadcastError('RULES_WRITE_ERROR', describeError(err));
+    }
+  };
+}
+
 /**
  * Rules editing/profiles (issue #19) are handled directly rather than via the event bus, since they need
  * synchronous validation and per-attempt error feedback that a fire-and-forget event emit can't give.
@@ -39,27 +63,7 @@ export function createRulesHandlers(deps: RulesHandlerDeps): RulesHandlers {
   const { broadcast, broadcastError, ruleProfilesMessage } = deps;
 
   return {
-    setRules(message) {
-      const ruleEngine = deps.getRuleEngine();
-      if (!ruleEngine) return broadcastError('RULES_WRITE_ERROR', 'No rules file is configured for this session.');
-      // Issue #161: refuse a `setRules` write that adds a brand-new `script` rule or changes an existing one's
-      // `path`, regardless of whether `--allow-scripts` is on — this closes the network-reachable half of the
-      // `setRules` → `script` → `require()` chain without touching the read side (a `script` rule already in
-      // rules.json keeps running, subject to `--allow-scripts`, however it got there). Checked before the `try`
-      // below since this is a validation failure, not a write failure — nothing has been written yet either way.
-      const scriptViolations = findRejectedScriptWrites(ruleEngine.getRules(), message.data.rules);
-      if (scriptViolations.length > 0) {
-        return broadcastError('RULES_WRITE_ERROR', scriptViolations.join('; '));
-      }
-      try {
-        // No `activeProfile` — clears `$activeProfile` on the written file even if `message.data` (the editor's
-        // own draft, synced from an earlier `rules` broadcast) still happened to carry one along. Editing and
-        // saving makes this a different, unnamed ruleset — see `RulesFile.$activeProfile`'s doc comment.
-        ruleEngine.write(message.data.rules);
-      } catch (err) {
-        broadcastError('RULES_WRITE_ERROR', describeError(err));
-      }
-    },
+    setRules: createSetRulesHandler(deps),
 
     createRuleProfile(message) {
       const { ruleProfileStore } = deps;

@@ -336,222 +336,153 @@ export function computeAllowedHostnames(
   return dashboardOnLan ? [...base, ...lanAddrs] : base;
 }
 
+// CSWSH / DNS-rebinding defenses (issue #92). A WebSocket handshake isn't
+// subject to the browser's same-origin policy the way `fetch`/XHR are, so
+// without these, any web page on any origin — not just ones served from
+// this machine — could open `ws://localhost:<dashboardPort>/ws` and:
+// eavesdrop on the decrypted-HTTPS backlog it streams (Authorization
+// headers, cookies, ...), rewrite `rules.json` via `setRules` to reroute
+// traffic, SSRF via `replay`, or lock the real user out via
+// `setDashboardPassword`. `--dashboard-password` (issue #66) doesn't help
+// here either — most sessions never set one, and even the handshake
+// itself (before any message is sent) already leaks the backlog once
+// `sendInitialPayload` fires. The dashboard's own port is also easily
+// guessable (`--port + 1000`, or just tried), so "an attacker doesn't
+// know the port" isn't a defense on its own.
+//
+//   - `isAllowedHostHeader` guards both the static SPA and `/ws`: it checks the
+//     `Host` header a *DNS-rebound* page would send (an attacker-owned
+//     domain that a malicious DNS response points at 127.0.0.1) — that
+//     header still names the attacker's domain regardless of which IP the
+//     TCP connection actually landed on, so this catches what `Origin`
+//     alone can't (a request that's missing `Origin` entirely still
+//     carries `Host`).
+//   - `isAllowedOriginHeader` guards `/ws` specifically: it checks the `Origin`
+//     header a browser attaches to a cross-origin fetch/handshake, which
+//     `Host` alone can't catch (a same-machine-hosted attacker page has a
+//     legitimate `Host: localhost:<dashboardPort>` but a foreign
+//     `Origin`). Absent entirely (no browser involved — a native app, or
+//     the `ws` client library used by this file's own tests, which sends
+//     none by default) is allowed through: there's no origin-confusion
+//     risk to check when nothing claims an origin at all.
+//
+// See `computeAllowedHostnames`'s doc comment for what this allows and why.
+
+// Extracts the hostname portion of a `Host` header (`localhost:5173` →
+// `localhost`, `[::1]:5173` → `::1`), lower-cased for a case-insensitive
+// compare against `allowedHostnames`. `undefined` for a missing header
+// (HTTP/1.1 requires one; node's own parser already rejects a request
+// without one before this ever runs, but there's no reason to trust that
+// remaining true forever) or an unparseable IPv6-bracket form.
+function hostnameOf(hostHeader: string | undefined): string | undefined {
+  if (!hostHeader) return undefined;
+  if (hostHeader.startsWith('[')) {
+    const end = hostHeader.indexOf(']');
+    if (end === -1) return undefined;
+    // Same reasoning as the non-numeric-port check below, applied to the
+    // bracketed form: whatever follows `]` must be empty (no port) or
+    // `:<digits>` — a value like `[::1]:evil` shouldn't parse down to the
+    // allowed hostname `::1` just because the bracket itself was well-formed.
+    const rest = hostHeader.slice(end + 1);
+    if (rest !== '' && !/^:\d+$/.test(rest)) return undefined;
+    return hostHeader.slice(1, end).toLowerCase();
+  }
+  const firstColon = hostHeader.indexOf(':');
+  const lastColon = hostHeader.lastIndexOf(':');
+  // More than one `:` outside of brackets means this isn't `host` or
+  // `host:port` — it's an unbracketed IPv6 literal (e.g. `::1:1234`),
+  // which RFC 7230 doesn't permit as a bare Host value. Reject rather than
+  // guess which segment is the "hostname", so a malformed/ambiguous Host
+  // header can't be parsed into something that happens to match the
+  // allowlist.
+  if (firstColon !== -1 && firstColon !== lastColon) return undefined;
+  if (lastColon === -1) return hostHeader.toLowerCase();
+  // A single `:` is only legitimately `host:port` if what follows is
+  // actually a port — a value like `localhost:evil` has exactly one `:`
+  // too, but isn't of that form, and slicing it down to `localhost`
+  // regardless would parse a malformed Host header into an allowed
+  // hostname purely by accident. `/^\d+$/` (rather than also range-
+  // checking 0-65535) is enough: it's already been established this isn't
+  // an allowlisted name, so the actual port value played no role either way.
+  if (!/^\d+$/.test(hostHeader.slice(lastColon + 1))) return undefined;
+  return hostHeader.slice(0, lastColon).toLowerCase();
+}
+
+function isAllowedHostHeader(hostHeader: string | undefined, allowedHostnames: readonly string[]): boolean {
+  const hostname = hostnameOf(hostHeader);
+  return hostname !== undefined && allowedHostnames.includes(hostname);
+}
+
+function isAllowedOriginHeader(
+  originHeader: string | undefined,
+  allowedHostnames: readonly string[],
+  boundPort: number,
+): boolean {
+  if (!originHeader) return true;
+  let origin: URL;
+  try {
+    origin = new URL(originHeader);
+  } catch {
+    // An `Origin` header that isn't even a valid URL can't be a
+    // legitimate browser-sent one — fail closed rather than risk treating
+    // it as absent.
+    return false;
+  }
+  // This dashboard is only ever served over http(s) — a browser-sent
+  // `Origin` is always one of those two (or the literal string `null`,
+  // already handled by the `new URL` throwing above), but a forged one
+  // could claim any scheme. Fail closed rather than let `protocol !==
+  // 'https:' → defaultPort 80` treat e.g. `chrome-extension://<id>` as an
+  // http origin with no explicit port.
+  if (origin.protocol !== 'http:' && origin.protocol !== 'https:') return false;
+  if (!allowedHostnames.includes(origin.hostname)) return false;
+  if (origin.port !== '') return Number(origin.port) === boundPort;
+  const defaultPort = origin.protocol === 'https:' ? 443 : 80;
+  return defaultPort === boundPort;
+}
+
 /**
- * Serves the built dashboard (static files + a `/ws` WebSocket feed of live
- * traffic) on `options.port`. Every exchange published on the event bus is
- * broadcast to all connected browser tabs in real time; a bounded backlog is
- * replayed to newly-connected clients so refreshing the page doesn't lose
- * recent history.
+ * First visit with `?token=` (issue #205): a valid token is traded for the
+ * session cookie and the browser is redirected to the same URL without it,
+ * so the secret doesn't stay in the address bar, history or `Referer`. A
+ * wrong one gets a plain 403 — and no cookie.
  */
-export async function startDashboardServer(
+function exchangeTokenForCookie(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  token: string,
+  secure: boolean,
+): void {
+  const presented = tokenFromUrl(req.url);
+  if (presented === undefined || !tokensEqual(presented, token)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Invalid dashboard token');
+    return;
+  }
+  const attributes = ['HttpOnly', 'SameSite=Strict', 'Path=/', `Max-Age=${60 * 60 * 24 * 365}`];
+  if (secure) attributes.push('Secure');
+  res.writeHead(302, {
+    'Set-Cookie': `${DASHBOARD_SESSION_COOKIE}=${sessionCookieValue(token)}; ${attributes.join('; ')}`,
+    Location: urlWithoutToken(req.url ?? '/'),
+    'Cache-Control': 'no-store',
+    // Keeps the token out of any `Referer` the redirect target might send.
+    'Referrer-Policy': 'no-referrer',
+  });
+  res.end();
+}
+
+function createDashboardHttpServer(
   options: DashboardServerOptions,
-  eventBus: DetourEventBus,
-): Promise<DashboardServerHandle> {
-  const host = options.host ?? 'localhost';
-  // `let`, not `const`: `ensureRuleEngine` below (see its own doc comment)
-  // reassigns this the first time it's actually needed — every read of
-  // `ruleEngine` elsewhere in this function happens lazily inside a message
-  // handler or a `broadcast()` callback, not at this line, so reassigning it
-  // here is enough for those to see the newly-provisioned engine from that
-  // point on.
-  let ruleEngine = options.ruleEngine;
-  const { ruleProfileStore, createRuleEngine } = options;
-  const httpRequester = options.httpRequester ?? nodeHttpRequester;
-  const lanAddrs = options.lanAddresses ?? [];
-  // Computed once, not per-connection like `rulesMessage()`/`ruleProfilesMessage()`
-  // below — a `--proto` schema has no live-reload (see `protoSchema`'s own
-  // doc comment on `DashboardServerMessage`), so there's nothing for a later
-  // call to pick up that this one wouldn't already have.
-  // `protobuf.INamespace` (a plain-data description of protobufjs's own
-  // schema types) has no index signature TypeScript will structurally match
-  // against `Record<string, unknown>` — but it's genuinely just JSON going
-  // out over the wire either way, so the cast is safe.
-  const protoSchema = (options.protoRegistry?.toJSON() as Record<string, unknown> | undefined) ?? null;
-  // Whether this server itself is bound to every network interface, not
-  // just loopback — see `sendInitialPayload`'s own `dashboardOnLan` below,
-  // which this mirrors. Only in this case are `lanAddrs` actually reachable
-  // at all (a `localhost`-only bind never accepts a connection arriving on
-  // a LAN address in the first place), so it's also the gate on whether
-  // `isAllowedHost`/`isAllowedOrigin` below treat them as legitimate.
-  const dashboardOnLan = host === '0.0.0.0';
-  // The dashboard's actual bound port — `options.port` verbatim except for
-  // an ephemeral `port: 0`, which only resolves to a real port once
-  // `httpServer.listen()`'s callback fires below. `isAllowedOrigin` needs
-  // the real value (an `Origin` header's port must match what this server
-  // is actually reachable on), so this is declared as a `let` here and
-  // updated once listening starts, rather than read fresh via
-  // `httpServer.address()` on every handshake.
-  let boundPort = options.port;
-  await assertPortAvailable(options.port, host);
-
-  const backlog = new RingBuffer<CapturedExchange>(
-    options.backlogSize ?? DEFAULT_BACKLOG_SIZE,
-    (item) => item.id,
-    options.maxCaptureMemoryBytes !== undefined
-      ? { maxTotalBytes: options.maxCaptureMemoryBytes, sizeOf: capturedExchangeByteSize }
-      : undefined,
-  );
-  for (const item of options.initialBacklog ?? []) backlog.upsert(item);
-  // Mirrors `backlog` above, but for WebSocket connections (issue #17) —
-  // kept in its own buffer/message type since a connection's shape (a
-  // stream of frames rather than one request/response pair) doesn't fit
-  // alongside `CapturedExchange`.
-  const wsBacklog = new RingBuffer<CapturedWebSocketConnection>(
-    options.backlogSize ?? DEFAULT_BACKLOG_SIZE,
-    (item) => item.id,
-  );
-  // Mirrors the proxy server's own `interceptEnabled` (which is the source
-  // of truth) so a newly-connecting client can be told the current state
-  // without a round trip — kept in sync via the `interceptChanged` event,
-  // the same way `backlog` mirrors traffic.
-  let interceptState: InterceptState = { enabled: true };
-  // Mirrors the proxy server's own `focusHosts` the same way, kept in sync
-  // via `focusChanged`.
-  let focusState: FocusState = { hosts: [] };
-  // Mirrors the proxy server's own `throttleState` the same way, kept in
-  // sync via `throttleChanged`.
-  let throttleState: ThrottleState = { enabled: false, downKbps: 0, upKbps: 0, latencyMs: 0, packetLossPct: 0 };
-  // Mirrors the proxy server's own `blockHostsState` the same way, kept in
-  // sync via `blockHostsChanged`.
-  let blockHostsState: BlockHostsState = { hosts: [], mode: 'forbidden' };
-
-  // CSWSH / DNS-rebinding defenses (issue #92). A WebSocket handshake isn't
-  // subject to the browser's same-origin policy the way `fetch`/XHR are, so
-  // without these, any web page on any origin — not just ones served from
-  // this machine — could open `ws://localhost:<dashboardPort>/ws` and:
-  // eavesdrop on the decrypted-HTTPS backlog it streams (Authorization
-  // headers, cookies, ...), rewrite `rules.json` via `setRules` to reroute
-  // traffic, SSRF via `replay`, or lock the real user out via
-  // `setDashboardPassword`. `--dashboard-password` (issue #66) doesn't help
-  // here either — most sessions never set one, and even the handshake
-  // itself (before any message is sent) already leaks the backlog once
-  // `sendInitialPayload` fires. The dashboard's own port is also easily
-  // guessable (`--port + 1000`, or just tried), so "an attacker doesn't
-  // know the port" isn't a defense on its own.
-  //
-  //   - `isAllowedHost` guards both the static SPA and `/ws`: it checks the
-  //     `Host` header a *DNS-rebound* page would send (an attacker-owned
-  //     domain that a malicious DNS response points at 127.0.0.1) — that
-  //     header still names the attacker's domain regardless of which IP the
-  //     TCP connection actually landed on, so this catches what `Origin`
-  //     alone can't (a request that's missing `Origin` entirely still
-  //     carries `Host`).
-  //   - `isAllowedOrigin` guards `/ws` specifically: it checks the `Origin`
-  //     header a browser attaches to a cross-origin fetch/handshake, which
-  //     `Host` alone can't catch (a same-machine-hosted attacker page has a
-  //     legitimate `Host: localhost:<dashboardPort>` but a foreign
-  //     `Origin`). Absent entirely (no browser involved — a native app, or
-  //     the `ws` client library used by this file's own tests, which sends
-  //     none by default) is allowed through: there's no origin-confusion
-  //     risk to check when nothing claims an origin at all.
-  //
-  // See `computeAllowedHostnames`'s doc comment for what this allows and why.
-  function allowedHostnames(): readonly string[] {
-    return computeAllowedHostnames(host, dashboardOnLan, lanAddrs);
-  }
-
-  // Extracts the hostname portion of a `Host` header (`localhost:5173` →
-  // `localhost`, `[::1]:5173` → `::1`), lower-cased for a case-insensitive
-  // compare against `allowedHostnames()`. `undefined` for a missing header
-  // (HTTP/1.1 requires one; node's own parser already rejects a request
-  // without one before this ever runs, but there's no reason to trust that
-  // remaining true forever) or an unparseable IPv6-bracket form.
-  function hostnameOf(hostHeader: string | undefined): string | undefined {
-    if (!hostHeader) return undefined;
-    if (hostHeader.startsWith('[')) {
-      const end = hostHeader.indexOf(']');
-      if (end === -1) return undefined;
-      // Same reasoning as the non-numeric-port check below, applied to the
-      // bracketed form: whatever follows `]` must be empty (no port) or
-      // `:<digits>` — a value like `[::1]:evil` shouldn't parse down to the
-      // allowed hostname `::1` just because the bracket itself was well-formed.
-      const rest = hostHeader.slice(end + 1);
-      if (rest !== '' && !/^:\d+$/.test(rest)) return undefined;
-      return hostHeader.slice(1, end).toLowerCase();
-    }
-    const firstColon = hostHeader.indexOf(':');
-    const lastColon = hostHeader.lastIndexOf(':');
-    // More than one `:` outside of brackets means this isn't `host` or
-    // `host:port` — it's an unbracketed IPv6 literal (e.g. `::1:1234`),
-    // which RFC 7230 doesn't permit as a bare Host value. Reject rather than
-    // guess which segment is the "hostname", so a malformed/ambiguous Host
-    // header can't be parsed into something that happens to match the
-    // allowlist.
-    if (firstColon !== -1 && firstColon !== lastColon) return undefined;
-    if (lastColon === -1) return hostHeader.toLowerCase();
-    // A single `:` is only legitimately `host:port` if what follows is
-    // actually a port — a value like `localhost:evil` has exactly one `:`
-    // too, but isn't of that form, and slicing it down to `localhost`
-    // regardless would parse a malformed Host header into an allowed
-    // hostname purely by accident. `/^\d+$/` (rather than also range-
-    // checking 0-65535) is enough: it's already been established this isn't
-    // an allowlisted name, so the actual port value played no role either way.
-    if (!/^\d+$/.test(hostHeader.slice(lastColon + 1))) return undefined;
-    return hostHeader.slice(0, lastColon).toLowerCase();
-  }
-
-  function isAllowedHost(hostHeader: string | undefined): boolean {
-    const hostname = hostnameOf(hostHeader);
-    return hostname !== undefined && allowedHostnames().includes(hostname);
-  }
-
-  function isAllowedOrigin(originHeader: string | undefined): boolean {
-    if (!originHeader) return true;
-    let origin: URL;
-    try {
-      origin = new URL(originHeader);
-    } catch {
-      // An `Origin` header that isn't even a valid URL can't be a
-      // legitimate browser-sent one — fail closed rather than risk treating
-      // it as absent.
-      return false;
-    }
-    // This dashboard is only ever served over http(s) — a browser-sent
-    // `Origin` is always one of those two (or the literal string `null`,
-    // already handled by the `new URL` throwing above), but a forged one
-    // could claim any scheme. Fail closed rather than let `protocol !==
-    // 'https:' → defaultPort 80` treat e.g. `chrome-extension://<id>` as an
-    // http origin with no explicit port.
-    if (origin.protocol !== 'http:' && origin.protocol !== 'https:') return false;
-    if (!allowedHostnames().includes(origin.hostname)) return false;
-    if (origin.port !== '') return Number(origin.port) === boundPort;
-    const defaultPort = origin.protocol === 'https:' ? 443 : 80;
-    return defaultPort === boundPort;
-  }
-
-  /**
-   * First visit with `?token=` (issue #205): a valid token is traded for the
-   * session cookie and the browser is redirected to the same URL without it,
-   * so the secret doesn't stay in the address bar, history or `Referer`. A
-   * wrong one gets a plain 403 — and no cookie.
-   */
-  function exchangeTokenForCookie(req: http.IncomingMessage, res: http.ServerResponse, token: string): void {
-    const presented = tokenFromUrl(req.url);
-    if (presented === undefined || !tokensEqual(presented, token)) {
-      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('Invalid dashboard token');
-      return;
-    }
-    const attributes = ['HttpOnly', 'SameSite=Strict', 'Path=/', `Max-Age=${60 * 60 * 24 * 365}`];
-    if (options.tlsKeyCert) attributes.push('Secure');
-    res.writeHead(302, {
-      'Set-Cookie': `${DASHBOARD_SESSION_COOKIE}=${sessionCookieValue(token)}; ${attributes.join('; ')}`,
-      Location: urlWithoutToken(req.url ?? '/'),
-      'Cache-Control': 'no-store',
-      // Keeps the token out of any `Referer` the redirect target might send.
-      'Referrer-Policy': 'no-referrer',
-    });
-    res.end();
-  }
-
+  allowedHostnames: readonly string[],
+): http.Server | https.Server {
   const requestListener: http.RequestListener = (req, res) => {
-    if (!isAllowedHost(req.headers.host)) {
+    if (!isAllowedHostHeader(req.headers.host, allowedHostnames)) {
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Forbidden');
       return;
     }
     if (options.accessToken && tokenFromUrl(req.url) !== undefined) {
-      exchangeTokenForCookie(req, res, options.accessToken);
+      exchangeTokenForCookie(req, res, options.accessToken, !!options.tlsKeyCert);
       return;
     }
     serveStatic(WEB_DIST_DIR, req, res);
@@ -562,11 +493,20 @@ export async function startDashboardServer(
   // `net.Server` defines (`https.Server` extends it via `tls.Server`), so
   // everything below (binding, `WebSocketServer`, teardown) works unchanged
   // regardless of which one this actually is.
-  const httpServer: http.Server | https.Server = options.tlsKeyCert
+  return options.tlsKeyCert
     ? https.createServer(options.tlsKeyCert, requestListener)
     : http.createServer(requestListener);
+}
+
+function createDashboardWebSocketServer(
+  httpServer: http.Server | https.Server,
+  dashboardCompression: boolean | undefined,
+  allowedHostnames: readonly string[],
+  getBoundPort: () => number,
+): WebSocketServer {
   const verifyClient: WebSocket.VerifyClientCallbackSync = (info) =>
-    isAllowedHost(info.req.headers.host) && isAllowedOrigin(info.origin);
+    isAllowedHostHeader(info.req.headers.host, allowedHostnames) &&
+    isAllowedOriginHeader(info.origin, allowedHostnames, getBoundPort());
   // `perMessageDeflate: false` when `dashboardCompression` is off (the
   // default) is explicit rather than just omitting the option — `ws`
   // itself defaults to `false` server-side either way, but spelling it out
@@ -574,11 +514,11 @@ export async function startDashboardServer(
   // at the call site, rather than relying on a reader already knowing `ws`'s
   // own default. See `DashboardServerOptions.dashboardCompression`'s doc
   // comment for the measurement behind this choice and its tuning.
-  const wss = new WebSocketServer({
+  return new WebSocketServer({
     server: httpServer,
     path: '/ws',
     verifyClient,
-    perMessageDeflate: options.dashboardCompression
+    perMessageDeflate: dashboardCompression
       ? {
           threshold: 1024,
           concurrencyLimit: 10,
@@ -601,143 +541,86 @@ export async function startDashboardServer(
         }
       : false,
   });
+}
 
-  // Who is authenticated, who proved a secret, the login rate limits (issues #66, #159, #205).
-  const auth = createDashboardAuth({
-    accessToken: options.accessToken,
-    loadPasswordHash: () => loadUserConfig(options.userConfigPath).dashboardPasswordHash ?? null,
-    sendInitialPayload: (socket) => sendInitialPayload(socket),
-  });
-  const dashboardUpdates = createDashboardUpdates(
-    options.updateService,
-    { isVerified: auth.isVerified },
-    Date.now,
-    (message) => broadcast({ type: 'updateStatus', state: 'failed', message }),
-  );
-  const sendUpdateInfo = async (socket: WebSocket) => {
-    const message = await dashboardUpdates.infoFor(socket);
-    if (message && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
-  };
-  const sendUpdateInfoToAll = () => {
-    for (const client of wss.clients) {
-      if (client.readyState === WebSocket.OPEN && auth.isAuthenticated(client)) void sendUpdateInfo(client);
-    }
-  };
-  const adbReverseOptions = options.adbReverse;
-  const sendAdbReverseState = (socket: WebSocket) => {
-    if (adbReverse && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(adbReverse.stateFor(socket)));
-  };
-  const sendAdbReverseStateToAll = () => {
-    for (const client of wss.clients) {
-      if (auth.isAuthenticated(client)) sendAdbReverseState(client);
-    }
-  };
-  const adbReverse = adbReverseOptions
-    ? createDashboardAdbReverse({
-        port: adbReverseOptions.port,
-        startWatcher: () => adbReverseOptions.start(sendAdbReverseStateToAll),
-        enabledAtStart: adbReverseOptions.enabledAtStart,
-        trust: { isVerified: auth.isVerified },
-        onChange: sendAdbReverseStateToAll,
-      })
-    : undefined;
-  const broadcast = (message: DashboardServerMessage) => {
-    const payload = JSON.stringify(message);
-    for (const client of wss.clients) {
-      // Skips a socket still waiting on `authRequired` — the whole point of
-      // gating it is that it never sees live traffic, rule contents, or any
-      // other state until it's proven it knows the password.
-      if (client.readyState === WebSocket.OPEN && auth.isAuthenticated(client)) client.send(payload);
-    }
-  };
-
-  const onRequest = (exchange: Readonly<CapturedExchange>) => {
-    backlog.upsert(exchange);
-    // Encoded to base64 only right here, at the point of actually going out
-    // over JSON — `backlog` above keeps the `Buffer` (issue #165's
-    // Proposal B; see `toWireExchange`'s own doc comment).
-    broadcast({ type: 'request', exchange: toWireExchange(exchange) });
-  };
-  const onResponse = (exchange: Readonly<CapturedExchange>) => {
-    backlog.upsert(exchange);
-    // Only the response-side diff goes out here (issue #165's Proposal C) —
-    // `requestBody`/`requestHeaders` already went out in full on this same
-    // id's `request` broadcast above and haven't changed since. `backlog`
-    // itself still keeps (and replays to a newly-connecting client via
-    // `toWireExchange` below) the complete exchange either way.
-    broadcast({ type: 'response', exchange: toResponsePatch(exchange) });
-  };
-  const onError: DetourEvents['error'] = (event) => broadcast({ type: 'error', event });
-  // Rules state, unlike intercept/focus/throttle/blockHosts above, isn't
-  // mirrored into a local variable kept in sync via events — `ruleEngine`
-  // (if configured) is already the live source of truth, so these just read
-  // through it on demand, both for a newly-connecting client and for
-  // rebroadcasting after any reload.
-  const rulesMessage = (): DashboardServerMessage => ({
+function buildRulesMessage(ruleEngine: RuleEngine | undefined): DashboardServerMessage {
+  // Rules state, unlike intercept/focus/throttle/blockHosts, isn't mirrored
+  // into a local variable kept in sync via events — `ruleEngine` (if
+  // configured) is already the live source of truth, so this reads through it
+  // on demand, both for a newly-connecting client and for rebroadcasting after
+  // any reload.
+  return {
     type: 'rules',
     data: ruleEngine ? { rules: [...ruleEngine.getRules()], $activeProfile: ruleEngine.getActiveProfile() } : null,
     unreachableWarnings: ruleEngine ? [...ruleEngine.getUnreachableWarnings()] : [],
     scriptWarnings: ruleEngine ? [...ruleEngine.getScriptWarnings()] : [],
-  });
-  const ruleProfilesMessage = (): DashboardServerMessage => ({
-    type: 'ruleProfiles',
-    profiles: ruleProfileStore?.list() ?? [],
-  });
-  // Unlike rules/ruleProfiles above, this reads straight off disk on every
-  // call rather than through an in-memory mirror kept in sync by an event —
-  // `~/.detour/config.json` is small, read once per connect/change, and has
-  // no other writer this process needs to stay in sync with (contrast
+  };
+}
+
+function buildUserConfigMessage(
+  userConfigPath: string | undefined,
+  currentPasswordHash: () => string | null,
+): DashboardServerMessage {
+  // Unlike rules/ruleProfiles, this reads straight off disk on every call
+  // rather than through an in-memory mirror kept in sync by an event —
+  // `~/.detour/config.json` is small, read once per connect/change, and has no
+  // other writer this process needs to stay in sync with (contrast
   // `ruleEngine`, which a hand-edited rules.json can also change).
-  const userConfigMessage = (): DashboardServerMessage => {
-    // Unlike `rulesMessage`/`ruleProfilesMessage` above, this reads a file
-    // that can fail validation (a hand-edited `~/.detour/config.json` with a
-    // typo'd value) — every other message sent right after connecting is a
-    // pure in-memory read that can't throw, and this one running inside
-    // `wss.on('connection', ...)` uncaught would crash that connection
-    // attempt (or worse) instead of just this one feature. Fall back to
-    // defaults; `setUserConfig` below still reports a clear
-    // `USER_CONFIG_WRITE_ERROR` (and refuses to write) if a client tries to
-    // change something while the file's in this state.
-    let config: ReturnType<typeof loadUserConfig>;
-    try {
-      config = loadUserConfig(options.userConfigPath);
-    } catch {
-      config = {};
-    }
-    return {
-      type: 'userConfig',
-      state: {
-        defaultDetach: config.defaultDetach ?? false,
-        lanAccess: config.lanAccess ?? false,
-        // `currentPasswordHash()` (not `config.dashboardPasswordHash` read
-        // above) — they can disagree the moment the config becomes
-        // unreadable after a password was already set: `config` here just
-        // fell back to `{}` (so `dashboardPasswordHash` reads as
-        // `undefined`), but `currentPasswordHash()` fails *closed* to the
-        // last successfully-read hash instead (see its own doc comment).
-        // Deriving this from the same fail-closed-aware getter that
-        // `login`/connection-gating actually uses keeps what a client is
-        // told in sync with whether a password is genuinely still required.
-        dashboardPasswordSet: !!auth.currentPasswordHash(),
-      },
-    };
+  //
+  // It reads a file that can fail validation (a hand-edited
+  // `~/.detour/config.json` with a typo'd value) — every other message sent
+  // right after connecting is a pure in-memory read that can't throw, and this
+  // one running inside `wss.on('connection', ...)` uncaught would crash that
+  // connection attempt (or worse) instead of just this one feature. Fall back
+  // to defaults; `setUserConfig` still reports a clear
+  // `USER_CONFIG_WRITE_ERROR` (and refuses to write) if a client tries to
+  // change something while the file's in this state.
+  let config: ReturnType<typeof loadUserConfig>;
+  try {
+    config = loadUserConfig(userConfigPath);
+  } catch {
+    config = {};
+  }
+  return {
+    type: 'userConfig',
+    state: {
+      defaultDetach: config.defaultDetach ?? false,
+      lanAccess: config.lanAccess ?? false,
+      // `currentPasswordHash()` (not `config.dashboardPasswordHash` read
+      // above) — they can disagree the moment the config becomes
+      // unreadable after a password was already set: `config` here just
+      // fell back to `{}` (so `dashboardPasswordHash` reads as
+      // `undefined`), but `currentPasswordHash()` fails *closed* to the
+      // last successfully-read hash instead (see its own doc comment).
+      // Deriving this from the same fail-closed-aware getter that
+      // `login`/connection-gating actually uses keeps what a client is
+      // told in sync with whether a password is genuinely still required.
+      dashboardPasswordSet: !!currentPasswordHash(),
+    },
   };
-  const broadcastError = (errorKind: string, message: string) =>
-    broadcast({ type: 'error', event: { errorKind, message } });
-  /** Whether `url` points at one of this process's own listeners (issue #214 — the URL is now editable, so Replay could otherwise be aimed at the dashboard itself, see #205). Unparseable URLs aren't refused here: the request fails on its own and says why. */
-  const targetsOwnListener = async (url: string): Promise<boolean> => {
-    if (!options.isSelfTarget) return false;
-    try {
-      const target = new URL(url);
-      const defaultPort = target.protocol === 'https:' ? 443 : 80;
-      return await options.isSelfTarget(target.hostname, target.port ? Number(target.port) : defaultPort);
-    } catch {
-      return false;
-    }
-  };
-  const handleReplayMessage = async (message: Extract<DashboardClientMessage, { type: 'replay' }>) => {
+}
+
+/** Whether `url` points at one of this process's own listeners (issue #214 — the URL is now editable, so Replay could otherwise be aimed at the dashboard itself, see #205). Unparseable URLs aren't refused here: the request fails on its own and says why. */
+async function targetsOwnListener(url: string, isSelfTarget: DashboardServerOptions['isSelfTarget']): Promise<boolean> {
+  if (!isSelfTarget) return false;
+  try {
+    const target = new URL(url);
+    const defaultPort = target.protocol === 'https:' ? 443 : 80;
+    return await isSelfTarget(target.hostname, target.port ? Number(target.port) : defaultPort);
+  } catch {
+    return false;
+  }
+}
+
+function createReplayHandler(
+  options: DashboardServerOptions,
+  eventBus: DetourEventBus,
+  httpRequester: HttpRequester,
+  broadcastError: (errorKind: string, message: string) => void,
+): (message: Extract<DashboardClientMessage, { type: 'replay' }>) => Promise<void> {
+  return async (message) => {
     const url = message.overrides?.url?.trim() || message.exchange.url;
-    if (await targetsOwnListener(url)) {
+    if (await targetsOwnListener(url, options.isSelfTarget)) {
       broadcastError('REPLAY_REJECTED', `Refused to replay to ${url}: it is one of Detour's own listeners.`);
       return;
     }
@@ -748,101 +631,220 @@ export async function startDashboardServer(
       broadcastError('REPLAY_ERROR', describeError(err)),
     );
   };
-  // Fires after *any* rules.json reload — whether triggered by `setRules`/
-  // `applyRuleProfile` (which write the file, then wait for the same
-  // fs.watch-driven reload a hand-edit would trigger) or an actual hand-edit
-  // in a text editor. `rulesMessage()` itself only ever produces a non-null
-  // `data` once a `ruleEngine` exists to emit this event in the first place,
-  // so registering the listener unconditionally (like every other listener
-  // in this function) is harmless when there isn't one.
-  const onRulesReloaded: DetourEvents['rulesReloaded'] = () => broadcast(rulesMessage());
-  // A `breakpoint` rule paused an exchange — broadcast it to every connected
-  // tab so all of them can show/edit it, not just the one that happens to be
-  // focused.
-  const onBreakpointHit: DetourEvents['breakpointHit'] = ({ exchange, payload }) =>
-    broadcast({ type: 'breakpoint', exchange: toWireExchange(exchange), payload });
-  const onInterceptChanged: DetourEvents['interceptChanged'] = (state) => {
-    interceptState = state;
-    broadcast({ type: 'intercept', state });
+}
+
+interface SessionState {
+  backlog: RingBuffer<CapturedExchange>;
+  wsBacklog: RingBuffer<CapturedWebSocketConnection>;
+  getInterceptState: () => InterceptState;
+  getFocusState: () => FocusState;
+  getThrottleState: () => ThrottleState;
+  getBlockHostsState: () => BlockHostsState;
+  subscribeEventBus: (
+    eventBus: DetourEventBus,
+    broadcast: (message: DashboardServerMessage) => void,
+    rulesMessage: () => DashboardServerMessage,
+  ) => () => void;
+}
+
+const FORWARDED_EVENTS = [
+  'request',
+  'response',
+  'error',
+  'breakpointHit',
+  'interceptChanged',
+  'focusChanged',
+  'throttleChanged',
+  'blockHostsChanged',
+  'wsOpen',
+  'wsFrame',
+  'wsClose',
+  'rulesReloaded',
+] as const satisfies readonly (keyof DetourEvents)[];
+
+type ForwardedEventMap = Pick<DetourEvents, (typeof FORWARDED_EVENTS)[number]>;
+
+function bindEventListeners(eventBus: DetourEventBus, listeners: ForwardedEventMap): () => void {
+  for (const name of FORWARDED_EVENTS) {
+    eventBus.on(name, listeners[name] as DetourEvents[typeof name]);
+  }
+  return () => {
+    for (const name of FORWARDED_EVENTS) {
+      eventBus.off(name, listeners[name] as DetourEvents[typeof name]);
+    }
   };
-  const onFocusChanged: DetourEvents['focusChanged'] = (state) => {
-    focusState = state;
-    broadcast({ type: 'focus', state });
-  };
-  const onThrottleChanged: DetourEvents['throttleChanged'] = (state) => {
-    throttleState = state;
-    broadcast({ type: 'throttle', state });
-  };
-  const onBlockHostsChanged: DetourEvents['blockHostsChanged'] = (state) => {
-    blockHostsState = state;
-    broadcast({ type: 'blockHosts', state });
-  };
-  const onWsOpen: DetourEvents['wsOpen'] = (connection) => {
-    wsBacklog.upsert(connection);
-    broadcast({ type: 'wsOpen', connection });
-  };
-  const onWsFrame: DetourEvents['wsFrame'] = (connection) => {
-    wsBacklog.upsert(connection);
-    broadcast({ type: 'wsFrame', connection });
-  };
-  const onWsClose: DetourEvents['wsClose'] = (connection) => {
-    wsBacklog.upsert(connection);
-    broadcast({ type: 'wsClose', connection });
+}
+
+function createExchangeBacklog(options: DashboardServerOptions): RingBuffer<CapturedExchange> {
+  const backlog = new RingBuffer<CapturedExchange>(
+    options.backlogSize ?? DEFAULT_BACKLOG_SIZE,
+    (item) => item.id,
+    options.maxCaptureMemoryBytes !== undefined
+      ? { maxTotalBytes: options.maxCaptureMemoryBytes, sizeOf: capturedExchangeByteSize }
+      : undefined,
+  );
+  for (const item of options.initialBacklog ?? []) backlog.upsert(item);
+  return backlog;
+}
+
+function createSessionState(options: DashboardServerOptions): SessionState {
+  const backlog = createExchangeBacklog(options);
+  // Mirrors `backlog` above, but for WebSocket connections (issue #17) —
+  // kept in its own buffer/message type since a connection's shape (a
+  // stream of frames rather than one request/response pair) doesn't fit
+  // alongside `CapturedExchange`.
+  const wsBacklog = new RingBuffer<CapturedWebSocketConnection>(
+    options.backlogSize ?? DEFAULT_BACKLOG_SIZE,
+    (item) => item.id,
+  );
+  // Mirrors the proxy server's own state (which is the source of truth) so a
+  // newly-connecting client can be told the current state without a round trip
+  // — kept in sync via the `*Changed` events, the same way `backlog` mirrors traffic.
+  let interceptState: InterceptState = { enabled: true };
+  let focusState: FocusState = { hosts: [] };
+  let throttleState: ThrottleState = { enabled: false, downKbps: 0, upKbps: 0, latencyMs: 0, packetLossPct: 0 };
+  let blockHostsState: BlockHostsState = { hosts: [], mode: 'forbidden' };
+
+  const subscribeEventBus: SessionState['subscribeEventBus'] = (eventBus, broadcast, rulesMessage) => {
+    const forwardWs =
+      (type: 'wsOpen' | 'wsFrame' | 'wsClose') => (connection: Readonly<CapturedWebSocketConnection>) => {
+        wsBacklog.upsert(connection);
+        broadcast({ type, connection });
+      };
+    return bindEventListeners(eventBus, {
+      // Encoded to base64 only right here, at the point of actually going out
+      // over JSON — `backlog` above keeps the `Buffer` (issue #165's
+      // Proposal B; see `toWireExchange`'s own doc comment).
+      request: (exchange) => {
+        backlog.upsert(exchange);
+        broadcast({ type: 'request', exchange: toWireExchange(exchange) });
+      },
+      // Only the response-side diff goes out here (issue #165's Proposal C) —
+      // `requestBody`/`requestHeaders` already went out in full on this same
+      // id's `request` broadcast above and haven't changed since. `backlog`
+      // itself still keeps (and replays to a newly-connecting client via
+      // `toWireExchange` below) the complete exchange either way.
+      response: (exchange) => {
+        backlog.upsert(exchange);
+        broadcast({ type: 'response', exchange: toResponsePatch(exchange) });
+      },
+      error: (event) => broadcast({ type: 'error', event }),
+      // Fires after *any* rules.json reload — whether triggered by `setRules`/
+      // `applyRuleProfile` (which write the file, then wait for the same
+      // fs.watch-driven reload a hand-edit would trigger) or an actual hand-edit
+      // in a text editor. `rulesMessage()` itself only ever produces a non-null
+      // `data` once a `ruleEngine` exists to emit this event in the first place,
+      // so registering the listener unconditionally is harmless when there isn't one.
+      rulesReloaded: () => broadcast(rulesMessage()),
+      // A `breakpoint` rule paused an exchange — broadcast it to every connected
+      // tab so all of them can show/edit it, not just the one that happens to be focused.
+      breakpointHit: ({ exchange, payload }) =>
+        broadcast({ type: 'breakpoint', exchange: toWireExchange(exchange), payload }),
+      interceptChanged: (state) => {
+        interceptState = state;
+        broadcast({ type: 'intercept', state });
+      },
+      focusChanged: (state) => {
+        focusState = state;
+        broadcast({ type: 'focus', state });
+      },
+      throttleChanged: (state) => {
+        throttleState = state;
+        broadcast({ type: 'throttle', state });
+      },
+      blockHostsChanged: (state) => {
+        blockHostsState = state;
+        broadcast({ type: 'blockHosts', state });
+      },
+      wsOpen: forwardWs('wsOpen'),
+      wsFrame: forwardWs('wsFrame'),
+      wsClose: forwardWs('wsClose'),
+    });
   };
 
-  // The full just-connected snapshot — sent immediately to a socket that
-  // needed no password, or once one that did has proven it via `login`.
-  // Order matches the pre-issue-#66 unconditional sends exactly (no test or
-  // client relies on it, but no reason to shuffle it either).
-  const sendInitialPayload = (socket: WebSocket) => {
+  return {
+    backlog,
+    wsBacklog,
+    getInterceptState: () => interceptState,
+    getFocusState: () => focusState,
+    getThrottleState: () => throttleState,
+    getBlockHostsState: () => blockHostsState,
+    subscribeEventBus,
+  };
+}
+
+interface InitialPayloadDeps {
+  options: DashboardServerOptions;
+  host: string;
+  lanAddrs: string[];
+  state: SessionState;
+  rulesMessage: () => DashboardServerMessage;
+  ruleProfilesMessage: () => DashboardServerMessage;
+  userConfigMessage: () => DashboardServerMessage;
+  sendUpdateInfo: (socket: WebSocket) => Promise<void>;
+  sendAdbReverseState: (socket: WebSocket) => void;
+}
+
+// The full just-connected snapshot — sent immediately to a socket that
+// needed no password, or once one that did has proven it via `login`.
+// Order matches the pre-issue-#66 unconditional sends exactly (no test or
+// client relies on it, but no reason to shuffle it either).
+function createInitialPayloadSender(deps: InitialPayloadDeps): (socket: WebSocket) => void {
+  const { options, host, lanAddrs, state } = deps;
+  // Computed once, not per-connection like `rulesMessage()`/`ruleProfilesMessage()`
+  // below — a `--proto` schema has no live-reload (see `protoSchema`'s own
+  // doc comment on `DashboardServerMessage`), so there's nothing for a later
+  // call to pick up that this one wouldn't already have.
+  // `protobuf.INamespace` (a plain-data description of protobufjs's own
+  // schema types) has no index signature TypeScript will structurally match
+  // against `Record<string, unknown>` — but it's genuinely just JSON going
+  // out over the wire either way, so the cast is safe.
+  const protoSchema = (options.protoRegistry?.toJSON() as Record<string, unknown> | undefined) ?? null;
+  return (socket: WebSocket) => {
+    const send = (msg: DashboardServerMessage) => socket.send(JSON.stringify(msg));
     if (options.proxyPort !== undefined) {
-      const proxyInfoMessage: DashboardServerMessage = {
+      send({
         type: 'proxyInfo',
         proxyPort: options.proxyPort,
         insecureUpstream: options.insecureUpstream ?? false,
         protocolVersion: PROTOCOL_VERSION,
-      };
-      socket.send(JSON.stringify(proxyInfoMessage));
+      });
     }
-    const lanInfoMessage: DashboardServerMessage = {
-      type: 'lanInfo',
-      addresses: lanAddrs,
-      // Specifically `=== '0.0.0.0'`, not merely `!== 'localhost'`: `host`
-      // is a plain `string` (see `DashboardServerOptions.host`), so it's
-      // never guaranteed to be one of only those two values — a caller
-      // could hand this a single bare interface address (`192.168.1.5`,
-      // say) to bind just that one NIC. `!== 'localhost'` would call that
-      // "on every interface" too, sending clients a Dashboard URL for
-      // every *other* LAN address this machine has, none of which that
-      // bind would actually accept a connection on.
-      dashboardOnLan: host === '0.0.0.0',
-    };
-    socket.send(JSON.stringify(lanInfoMessage));
-    const backlogMessage: DashboardServerMessage = { type: 'backlog', items: backlog.toArray().map(toWireExchange) };
-    socket.send(JSON.stringify(backlogMessage));
-    const wsBacklogMessage: DashboardServerMessage = { type: 'wsBacklog', items: wsBacklog.toArray() };
-    socket.send(JSON.stringify(wsBacklogMessage));
-    const interceptMessage: DashboardServerMessage = { type: 'intercept', state: interceptState };
-    socket.send(JSON.stringify(interceptMessage));
-    const focusMessage: DashboardServerMessage = { type: 'focus', state: focusState };
-    socket.send(JSON.stringify(focusMessage));
-    const throttleMessage: DashboardServerMessage = { type: 'throttle', state: throttleState };
-    socket.send(JSON.stringify(throttleMessage));
-    const blockHostsMessage: DashboardServerMessage = { type: 'blockHosts', state: blockHostsState };
-    socket.send(JSON.stringify(blockHostsMessage));
-    socket.send(JSON.stringify(rulesMessage()));
-    socket.send(JSON.stringify(ruleProfilesMessage()));
-    socket.send(JSON.stringify(userConfigMessage()));
-    const protoSchemaMessage: DashboardServerMessage = { type: 'protoSchema', schema: protoSchema };
-    socket.send(JSON.stringify(protoSchemaMessage));
-    const historyStatusMessage: DashboardServerMessage = { type: 'historyStatus', enabled: !!options.historyStore };
-    socket.send(JSON.stringify(historyStatusMessage));
+    // Specifically `=== '0.0.0.0'`, not merely `!== 'localhost'`: `host`
+    // is a plain `string` (see `DashboardServerOptions.host`), so it's
+    // never guaranteed to be one of only those two values — a caller
+    // could hand this a single bare interface address (`192.168.1.5`,
+    // say) to bind just that one NIC. `!== 'localhost'` would call that
+    // "on every interface" too, sending clients a Dashboard URL for
+    // every *other* LAN address this machine has, none of which that
+    // bind would actually accept a connection on.
+    send({ type: 'lanInfo', addresses: lanAddrs, dashboardOnLan: host === '0.0.0.0' });
+    send({ type: 'backlog', items: state.backlog.toArray().map(toWireExchange) });
+    send({ type: 'wsBacklog', items: state.wsBacklog.toArray() });
+    send({ type: 'intercept', state: state.getInterceptState() });
+    send({ type: 'focus', state: state.getFocusState() });
+    send({ type: 'throttle', state: state.getThrottleState() });
+    send({ type: 'blockHosts', state: state.getBlockHostsState() });
+    send(deps.rulesMessage());
+    send(deps.ruleProfilesMessage());
+    send(deps.userConfigMessage());
+    send({ type: 'protoSchema', schema: protoSchema });
+    send({ type: 'historyStatus', enabled: !!options.historyStore });
     // Last and unawaited: the release lookup may hit the network, and must
     // never delay the snapshot above.
-    void sendUpdateInfo(socket);
-    sendAdbReverseState(socket);
+    void deps.sendUpdateInfo(socket);
+    deps.sendAdbReverseState(socket);
   };
+}
 
+function attachWebSocketConnectionHandler(deps: {
+  wss: WebSocketServer;
+  auth: ReturnType<typeof createDashboardAuth>;
+  sendInitialPayload: (socket: WebSocket) => void;
+  messageHandlers: ReturnType<typeof createMessageHandlers>;
+  eventBus: DetourEventBus;
+}): void {
+  const { wss, auth, sendInitialPayload, messageHandlers, eventBus } = deps;
   wss.on('connection', (socket: WebSocket, req: IncomingMessage) => {
     const admission = auth.admitConnection(socket, req);
     if (admission === 'rejected') return;
@@ -899,124 +901,92 @@ export async function startDashboardServer(
       }
     });
   });
+}
 
-  /**
-   * Returns the session's `ruleEngine`, provisioning one via
-   * `createRuleEngine` (issue #123) the first time it's actually needed —
-   * see `DashboardServerOptions.createRuleEngine`'s own doc comment. Only
-   * `applyRuleProfile` calls this: it's the one action reachable with no
-   * active rules file at all (the "Switch profile…" `<select>` lists saved
-   * profiles regardless of whether one's currently applied), whereas
-   * `setRules`/`saveActiveRulesAsProfile` are both inherently about editing
-   * or snapshotting an *already*-active ruleset, with nothing for a freshly
-   * created empty one to meaningfully contribute.
-   */
-  function ensureRuleEngine(): RuleEngine | undefined {
-    if (ruleEngine) return ruleEngine;
-    if (!createRuleEngine) return undefined;
-    ruleEngine = createRuleEngine();
-    return ruleEngine;
-  }
-
-  const messageHandlers = createMessageHandlers({
-    eventBus,
-    rules: createRulesHandlers({
-      getRuleEngine: () => ruleEngine,
-      ensureRuleEngine,
-      ruleProfileStore,
-      broadcast,
-      broadcastError,
-      ruleProfilesMessage,
-    }),
-    broadcast,
-    broadcastError,
-    userConfigMessage,
-    sendUpdateInfoToAll,
-    persistUserConfig: (patch) => writeUserConfig(patch, options.userConfigPath),
-    onDashboardPasswordChanged: auth.onPasswordChanged,
-    startUpdate: (socket) => dashboardUpdates.start(socket),
-    refreshUpdateInfo: () => dashboardUpdates.refresh(),
-    setAdbReverse: (socket, enabled) => adbReverse?.setEnabled(socket, enabled) ?? false,
-    sendAdbReverseState,
-    replay: handleReplayMessage,
-    queryHistory: (query) => options.historyStore?.query(query),
+function stopDashboardServer(deps: {
+  control: ControlServerHandle | undefined;
+  adbReverse: ReturnType<typeof createDashboardAdbReverse> | undefined;
+  unsubscribeEventBus: () => void;
+  updateTimer: ReturnType<typeof setInterval> | undefined;
+  wss: WebSocketServer;
+  httpServer: http.Server | https.Server;
+}): Promise<void> {
+  return new Promise<void>((res) => {
+    // Awaited, not fired and forgotten: a caller that treats a resolved
+    // `stop()` as "every port is released" (a test restarting Detour on
+    // a fixed `--control-port`) must not find the control listener
+    // still bound.
+    const controlStopped = deps.control?.stop() ?? Promise.resolve();
+    // The dashboard's switch may have started a watcher `detour start` never saw — stop whichever is running.
+    deps.adbReverse?.stop();
+    deps.unsubscribeEventBus();
+    if (deps.updateTimer) clearInterval(deps.updateTimer);
+    for (const client of deps.wss.clients) client.close();
+    // `httpServer.close()` waits for every connection, so one client
+    // that never answers the close handshake (or a stray keep-alive)
+    // would block shutdown forever (issue #206) — cut what remains
+    // after a short drain.
+    const force = setTimeout(() => {
+      for (const client of deps.wss.clients) client.terminate();
+      deps.httpServer.closeAllConnections();
+    }, SHUTDOWN_DRAIN_MS);
+    force.unref();
+    const onHttpClosed = () => {
+      clearTimeout(force);
+      void controlStopped.then(() => res());
+    };
+    deps.wss.close(() => deps.httpServer.close(onHttpClosed));
   });
+}
 
+interface ListenDashboardDeps {
+  options: DashboardServerOptions;
+  host: string;
+  httpServer: http.Server | https.Server;
+  wss: WebSocketServer;
+  eventBus: DetourEventBus;
+  state: SessionState;
+  services: DashboardServices;
+  rulesMessage: () => DashboardServerMessage;
+  ruleEngineHolder: RuleEngineHolder;
+  setBoundPort: (port: number) => void;
+}
+
+function listenDashboardServer(deps: ListenDashboardDeps): Promise<DashboardServerHandle> {
+  const { options, host, httpServer, wss, eventBus, state, services, ruleEngineHolder } = deps;
   return new Promise((resolve, reject) => {
     httpServer.on('error', reject);
     httpServer.listen(options.port, host, () => {
       // Only subscribed once bound: if listen() fails (e.g. a port grabbed by
       // another process in the gap since assertPortAvailable's check), there
       // must be no dangling event-bus listeners left over from this attempt.
-      eventBus.on('request', onRequest);
-      eventBus.on('response', onResponse);
-      eventBus.on('error', onError);
-      eventBus.on('breakpointHit', onBreakpointHit);
-      eventBus.on('interceptChanged', onInterceptChanged);
-      eventBus.on('focusChanged', onFocusChanged);
-      eventBus.on('throttleChanged', onThrottleChanged);
-      eventBus.on('blockHostsChanged', onBlockHostsChanged);
-      eventBus.on('wsOpen', onWsOpen);
-      eventBus.on('wsFrame', onWsFrame);
-      eventBus.on('wsClose', onWsClose);
-      eventBus.on('rulesReloaded', onRulesReloaded);
+      const unsubscribeEventBus = state.subscribeEventBus(eventBus, services.broadcast, deps.rulesMessage);
 
       // Keeps a long-open tab current: the lookup itself is cached, so this
       // is cheap — it only matters once the cache has expired.
-      const updateTimer = options.updateService ? setInterval(sendUpdateInfoToAll, UPDATE_INFO_REFRESH_MS) : undefined;
+      const updateTimer = options.updateService
+        ? setInterval(services.sendUpdateInfoToAll, UPDATE_INFO_REFRESH_MS)
+        : undefined;
       updateTimer?.unref();
 
       const address = httpServer.address();
-      // Reassigns the outer `let boundPort` (declared up top, alongside
-      // `isAllowedOrigin`'s doc comment on why) — not a new binding — so an
-      // ephemeral `port: 0` resolving to a real OS-assigned port here is
-      // what `isAllowedOrigin` checks handshakes against from this point on.
-      boundPort = typeof address === 'object' && address ? address.port : options.port;
+      const boundPort = typeof address === 'object' && address ? address.port : options.port;
+      deps.setBoundPort(boundPort);
       const buildHandle = (control: ControlServerHandle | undefined): DashboardServerHandle => {
-        adbReverse?.begin();
+        services.adbReverse?.begin();
         return {
           port: boundPort,
           ...(control ? { controlPort: control.port } : {}),
           address: typeof address === 'object' && address ? address.address : host,
-          backlogForUpdateRestart: () => (dashboardUpdates.isUpdating() ? backlog.toArray() : undefined),
+          backlogForUpdateRestart: () => (services.dashboardUpdates.isUpdating() ? state.backlog.toArray() : undefined),
           stop: () =>
-            new Promise<void>((res) => {
-              // Awaited, not fired and forgotten: a caller that treats a resolved
-              // `stop()` as "every port is released" (a test restarting Detour on
-              // a fixed `--control-port`) must not find the control listener
-              // still bound.
-              const controlStopped = control?.stop() ?? Promise.resolve();
-              // The dashboard's switch may have started a watcher `detour start` never saw — stop whichever is running.
-              adbReverse?.stop();
-              eventBus.off('request', onRequest);
-              eventBus.off('response', onResponse);
-              eventBus.off('error', onError);
-              eventBus.off('breakpointHit', onBreakpointHit);
-              eventBus.off('interceptChanged', onInterceptChanged);
-              eventBus.off('focusChanged', onFocusChanged);
-              eventBus.off('throttleChanged', onThrottleChanged);
-              eventBus.off('blockHostsChanged', onBlockHostsChanged);
-              eventBus.off('wsOpen', onWsOpen);
-              eventBus.off('wsFrame', onWsFrame);
-              eventBus.off('wsClose', onWsClose);
-              eventBus.off('rulesReloaded', onRulesReloaded);
-              if (updateTimer) clearInterval(updateTimer);
-              for (const client of wss.clients) client.close();
-              // `httpServer.close()` waits for every connection, so one client
-              // that never answers the close handshake (or a stray keep-alive)
-              // would block shutdown forever (issue #206) — cut what remains
-              // after a short drain.
-              const force = setTimeout(() => {
-                for (const client of wss.clients) client.terminate();
-                httpServer.closeAllConnections();
-              }, SHUTDOWN_DRAIN_MS);
-              force.unref();
-              wss.close(() =>
-                httpServer.close(() => {
-                  clearTimeout(force);
-                  void controlStopped.then(() => res());
-                }),
-              );
+            stopDashboardServer({
+              control,
+              adbReverse: services.adbReverse,
+              unsubscribeEventBus,
+              updateTimer,
+              wss,
+              httpServer,
             }),
         };
       };
@@ -1038,10 +1008,10 @@ export async function startDashboardServer(
         { port: options.controlPort, token: options.accessToken },
         createControlDeps({
           eventBus,
-          getRuleEngine: () => ruleEngine,
-          ensureRuleEngine,
-          profiles: () => ruleProfileStore,
-          backlog,
+          getRuleEngine: ruleEngineHolder.get,
+          ensureRuleEngine: ruleEngineHolder.ensure,
+          profiles: () => options.ruleProfileStore,
+          backlog: state.backlog,
           version: options.version,
         }),
       ).then(
@@ -1050,9 +1020,256 @@ export async function startDashboardServer(
           // The dashboard is already listening; release it so the caller is
           // not left holding half a start — and only then report the failure,
           // so "the start failed" can be trusted to mean "no port is held".
-          wss.close(() => httpServer.close(() => reject(err)));
+          const closeHttp = () => httpServer.close(() => reject(err));
+          wss.close(closeHttp);
         },
       );
     });
+  });
+}
+
+interface DashboardServices {
+  broadcast: (message: DashboardServerMessage) => void;
+  broadcastError: (errorKind: string, message: string) => void;
+  dashboardUpdates: ReturnType<typeof createDashboardUpdates>;
+  sendUpdateInfo: (socket: WebSocket) => Promise<void>;
+  sendUpdateInfoToAll: () => void;
+  adbReverse: ReturnType<typeof createDashboardAdbReverse> | undefined;
+  sendAdbReverseState: (socket: WebSocket) => void;
+}
+
+function createDashboardServices(
+  options: DashboardServerOptions,
+  wss: WebSocketServer,
+  auth: ReturnType<typeof createDashboardAuth>,
+): DashboardServices {
+  const broadcast = (message: DashboardServerMessage) => {
+    const payload = JSON.stringify(message);
+    for (const client of wss.clients) {
+      // Skips a socket still waiting on `authRequired` — the whole point of
+      // gating it is that it never sees live traffic, rule contents, or any
+      // other state until it's proven it knows the password.
+      if (client.readyState === WebSocket.OPEN && auth.isAuthenticated(client)) client.send(payload);
+    }
+  };
+  const broadcastError = (errorKind: string, message: string) =>
+    broadcast({ type: 'error', event: { errorKind, message } });
+
+  const dashboardUpdates = createDashboardUpdates(
+    options.updateService,
+    { isVerified: auth.isVerified },
+    Date.now,
+    (message) => broadcast({ type: 'updateStatus', state: 'failed', message }),
+  );
+  const sendUpdateInfo = async (socket: WebSocket) => {
+    const message = await dashboardUpdates.infoFor(socket);
+    if (message && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+  };
+  const sendUpdateInfoToAll = () => {
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN && auth.isAuthenticated(client)) void sendUpdateInfo(client);
+    }
+  };
+  const adbReverseOptions = options.adbReverse;
+  const sendAdbReverseState = (socket: WebSocket) => {
+    if (adbReverse && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(adbReverse.stateFor(socket)));
+  };
+  const sendAdbReverseStateToAll = () => {
+    for (const client of wss.clients) {
+      if (auth.isAuthenticated(client)) sendAdbReverseState(client);
+    }
+  };
+  const adbReverse = adbReverseOptions
+    ? createDashboardAdbReverse({
+        port: adbReverseOptions.port,
+        startWatcher: () => adbReverseOptions.start(sendAdbReverseStateToAll),
+        enabledAtStart: adbReverseOptions.enabledAtStart,
+        trust: { isVerified: auth.isVerified },
+        onChange: sendAdbReverseStateToAll,
+      })
+    : undefined;
+
+  return {
+    broadcast,
+    broadcastError,
+    dashboardUpdates,
+    sendUpdateInfo,
+    sendUpdateInfoToAll,
+    adbReverse,
+    sendAdbReverseState,
+  };
+}
+
+function wireDashboardMessageHandlers(deps: {
+  options: DashboardServerOptions;
+  eventBus: DetourEventBus;
+  services: DashboardServices;
+  auth: ReturnType<typeof createDashboardAuth>;
+  getRuleEngine: () => RuleEngine | undefined;
+  ensureRuleEngine: () => RuleEngine | undefined;
+  ruleProfilesMessage: () => DashboardServerMessage;
+  userConfigMessage: () => DashboardServerMessage;
+}): ReturnType<typeof createMessageHandlers> {
+  const { options, eventBus, services, auth } = deps;
+  const httpRequester = options.httpRequester ?? nodeHttpRequester;
+  return createMessageHandlers({
+    eventBus,
+    rules: createRulesHandlers({
+      getRuleEngine: deps.getRuleEngine,
+      ensureRuleEngine: deps.ensureRuleEngine,
+      ruleProfileStore: options.ruleProfileStore,
+      broadcast: services.broadcast,
+      broadcastError: services.broadcastError,
+      ruleProfilesMessage: deps.ruleProfilesMessage,
+    }),
+    broadcast: services.broadcast,
+    broadcastError: services.broadcastError,
+    userConfigMessage: deps.userConfigMessage,
+    sendUpdateInfoToAll: services.sendUpdateInfoToAll,
+    persistUserConfig: (patch) => writeUserConfig(patch, options.userConfigPath),
+    onDashboardPasswordChanged: auth.onPasswordChanged,
+    startUpdate: (socket) => services.dashboardUpdates.start(socket),
+    refreshUpdateInfo: () => services.dashboardUpdates.refresh(),
+    setAdbReverse: (socket, enabled) => services.adbReverse?.setEnabled(socket, enabled) ?? false,
+    sendAdbReverseState: services.sendAdbReverseState,
+    replay: createReplayHandler(options, eventBus, httpRequester, services.broadcastError),
+    queryHistory: (query) => options.historyStore?.query(query),
+  });
+}
+
+interface RuleEngineHolder {
+  get: () => RuleEngine | undefined;
+  ensure: () => RuleEngine | undefined;
+}
+
+// `let`, not `const`: `ensure` (see `DashboardServerOptions.createRuleEngine`'s
+// own doc comment) reassigns `ruleEngine` the first time it's actually needed —
+// every read of `get()` happens lazily inside a message handler or a
+// `broadcast()` callback, so reassigning it here is enough for those to see the
+// newly-provisioned engine from that point on (issue #123). Only
+// `applyRuleProfile` calls `ensure`: it's the one action reachable with no
+// active rules file at all (the "Switch profile…" `<select>` lists saved
+// profiles regardless of whether one's currently applied), whereas
+// `setRules`/`saveActiveRulesAsProfile` are both inherently about editing or
+// snapshotting an *already*-active ruleset.
+function createRuleEngineHolder(options: DashboardServerOptions): RuleEngineHolder {
+  let ruleEngine = options.ruleEngine;
+  return {
+    get: () => ruleEngine,
+    ensure: () => {
+      if (ruleEngine) return ruleEngine;
+      if (!options.createRuleEngine) return undefined;
+      ruleEngine = options.createRuleEngine();
+      return ruleEngine;
+    },
+  };
+}
+
+interface DashboardStateMessages {
+  rulesMessage: () => DashboardServerMessage;
+  ruleProfilesMessage: () => DashboardServerMessage;
+  userConfigMessage: () => DashboardServerMessage;
+}
+
+function createDashboardStateMessages(
+  options: DashboardServerOptions,
+  getRuleEngine: () => RuleEngine | undefined,
+  currentPasswordHash: () => string | null,
+): DashboardStateMessages {
+  return {
+    rulesMessage: () => buildRulesMessage(getRuleEngine()),
+    ruleProfilesMessage: () => ({
+      type: 'ruleProfiles',
+      profiles: options.ruleProfileStore?.list() ?? [],
+    }),
+    userConfigMessage: () => buildUserConfigMessage(options.userConfigPath, currentPasswordHash),
+  };
+}
+
+/**
+ * Serves the built dashboard (static files + a `/ws` WebSocket feed of live
+ * traffic) on `options.port`. Every exchange published on the event bus is
+ * broadcast to all connected browser tabs in real time; a bounded backlog is
+ * replayed to newly-connected clients so refreshing the page doesn't lose
+ * recent history.
+ */
+export async function startDashboardServer(
+  options: DashboardServerOptions,
+  eventBus: DetourEventBus,
+): Promise<DashboardServerHandle> {
+  const host = options.host ?? 'localhost';
+  const ruleEngineHolder = createRuleEngineHolder(options);
+  const lanAddrs = options.lanAddresses ?? [];
+  // Whether this server itself is bound to every network interface, not
+  // just loopback — see `sendInitialPayload`'s own `dashboardOnLan` below,
+  // which this mirrors. Only in this case are `lanAddrs` actually reachable
+  // at all (a `localhost`-only bind never accepts a connection arriving on
+  // a LAN address in the first place), so it's also the gate on whether
+  // `isAllowedHostHeader`/`isAllowedOriginHeader` treat them as legitimate.
+  const allowedHostnames = computeAllowedHostnames(host, host === '0.0.0.0', lanAddrs);
+  // The dashboard's actual bound port — `options.port` verbatim except for
+  // an ephemeral `port: 0`, which only resolves to a real port once
+  // `httpServer.listen()`'s callback fires below. `isAllowedOriginHeader` needs
+  // the real value (an `Origin` header's port must match what this server
+  // is actually reachable on), so this is declared as a `let` here and
+  // updated once listening starts, rather than read fresh via
+  // `httpServer.address()` on every handshake.
+  let boundPort = options.port;
+  await assertPortAvailable(options.port, host);
+
+  const state = createSessionState(options);
+  const httpServer = createDashboardHttpServer(options, allowedHostnames);
+  const wss = createDashboardWebSocketServer(
+    httpServer,
+    options.dashboardCompression,
+    allowedHostnames,
+    () => boundPort,
+  );
+
+  // Who is authenticated, who proved a secret, the login rate limits (issues #66, #159, #205).
+  const auth = createDashboardAuth({
+    accessToken: options.accessToken,
+    loadPasswordHash: () => loadUserConfig(options.userConfigPath).dashboardPasswordHash ?? null,
+    sendInitialPayload: (socket) => sendInitialPayload(socket),
+  });
+  const services = createDashboardServices(options, wss, auth);
+  const messages = createDashboardStateMessages(options, ruleEngineHolder.get, auth.currentPasswordHash);
+
+  const sendInitialPayload = createInitialPayloadSender({
+    options,
+    host,
+    lanAddrs,
+    state,
+    ...messages,
+    sendUpdateInfo: services.sendUpdateInfo,
+    sendAdbReverseState: services.sendAdbReverseState,
+  });
+
+  const messageHandlers = wireDashboardMessageHandlers({
+    options,
+    eventBus,
+    services,
+    auth,
+    getRuleEngine: ruleEngineHolder.get,
+    ensureRuleEngine: ruleEngineHolder.ensure,
+    ruleProfilesMessage: messages.ruleProfilesMessage,
+    userConfigMessage: messages.userConfigMessage,
+  });
+
+  attachWebSocketConnectionHandler({ wss, auth, sendInitialPayload, messageHandlers, eventBus });
+
+  return listenDashboardServer({
+    options,
+    host,
+    httpServer,
+    wss,
+    eventBus,
+    state,
+    services,
+    rulesMessage: messages.rulesMessage,
+    ruleEngineHolder,
+    setBoundPort: (port) => {
+      boundPort = port;
+    },
   });
 }

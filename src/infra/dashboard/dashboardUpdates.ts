@@ -31,6 +31,10 @@ export interface DashboardUpdates {
   isUpdating(): boolean;
 }
 
+function rejectedUpdateStatus(message: string): DashboardServerMessage {
+  return { type: 'updateStatus', state: 'rejected', message };
+}
+
 /**
  * Running `brew upgrade` and restarting the process is arbitrary host-level
  * action, so it's offered only to a client that has proven a secret (the
@@ -68,21 +72,15 @@ export function createDashboardUpdates(
     },
     async start(socket) {
       if (!service?.canSelfUpdate) {
-        return {
-          type: 'updateStatus',
-          state: 'rejected',
-          message: 'This install cannot update itself. Run `detour update` in a terminal.',
-        };
+        return rejectedUpdateStatus('This install cannot update itself. Run `detour update` in a terminal.');
       }
       if (!mayUpdate(socket)) {
-        return {
-          type: 'updateStatus',
-          state: 'rejected',
-          message: 'Updating from the dashboard is only allowed from this machine or a password-authenticated session.',
-        };
+        return rejectedUpdateStatus(
+          'Updating from the dashboard is only allowed from this machine or a password-authenticated session.',
+        );
       }
       if (now() - lastStartedAt < START_DEBOUNCE_MS) {
-        return { type: 'updateStatus', state: 'rejected', message: 'An update is already in progress.' };
+        return rejectedUpdateStatus('An update is already in progress.');
       }
       // Armed before the await: two sockets racing through the spawn must not both launch an updater.
       lastStartedAt = now();

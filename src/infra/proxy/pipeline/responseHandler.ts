@@ -39,6 +39,7 @@ export interface ResponseHandlerDeps {
  * flushed) — this handler just steps aside for those (`return callback()`)
  * so the same exchange isn't captured/finalized twice.
  */
+// eslint-disable-next-line max-lines-per-function -- response pipeline stage factory; tracked under issue #208 (issue #207)
 export function createResponseHandler(deps: ResponseHandlerDeps): OnRequestParams {
   const {
     eventBus,
@@ -51,6 +52,7 @@ export function createResponseHandler(deps: ResponseHandlerDeps): OnRequestParam
     scriptRequestBodies,
   } = deps;
 
+  // eslint-disable-next-line max-lines-per-function -- response pipeline stage; tracked under issue #208 (issue #207)
   return function handleResponse(ctx, callback) {
     const exchange = inFlight.get(ctx.uuid);
     const terminal = ruleContexts.get(ctx.uuid);

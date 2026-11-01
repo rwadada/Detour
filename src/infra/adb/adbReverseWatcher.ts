@@ -79,6 +79,7 @@ const DEFAULT_RESTART_DELAY_MS = 5000;
  * - If `adb track-devices` ends (the server restarted, or `adb` is missing),
  *   it is started again after a delay, until `stop()`.
  */
+// eslint-disable-next-line max-lines-per-function -- cohesive adb track-devices lifecycle closure (issue #207)
 export function startAdbReverseWatcher(options: AdbReverseWatcherOptions): AdbReverseWatcher {
   const spawnProcess = options.spawn ?? spawnStreaming;
   const restartDelayMs = options.restartDelayMs ?? DEFAULT_RESTART_DELAY_MS;

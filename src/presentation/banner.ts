@@ -64,6 +64,7 @@ const INSECURE_UPSTREAM_WARNING =
  * (see `boundaries/dependencies` in eslint.config.mjs). The composition root
  * resolves them; this only decides what to print.
  */
+// eslint-disable-next-line max-lines-per-function, sonarjs/cognitive-complexity -- sequential startup banner formatting over resolved CLI flags (issue #207)
 export function printStartupBanner(info: {
   /** The dashboard's own bind host (`localhost` or `0.0.0.0`) — the proxy's is always `PROXY_HOST` ('0.0.0.0'), not passed in since this function never needs to branch on it. */
   dashboardHost: string;

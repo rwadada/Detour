@@ -1084,6 +1084,7 @@ function crashGuardUnhandledRejectionListener(reason: unknown): void {
 }
 
 /** Wires `detour start` into the CLI (issue #168's split of the former single-file composition root). */
+// eslint-disable-next-line max-lines-per-function -- declarative Commander `.option(...)` chain for `detour start` (issue #207)
 export function registerStartCommand(program: Command): void {
   program
     .command('start')
