@@ -328,9 +328,10 @@ function mulberry32(seed) {
 }
 
 /**
- * Upper bound on `/bytes/<n>` and `/json-bytes/<n>` (the largest scenario
- * requests 1 MiB) so `size` parsed from `req.url` cannot allocate an
- * arbitrarily large buffer (CodeQL `js/resource-exhaustion`).
+ * Upper bound on `/bytes/<n>` and `/json-bytes/<n>` (the largest scenario,
+ * scenario 6's `HTTPS streaming (10 MB body)`, requests 10 MiB) so `size`
+ * parsed from `req.url` cannot allocate an arbitrarily large buffer (CodeQL
+ * `js/resource-exhaustion`).
  */
 const MAX_BENCH_BODY_BYTES = 16 * MB;
 
