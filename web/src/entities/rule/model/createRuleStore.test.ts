@@ -120,6 +120,25 @@ describe('createRuleStore', () => {
     emit({ type: 'error', event: { errorKind: 'PROXY_CONNECT_ERROR', message: 'unrelated' } });
 
     expect(store.getState().lastError).toBeNull();
+    expect(store.getState().reloadError).toBeNull();
+  });
+
+  it('surfaces RULES_RELOAD_ERROR as reloadError (without touching lastError), and clears it on a new rules broadcast or dismissReloadError (issue #282)', () => {
+    const { connection, emit } = fakeDashboardConnection();
+    const store = createRuleStore(connection);
+
+    emit({ type: 'error', event: { errorKind: 'RULES_RELOAD_ERROR', message: 'Rules file contains invalid JSON' } });
+    expect(store.getState().reloadError).toBe('Rules file contains invalid JSON');
+    expect(store.getState().lastError).toBeNull();
+
+    store.getState().dismissReloadError();
+    expect(store.getState().reloadError).toBeNull();
+
+    emit({ type: 'error', event: { errorKind: 'RULES_RELOAD_ERROR', message: 'Rules file failed validation' } });
+    expect(store.getState().reloadError).toBe('Rules file failed validation');
+
+    emit({ type: 'rules', data: rulesFile, unreachableWarnings: [], scriptWarnings: [] });
+    expect(store.getState().reloadError).toBeNull();
   });
 
   it('queueNewRule()/clearPendingNewRule() manage pendingNewRule', () => {

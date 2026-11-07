@@ -26,6 +26,37 @@ const TSX_CLI = require.resolve('tsx/cli');
 const E2E_DASHBOARD_TOKEN = 'e2e-dashboard-token-0123456789abcdef';
 
 /**
+ * Isolated `HOME`/`USERPROFILE` for the E2E suite so a developer's real
+ * `~/.detour/config.json` (e.g. `defaultDetach: true`, `lanAccess: true`, or
+ * `proxyAuth`) can never leak into `detour start` runs here, and test writes to
+ * `~/.detour/{run,logs,dumps,rule-profiles}` never pollute the host home.
+ * Pre-seeded with `~/.detour/certs` when present to avoid regenerating a
+ * 2048-bit RSA CA key on every suite run.
+ */
+const E2E_HOME = (() => {
+  const realHome = os.homedir();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-home-'));
+  const realCertsDir = path.join(realHome, '.detour', 'certs');
+  if (fs.existsSync(realCertsDir)) {
+    fs.cpSync(realCertsDir, path.join(home, '.detour', 'certs'), { recursive: true });
+  }
+  process.on('exit', () => {
+    try {
+      fs.rmSync(home, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup on process exit.
+    }
+  });
+  return home;
+})();
+
+const E2E_BASE_ENV: NodeJS.ProcessEnv = {
+  ...process.env,
+  HOME: E2E_HOME,
+  USERPROFILE: E2E_HOME,
+};
+
+/**
  * Runs `detour`'s CLI under tsx by spawning `node <tsx's cli.mjs> src/cli.ts
  * ...args` directly, rather than `npx tsx ...` or a `node_modules/.bin/tsx`
  * shim:
@@ -44,7 +75,15 @@ const E2E_DASHBOARD_TOKEN = 'e2e-dashboard-token-0123456789abcdef';
  * itself rather than a hand-built OS-specific one.
  */
 function runTsx(args: string[], options?: Options) {
-  return execa(process.execPath, [TSX_CLI, ...args], options);
+  return execa(process.execPath, [TSX_CLI, ...args], {
+    ...options,
+    env: {
+      ...E2E_BASE_ENV,
+      ...options?.env,
+      HOME: options?.env?.HOME ?? E2E_HOME,
+      USERPROFILE: options?.env?.USERPROFILE ?? E2E_HOME,
+    },
+  });
 }
 
 /**
@@ -1059,7 +1098,7 @@ async function startDetourCli(
   const subprocess = runTsx([cliEntry, 'start', '--port', '0', '--dashboard-port', '0', ...args], {
     cwd,
     reject: false,
-    env: { ...process.env, DETOUR_DASHBOARD_TOKEN: E2E_DASHBOARD_TOKEN, ...env },
+    env: { DETOUR_DASHBOARD_TOKEN: E2E_DASHBOARD_TOKEN, ...env },
   });
 
   let stdout = '';
@@ -2660,7 +2699,7 @@ describe('detour start (CLI, end-to-end)', () => {
 
       await requestThroughProxy(cli.port, echo.port, `/${marker}`, { Authorization: 'Bearer secret-token' });
 
-      const dumpDir = path.join(os.homedir(), '.detour', 'dumps');
+      const dumpDir = path.join(E2E_HOME, '.detour', 'dumps');
       const start = Date.now();
       let dumpFile: string | undefined;
       while (!dumpFile) {
@@ -3762,7 +3801,7 @@ async function startDetourCliReady(
   const subprocess = runTsx(['src/cli.ts', 'start', ...args], {
     cwd: REPO_ROOT,
     reject: false,
-    env: { ...process.env, DETOUR_DASHBOARD_TOKEN: E2E_DASHBOARD_TOKEN, ...env },
+    env: { DETOUR_DASHBOARD_TOKEN: E2E_DASHBOARD_TOKEN, ...env },
   });
 
   let stdout = '';
@@ -4812,7 +4851,7 @@ describe('detour test (issue #148, CLI end-to-end)', () => {
           cwd: REPO_ROOT,
           reject: false,
           timeout: 15_000,
-          env: { ...process.env, NODE_EXTRA_CA_CERTS: existingBundlePath },
+          env: { NODE_EXTRA_CA_CERTS: existingBundlePath },
         },
       );
 
@@ -4837,7 +4876,7 @@ describe('detour test (issue #148, CLI end-to-end)', () => {
           cwd: REPO_ROOT,
           reject: false,
           timeout: 15_000,
-          env: { ...process.env, NODE_EXTRA_CA_CERTS: missingBundlePath },
+          env: { NODE_EXTRA_CA_CERTS: missingBundlePath },
         },
       );
 
@@ -4868,7 +4907,7 @@ describe('detour test (issue #148, CLI end-to-end)', () => {
           cwd: REPO_ROOT,
           reject: false,
           timeout: 15_000,
-          env: { ...process.env, NO_PROXY: 'localhost,127.0.0.1', no_proxy: 'localhost,127.0.0.1' },
+          env: { NO_PROXY: 'localhost,127.0.0.1', no_proxy: 'localhost,127.0.0.1' },
         },
       );
 
@@ -5412,7 +5451,7 @@ describe('control API (issue #212, CLI end-to-end)', () => {
     const result = await runTsx(['src/cli.ts', 'start', '--port', '0', '--headless', '--control-port', '0'], {
       cwd: REPO_ROOT,
       reject: false,
-      env: { ...process.env, DETOUR_DASHBOARD_TOKEN: E2E_DASHBOARD_TOKEN },
+      env: { DETOUR_DASHBOARD_TOKEN: E2E_DASHBOARD_TOKEN },
     });
     expect(result.exitCode).not.toBe(0);
     expect(`${result.stdout}${result.stderr}`).toMatch(/--control-port needs the dashboard/);

@@ -1,24 +1,35 @@
 import { json } from '@codemirror/lang-json';
 import CodeMirror from '@uiw/react-codemirror';
-import { AlertTriangle, Plus, ShieldOff, Trash2 } from 'lucide-react';
+import { AlertTriangle, Plus, ShieldOff, Trash2, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useRuleStore } from '@/entities/rule';
+import type { Rule, RuleAction, ScriptGateWarning, UnreachableRuleWarning } from '@/shared/api';
 import { useTheme } from '@/shared/lib/theme';
 import { cn } from '@/shared/lib/utils';
-import type { Rule, RuleAction, RulesFile } from '@/shared/api';
 import { Button, Input, Select } from '@/shared/ui';
-import { blankAction } from '../model/actionFields';
-import { blankRule, describeMatch, parseMethodInput } from '../model/ruleSummary';
+import { ACTION_TYPES, blankAction } from '../model/actionFields';
+import {
+  type DraftRuleEntry,
+  addDraftRule,
+  createDraftRulesState,
+  firstDraftRuleError,
+  removeDraftRule,
+  setDraftRuleFormError,
+  syncDraftRulesState,
+  toggleDraftRuleJsonMode,
+  toRulesFile,
+  updateDraftRule,
+  updateDraftRuleActionJson,
+} from '../model/draftRules';
+import { describeMatch, methodToEditableText, parseMethodInput } from '../model/ruleSummary';
 import { ActionFields } from './ActionFields';
-
-const ACTION_TYPES: RuleAction['type'][] = ['mock', 'route', 'rewrite', 'breakpoint', 'script'];
 
 /** How long `save()` waits for the server's `rules`/`error` broadcast before giving up — WS delivery on a live connection is effectively instant, so this is just a bailout for the unusual case (a dropped connection, say) where neither ever arrives and the dialog would otherwise be stuck showing "Saving…" forever. Mirrors `RuleProfilesControl`'s own `PENDING_CONFIRMATION_TIMEOUT_MS` for the same reason. */
 const SAVE_TIMEOUT_MS = 5000;
 
 /**
  * The Rules editor's body (issue #19), rendered inside a `Dialog` by
- * `RulesEditorButton`. Edits are staged in local `draft` state and only
+ * `RulesEditorButton`. Edits are staged in local `draftState` and only
  * sent to the server (`setRules`) when "Save" is clicked — the file itself,
  * and the traffic it's actively matching, are untouched until then.
  *
@@ -29,6 +40,7 @@ const SAVE_TIMEOUT_MS = 5000;
  * JSON" toggle for anything the form doesn't cover (a `urlRegex` match,
  * which this form doesn't expose either, is the other main example).
  */
+// eslint-disable-next-line max-lines-per-function -- top-level panel state + save lifecycle hooks
 export function RulesEditorPanel() {
   const rulesFile = useRuleStore((s) => s.rulesFile);
   const rulesFileAt = useRuleStore((s) => s.rulesFileAt);
@@ -41,90 +53,46 @@ export function RulesEditorPanel() {
   const lastErrorAt = useRuleStore((s) => s.lastErrorAt);
   const lastErrorKind = useRuleStore((s) => s.lastErrorKind);
   const dismissError = useRuleStore((s) => s.dismissError);
+  const reloadError = useRuleStore((s) => s.reloadError);
+  const dismissReloadError = useRuleStore((s) => s.dismissReloadError);
   const pendingNewRule = useRuleStore((s) => s.pendingNewRule);
   const clearPendingNewRule = useRuleStore((s) => s.clearPendingNewRule);
+
   // Seeds a queued rule (`RuleState.pendingNewRule`'s own doc comment)
   // straight into the initial draft, already selected — read once, here,
   // rather than in an effect, since this component remounts fresh every
   // time `Dialog` opens it (`RulesEditorButton`'s `open` toggles whether
   // `<RulesEditorPanel />` renders at all), so "on mount" and "the moment
   // there's a queued rule to show" are the same event for this component.
-  const [draft, setDraft] = useState<RulesFile>(() => {
-    const base = rulesFile ?? { rules: [] };
-    return pendingNewRule ? { ...base, rules: [...base.rules, pendingNewRule] } : base;
-  });
+  const [draftState, setDraftState] = useState(() => createDraftRulesState(rulesFile, pendingNewRule));
   const [syncedFrom, setSyncedFrom] = useState(rulesFile);
-  const [selected, setSelected] = useState<number | null>(() => (pendingNewRule ? draft.rules.length - 1 : null));
   // `Date.now()` when `save()` last sent a `setRules` — `null` once that
-  // save has resolved (either way) or nothing's been sent yet. See the
-  // effect below: `setRules` is a fire-and-forget WS message with no
-  // per-request ack, so this is what ties a later `rules`/`error` message
-  // back to *this* save rather than an unrelated one from earlier or from
-  // another connected tab.
+  // save has resolved (either way) or nothing's been sent yet.
   const [pendingSaveAt, setPendingSaveAt] = useState<number | null>(null);
   // The server's rejection of the most recent save (e.g. failed
   // validation), if it hasn't been superseded by a later save attempt yet.
-  // Previously `save()` cleared `dirty` unconditionally the instant it was
-  // clicked, so a rejected save (bad rule data, a duplicate name, …) looked
-  // exactly like a successful one — the draft was marked clean and the
-  // dialog gave no indication anything was wrong, even though rules.json on
-  // disk never changed.
   const [saveError, setSaveError] = useState<string | null>(null);
-  // Bumped by every draft edit (`updateRule`/`addRule`/`removeRule`) —
-  // `save()` snapshots the current value into `savingVersion` below.
-  // Together they're what tells the resolving effect apart a save that
-  // succeeded with nothing left unsaved from one whose success arrived
-  // *after* the user had already made more edits: naively clearing `dirty`
-  // on any success would otherwise silently drop those newer edits'
-  // "there's something unsaved" status the moment the *earlier* save's ack
-  // showed up.
+  // Bumped by every draft edit — `save()` snapshots the current value into
+  // `savingVersion` below so `dirty` only clears if no newer edits happened
+  // while the save was in flight.
   const [draftVersion, setDraftVersion] = useState(0);
-  // `draftVersion` at the moment `save()` last dispatched — `null` when no
-  // save is in flight. `dirty` only actually clears once the resolving
-  // effect sees this still matches the (possibly since-advanced)
-  // `draftVersion`.
   const [savingVersion, setSavingVersion] = useState<number | null>(null);
-  // The exact `rules` `save()` last sent — `null` when no save is in
-  // flight. `rulesFileAt` alone isn't enough to tell *this* save's ack
-  // apart from a same-timing-window `rules` broadcast for something else
-  // entirely (another connected tab's own edit, a profile switch, someone
-  // hand-editing rules.json — `createRuleStore`'s own docs note `rules`
-  // is shared across all of those): only a `rulesFile` whose `rules`
-  // actually match what was sent is genuinely this save landing, mirroring
-  // how `RuleProfilesControl` requires content, not just freshness, before
-  // treating its own fire-and-forget commands as resolved.
   const [sentRules, setSentRules] = useState<Rule[] | null>(null);
 
   // Consumes `pendingNewRule` exactly once, right after the initial draft
-  // above already baked it in — an effect (not read during render) since
-  // clearing it is a genuine side effect on shared, cross-widget state, not
-  // something derivable from this component's own props/state. Marks the
-  // draft dirty too, so Save/Discard reflect there's really something
-  // unsaved and the resync-from-server guard above leaves it alone.
+  // above already baked it in. Marks the draft dirty too, so Save/Discard
+  // reflect there's really something unsaved and the resync-from-server
+  // guard leaves it alone.
   useEffect(() => {
     if (!pendingNewRule) return;
     clearPendingNewRule();
     setDirty(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once on mount to consume whatever pendingNewRule (if any) the initial draft above already captured; re-running if it somehow changed later would re-append a rule already baked into draft
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once on mount to consume whatever pendingNewRule the initial draft already captured
   }, []);
 
   // Resolves a save dispatched by `save()` below against whichever of
   // `lastError`/`rulesFile` actually changes first, the same way
-  // `RuleProfilesControl` resolves its own fire-and-forget WS commands
-  // (see that component's matching effect for the fuller rationale): a
-  // `RULES_WRITE_ERROR` — specifically that kind, not a same-window
-  // `RULE_PROFILE_ERROR` from an unrelated profile action sharing the same
-  // `lastError`/`lastErrorAt` fields (`RuleProfilesControl` might be the
-  // one that's actually supposed to consume that one) — no older than
-  // `pendingSaveAt` means this specific save was rejected, so the draft
-  // stays dirty and the rejection reason is shown instead of being
-  // silently swallowed; a `rulesFile` update no older than `pendingSaveAt`
-  // *and* whose `rules` match `sentRules` means this save specifically
-  // landed (see that field's own doc comment on why freshness alone can't
-  // tell that apart from an unrelated broadcast). `dirty` only actually
-  // clears then if `draftVersion` still matches what was saved — otherwise
-  // the user made more edits while this save was in flight, and clearing
-  // it would silently mark those newer, still-unsaved edits as saved too.
+  // `RuleProfilesControl` resolves its own fire-and-forget WS commands.
   useEffect(() => {
     if (pendingSaveAt === null) return;
     if (
@@ -151,7 +119,7 @@ export function RulesEditorPanel() {
       setSavingVersion(null);
       setSentRules(null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- setDirty/dismissError are stable-enough store actions, not reactive values this effect should re-run for
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setDirty/dismissError are stable store actions
   }, [
     pendingSaveAt,
     lastError,
@@ -164,11 +132,7 @@ export function RulesEditorPanel() {
     sentRules,
   ]);
 
-  // Bails out of a save that never resolved either way — see
-  // `SAVE_TIMEOUT_MS`'s own doc comment. Surfaces it as a `saveError`
-  // (rather than silently unsticking "Saving…") since something genuinely
-  // did go wrong: the draft's own dirty status was already left untouched
-  // by the effect above, exactly as if the rejection had a message.
+  // Bails out of a save that never resolved either way — see `SAVE_TIMEOUT_MS`.
   useEffect(() => {
     if (pendingSaveAt === null) return;
     const timer = setTimeout(() => {
@@ -181,16 +145,11 @@ export function RulesEditorPanel() {
   }, [pendingSaveAt]);
 
   // Re-syncs the draft from the server whenever a fresh `rulesFile` arrives
-  // while nothing is unsaved — covers both the initial load (draft starts
-  // empty before the first `rules` message) and an external reload (e.g.
-  // someone hand-edited rules.json) while the panel sits idle. A dirty
-  // draft is left alone so in-progress edits are never silently discarded.
-  // Adjusted during render (react.dev's "you might not need an effect"
-  // pattern) rather than in a `useEffect`, so a genuinely new `rulesFile`
-  // is reflected in the same render instead of one tick later.
+  // while nothing is unsaved. A dirty draft is left alone so in-progress
+  // edits are never silently discarded.
   if (rulesFile !== syncedFrom && !dirty && rulesFile) {
     setSyncedFrom(rulesFile);
-    setDraft(rulesFile);
+    setDraftState((prev) => syncDraftRulesState(prev, rulesFile));
   }
 
   if (!rulesFile) {
@@ -203,32 +162,47 @@ export function RulesEditorPanel() {
     );
   }
 
-  const updateRule = (index: number, patch: Partial<Rule>) => {
-    setDraft((d) => ({ ...d, rules: d.rules.map((r, i) => (i === index ? { ...r, ...patch } : r)) }));
+  const markEdited = () => {
     setDirty(true);
     setSaveError(null);
     setDraftVersion((v) => v + 1);
+  };
+
+  const updateRule = (index: number, patch: Partial<Rule>) => {
+    setDraftState((s) => updateDraftRule(s, index, patch));
+    markEdited();
+  };
+
+  const updateActionJson = (index: number, text: string) => {
+    setDraftState((s) => updateDraftRuleActionJson(s, index, text));
+    markEdited();
+  };
+
+  const toggleJsonMode = (index: number) => {
+    setDraftState((s) => toggleDraftRuleJsonMode(s, index));
+  };
+
+  const setFormError = (index: number, fieldKey: string, error: string | null) => {
+    setDraftState((s) => setDraftRuleFormError(s, index, fieldKey, error));
   };
 
   const addRule = () => {
-    setDraft((d) => ({ ...d, rules: [...d.rules, blankRule()] }));
-    setSelected(draft.rules.length);
-    setDirty(true);
-    setSaveError(null);
-    setDraftVersion((v) => v + 1);
+    setDraftState((s) => addDraftRule(s));
+    markEdited();
   };
 
   const removeRule = (index: number) => {
-    setDraft((d) => ({ ...d, rules: d.rules.filter((_, i) => i !== index) }));
-    if (selected === index) setSelected(null);
-    setDirty(true);
-    setSaveError(null);
-    setDraftVersion((v) => v + 1);
+    setDraftState((s) => removeDraftRule(s, index));
+    markEdited();
+  };
+
+  const setSelected = (index: number | null) => {
+    setDraftState((s) => ({ ...s, selected: index }));
   };
 
   const discard = () => {
-    setDraft(rulesFile);
-    setSelected(null);
+    setDraftState((s) => ({ ...syncDraftRulesState(s, rulesFile), selected: null }));
+    setSyncedFrom(rulesFile);
     setDirty(false);
     setSaveError(null);
     setPendingSaveAt(null);
@@ -236,96 +210,53 @@ export function RulesEditorPanel() {
     setSentRules(null);
   };
 
+  const draftError = firstDraftRuleError(draftState);
+
   const save = () => {
+    if (draftError !== null) {
+      setSelected(draftError.ruleIndex);
+      return;
+    }
+    const payload = toRulesFile(draftState);
     setSaveError(null);
     setPendingSaveAt(Date.now());
     setSavingVersion(draftVersion);
-    setSentRules(draft.rules);
-    setRules(draft);
+    setSentRules(payload.rules);
+    setRules(payload);
   };
 
-  const editing = selected !== null ? draft.rules[selected] : undefined;
+  const { entries, selected } = draftState;
+  const editing = selected !== null ? entries[selected] : undefined;
 
   return (
     <div className="flex h-[60vh] flex-col gap-3">
+      {reloadError && <ReloadErrorBanner message={reloadError} onDismiss={dismissReloadError} />}
       {/* Capped instead of flex-1 while a rule's being edited: the edit form below can run long
           (rewrite's request+response sections, breakpoint's notes, …) and needs the room more than
-          this list does once something's selected — see the `editing ? ... : 'flex-1'` split below
-          giving that room back to the form, wrapped in its own scroll region. Without this split,
-          this list ate the whole flex-1 share and pushed the form (and its "Done" button) out past
-          the visible area with no independent way to scroll back up to it. */}
+          this list does once something's selected. */}
       <div
         className={cn(
           'overflow-auto rounded-md border border-[var(--border)]',
           editing ? 'max-h-32 shrink-0' : 'flex-1',
         )}
       >
-        {draft.rules.length === 0 ? (
+        {entries.length === 0 ? (
           <p className="p-3 text-sm text-[var(--muted)]">No rules yet.</p>
         ) : (
           <ul>
-            {draft.rules.map((rule, index) => {
-              // Only while the draft exactly mirrors the last-saved file
-              // (`!dirty`) — `unreachableWarnings` is computed server-side
-              // against that saved content, keyed by index, so it'd point at
-              // the wrong row (or a rule that no longer exists) once local
-              // edits move things around. Looked up once per row (rather
-              // than once for the render condition and again for the
-              // message) so the icon's `title`/`aria-label` can't end up
-              // reading a different match than the one that made it render.
-              const warning = dirty ? undefined : unreachableWarnings.find((w) => w.ruleIndex === index);
-              // Same "only while the draft mirrors the last-saved file" caveat as `warning` above — issue #161.
-              const scriptWarning = dirty ? undefined : scriptWarnings.find((w) => w.ruleIndex === index);
-              return (
-                <li
-                  key={`${rule.name}-${index}`}
-                  className={cn(
-                    'flex items-center gap-2 border-b border-[var(--border)] px-3 py-2 text-sm last:border-b-0',
-                    selected === index && 'bg-[var(--row-selected)]',
-                  )}
-                >
-                  <input
-                    type="checkbox"
-                    checked={rule.enabled ?? true}
-                    onChange={(e) => updateRule(index, { enabled: e.target.checked })}
-                    title={rule.enabled === false ? 'Disabled' : 'Enabled'}
-                  />
-                  <button type="button" className="flex-1 truncate text-left" onClick={() => setSelected(index)}>
-                    <span className="font-medium">{rule.name}</span>{' '}
-                    <span className="text-[var(--muted)]">— {describeMatch(rule)}</span>{' '}
-                    <span className="text-[10px] uppercase text-[var(--accent)]">{rule.action.type}</span>
-                  </button>
-                  {warning && (
-                    <span
-                      role="img"
-                      aria-label={warning.message}
-                      title={warning.message}
-                      className="shrink-0 text-[var(--status-4xx)]"
-                    >
-                      <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
-                    </span>
-                  )}
-                  {scriptWarning && (
-                    <span
-                      role="img"
-                      aria-label={scriptWarning.message}
-                      title={scriptWarning.message}
-                      className="shrink-0 text-[var(--muted)]"
-                    >
-                      <ShieldOff className="h-3.5 w-3.5" aria-hidden="true" />
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => removeRule(index)}
-                    className="rounded p-1 text-[var(--muted)] hover:bg-[var(--row-hover)] hover:text-[var(--status-5xx)]"
-                    title="Delete rule"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </li>
-              );
-            })}
+            {entries.map((entry, index) => (
+              <RuleListRow
+                key={entry.id}
+                entry={entry}
+                index={index}
+                selected={selected === index}
+                warning={dirty ? undefined : unreachableWarnings.find((w) => w.ruleIndex === index)}
+                scriptWarning={dirty ? undefined : scriptWarnings.find((w) => w.ruleIndex === index)}
+                onSelect={() => setSelected(index)}
+                onToggleEnabled={(enabled) => updateRule(index, { enabled })}
+                onRemove={() => removeRule(index)}
+              />
+            ))}
           </ul>
         )}
       </div>
@@ -337,19 +268,29 @@ export function RulesEditorPanel() {
       {editing && selected !== null && (
         <div className="min-h-0 flex-1 overflow-auto">
           <RuleFields
-            rule={editing}
+            key={editing.id}
+            entry={editing}
             onChange={(patch) => updateRule(selected, patch)}
+            onActionJsonChange={(text) => updateActionJson(selected, text)}
+            onToggleJsonMode={() => toggleJsonMode(selected)}
+            onFormError={(fieldKey, error) => setFormError(selected, fieldKey, error)}
             onClose={() => setSelected(null)}
           />
         </div>
       )}
 
       <div className="flex shrink-0 items-center justify-end gap-2 border-t border-[var(--border)] pt-3">
-        {saveError && <p className="mr-auto text-xs text-[var(--status-5xx)]">Not saved — {saveError}</p>}
+        {draftError ? (
+          <p className="mr-auto text-xs text-[var(--status-5xx)]">
+            Cannot save — rule &ldquo;{draftError.ruleName}&rdquo;: {draftError.message}
+          </p>
+        ) : (
+          saveError && <p className="mr-auto text-xs text-[var(--status-5xx)]">Not saved — {saveError}</p>
+        )}
         <Button variant="ghost" onClick={discard} disabled={!dirty || pendingSaveAt !== null}>
           Discard changes
         </Button>
-        <Button onClick={save} disabled={!dirty || pendingSaveAt !== null}>
+        <Button onClick={save} disabled={!dirty || pendingSaveAt !== null || draftError !== null}>
           {pendingSaveAt !== null ? 'Saving…' : 'Save to rules.json'}
         </Button>
       </div>
@@ -357,24 +298,225 @@ export function RulesEditorPanel() {
   );
 }
 
+function ReloadErrorBanner({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+  return (
+    <div
+      role="alert"
+      className="flex shrink-0 items-start justify-between gap-2 rounded-md border border-[var(--status-4xx)]/40 bg-[var(--status-4xx)]/10 px-3 py-2 text-xs text-[var(--status-4xx)]"
+    >
+      <span>
+        <strong>rules.json on disk failed to reload</strong> (the proxy is still serving the last valid rules shown
+        here): {message}
+      </span>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="shrink-0 rounded p-0.5 hover:bg-[var(--row-hover)]"
+        title="Dismiss warning"
+        aria-label="Dismiss reload error"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function RuleBadge({
+  message,
+  className,
+  children,
+}: {
+  message: string;
+  className: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <span role="img" aria-label={message} title={message} className={cn('shrink-0', className)}>
+      {children}
+    </span>
+  );
+}
+
+function RuleRowBadges({
+  entry,
+  warning,
+  scriptWarning,
+}: {
+  entry: DraftRuleEntry;
+  warning: UnreachableRuleWarning | undefined;
+  scriptWarning: ScriptGateWarning | undefined;
+}) {
+  const hasDraftError = entry.jsonError !== null || Object.values(entry.formErrors).some(Boolean);
+  return (
+    <>
+      {hasDraftError && (
+        <RuleBadge
+          message="This rule has an invalid JSON edit that must be fixed before saving"
+          className="text-[var(--status-5xx)]"
+        >
+          <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+        </RuleBadge>
+      )}
+      {warning && (
+        <RuleBadge message={warning.message} className="text-[var(--status-4xx)]">
+          <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+        </RuleBadge>
+      )}
+      {scriptWarning && (
+        <RuleBadge message={scriptWarning.message} className="text-[var(--muted)]">
+          <ShieldOff className="h-3.5 w-3.5" aria-hidden="true" />
+        </RuleBadge>
+      )}
+    </>
+  );
+}
+
+function RuleListRow({
+  entry,
+  index,
+  selected,
+  warning,
+  scriptWarning,
+  onSelect,
+  onToggleEnabled,
+  onRemove,
+}: {
+  entry: DraftRuleEntry;
+  index: number;
+  selected: boolean;
+  warning: UnreachableRuleWarning | undefined;
+  scriptWarning: ScriptGateWarning | undefined;
+  onSelect: () => void;
+  onToggleEnabled: (enabled: boolean) => void;
+  onRemove: () => void;
+}) {
+  const { rule } = entry;
+  return (
+    <li
+      className={cn(
+        'flex items-center gap-2 border-b border-[var(--border)] px-3 py-2 text-sm last:border-b-0',
+        selected && 'bg-[var(--row-selected)]',
+      )}
+    >
+      <input
+        type="checkbox"
+        checked={rule.enabled ?? true}
+        onChange={(e) => onToggleEnabled(e.target.checked)}
+        title={rule.enabled === false ? 'Disabled' : 'Enabled'}
+      />
+      <button type="button" className="flex-1 truncate text-left" onClick={onSelect}>
+        <span className="font-medium">{rule.name}</span>{' '}
+        <span className="text-[var(--muted)]">— {describeMatch(rule)}</span>{' '}
+        <span className="text-[10px] uppercase text-[var(--accent)]">{rule.action.type}</span>
+      </button>
+      <RuleRowBadges entry={entry} warning={warning} scriptWarning={scriptWarning} />
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove();
+        }}
+        data-index={index}
+        className="rounded p-1 text-[var(--muted)] hover:bg-[var(--row-hover)] hover:text-[var(--status-5xx)]"
+        title="Delete rule"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+    </li>
+  );
+}
+
+function RuleMatchFields({ rule, onChange }: { rule: Rule; onChange: (patch: Partial<Rule>) => void }) {
+  const [methodText, setMethodText] = useState(() => methodToEditableText(rule.match.method));
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <label className="text-xs text-[var(--muted)]">
+        Method (comma-separated, blank = any)
+        <Input
+          value={methodText}
+          onChange={(e) => {
+            setMethodText(e.target.value);
+            onChange({ match: { ...rule.match, method: parseMethodInput(e.target.value) } });
+          }}
+          className="mt-0.5"
+        />
+      </label>
+      <label className="text-xs text-[var(--muted)]">
+        URL pattern (<code className="font-mono-ui">*</code>/<code className="font-mono-ui">?</code> wildcards)
+        <Input
+          value={rule.match.url ?? ''}
+          onChange={(e) =>
+            onChange({
+              match: { ...rule.match, url: e.target.value, urlRegex: undefined, urlRegexFlags: undefined },
+            })
+          }
+          className="mt-0.5"
+        />
+      </label>
+    </div>
+  );
+}
+
+function ActionTypeToolbar({
+  actionType,
+  showJson,
+  jsonError,
+  onSelectType,
+  onToggleJsonMode,
+}: {
+  actionType: RuleAction['type'];
+  showJson: boolean;
+  jsonError: string | null;
+  onSelectType: (type: RuleAction['type']) => void;
+  onToggleJsonMode: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between">
+      <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
+        Action type
+        <Select value={actionType} onChange={(e) => onSelectType(e.target.value as RuleAction['type'])}>
+          {ACTION_TYPES.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </Select>
+      </label>
+      <button
+        type="button"
+        onClick={onToggleJsonMode}
+        disabled={showJson && jsonError !== null}
+        title={showJson && jsonError !== null ? 'Fix JSON errors before switching back to the form' : undefined}
+        className="text-xs text-[var(--muted)] underline decoration-dotted hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {showJson ? 'Use form' : 'Edit as JSON'}
+      </button>
+    </div>
+  );
+}
+
 function RuleFields({
-  rule,
+  entry,
   onChange,
+  onActionJsonChange,
+  onToggleJsonMode,
+  onFormError,
   onClose,
 }: {
-  rule: Rule;
+  entry: DraftRuleEntry;
   onChange: (patch: Partial<Rule>) => void;
+  onActionJsonChange: (text: string) => void;
+  onToggleJsonMode: () => void;
+  onFormError: (fieldKey: string, error: string | null) => void;
   onClose: () => void;
 }) {
-  const [showJson, setShowJson] = useState(false);
+  const { rule, showJson, jsonText, jsonError } = entry;
 
   return (
     <div className="flex flex-col gap-2 rounded-md border border-[var(--border)] p-3">
       {/* Sticky against the scroll region RulesEditorPanel wraps this form in — a long form (rewrite's
           request+response sections, in particular) can scroll well past this point, and "Done" needs
-          to stay reachable without scrolling back up to find it. The negative margin/matching padding
-          extends the sticky bar's background across the parent's own padding, so content scrolling
-          underneath doesn't show through at the edges. */}
+          to stay reachable without scrolling back up to find it. */}
       <div className="sticky top-0 z-10 -mx-3 -mt-3 flex items-center justify-between bg-[var(--panel)] px-3 py-3">
         <span className="text-xs font-semibold text-[var(--muted)]">Editing rule</span>
         <Button variant="ghost" size="sm" onClick={onClose}>
@@ -385,73 +527,44 @@ function RuleFields({
         Name
         <Input value={rule.name} onChange={(e) => onChange({ name: e.target.value })} className="mt-0.5" />
       </label>
-      <div className="grid grid-cols-2 gap-2">
-        <label className="text-xs text-[var(--muted)]">
-          Method (comma-separated, blank = any)
-          <Input
-            value={Array.isArray(rule.match.method) ? rule.match.method.join(',') : (rule.match.method ?? '')}
-            onChange={(e) => onChange({ match: { ...rule.match, method: parseMethodInput(e.target.value) } })}
-            className="mt-0.5"
-          />
-        </label>
-        <label className="text-xs text-[var(--muted)]">
-          URL pattern (<code className="font-mono-ui">*</code>/<code className="font-mono-ui">?</code> wildcards)
-          <Input
-            value={rule.match.url ?? ''}
-            onChange={(e) => onChange({ match: { ...rule.match, url: e.target.value } })}
-            className="mt-0.5"
-          />
-        </label>
-      </div>
-
-      <div className="flex items-center justify-between">
-        <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
-          Action type
-          <Select
-            value={rule.action.type}
-            onChange={(e) => onChange({ action: blankAction(e.target.value as RuleAction['type']) })}
-          >
-            {ACTION_TYPES.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </Select>
-        </label>
-        <button
-          type="button"
-          onClick={() => setShowJson((v) => !v)}
-          className="text-xs text-[var(--muted)] underline decoration-dotted hover:text-[var(--foreground)]"
-        >
-          {showJson ? 'Use form' : 'Edit as JSON'}
-        </button>
-      </div>
+      <RuleMatchFields rule={rule} onChange={onChange} />
+      <ActionTypeToolbar
+        actionType={rule.action.type}
+        showJson={showJson}
+        jsonError={jsonError}
+        onSelectType={(type) => onChange({ action: blankAction(type) })}
+        onToggleJsonMode={onToggleJsonMode}
+      />
 
       {showJson ? (
-        <JsonActionField key={rule.name} action={rule.action} onChange={(action) => onChange({ action })} />
+        <JsonActionField
+          text={jsonText ?? JSON.stringify(rule.action, null, 2)}
+          error={jsonError}
+          onChange={onActionJsonChange}
+        />
       ) : (
-        <ActionFields key={rule.name} action={rule.action} onChange={(action) => onChange({ action })} />
+        <ActionFields
+          key={rule.action.type}
+          action={rule.action}
+          onChange={(action) => onChange({ action })}
+          onFormError={onFormError}
+        />
       )}
     </div>
   );
 }
 
 /** The raw-JSON fallback for a rule's `action` — the same CodeMirror editor the Rules editor originally shipped with, kept as an escape hatch for anything `ActionFields` doesn't cover. */
-function JsonActionField({ action, onChange }: { action: RuleAction; onChange: (action: RuleAction) => void }) {
+function JsonActionField({
+  text,
+  error,
+  onChange,
+}: {
+  text: string;
+  error: string | null;
+  onChange: (nextText: string) => void;
+}) {
   const dark = useTheme() === 'dark';
-  const [text, setText] = useState(() => JSON.stringify(action, null, 2));
-  const [error, setError] = useState<string | null>(null);
-
-  const commit = (nextText: string) => {
-    setText(nextText);
-    try {
-      const parsed = JSON.parse(nextText);
-      setError(null);
-      onChange(parsed);
-    } catch {
-      setError('Invalid JSON — not saved to the draft yet.');
-    }
-  };
 
   return (
     <div className="flex flex-col gap-1">
@@ -466,7 +579,7 @@ function JsonActionField({ action, onChange }: { action: RuleAction; onChange: (
         extensions={[json()]}
         theme={dark ? 'dark' : 'light'}
         basicSetup={{ lineNumbers: true, foldGutter: true }}
-        onChange={commit}
+        onChange={onChange}
         height="10rem"
         className="rounded border border-[var(--border)] text-xs"
       />

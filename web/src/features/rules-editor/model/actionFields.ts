@@ -1,6 +1,12 @@
 import type { BodyReplace, BodyRewrite, HeaderRewrite, PathRewrite, QueryRewrite, RuleAction } from '@/shared/api';
 import { headersToEditableText, parseEditableHeaders } from '@/shared/lib/utils';
 
+export const ACTION_TYPES: readonly RuleAction['type'][] = ['mock', 'route', 'rewrite', 'breakpoint', 'script'];
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 /** A fresh action of the given type, with sensible defaults — used both as `blankRule()`'s starter action and when the editor's Type selector switches a rule to a different action type (the previous action's fields don't carry over; the shapes are too different to guess a mapping). */
 export function blankAction(type: RuleAction['type']): RuleAction {
   switch (type) {
@@ -97,6 +103,84 @@ export function describeJsonBodyText(text: string): JsonBodyStatus {
   } catch {
     return { validJson: false, status: 'Not valid JSON — will be sent as a literal string, as-is' };
   }
+}
+
+export interface JsonMergeStatus extends JsonBodyStatus {
+  /** True when `text` is non-empty and does not parse to a plain JSON object (`{ ... }`), so saving would fail schema validation (`merge` must be an object per RFC 7396). */
+  invalidMerge: boolean;
+}
+
+/**
+ * Parses `BodyRewrite.merge`'s editor text (issue #282). Unlike `MockAction.body`
+ * and `BodyRewrite.set` (`parseBodyValue`), `merge` is an RFC 7396 JSON Merge
+ * Patch and the server schema requires a plain JSON object (`{ ... }`) —
+ * falling back to a literal string on invalid JSON (or accepting an array/
+ * primitive) produced a draft that failed validation on save. Returns
+ * `undefined` when blank or invalid; callers pair this with
+ * `describeJsonMergeText` to surface an inline error and block saving while
+ * `invalidMerge` is true.
+ */
+export function parseMergeValue(text: string): Record<string, unknown> | undefined {
+  if (text.trim() === '') return undefined;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return isPlainObject(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Status caption and validity check for `BodyRewrite.merge` (see `parseMergeValue`). */
+export function describeJsonMergeText(text: string): JsonMergeStatus {
+  const trimmed = text.trim();
+  if (trimmed === '') return { validJson: false, invalidMerge: false, status: 'Empty' };
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!isPlainObject(parsed)) {
+      return {
+        validJson: true,
+        invalidMerge: true,
+        parsed,
+        status: 'Merge patch must be a JSON object (e.g. {"key": "value"}).',
+      };
+    }
+    return { validJson: true, invalidMerge: false, parsed, status: '✓ Valid JSON object' };
+  } catch {
+    return {
+      validJson: false,
+      invalidMerge: true,
+      status: 'Invalid JSON — merge patch must be a valid JSON object.',
+    };
+  }
+}
+
+export type ParsedActionJson = { ok: true; action: RuleAction } | { ok: false; error: string };
+
+/**
+ * Parses and validates the raw JSON text from `JsonActionField` ("Edit as
+ * JSON", issue #282). Rejects both syntax errors and valid JSON that isn't a
+ * `RuleAction` object with a recognized `type` — previously `JSON.parse("null")`
+ * or a pasted response body (`{"id": 1}`, no `type`) was committed straight
+ * into `rule.action`, crashing `rule.action.type` reads or leaving `ActionFields`
+ * blank on switching back to form mode.
+ */
+export function parseActionJson(text: string): ParsedActionJson {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { ok: false, error: 'Invalid JSON — fix syntax errors before saving.' };
+  }
+  if (!isPlainObject(parsed)) {
+    return { ok: false, error: 'Action JSON must be a JSON object.' };
+  }
+  if (typeof parsed.type !== 'string' || !ACTION_TYPES.includes(parsed.type as RuleAction['type'])) {
+    return {
+      ok: false,
+      error: 'Action JSON must have a valid "type" ("mock", "route", "rewrite", "breakpoint", or "script").',
+    };
+  }
+  return { ok: true, action: parsed as unknown as RuleAction };
 }
 
 /**

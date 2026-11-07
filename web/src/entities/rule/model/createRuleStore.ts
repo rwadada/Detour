@@ -56,6 +56,16 @@ export interface RuleState {
    * because both happened to land in the same narrow window.
    */
   lastErrorKind: 'RULES_WRITE_ERROR' | 'RULE_PROFILE_ERROR' | null;
+  /**
+   * The most recent `RULES_RELOAD_ERROR` from the file watcher (issue #282):
+   * set when `rules.json` on disk was edited into invalid JSON or failed
+   * schema validation so `RuleEngine.reload()` kept the last-known-good rules
+   * in memory. Cleared automatically the next time a valid `rules` broadcast
+   * arrives (or when dismissed), and kept separate from `lastError` so a
+   * background file-watcher failure never masquerades as a rejection of an
+   * in-flight `setRules`/`applyProfile` request.
+   */
+  reloadError: string | null;
   /** Saves edits to the active rules.json (Rules editor). */
   setRules: (data: RulesFile) => void;
   /** Creates a new saved profile from a template. */
@@ -65,6 +75,7 @@ export interface RuleState {
   /** Loads a saved profile's rules into the active rules.json. */
   applyProfile: (name: string) => void;
   dismissError: () => void;
+  dismissReloadError: () => void;
   /**
    * Whether the Rules editor (`RulesEditorPanel`) has unsaved local edits.
    * Lifted up from the editor itself (rather than kept as its own local
@@ -119,6 +130,7 @@ export function createRuleStore(connection: DashboardConnection) {
             unreachableWarnings: message.unreachableWarnings ?? [],
             scriptWarnings: message.scriptWarnings ?? [],
             rulesFileAt: Date.now(),
+            reloadError: null,
           });
           return;
         case 'ruleProfiles':
@@ -127,6 +139,8 @@ export function createRuleStore(connection: DashboardConnection) {
         case 'error':
           if (message.event.errorKind === 'RULES_WRITE_ERROR' || message.event.errorKind === 'RULE_PROFILE_ERROR') {
             set({ lastError: message.event.message, lastErrorAt: Date.now(), lastErrorKind: message.event.errorKind });
+          } else if (message.event.errorKind === 'RULES_RELOAD_ERROR') {
+            set({ reloadError: message.event.message });
           }
           return;
         default:
@@ -144,11 +158,13 @@ export function createRuleStore(connection: DashboardConnection) {
       lastError: null,
       lastErrorAt: null,
       lastErrorKind: null,
+      reloadError: null,
       setRules: (data) => connection.send({ type: 'setRules', data }),
       createProfile: (name, template) => connection.send({ type: 'createRuleProfile', name, template }),
       saveActiveAsProfile: (name) => connection.send({ type: 'saveActiveRulesAsProfile', name }),
       applyProfile: (name) => connection.send({ type: 'applyRuleProfile', name }),
       dismissError: () => set({ lastError: null, lastErrorAt: null, lastErrorKind: null }),
+      dismissReloadError: () => set({ reloadError: null }),
       dirtyDraft: false,
       setDirtyDraft: (dirty) => set({ dirtyDraft: dirty }),
       pendingNewRule: null,

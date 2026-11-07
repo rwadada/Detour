@@ -67,6 +67,20 @@ describe('dashboard rules handlers (issue #207)', () => {
       expect(() => handlers.setRules({ type: 'setRules', data: data([mock]) })).not.toThrow();
       expect(broadcastError).toHaveBeenCalledWith('RULES_WRITE_ERROR', 'disk full');
     });
+
+    it('reaches engine.write (for schema validation) instead of crashing in scriptGate when a rule has a null action (issue #282)', () => {
+      const { engine, write } = fakeEngine();
+      write.mockImplementation(() => {
+        throw new Error('Rules failed validation: /rules/0/action must be object');
+      });
+      const { handlers, broadcastError } = setup({ engine });
+      const malformed = [{ name: 'bad', match: { url: '*' }, action: null }] as unknown as Rule[];
+      expect(() => handlers.setRules({ type: 'setRules', data: data(malformed) })).not.toThrow();
+      expect(broadcastError).toHaveBeenCalledWith(
+        'RULES_WRITE_ERROR',
+        'Rules failed validation: /rules/0/action must be object',
+      );
+    });
   });
 
   describe('createRuleProfile', () => {

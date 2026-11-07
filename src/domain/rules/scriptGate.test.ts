@@ -86,4 +86,9 @@ describe('findRejectedScriptWrites', () => {
     const next = [scriptRule('s1', 'b.js'), scriptRule('s2', 'c.js')];
     expect(findRejectedScriptWrites(existing, next)).toHaveLength(2);
   });
+
+  it('skips malformed rules whose action is null or missing so schema validation can report them (issue #282)', () => {
+    const malformed = [null, { name: 'broken', match: { url: '*' }, action: null }] as unknown as Rule[];
+    expect(findRejectedScriptWrites([], malformed)).toEqual([]);
+  });
 });
