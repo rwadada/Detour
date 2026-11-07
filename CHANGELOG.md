@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.4.0](https://github.com/rwadada/Detour/compare/v2.3.2...v2.4.0) (2026-11-07)
+
+
+### Features
+
+* **claude:** add project skills and optimize verify-stop hook ([#216](https://github.com/rwadada/Detour/issues/216)) ([21071c2](https://github.com/rwadada/Detour/commit/21071c2481d47e4331b3ca6d2592d88ec6de40c4))
+* **claude:** add project skills and optimize verify-stop hook ([#216](https://github.com/rwadada/Detour/issues/216)) ([9226688](https://github.com/rwadada/Detour/commit/92266884ffc702a41fb4ff6f8e8991e85d1dd6ce))
+* **github:** add issue forms for bug reports, feature requests, and feedback ([c7b563d](https://github.com/rwadada/Detour/commit/c7b563d1297a1aa861acb1f44f214d19d49c11ed))
+* **github:** add issue forms for bug reports, feature requests, and feedback ([bcfec4a](https://github.com/rwadada/Detour/commit/bcfec4a859ccf6fdfbe0cea0d079aa8945f43a9d))
+* publish @rwadada/detour to npm for npx and global install ([644c127](https://github.com/rwadada/Detour/commit/644c127b7909b0ae9838de1cf1efe345c169140a))
+* publish @rwadada/detour to npm for npx and global install ([c3749c9](https://github.com/rwadada/Detour/commit/c3749c90070403315b9f7e73b9a1a5e69911cd90))
+
+
+### Bug Fixes
+
+* **ci:** configure npm auth token only when NPM_TOKEN is set ([0a7bd2f](https://github.com/rwadada/Detour/commit/0a7bd2f84abd1114a099b7359843b16fafc84425))
+* **claude:** address Copilot review comments on PR [#287](https://github.com/rwadada/Detour/issues/287) ([4582f03](https://github.com/rwadada/Detour/commit/4582f0327549e61e2a7cb5f2030b0815f4c48208))
+* **proxy:** address Copilot review comments on PR [#286](https://github.com/rwadada/Detour/issues/286) ([0ca0c0d](https://github.com/rwadada/Detour/commit/0ca0c0d63e467ddc24b8b4fbf05333a056c5afd8))
+* **proxy:** omit SNI servername when target host is an IP address ([7402ce6](https://github.com/rwadada/Detour/commit/7402ce6a4b504bb898192dede9fd020736feb79b))
+* **rules:** address Copilot review comments on PR [#283](https://github.com/rwadada/Detour/issues/283) ([2f750e7](https://github.com/rwadada/Detour/commit/2f750e77074b7d1b425941f93b5b1e1dde7dc2e2))
+* **rules:** prevent rule edit rollback and unintended state on invalid JSON ([#282](https://github.com/rwadada/Detour/issues/282)) ([98e306a](https://github.com/rwadada/Detour/commit/98e306afca08afc338e0b5afe8eca1ceff5c49a4))
+* **rules:** prevent rule edit rollback and unintended state on invalid JSON ([#282](https://github.com/rwadada/Detour/issues/282)) ([fdd4dde](https://github.com/rwadada/Detour/commit/fdd4dde09f92de292d0f1f8e505133fdc53df760))
+
 ## [2.3.2](https://github.com/rwadada/Detour/compare/v2.3.1...v2.3.2) (2026-11-01)
 
 
