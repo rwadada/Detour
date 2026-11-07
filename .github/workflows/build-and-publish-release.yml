@@ -58,7 +58,6 @@ jobs:
           # exact floor (rather than a bare "22") so a resolver change can't
           # silently pick an early-22.x that predates it.
           node-version: "22.12.0"
-          registry-url: "https://registry.npmjs.org"
 
       - name: Verify tag matches package.json version
         run: |
@@ -118,7 +117,7 @@ jobs:
 
       - name: Publish to npm (@rwadada/detour)
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           pkg_name="$(node -p "require('./package.json').name")"
           version="$(node -p "require('./package.json').version")"
@@ -126,7 +125,14 @@ jobs:
             echo "${pkg_name}@${version} is already published on npm; skipping."
             exit 0
           fi
-          npm publish --access public --provenance
+          userconfig="$(mktemp)"
+          trap 'rm -f "$userconfig"' EXIT
+          if [ -n "$NPM_TOKEN" ]; then
+            printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$userconfig"
+            NPM_CONFIG_USERCONFIG="$userconfig" npm publish --access public --provenance
+          else
+            npm publish --access public --provenance
+          fi
 
       # SLSA build provenance for the tarball (issue #211) — `detour update`
       # and the Homebrew formula both fetch this artifact and run it on
