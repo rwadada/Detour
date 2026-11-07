@@ -20,7 +20,7 @@ describe('WEB_DIST_DIR', () => {
     expect(path.basename(WEB_DIST_DIR)).toBe('web-dist');
     const packageRoot = path.dirname(WEB_DIST_DIR);
     const pkg = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
-    expect(pkg.name).toBe('detour');
+    expect(pkg.name).toBe('@rwadada/detour');
   });
 
   describe('DETOUR_WEB_DIST_DIR override', () => {

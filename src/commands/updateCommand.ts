@@ -9,7 +9,9 @@ import { runUpdate, type UpdateDeps } from '../usecase/update/runUpdate';
 
 const MANUAL_UPGRADE_HINT =
   'This copy of detour was not installed with Homebrew, so it cannot update itself. ' +
-  'Install with `brew tap rwadada/detour && brew install detour`, or update your source checkout (git pull && npm install && npm run build) and restart.';
+  'Upgrade via npm (`npm install -g @rwadada/detour@latest` / `npx @rwadada/detour@latest`), ' +
+  'install with `brew tap rwadada/detour && brew install detour`, ' +
+  'or update your source checkout (git pull && npm install && npm run build) and restart.';
 
 async function confirmOnTty(question: string): Promise<boolean> {
   if (!process.stdin.isTTY) {
