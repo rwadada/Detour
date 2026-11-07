@@ -1,9 +1,11 @@
 #!/bin/sh
 # Runs on every Stop event (Claude finishing a response). Only runs
-# typecheck + lint + tests (npm run verify) when this turn actually touched
+# typecheck + lint + tests (npm run verify:fast) when this turn actually touched
 # an implementation file under src/, web/, bin/, or scripts/ — recorded by
 # the PostToolUse hook (record-edited-file.sh) into a per-session state
 # file. Doc-only, config-only, or no-edit turns skip verify entirely.
+# (verify:fast omits full CLI E2E tests so the Stop hook finishes in ~10-15s,
+# well within the 120s timeout limit; full E2E runs in CI or pre-push).
 # Exits 2 (Claude Code's "blocking error" signal for a Stop hook) with the
 # failure output on stderr when verify fails, so Claude sees it and can act
 # on it before truly stopping — the state file is left untouched on
@@ -33,7 +35,7 @@ if ! grep -Eq '(^|/)(src|web|bin|scripts)/' "$state_file" 2>/dev/null; then
   exit 0
 fi
 
-output=$(npm run verify 2>&1)
+output=$(npm run verify:fast 2>&1)
 code=$?
 if [ "$code" -ne 0 ]; then
   echo "$output" >&2
