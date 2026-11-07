@@ -1,4 +1,5 @@
 import { BodyCapture } from '../../../domain/exchange/bodyCapture';
+import type { ExchangeRegistry } from '../../../domain/exchange/exchangeRegistry';
 import { deleteHeader, flattenHeaders } from '../../../domain/exchange/headers';
 import type { CapturedExchange } from '../../../domain/exchange/types';
 import type { ScriptModule, ScriptRequestInfo } from '../../../domain/rules/scriptAction';
@@ -9,8 +10,7 @@ import type { ErrorCallback, IContext } from '../engine/types';
 
 export interface ScriptRequestHookDeps {
   eventBus: DetourEventBus;
-  /** Keyed by ctx.uuid — shared with the response phase, not owned here. */
-  scriptRequestBodies: Map<string, Buffer>;
+  exchangeRegistry: ExchangeRegistry;
   /** `--script-timeout-ms` (issue #161) — see `runBeforeRequest`'s own doc comment. */
   scriptTimeoutMs?: number;
 }
@@ -43,7 +43,7 @@ export interface ScriptRequestHookDeps {
  */
 // eslint-disable-next-line max-lines-per-function -- script request hook factory; tracked under issue #208 (issue #207)
 export function createScriptRequestHookHandler(deps: ScriptRequestHookDeps) {
-  const { eventBus, scriptRequestBodies, scriptTimeoutMs = DEFAULT_SCRIPT_TIMEOUT_MS } = deps;
+  const { eventBus, exchangeRegistry, scriptTimeoutMs = DEFAULT_SCRIPT_TIMEOUT_MS } = deps;
 
   // eslint-disable-next-line max-lines-per-function -- script request hook body capture + execution; tracked under issue #208 (issue #207)
   return function handleScriptRequestHook(
@@ -66,8 +66,10 @@ export function createScriptRequestHookHandler(deps: ScriptRequestHookDeps) {
 
     const forwardBody = (body: Buffer) => {
       // Handed to `beforeResponse` (if this rule also defines one) as its
-      // `req.body` — see `scriptRequestBodies`' doc comment.
-      scriptRequestBodies.set(ctx.uuid, body);
+      // `req.body` — stored on ExchangeContext (issue #208).
+      const context = exchangeRegistry.get(ctx.uuid);
+      if (context) context.scriptRequestBody = body;
+
       ctx.onRequestData((_dataCtx, _chunk, cb) => cb(undefined, Buffer.alloc(0)));
       ctx.onRequestEnd((_endCtx, cb) => {
         if (body.length > 0) ctx.proxyToServerRequest?.write(body);

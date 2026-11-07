@@ -1,4 +1,5 @@
 import { BodyCapture } from '../../../domain/exchange/bodyCapture';
+import type { ExchangeRegistry } from '../../../domain/exchange/exchangeRegistry';
 import { deleteHeader, flattenHeaders } from '../../../domain/exchange/headers';
 import type { BreakpointRequestPayload, CapturedExchange } from '../../../domain/exchange/types';
 import type { Rule } from '../../../domain/rules/types';
@@ -9,10 +10,7 @@ import type { ErrorCallback, IContext } from '../engine/types';
 export interface RequestBreakpointDeps {
   eventBus: DetourEventBus;
   breakpoints: BreakpointCoordinator;
-  /** Keyed by ctx.uuid — shared with the rest of the pipeline, not owned here. */
-  inFlight: Map<string, CapturedExchange>;
-  ruleContexts: Map<string, Rule>;
-  rewriteContexts: Map<string, Rule[]>;
+  exchangeRegistry: ExchangeRegistry;
 }
 
 /**
@@ -22,7 +20,7 @@ export interface RequestBreakpointDeps {
  */
 // eslint-disable-next-line max-lines-per-function -- request breakpoint handler factory; tracked under issue #208 (issue #207)
 export function createRequestBreakpointHandler(deps: RequestBreakpointDeps) {
-  const { eventBus, breakpoints, inFlight, ruleContexts, rewriteContexts } = deps;
+  const { eventBus, breakpoints, exchangeRegistry } = deps;
 
   // eslint-disable-next-line max-lines-per-function -- request breakpoint body capture + resume flow; tracked under issue #208 (issue #207)
   return function handleRequestBreakpoint(
@@ -77,9 +75,7 @@ export function createRequestBreakpointHandler(deps: RequestBreakpointDeps) {
 
       breakpoints.wait(ctx.uuid, 'request').then((command) => {
         if (command.action === 'abort') {
-          inFlight.delete(ctx.uuid);
-          ruleContexts.delete(ctx.uuid);
-          rewriteContexts.delete(ctx.uuid);
+          exchangeRegistry.finalize(ctx.uuid);
           exchange.error = `rule "${rule.name}": request aborted via breakpoint`;
           exchange.finishedAt = Date.now();
           exchange.durationMs = exchange.finishedAt - exchange.startedAt;

@@ -1,17 +1,11 @@
-import type { CapturedExchange } from '../../../domain/exchange/types';
-import type { ScriptModule } from '../../../domain/rules/scriptAction';
-import type { Rule } from '../../../domain/rules/types';
+import type { ExchangeRegistry } from '../../../domain/exchange/exchangeRegistry';
 import { applyResponseHeaderRewrite } from '../actionsRuntime';
 import type { OnRequestParams } from '../engine/types';
 import type { createResponseBreakpointHandler } from './responseBreakpoint';
 import type { createScriptResponseHookHandler } from './scriptResponseHook';
 
 export interface ResponseHeadersHandlerDeps {
-  /** Keyed by ctx.uuid — shared with the rest of the pipeline, not owned here. */
-  inFlight: Map<string, CapturedExchange>;
-  ruleContexts: Map<string, Rule>;
-  rewriteContexts: Map<string, Rule[]>;
-  scriptModules: Map<string, ScriptModule>;
+  exchangeRegistry: ExchangeRegistry;
   handleResponseBreakpoint: ReturnType<typeof createResponseBreakpointHandler>;
   handleScriptResponseHook: ReturnType<typeof createScriptResponseHookHandler>;
 }
@@ -24,11 +18,11 @@ export interface ResponseHeadersHandlerDeps {
  * dispatched from here too.
  */
 export function createResponseHeadersHandler(deps: ResponseHeadersHandlerDeps): OnRequestParams {
-  const { inFlight, ruleContexts, rewriteContexts, scriptModules, handleResponseBreakpoint, handleScriptResponseHook } =
-    deps;
+  const { exchangeRegistry, handleResponseBreakpoint, handleScriptResponseHook } = deps;
 
   return function handleResponseHeaders(ctx, callback) {
-    const rule = ruleContexts.get(ctx.uuid);
+    const context = exchangeRegistry.get(ctx.uuid);
+    const rule = context?.terminalRule;
 
     // Apply every matching `rewrite` rule's response status/header changes
     // first, before any terminal breakpoint/script handling below (Copilot
@@ -40,7 +34,7 @@ export function createResponseHeadersHandler(deps: ResponseHeadersHandlerDeps): 
     // `ctx.serverToProxyResponse` by reference, the same object this
     // mutates directly, rather than a separately-captured snapshot.
     let appliedResponseHeaderRewrite = false;
-    for (const r of rewriteContexts.get(ctx.uuid) ?? []) {
+    for (const r of context?.rewriteRules ?? []) {
       if (r.action.type !== 'rewrite' || !r.action.response) continue;
       applyResponseHeaderRewrite(ctx, r.action.response);
       appliedResponseHeaderRewrite = true;
@@ -54,7 +48,7 @@ export function createResponseHeadersHandler(deps: ResponseHeadersHandlerDeps): 
       // `ProxyEngine.onUpstreamResponse`: `onResponseHandlers` fires, then
       // `onResponseHeadersHandlers`), so a rewrite here was applied to the
       // real response the client received but silently never shown here.
-      const exchange = inFlight.get(ctx.uuid);
+      const exchange = context?.exchange;
       if (exchange && ctx.serverToProxyResponse) {
         exchange.statusCode = ctx.serverToProxyResponse.statusCode;
         exchange.statusMessage = ctx.serverToProxyResponse.statusMessage;
@@ -67,8 +61,8 @@ export function createResponseHeadersHandler(deps: ResponseHeadersHandlerDeps): 
       return;
     }
     if (rule?.action.type === 'script') {
-      const module = scriptModules.get(ctx.uuid);
-      scriptModules.delete(ctx.uuid);
+      const module = context?.scriptModule;
+      if (context) context.scriptModule = undefined;
       if (module) {
         handleScriptResponseHook(ctx, rule, module, callback);
         return;

@@ -1,5 +1,6 @@
 import http from 'node:http';
 import http2 from 'node:http2';
+import net from 'node:net';
 import tls from 'node:tls';
 import { findHeader } from '../../../domain/exchange/headers';
 import type { UpstreamCertificate } from '../../../domain/exchange/types';
@@ -236,7 +237,7 @@ export class UpstreamHttp2Pool {
       const socket = tls.connect({
         host,
         port,
-        servername: host,
+        servername: net.isIP(host) === 0 ? host : undefined,
         ALPNProtocols: ['h2', 'http/1.1'],
         // Spread, not individually-named `ca: tlsOptions?.ca, ...` fields:
         // an explicit `rejectUnauthorized: undefined` key (as opposed to

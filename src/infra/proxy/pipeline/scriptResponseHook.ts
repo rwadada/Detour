@@ -1,6 +1,6 @@
 import { BodyCapture } from '../../../domain/exchange/bodyCapture';
+import type { ExchangeRegistry } from '../../../domain/exchange/exchangeRegistry';
 import { compactHeaders, deleteHeader, flattenHeaders } from '../../../domain/exchange/headers';
-import type { CapturedExchange } from '../../../domain/exchange/types';
 import type { ScriptModule, ScriptRequestInfo, ScriptResponseInfo } from '../../../domain/rules/scriptAction';
 import type { Rule } from '../../../domain/rules/types';
 import { DEFAULT_SCRIPT_TIMEOUT_MS, runBeforeResponse } from '../../../usecase/runScriptHooks';
@@ -10,12 +10,7 @@ import type { ErrorCallback, IContext } from '../engine/types';
 
 export interface ScriptResponseHookDeps {
   eventBus: DetourEventBus;
-  /** Keyed by ctx.uuid — shared with the rest of the pipeline, not owned here. */
-  inFlight: Map<string, CapturedExchange>;
-  ruleContexts: Map<string, Rule>;
-  rewriteContexts: Map<string, Rule[]>;
-  /** Keyed by ctx.uuid — set by the request phase's script hook, read (and cleared) here. */
-  scriptRequestBodies: Map<string, Buffer>;
+  exchangeRegistry: ExchangeRegistry;
   /** `--script-timeout-ms` (issue #161) — see `runBeforeResponse`'s own doc comment. */
   scriptTimeoutMs?: number;
 }
@@ -42,14 +37,7 @@ export interface ScriptResponseHookDeps {
  */
 // eslint-disable-next-line max-lines-per-function -- script response hook factory; tracked under issue #208 (issue #207)
 export function createScriptResponseHookHandler(deps: ScriptResponseHookDeps) {
-  const {
-    eventBus,
-    inFlight,
-    ruleContexts,
-    rewriteContexts,
-    scriptRequestBodies,
-    scriptTimeoutMs = DEFAULT_SCRIPT_TIMEOUT_MS,
-  } = deps;
+  const { eventBus, exchangeRegistry, scriptTimeoutMs = DEFAULT_SCRIPT_TIMEOUT_MS } = deps;
 
   // eslint-disable-next-line max-lines-per-function -- script response hook body capture + execution; tracked under issue #208 (issue #207)
   return function handleScriptResponseHook(
@@ -58,7 +46,7 @@ export function createScriptResponseHookHandler(deps: ScriptResponseHookDeps) {
     module: ScriptModule,
     callback: ErrorCallback,
   ): void {
-    const exchange = inFlight.get(ctx.uuid);
+    const exchange = exchangeRegistry.getExchange(ctx.uuid);
     const res = ctx.serverToProxyResponse;
     if (!res || !exchange) {
       callback();
@@ -98,9 +86,7 @@ export function createScriptResponseHookHandler(deps: ScriptResponseHookDeps) {
       ctx.onResponseEnd((_endCtx, cb) => {
         if (result.body.length > 0) ctx.proxyToClientResponse.write(result.body);
         eventBus.emit('response', exchange);
-        inFlight.delete(ctx.uuid);
-        ruleContexts.delete(ctx.uuid);
-        rewriteContexts.delete(ctx.uuid);
+        exchangeRegistry.finalize(ctx.uuid);
         return cb();
       });
       callback();
@@ -108,14 +94,11 @@ export function createScriptResponseHookHandler(deps: ScriptResponseHookDeps) {
 
     const run = () => {
       // The exact body `handleScriptRequestHook` forwarded upstream for
-      // this same exchange — see `scriptRequestBodies`' doc comment. Falls
-      // back to the dashboard's own (possibly truncated) display copy only
-      // in the rare case that path never ran at all, e.g. the module
-      // failed to load at the request phase but a fixed version loads
-      // successfully by the time this (independent) response-phase load
-      // runs — see the `onRequest` handler's script branch.
-      const requestBody = scriptRequestBodies.get(ctx.uuid);
-      scriptRequestBodies.delete(ctx.uuid);
+      // this same exchange — stored on ExchangeContext (issue #208).
+      const context = exchangeRegistry.get(ctx.uuid);
+      const requestBody = context?.scriptRequestBody;
+      if (context) context.scriptRequestBody = undefined;
+
       const reqInfo: ScriptRequestInfo = {
         method: exchange.method,
         url: exchange.url,
