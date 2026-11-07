@@ -35,16 +35,15 @@ function createSetRulesHandler(deps: RulesHandlerDeps): RulesHandlers['setRules'
   return (message) => {
     const ruleEngine = deps.getRuleEngine();
     if (!ruleEngine) return deps.broadcastError('RULES_WRITE_ERROR', 'No rules file is configured for this session.');
-    // Issue #161: refuse a `setRules` write that adds a brand-new `script` rule or changes an existing one's
-    // `path`, regardless of whether `--allow-scripts` is on — this closes the network-reachable half of the
-    // `setRules` → `script` → `require()` chain without touching the read side (a `script` rule already in
-    // rules.json keeps running, subject to `--allow-scripts`, however it got there). Checked before the `try`
-    // below since this is a validation failure, not a write failure — nothing has been written yet either way.
-    const scriptViolations = findRejectedScriptWrites(ruleEngine.getRules(), message.data.rules);
-    if (scriptViolations.length > 0) {
-      return deps.broadcastError('RULES_WRITE_ERROR', scriptViolations.join('; '));
-    }
     try {
+      // Issue #161: refuse a `setRules` write that adds a brand-new `script` rule or changes an existing one's
+      // `path`, regardless of whether `--allow-scripts` is on — this closes the network-reachable half of the
+      // `setRules` → `script` → `require()` chain without touching the read side (a `script` rule already in
+      // rules.json keeps running, subject to `--allow-scripts`, however it got there).
+      const scriptViolations = findRejectedScriptWrites(ruleEngine.getRules(), message.data.rules);
+      if (scriptViolations.length > 0) {
+        return deps.broadcastError('RULES_WRITE_ERROR', scriptViolations.join('; '));
+      }
       // No `activeProfile` — clears `$activeProfile` on the written file even if `message.data` (the editor's
       // own draft, synced from an earlier `rules` broadcast) still happened to carry one along. Editing and
       // saving makes this a different, unnamed ruleset — see `RulesFile.$activeProfile`'s doc comment.

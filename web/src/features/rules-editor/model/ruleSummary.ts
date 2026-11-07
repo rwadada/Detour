@@ -14,10 +14,17 @@ export function blankRule(): Rule {
   return { name: 'new-rule', enabled: true, match: { url: '*' }, action: blankAction('mock') };
 }
 
-/** Parses the Method field's free-text input into `RuleMatch['method']`: blank means "any method", a comma splits into a list. */
+/** Parses the Method field's free-text input into `RuleMatch['method']`: blank means "any method", a comma splits into a list (dropping empty trailing entries so `"GET, "` never produces an invalid `""` element). */
 export function parseMethodInput(value: string): string | string[] | undefined {
-  const trimmed = value.trim();
-  if (trimmed === '') return undefined;
-  if (!trimmed.includes(',')) return trimmed;
-  return trimmed.split(',').map((m) => m.trim());
+  const parts = value
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return undefined;
+  return parts.length === 1 ? parts[0] : parts;
+}
+
+/** The inverse of `parseMethodInput`, for seeding the Method field's local edit buffer. */
+export function methodToEditableText(method: Rule['match']['method']): string {
+  return Array.isArray(method) ? method.join(', ') : (method ?? '');
 }

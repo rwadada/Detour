@@ -5,8 +5,11 @@ import {
   bodyRewriteMode,
   bodyValueToText,
   describeJsonBodyText,
+  describeJsonMergeText,
   isEmptySetRemove,
+  parseActionJson,
   parseBodyValue,
+  parseMergeValue,
   parseOptionalInt,
   pathRewriteMode,
   removeListToText,
@@ -250,5 +253,72 @@ describe('parseOptionalInt', () => {
 
   it('returns undefined for non-numeric text', () => {
     expect(parseOptionalInt('abc')).toBeUndefined();
+  });
+});
+
+describe('parseMergeValue / describeJsonMergeText (issue #282)', () => {
+  it('accepts a valid JSON object', () => {
+    expect(parseMergeValue('{"status": "confirmed", "old": null}')).toEqual({ status: 'confirmed', old: null });
+    expect(describeJsonMergeText('{"status": "confirmed"}')).toEqual({
+      validJson: true,
+      invalidMerge: false,
+      parsed: { status: 'confirmed' },
+      status: '✓ Valid JSON object',
+    });
+  });
+
+  it('treats blank text as empty and valid', () => {
+    expect(parseMergeValue('')).toBeUndefined();
+    expect(parseMergeValue('   ')).toBeUndefined();
+    expect(describeJsonMergeText('')).toEqual({ validJson: false, invalidMerge: false, status: 'Empty' });
+  });
+
+  it('rejects invalid JSON syntax instead of falling back to a literal string', () => {
+    expect(parseMergeValue('{"status": ')).toBeUndefined();
+    const status = describeJsonMergeText('{"status": ');
+    expect(status.validJson).toBe(false);
+    expect(status.invalidMerge).toBe(true);
+    expect(status.status).toMatch(/invalid json/i);
+  });
+
+  it('rejects valid JSON that is not a plain object (array, null, primitive)', () => {
+    for (const input of ['[1, 2]', 'null', '42', '"hello"', 'true']) {
+      expect(parseMergeValue(input)).toBeUndefined();
+      const status = describeJsonMergeText(input);
+      expect(status.validJson).toBe(true);
+      expect(status.invalidMerge).toBe(true);
+      expect(status.status).toMatch(/json object/i);
+    }
+  });
+});
+
+describe('parseActionJson (issue #282)', () => {
+  it('parses a valid RuleAction object', () => {
+    expect(parseActionJson('{"type": "mock", "status": 200, "body": {"id": 1}}')).toEqual({
+      ok: true,
+      action: { type: 'mock', status: 200, body: { id: 1 } },
+    });
+  });
+
+  it('rejects malformed JSON syntax', () => {
+    const result = parseActionJson('{"type": "mock", "body": {');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/invalid json/i);
+  });
+
+  it('rejects non-object JSON values (null, array, primitive) so rule.action.type never throws', () => {
+    for (const input of ['null', '[]', '123', '"mock"']) {
+      const result = parseActionJson(input);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toMatch(/json object/i);
+    }
+  });
+
+  it('rejects an object without a recognized RuleAction type (e.g. a bare response body pasted into Edit as JSON)', () => {
+    for (const input of ['{"id": 1, "name": "Alice"}', '{"type": "unknown"}', '{"type": 123}']) {
+      const result = parseActionJson(input);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toMatch(/valid "type"/i);
+    }
   });
 });

@@ -61,7 +61,11 @@ export function findRejectedScriptWrites(existing: readonly Rule[], next: readon
 
   const violations: string[] = [];
   for (const rule of next) {
-    if (rule.action.type !== 'script') continue;
+    // `next` can arrive from `setRules` before `validateRulesData` runs
+    // (issue #282), so a malformed entry (`null`, or an action missing or
+    // set to `null`) must be skipped here rather than throwing a TypeError
+    // before schema validation can report the real reason.
+    if (rule?.action?.type !== 'script') continue;
     const priorPath = existingScriptPathByName.get(rule.name);
     if (priorPath === undefined) {
       violations.push(

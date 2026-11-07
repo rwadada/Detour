@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Rule } from '@/shared/api';
-import { blankRule, describeMatch, parseMethodInput } from './ruleSummary';
+import { blankRule, describeMatch, methodToEditableText, parseMethodInput } from './ruleSummary';
 
 function rule(overrides: Partial<Rule> = {}): Rule {
   return { name: 'r1', match: { url: 'https://x/*' }, action: { type: 'route', host: 'y' }, ...overrides };
@@ -46,6 +46,18 @@ describe('parseMethodInput', () => {
 
   it('splits comma-separated methods, trimming each', () => {
     expect(parseMethodInput('GET, POST ,PUT')).toEqual(['GET', 'POST', 'PUT']);
+  });
+
+  it('drops empty entries from trailing or repeated commas so schema validation never sees "" (issue #282)', () => {
+    expect(parseMethodInput('GET, ')).toBe('GET');
+    expect(parseMethodInput('GET, , POST,')).toEqual(['GET', 'POST']);
+    expect(parseMethodInput(' , , ')).toBeUndefined();
+  });
+
+  it('formats method back to editable text via methodToEditableText', () => {
+    expect(methodToEditableText(undefined)).toBe('');
+    expect(methodToEditableText('GET')).toBe('GET');
+    expect(methodToEditableText(['GET', 'POST'])).toBe('GET, POST');
   });
 });
 

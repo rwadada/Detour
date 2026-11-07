@@ -18,6 +18,7 @@ import type {
   ScriptAction,
 } from '@/shared/api';
 import { useTheme } from '@/shared/lib/theme';
+import { cn } from '@/shared/lib/utils';
 import { Button, Input, Select } from '@/shared/ui';
 import {
   type BodyRewriteMode,
@@ -26,8 +27,10 @@ import {
   bodyRewriteMode,
   bodyValueToText,
   describeJsonBodyText,
+  describeJsonMergeText,
   isEmptySetRemove,
   parseBodyValue,
+  parseMergeValue,
   parseOptionalInt,
   pathRewriteMode,
   removeListToText,
@@ -94,15 +97,23 @@ function JsonBodyField({
   onChange,
   placeholder,
   height = '10rem',
+  mode = 'body',
 }: {
   value: string;
   onChange: (text: string) => void;
   placeholder?: string;
   /** Passed straight through to `CodeMirror`'s own `height` prop — see this component's own height/scrolling doc comment below for why a Tailwind height class on the wrapper `className` doesn't work here. */
   height?: string;
+  /** `'merge'` validates that `value` is a JSON object (RFC 7396 `BodyRewrite.merge`); `'body'` allows plain-text fallback. */
+  mode?: 'body' | 'merge';
 }) {
   const dark = useTheme() === 'dark';
-  const { validJson, parsed, status } = describeJsonBodyText(value);
+  const mergeDesc = mode === 'merge' ? describeJsonMergeText(value) : undefined;
+  const bodyDesc = mergeDesc ?? describeJsonBodyText(value);
+  const { validJson, parsed, status } = bodyDesc;
+  const invalidMerge = mergeDesc?.invalidMerge ?? false;
+  const canFormat = validJson && !invalidMerge;
+  const isLiteralFallback = mode === 'body' && !validJson && value.trim() !== '';
 
   return (
     <div className="flex flex-col gap-1">
@@ -131,8 +142,12 @@ function JsonBodyField({
         className="overflow-hidden rounded-md border border-[var(--border)] text-xs"
       />
       <div className="flex items-center justify-between text-[10px] text-[var(--muted)]">
-        <span>{status}</span>
-        {validJson && (
+        <span
+          className={cn(invalidMerge && 'text-[var(--status-5xx)]', isLiteralFallback && 'text-[var(--status-4xx)]')}
+        >
+          {status}
+        </span>
+        {canFormat && (
           <button
             type="button"
             onClick={() => onChange(JSON.stringify(parsed, null, 2))}
@@ -150,19 +165,27 @@ function JsonBodyField({
  * A structured, non-JSON form for a rule's `action` — dispatches to a
  * dedicated sub-form per action type, since the five shapes (`mock`/
  * `route`/`rewrite`/`breakpoint`/`script`) don't share enough fields for one
- * generic form. Callers should mount this keyed by something that changes
- * per-rule (e.g. `key={rule.name}`, as `RulesEditorPanel` does) so each
- * rule's sub-forms start from a fresh local edit buffer rather than trying
- * to reconcile one rule's in-progress text against another's.
+ * generic form. Callers should mount this inside a rule-keyed container
+ * (`key={entry.id}` in `RulesEditorPanel`) so each rule's sub-forms start
+ * from a fresh local edit buffer rather than trying to reconcile one rule's
+ * in-progress text against another's.
  */
-export function ActionFields({ action, onChange }: { action: RuleAction; onChange: (action: RuleAction) => void }) {
+export function ActionFields({
+  action,
+  onChange,
+  onFormError,
+}: {
+  action: RuleAction;
+  onChange: (action: RuleAction) => void;
+  onFormError?: (fieldKey: string, error: string | null) => void;
+}) {
   switch (action.type) {
     case 'mock':
       return <MockActionFields action={action} onChange={onChange} />;
     case 'route':
       return <RouteActionFields action={action} onChange={onChange} />;
     case 'rewrite':
-      return <RewriteActionFields action={action} onChange={onChange} />;
+      return <RewriteActionFields action={action} onChange={onChange} onFormError={onFormError} />;
     case 'breakpoint':
       return <BreakpointActionFields action={action} onChange={onChange} />;
     case 'script':
@@ -185,7 +208,8 @@ function MockActionFields({ action, onChange }: { action: MockAction; onChange: 
         <Field label="Status code">
           <Input
             type="number"
-            value={action.status ?? 200}
+            value={action.status ?? ''}
+            placeholder="200"
             onChange={(e) => patch({ status: parseOptionalInt(e.target.value) })}
           />
         </Field>
@@ -312,7 +336,7 @@ function RouteActionFields({ action, onChange }: { action: RouteAction; onChange
     <div className="flex flex-col gap-2">
       <Field label="Redirect the request to this host">
         <Input
-          value={action.host}
+          value={action.host ?? ''}
           onChange={(e) => patch({ host: e.target.value })}
           placeholder="staging.example.com"
         />
@@ -375,7 +399,7 @@ function ScriptActionFields({ action, onChange }: { action: ScriptAction; onChan
     <div className="flex flex-col gap-2">
       <Field label="Script file path (relative to rules.json)">
         <Input
-          value={action.path}
+          value={action.path ?? ''}
           onChange={(e) => onChange({ ...action, path: e.target.value })}
           placeholder="./rules.script.js"
         />
@@ -511,9 +535,11 @@ function ReplaceRowsEditor({
 function BodyRewriteFields({
   value,
   onChange,
+  onMergeError,
 }: {
   value: BodyRewrite | undefined;
   onChange: (value: BodyRewrite | undefined) => void;
+  onMergeError?: (error: string | null) => void;
 }) {
   const [mode, setMode] = useState<BodyRewriteMode>(() => bodyRewriteMode(value));
   const [setText, setSetText] = useState(() => bodyValueToText(value?.set));
@@ -525,7 +551,10 @@ function BodyRewriteFields({
   // silently drop whatever the other already held.
   const emitTransform = (overrides: { mergeText?: string; rows?: BodyReplace[] } = {}) => {
     const rows = overrides.rows ?? replaceRows;
-    const merge = parseBodyValue(overrides.mergeText ?? mergeText);
+    const rawMerge = overrides.mergeText ?? mergeText;
+    const mergeStatus = describeJsonMergeText(rawMerge);
+    onMergeError?.(mergeStatus.invalidMerge ? mergeStatus.status : null);
+    const merge = parseMergeValue(rawMerge);
     const next: BodyRewrite = {};
     if (rows.length > 0) next.replace = rows;
     if (merge !== undefined) next.merge = merge;
@@ -533,6 +562,7 @@ function BodyRewriteFields({
   };
 
   const emit = (nextMode: BodyRewriteMode, overrides: { setText?: string } = {}) => {
+    if (nextMode !== 'transform') onMergeError?.(null);
     if (nextMode === 'none') return onChange(undefined);
     if (nextMode === 'set') return onChange({ set: parseBodyValue(overrides.setText ?? setText) });
     return emitTransform();
@@ -580,6 +610,7 @@ function BodyRewriteFields({
           <Field label="Then merge into the JSON body (optional)">
             <JsonBodyField
               value={mergeText}
+              mode="merge"
               placeholder='{"status": "confirmed"} — a null value deletes that key'
               height="5rem"
               onChange={(text) => {
@@ -680,9 +711,11 @@ function PathRewriteFields({
 function RewriteActionFields({
   action,
   onChange,
+  onFormError,
 }: {
   action: RewriteAction;
   onChange: (action: RewriteAction) => void;
+  onFormError?: (fieldKey: string, error: string | null) => void;
 }) {
   const patchRequest = (p: Partial<NonNullable<RewriteAction['request']>>) => {
     const next = { ...action.request, ...p };
@@ -716,7 +749,11 @@ function RewriteActionFields({
           value={action.request?.headers}
           onChange={(v) => patchRequest({ headers: v })}
         />
-        <BodyRewriteFields value={action.request?.body} onChange={(v) => patchRequest({ body: v })} />
+        <BodyRewriteFields
+          value={action.request?.body}
+          onChange={(v) => patchRequest({ body: v })}
+          onMergeError={(err) => onFormError?.('request.body.merge', err)}
+        />
       </section>
 
       <section className="flex flex-col gap-2 border-t border-[var(--border)] pt-3">
@@ -736,7 +773,11 @@ function RewriteActionFields({
           value={action.response?.headers}
           onChange={(v) => patchResponse({ headers: v })}
         />
-        <BodyRewriteFields value={action.response?.body} onChange={(v) => patchResponse({ body: v })} />
+        <BodyRewriteFields
+          value={action.response?.body}
+          onChange={(v) => patchResponse({ body: v })}
+          onMergeError={(err) => onFormError?.('response.body.merge', err)}
+        />
       </section>
     </div>
   );
