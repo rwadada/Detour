@@ -1,4 +1,5 @@
 import { BodyCapture } from '../../../domain/exchange/bodyCapture';
+import type { ExchangeRegistry } from '../../../domain/exchange/exchangeRegistry';
 import { deleteHeader, flattenHeaders } from '../../../domain/exchange/headers';
 import type { BreakpointResponsePayload, CapturedExchange } from '../../../domain/exchange/types';
 import type { Rule } from '../../../domain/rules/types';
@@ -10,10 +11,7 @@ import type { ErrorCallback, IContext } from '../engine/types';
 export interface ResponseBreakpointDeps {
   eventBus: DetourEventBus;
   breakpoints: BreakpointCoordinator;
-  /** Keyed by ctx.uuid — shared with the rest of the pipeline, not owned here. */
-  inFlight: Map<string, CapturedExchange>;
-  ruleContexts: Map<string, Rule>;
-  rewriteContexts: Map<string, Rule[]>;
+  exchangeRegistry: ExchangeRegistry;
 }
 
 /**
@@ -34,11 +32,11 @@ export interface ResponseBreakpointDeps {
  */
 // eslint-disable-next-line max-lines-per-function -- response breakpoint handler factory; tracked under issue #208 (issue #207)
 export function createResponseBreakpointHandler(deps: ResponseBreakpointDeps) {
-  const { eventBus, breakpoints, inFlight, ruleContexts, rewriteContexts } = deps;
+  const { eventBus, breakpoints, exchangeRegistry } = deps;
 
   // eslint-disable-next-line max-lines-per-function -- response breakpoint body capture + resume flow; tracked under issue #208 (issue #207)
   return function handleResponseBreakpoint(ctx: IContext, rule: Rule, callback: ErrorCallback): void {
-    const exchange = inFlight.get(ctx.uuid);
+    const exchange = exchangeRegistry.getExchange(ctx.uuid);
     const res = ctx.serverToProxyResponse;
     if (!res || !exchange) {
       callback();
@@ -64,7 +62,6 @@ export function createResponseBreakpointHandler(deps: ResponseBreakpointDeps) {
     // wait below deadlocks forever (same reasoning as the mock branch above).
     res.resume();
 
-    // eslint-disable-next-line max-lines-per-function -- response breakpoint pause/resume closure; tracked under issue #208 (issue #207)
     const pause = () => {
       const rawBody = Buffer.concat(chunks);
       // See handleRequestBreakpoint's identical fix above: without this,
@@ -96,9 +93,7 @@ export function createResponseBreakpointHandler(deps: ResponseBreakpointDeps) {
 
       breakpoints.wait(ctx.uuid, 'response').then((command) => {
         if (command.action === 'abort') {
-          inFlight.delete(ctx.uuid);
-          ruleContexts.delete(ctx.uuid);
-          rewriteContexts.delete(ctx.uuid);
+          exchangeRegistry.finalize(ctx.uuid);
           exchange.error = `rule "${rule.name}": response aborted via breakpoint (connection closed)`;
           exchange.finishedAt = Date.now();
           exchange.durationMs = exchange.finishedAt - exchange.startedAt;
@@ -140,9 +135,7 @@ export function createResponseBreakpointHandler(deps: ResponseBreakpointDeps) {
         ctx.onResponseEnd((_endCtx, cb) => {
           if (finalBody.length > 0) ctx.proxyToClientResponse.write(finalBody);
           eventBus.emit('response', exchange);
-          inFlight.delete(ctx.uuid);
-          ruleContexts.delete(ctx.uuid);
-          rewriteContexts.delete(ctx.uuid);
+          exchangeRegistry.finalize(ctx.uuid);
           return cb();
         });
 
@@ -150,9 +143,6 @@ export function createResponseBreakpointHandler(deps: ResponseBreakpointDeps) {
       });
     };
 
-    // `readableEnded`, not `.complete` (h2 upstream responses — issue #166
-    // — have no such property at all; see `ProxyEngine.pumpChunks`'s own
-    // doc comment for why this is the more precise check anyway).
     if (res.readableEnded) pause();
     else res.once('end', pause);
   };

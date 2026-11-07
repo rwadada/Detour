@@ -1,31 +1,18 @@
 import { BodyCapture } from '../../../domain/exchange/bodyCapture';
-import type { CapturedExchange, ThrottleState } from '../../../domain/exchange/types';
-import type { ScriptModule } from '../../../domain/rules/scriptAction';
-import type { Rule } from '../../../domain/rules/types';
+import type { ExchangeRegistry } from '../../../domain/exchange/exchangeRegistry';
 import { BandwidthState, transferDelayMs } from '../../../domain/throttle/bandwidth';
+import type { ProxyRuntimeState } from '../../../usecase/proxyRuntimeState';
 import { selectLastMatchingBodyRewriteRule } from '../../../usecase/selectBodyRewriteRule';
-import type { RuleEngine } from '../../../usecase/ruleEngine';
 import type { DetourEventBus } from '../../eventBus';
 import { installResponseBodyRewrite } from '../actionsRuntime';
 import { attachCertificate, attachTiming, attachUpstreamProtocol } from '../attachTiming';
 import type { OnRequestParams } from '../engine/types';
 import { tryLoadScriptModule } from '../scriptModuleLoader';
 
-/**
- * Dependencies read live at call time, not captured once at construction:
- * `ruleEngine`/`throttleState` are both mutable in `startProxyServer`, so
- * this takes getters rather than snapshotted values.
- */
 export interface ResponseHandlerDeps {
   eventBus: DetourEventBus;
-  getRuleEngine: () => RuleEngine | undefined;
-  getThrottleState: () => ThrottleState;
-  /** Keyed by ctx.uuid — shared with the rest of the pipeline, not owned here. */
-  inFlight: Map<string, CapturedExchange>;
-  ruleContexts: Map<string, Rule>;
-  rewriteContexts: Map<string, Rule[]>;
-  scriptModules: Map<string, ScriptModule>;
-  scriptRequestBodies: Map<string, Buffer>;
+  runtimeState: ProxyRuntimeState;
+  exchangeRegistry: ExchangeRegistry;
 }
 
 /**
@@ -41,21 +28,13 @@ export interface ResponseHandlerDeps {
  */
 // eslint-disable-next-line max-lines-per-function -- response pipeline stage factory; tracked under issue #208 (issue #207)
 export function createResponseHandler(deps: ResponseHandlerDeps): OnRequestParams {
-  const {
-    eventBus,
-    getRuleEngine,
-    getThrottleState,
-    inFlight,
-    ruleContexts,
-    rewriteContexts,
-    scriptModules,
-    scriptRequestBodies,
-  } = deps;
+  const { eventBus, runtimeState, exchangeRegistry } = deps;
 
   // eslint-disable-next-line max-lines-per-function -- response pipeline stage; tracked under issue #208 (issue #207)
   return function handleResponse(ctx, callback) {
-    const exchange = inFlight.get(ctx.uuid);
-    const terminal = ruleContexts.get(ctx.uuid);
+    const context = exchangeRegistry.get(ctx.uuid);
+    const exchange = context?.exchange;
+    const terminal = context?.terminalRule;
 
     // Unlike the header/status rewrites above (moved ahead of these two
     // branches in `onResponseHeaders`), a matching rule's `response.body`
@@ -77,20 +56,20 @@ export function createResponseHandler(deps: ResponseHandlerDeps): OnRequestParam
       return callback();
     }
 
-    const ruleEngine = getRuleEngine();
+    const snapshot = runtimeState.getSnapshot();
     if (terminal?.action.type === 'script') {
       // Load (or reuse the cached) module now to decide whether this rule
       // even has a `beforeResponse` hook — a rule with only `beforeRequest`
       // has nothing left to do at the response phase and falls through to
       // the normal capture/forwarding below, same as a `route`/no-op rule.
       const module = tryLoadScriptModule(terminal, {
-        basePath: ruleEngine!.basePath,
-        allowExternalPaths: ruleEngine!.allowExternalScriptPaths,
-        allowScripts: ruleEngine!.allowScripts,
+        basePath: snapshot.ruleEngine!.basePath,
+        allowExternalPaths: snapshot.ruleEngine!.allowExternalScriptPaths,
+        allowScripts: snapshot.ruleEngine!.allowScripts,
         onError: (message) => eventBus.emit('error', { id: ctx.uuid, errorKind: 'RULE_SCRIPT_ERROR', message }),
       });
       if (module?.beforeResponse) {
-        scriptModules.set(ctx.uuid, module);
+        if (context) context.scriptModule = module;
         // Fully handled by handleScriptResponseHook from onResponseHeaders
         // instead (needs the response *before* headers are flushed — see
         // its doc comment), mirroring the breakpoint skip just above.
@@ -98,9 +77,8 @@ export function createResponseHandler(deps: ResponseHandlerDeps): OnRequestParam
       }
       // No `beforeResponse` (or the module failed to load) — nothing will
       // consume the full request body `handleScriptRequestHook` stashed
-      // for it (see `scriptRequestBodies`' doc comment); drop it here
-      // rather than leak it until `onError`.
-      scriptRequestBodies.delete(ctx.uuid);
+      // for it; drop it here rather than leak it until `onError`.
+      if (context) context.scriptRequestBody = undefined;
     }
 
     if (exchange && ctx.serverToProxyResponse) {
@@ -113,9 +91,9 @@ export function createResponseHandler(deps: ResponseHandlerDeps): OnRequestParam
     // buffer and replace the whole body — like the request side, only the
     // *last* one actually does (see `selectLastMatchingBodyRewriteRule`'s
     // doc comment for why chaining more than one isn't safe).
-    const responseBodyRewriteRule = selectLastMatchingBodyRewriteRule(rewriteContexts.get(ctx.uuid) ?? [], 'response');
+    const responseBodyRewriteRule = selectLastMatchingBodyRewriteRule(context?.rewriteRules ?? [], 'response');
 
-    const throttleState = getThrottleState();
+    const throttleState = snapshot.throttleState;
     const responseCapture = new BodyCapture();
     // Throttle's download bandwidth cap/packet-loss simulation, applied
     // per-chunk as it streams to the client — see the upload side's
@@ -159,10 +137,8 @@ export function createResponseHandler(deps: ResponseHandlerDeps): OnRequestParam
         // upstream, not what a rewrite rule replaced it with.
         responseCapture.applyTo(exchange, 'response');
         eventBus.emit('response', exchange);
-        inFlight.delete(ctx.uuid);
       }
-      ruleContexts.delete(ctx.uuid);
-      rewriteContexts.delete(ctx.uuid);
+      exchangeRegistry.finalize(ctx.uuid);
       cb();
     });
 

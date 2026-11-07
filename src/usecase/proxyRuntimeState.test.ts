@@ -1,0 +1,46 @@
+import { describe, expect, it } from 'vitest';
+import { DEFAULT_THROTTLE_STATE } from '../domain/throttle/throttlePolicy';
+import { ProxyRuntimeState } from './proxyRuntimeState';
+
+describe('ProxyRuntimeState', () => {
+  it('initializes with default values when no args provided', () => {
+    const state = new ProxyRuntimeState();
+    const snapshot = state.getSnapshot();
+
+    expect(snapshot.ruleEngine).toBeUndefined();
+    expect(snapshot.interceptEnabled).toBe(true);
+    expect(snapshot.focusHosts).toEqual([]);
+    expect(snapshot.throttleState).toEqual(DEFAULT_THROTTLE_STATE);
+    expect(snapshot.blockHostsState).toEqual({ hosts: [], mode: 'forbidden' });
+  });
+
+  it('initializes with provided partial values', () => {
+    const state = new ProxyRuntimeState({
+      interceptEnabled: false,
+      focusHosts: ['example.com'],
+    });
+    const snapshot = state.getSnapshot();
+
+    expect(snapshot.interceptEnabled).toBe(false);
+    expect(snapshot.focusHosts).toEqual(['example.com']);
+    expect(snapshot.throttleState).toEqual(DEFAULT_THROTTLE_STATE);
+  });
+
+  it('updates state and returns updated snapshot', () => {
+    const state = new ProxyRuntimeState();
+
+    state.update({ interceptEnabled: false });
+    expect(state.getSnapshot().interceptEnabled).toBe(false);
+
+    state.update({ focusHosts: ['api.test'] });
+    expect(state.getSnapshot().focusHosts).toEqual(['api.test']);
+    expect(state.getSnapshot().interceptEnabled).toBe(false);
+
+    state.update({
+      blockHostsState: { hosts: ['bad.com'], mode: 'reset' },
+      throttleState: { ...DEFAULT_THROTTLE_STATE, enabled: true, latencyMs: 50 },
+    });
+    expect(state.getSnapshot().blockHostsState).toEqual({ hosts: ['bad.com'], mode: 'reset' });
+    expect(state.getSnapshot().throttleState.latencyMs).toBe(50);
+  });
+});
