@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/header-banner.png" alt="Detour — Terminal-first HTTP debugging proxy for mobile and web" width="100%" />
+</p>
+
 # Detour
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
