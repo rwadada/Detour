@@ -296,8 +296,13 @@ export function createRequestHandler(deps: RequestHandlerDeps): OnRequestParams 
           allowScripts: ruleEngine!.allowScripts,
           onError: (message) => eventBus.emit('error', { id: ctx.uuid, errorKind: 'RULE_SCRIPT_ERROR', message }),
         });
+        // Always runs (not just when `beforeRequest` is defined) — a
+        // `beforeResponse` hook (checked separately at the response phase)
+        // needs the real, full request body as its `req` argument, which
+        // only this path captures; see `context.scriptRequestBody`.
+        // Note: do not set context.scriptModule here; responseHandler will
+        // populate it if module?.beforeResponse is defined to avoid multiple consumers.
         if (module) {
-          context.scriptModule = module;
           handleScriptRequestHook(ctx, { rule: action.terminal, module }, exchange, callback);
           return;
         }

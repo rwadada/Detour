@@ -43,4 +43,23 @@ describe('ProxyRuntimeState', () => {
     expect(state.getSnapshot().blockHostsState).toEqual({ hosts: ['bad.com'], mode: 'reset' });
     expect(state.getSnapshot().throttleState.latencyMs).toBe(50);
   });
+
+  it('guarantees snapshot immutability against caller mutations', () => {
+    const state = new ProxyRuntimeState({
+      focusHosts: ['initial.test'],
+      throttleState: { ...DEFAULT_THROTTLE_STATE, latencyMs: 100 },
+      blockHostsState: { hosts: ['block.test'], mode: 'forbidden' },
+    });
+
+    const snapshot = state.getSnapshot();
+    // Attempt mutations on the returned snapshot
+    (snapshot.focusHosts as string[]).push('mutated.test');
+    snapshot.throttleState.latencyMs = 999;
+    (snapshot.blockHostsState.hosts as string[]).push('mutated-block.test');
+
+    const freshSnapshot = state.getSnapshot();
+    expect(freshSnapshot.focusHosts).toEqual(['initial.test']);
+    expect(freshSnapshot.throttleState.latencyMs).toBe(100);
+    expect(freshSnapshot.blockHostsState.hosts).toEqual(['block.test']);
+  });
 });

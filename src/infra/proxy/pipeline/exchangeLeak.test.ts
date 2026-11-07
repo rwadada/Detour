@@ -80,7 +80,9 @@ function createFakeContext(uuid = 'test-uuid'): {
     proxyToServerRequestOptions: { host: 'example.com', port: 80, path: '/test', headers: {} },
     responseContentPotentiallyModified: false,
     onRequestData: (_cb: unknown) => {},
-    onRequestEnd: (cb: () => void) => cb(),
+    onRequestEnd: (fn: (ctx: unknown, cb: () => void) => void) => {
+      fn({}, () => {});
+    },
     onResponseData: (_cb: unknown) => {},
     onResponseEnd: (fn: (ctx: unknown, cb: () => void) => void) => {
       capturedResponseEndCb = fn;

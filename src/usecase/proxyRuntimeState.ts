@@ -10,6 +10,18 @@ export interface ProxyRuntimeSnapshot {
   readonly blockHostsState: BlockHostsState;
 }
 
+function cloneSnapshot(snapshot: ProxyRuntimeSnapshot): ProxyRuntimeSnapshot {
+  return {
+    ...snapshot,
+    focusHosts: [...snapshot.focusHosts],
+    throttleState: { ...snapshot.throttleState },
+    blockHostsState: {
+      ...snapshot.blockHostsState,
+      hosts: [...snapshot.blockHostsState.hosts],
+    },
+  };
+}
+
 /**
  * Manages mutable proxy runtime state (Intercept, Focus, Throttle, Block Hosts,
  * and RuleEngine) in a single unified container with snapshotting (issue #208).
@@ -22,17 +34,32 @@ export class ProxyRuntimeState {
     this.current = {
       ruleEngine: initial?.ruleEngine,
       interceptEnabled: initial?.interceptEnabled ?? true,
-      focusHosts: initial?.focusHosts ?? [],
-      throttleState: initial?.throttleState ?? DEFAULT_THROTTLE_STATE,
-      blockHostsState: initial?.blockHostsState ?? { hosts: [], mode: 'forbidden' },
+      focusHosts: initial?.focusHosts ? [...initial.focusHosts] : [],
+      throttleState: initial?.throttleState ? { ...initial.throttleState } : DEFAULT_THROTTLE_STATE,
+      blockHostsState: initial?.blockHostsState
+        ? { mode: initial.blockHostsState.mode, hosts: [...initial.blockHostsState.hosts] }
+        : { hosts: [], mode: 'forbidden' },
     };
   }
 
   getSnapshot(): ProxyRuntimeSnapshot {
-    return this.current;
+    return cloneSnapshot(this.current);
   }
 
   update(patch: Partial<ProxyRuntimeSnapshot>): void {
-    this.current = { ...this.current, ...patch };
+    this.current = {
+      ...this.current,
+      ...patch,
+      ...(patch.focusHosts !== undefined ? { focusHosts: [...patch.focusHosts] } : {}),
+      ...(patch.throttleState !== undefined ? { throttleState: { ...patch.throttleState } } : {}),
+      ...(patch.blockHostsState !== undefined
+        ? {
+            blockHostsState: {
+              mode: patch.blockHostsState.mode,
+              hosts: [...patch.blockHostsState.hosts],
+            },
+          }
+        : {}),
+    };
   }
 }

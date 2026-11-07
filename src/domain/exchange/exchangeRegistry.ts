@@ -10,6 +10,9 @@ export class ExchangeRegistry {
   private readonly contexts = new Map<string, ExchangeContext>();
 
   create(id: string, exchange: CapturedExchange): ExchangeContext {
+    if (this.contexts.has(id)) {
+      throw new Error(`ExchangeContext already exists for id "${id}"`);
+    }
     const ctx: ExchangeContext = { id, exchange };
     this.contexts.set(id, ctx);
     return ctx;

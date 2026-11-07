@@ -46,6 +46,14 @@ describe('ExchangeRegistry', () => {
     expect(registry.finalize('non-existent')).toBeUndefined();
   });
 
+  it('throws an error when creating with an already registered id', () => {
+    const registry = new ExchangeRegistry();
+    registry.create('req-1', createDummyExchange('req-1'));
+    expect(() => registry.create('req-1', createDummyExchange('req-1'))).toThrow(
+      'ExchangeContext already exists for id "req-1"',
+    );
+  });
+
   it('clears all contexts', () => {
     const registry = new ExchangeRegistry();
     registry.create('1', createDummyExchange('1'));
