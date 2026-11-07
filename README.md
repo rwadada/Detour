@@ -5,6 +5,7 @@
 [![npm](https://img.shields.io/npm/v/@rwadada/detour.svg)](https://www.npmjs.com/package/@rwadada/detour)
 [![Node](https://img.shields.io/badge/node-%3E%3D22.12-brightgreen.svg)](package.json)
 [![CI](https://github.com/rwadada/Detour/actions/workflows/pr.yml/badge.svg)](https://github.com/rwadada/Detour/actions/workflows/pr.yml)
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-yellow.svg)](https://buymeacoffee.com/rwadada)
 
 A terminal-first, lightweight HTTP debugging proxy for mobile and web, with a real-time web dashboard.
 
@@ -585,3 +586,10 @@ What this says, including the unflattering parts:
 - **A first-ever request to a host is expensive.** ~300 ms of it is issuing that host's leaf certificate with pure-JS RSA-2048 ([issue #164](https://github.com/rwadada/Detour/issues/164)). It's a once-per-host cost that the cache then absorbs, but it's the first thing a user feels — and it dominates scenario 7, where every request is to a host never seen before, so there's no keep-alive connection to reuse either.
 
 `bench` is deliberately **not** part of `npm run verify` — it takes minutes and its numbers move with the machine, the same reason `knip` and `test:mutation` sit outside that gate. CI runs `--quick --gate` as its own job, failing only when a scenario's p95 blows past a generous per-scenario multiple of the direct baseline measured on the same runner.
+
+---
+
+## Support / Sponsor
+
+If Detour saved you time, streamlined your debugging workflow, or made your development easier, consider [buying me a coffee ☕](https://buymeacoffee.com/rwadada). Your support directly fuels future maintenance and improvements!
+
