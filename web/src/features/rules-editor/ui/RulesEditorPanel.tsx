@@ -1,7 +1,7 @@
 import { json } from '@codemirror/lang-json';
 import CodeMirror from '@uiw/react-codemirror';
 import { AlertTriangle, Plus, ShieldOff, Trash2, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { useRuleStore } from '@/entities/rule';
 import type { Rule, RuleAction, ScriptGateWarning, UnreachableRuleWarning } from '@/shared/api';
 import { useTheme } from '@/shared/lib/theme';
@@ -305,8 +305,8 @@ function ReloadErrorBanner({ message, onDismiss }: { message: string; onDismiss:
       className="flex shrink-0 items-start justify-between gap-2 rounded-md border border-[var(--status-4xx)]/40 bg-[var(--status-4xx)]/10 px-3 py-2 text-xs text-[var(--status-4xx)]"
     >
       <span>
-        <strong>rules.json on disk failed to reload</strong> (the proxy is still serving the last valid rules shown
-        here): {message}
+        <strong>rules.json on disk failed to reload</strong> (the proxy is still serving the last valid rules loaded in
+        memory): {message}
       </span>
       <button
         type="button"
@@ -321,15 +321,7 @@ function ReloadErrorBanner({ message, onDismiss }: { message: string; onDismiss:
   );
 }
 
-function RuleBadge({
-  message,
-  className,
-  children,
-}: {
-  message: string;
-  className: string;
-  children: React.ReactNode;
-}) {
+function RuleBadge({ message, className, children }: { message: string; className: string; children: ReactNode }) {
   return (
     <span role="img" aria-label={message} title={message} className={cn('shrink-0', className)}>
       {children}
@@ -351,7 +343,7 @@ function RuleRowBadges({
     <>
       {hasDraftError && (
         <RuleBadge
-          message="This rule has an invalid JSON edit that must be fixed before saving"
+          message="This rule has a validation or JSON error that must be fixed before saving"
           className="text-[var(--status-5xx)]"
         >
           <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
