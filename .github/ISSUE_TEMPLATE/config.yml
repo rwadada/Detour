@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Detour Official Documentation
+    url: https://detour.rwadada.com/
+    about: Read installation guides, CLI command references, and architecture details.
+  - name: Release Notes & Changelog
+    url: https://github.com/rwadada/Detour/blob/main/CHANGELOG.md
+    about: See what's new in recent Detour releases.

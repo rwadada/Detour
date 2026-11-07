@@ -1,0 +1,25 @@
+name: Feedback / User Experience
+description: Share your thoughts, first impressions, or usability feedback
+title: "[Feedback]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We would love to hear what you think of Detour! Whether you just tried it once or use it daily, all feedback helps shape future releases.
+  - type: textarea
+    id: experience
+    attributes:
+      label: What did you try, and how was the experience?
+      description: What was your setup workflow? (e.g. testing an iOS app, mocking API endpoints, inspecting gRPC)
+    validations:
+      required: true
+  - type: textarea
+    id: friction
+    attributes:
+      label: What felt confusing, difficult, or missing?
+      description: Any moments where you got stuck, doc gaps, or unexpected UX friction?
+  - type: textarea
+    id: highlights
+    attributes:
+      label: What did you like most?
+      description: Did any specific feature or workflow work particularly well?

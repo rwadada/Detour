@@ -1,0 +1,34 @@
+name: Feature Request
+description: Suggest an idea or enhancement for Detour
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping make Detour better!
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Is your feature request related to a problem or limitation? (e.g. "I often need to inspect WebSocket traffic but...")
+      placeholder: A clear description of the problem you are trying to solve.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution / Desired Behavior
+      description: Describe what you would like Detour to do.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Have you considered or tried any workarounds? How do other tools (Charles, Proxyman, mitmproxy) handle this?
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Any screenshots, mockups, or extra context to explain the idea.
