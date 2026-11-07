@@ -25,9 +25,9 @@ npm run build:cli
 
 Always use dynamic, non-default ports to prevent port conflicts with running dev instances:
 ```bash
-PROXY_PORT=$((20000 + RANDOM % 10000))
-DASH_PORT=$((PROXY_PORT + 1))
-CONTROL_PORT=$((PROXY_PORT + 2))
+export PROXY_PORT=$((20000 + RANDOM % 10000))
+export DASH_PORT=$((PROXY_PORT + 1))
+export CONTROL_PORT=$((PROXY_PORT + 2))
 ```
 
 ## 3. Starting Detour in Background
@@ -76,7 +76,7 @@ curl -sv -x "http://127.0.0.1:${PROXY_PORT}" --cacert "$CA_CERT" "https://httpbi
 ### WebSocket Upgrade & Keep-Alive Probing (e.g. Issue #206)
 Send a raw HTTP Upgrade request using Node to test upstream socket handling and disconnect behavior:
 ```bash
-node -e '
+PROXY_PORT="${PROXY_PORT}" node -e '
 const net = require("net");
 const sock = net.connect({ host: "127.0.0.1", port: process.env.PROXY_PORT }, () => {
   sock.write("GET http://echo.websocket.events/ HTTP/1.1\r\n" +

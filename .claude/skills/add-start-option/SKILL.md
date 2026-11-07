@@ -16,18 +16,18 @@ Add the option and its type to `StartOptions`:
 
 ### Step 2: Option Parser & Validation
 Implement argument parsing and validation:
-- **File**: `src/infra/cli/options/optionParsers.ts`
+- **File**: `src/commands/optionParsers.ts`
 - **Action**: Add parser function (e.g. `parseMyOption(val: string): MyOptionType`) and export it.
-- **Unit Test**: `src/infra/cli/options/optionParsers.test.ts`.
+- **Unit Test**: `src/commands/optionParsers.test.ts` (or co-located parser tests).
 
 ### Step 3: Register Commander Option
 Register the CLI flag on `detour start`:
-- **File**: `src/infra/cli/commands/startCommand.ts`
+- **File**: `src/commands/startCommand.ts`
 - **Action**: Add `.option('--my-option <val>', 'description')` and map it into `StartOptions`.
 
 ### Step 4: Configuration File Persistence
 Allow persisting the setting into `~/.detour/config.json`:
-- **File**: `src/infra/cli/commands/configCommand.ts`
+- **File**: `src/commands/configCommand.ts`
 - **Action**: Support `detour config --my-option <val>` and `detour config --my-option off`.
 - **Unit Test**: `src/infra/cli/commands/configCommand.test.ts`.
 

@@ -11,7 +11,7 @@ Use this checklist whenever changes touch `src/infra/proxy/**`, `src/infra/dashb
 
 ### 1. Self-Targeting & Loopback Reflection (SSRF Prevention)
 - [ ] **Self-Target Detection**: Does the proxy reject requests attempting to loop back into its own listening ports (proxy port, dashboard port, control port)?
-  - Ensure `proxyEngine.selfTarget.ts` or related guards block requests targeting Detour's own services with `403 Forbidden` / `502 Bad Gateway`.
+  - Ensure `src/infra/proxy/engine/selfTarget.ts` or related guards block requests targeting Detour's own services with `403 Forbidden` / `502 Bad Gateway` (tested by `selfTarget.test.ts` and `proxyEngine.selfTarget.test.ts`).
 - [ ] **LAN-to-Localhost Trampolining (#205 / CVE-2025-23217 equivalent)**:
   - If a LAN client connects to Detour's proxy port, can it reach `http://localhost:<dashboard-port>` or internal services without authorization?
   - Verify access tokens or loopback filtering properly prevent unauthorized LAN access to loopback-only endpoints.
@@ -21,7 +21,7 @@ Use this checklist whenever changes touch `src/infra/proxy/**`, `src/infra/dashb
 - [ ] **Access Token & Cookie Enforcement**:
   - Is the dashboard access token checked on initial connection?
   - Are cookies flagged with `HttpOnly`, `SameSite=Lax/Strict`, and `Secure` where appropriate?
-- [ ] **Rate Limiting**: Are authentication attempts (dashboard password login) rate-limited against brute-force attacks (`rateLimit.ts`)?
+- [ ] **Rate Limiting**: Are authentication attempts (dashboard password login) rate-limited against brute-force attacks (`src/infra/dashboard/dashboardServer.rateLimit.test.ts`)?
 
 ### 3. Credential & Header Leakage Prevention
 - [ ] **Hop-by-Hop & Proxy Authentication Headers**:
@@ -44,6 +44,7 @@ Use this checklist whenever changes touch `src/infra/proxy/**`, `src/infra/dashb
   - If scripts fail to load or throw an exception, does the error get contained and reported without crashing the proxy server?
 
 ### 6. LAN Binding & Exposure Warning
-- [ ] **0.0.0.0 Binding Warnings**:
-  - When `--lan` is specified, does the CLI banner clearly warn that the dashboard/proxy is bound to `0.0.0.0`?
-  - Without `--lan`, is the dashboard strictly bound to `127.0.0.1`?
+- [ ] **Dashboard LAN Access Exposure**:
+  - The proxy itself listens on all interfaces (`0.0.0.0`) by design so external/mobile devices can route through it. `--lan` controls whether the *dashboard* (and its web interface) is exposed to the local network or restricted to localhost.
+  - When `--lan` is specified, verify the CLI banner and logs clearly warn that the dashboard is bound to `0.0.0.0` and accessible over the LAN.
+  - Without `--lan`, verify the dashboard strictly binds to `127.0.0.1`.

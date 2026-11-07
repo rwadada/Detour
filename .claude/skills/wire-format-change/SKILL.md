@@ -18,13 +18,12 @@ When changing `CapturedExchange`, verify all corresponding files:
 - [ ] **`src/domain/update/backlogSnapshot.ts`**: Update snapshot serialization across binary update restarts (`backlogSnapshot.test.ts`).
 
 ### Persistence & Storage
-- [ ] **`src/infra/session/sessionFile.ts`**: Update session save/load JSON serialization (`sessionFile.test.ts`).
-- [ ] **`src/infra/history/historyStore.ts`**: Update SQLite table schema, migrations, and row mapping functions (`historyStore.test.ts`).
-- [ ] **`src/domain/record/fixtureStore.ts`**: Ensure fixture JSON format used by `detour record` and `detour serve` remains compatible.
+- [ ] **`src/infra/persistence/historyStore.ts`**: Update SQLite table schema, migrations, and row mapping functions (`src/infra/persistence/historyStore.test.ts`).
+- [ ] **`src/domain/record/fixtureStore.ts`**: Ensure fixture JSON format used by `detour record` and `detour serve` remains compatible (`src/domain/record/fixtureStore.test.ts`).
 
 ### Export & Import
-- [ ] **`src/infra/har/harExport.ts`**: Map new exchange attributes to HAR 1.2 fields (or custom `_` fields).
-- [ ] **`src/infra/har/harImport.ts`**: Map HAR entries back to `CapturedExchange`.
+- [ ] **`src/domain/exchange/harImport.ts`**: Map imported HAR entries to `CapturedExchange` on the backend (`src/domain/exchange/harImport.test.ts`).
+- [ ] **`web/src/entities/exchange/lib/har.ts`**: Update `exchangesToHar()` and `harToExchanges()` for frontend HAR import/export (`web/src/entities/exchange/lib/har.test.ts`).
 
 ### Frontend Web Dashboard
 - [ ] **`web/src/shared/api/protocol.ts`**: Sync protocol type definitions with backend.
@@ -33,7 +32,7 @@ When changing `CapturedExchange`, verify all corresponding files:
 
 ## 2. Backward Compatibility Rules
 
-- [ ] **Optional by Default**: New fields MUST be optional (`field?: type`) so older session files, recordings, and SQLite rows without the field load without error.
+- [ ] **Optional by Default**: New fields MUST be optional (`field?: type`) so older recordings, exports, and SQLite rows without the field load without error.
 - [ ] **Graceful Fallback**: Deserializers must provide safe fallback defaults (e.g., `row.insecureUpstream ?? false`).
 - [ ] **Database Migration**: If modifying the SQLite schema, add a non-destructive column addition (`ALTER TABLE exchanges ADD COLUMN ...`) with default values.
 
@@ -48,7 +47,8 @@ Run targeted serialization & persistence tests:
 ```bash
 npx vitest run src/domain/exchange/wireExchange.test.ts
 npx vitest run src/domain/update/backlogSnapshot.test.ts
-npx vitest run src/infra/history/historyStore.test.ts
+npx vitest run src/infra/persistence/historyStore.test.ts
+npx vitest run src/domain/exchange/harImport.test.ts
 ```
 
 Run CLI recording and replay tests:
