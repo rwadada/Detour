@@ -669,6 +669,9 @@
 brew tap rwadada/detour
 brew install detour
 
+<span class="tok-com"># or run directly via npx (no global install needed)</span>
+npx @rwadada/detour start
+
 <span class="tok-com"># run it</span>
 detour start</pre>
       </div>
@@ -679,7 +682,7 @@ detour start</pre>
     <section class="page" id="page-getting-started" data-title="Getting started">
       <div class="eyebrow">02 · Setup</div>
       <h1>Getting started</h1>
-      <p class="lede">Two ways to install, one certificate to trust, then point a client at the proxy port.</p>
+      <p class="lede">Install via Homebrew or run with npx/npm, trust one certificate, then point a client at the proxy port.</p>
 
       <h2>Install</h2>
       <h3>Homebrew (recommended)</h3>
@@ -691,6 +694,17 @@ detour start</pre>
       </div>
       <p>Ships a self-contained release build — no Node toolchain needed beyond Node itself, pulled in
         automatically as the formula's dependency.</p>
+
+      <h3>npx / npm</h3>
+      <div class="code-block">
+        <div class="code-head"><span>terminal</span><button class="copy" data-copy="npx @rwadada/detour start">copy</button></div>
+        <pre><span class="tok-com"># run directly without installing globally</span>
+npx @rwadada/detour start
+
+<span class="tok-com"># or install globally from npm</span>
+npm install -g @rwadada/detour
+detour start</pre>
+      </div>
 
       <h3>From source</h3>
       <div class="code-block">

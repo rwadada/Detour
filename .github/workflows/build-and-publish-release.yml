@@ -28,6 +28,12 @@ on:
           else in this workflow works fine without it, and that one step
           fails with a clear message instead if it's unset.
         required: false
+      NPM_TOKEN:
+        description: >-
+          npm Automation Token with publish access to @rwadada/detour on
+          registry.npmjs.org. Optional when npm Trusted Publishing (OIDC) is
+          configured for rwadada/Detour on npmjs.com.
+        required: false
 
 # `id-token`/`attestations` are for the build-provenance step below (issue
 # #211). A reusable workflow can't be granted more than its caller holds, so
@@ -105,6 +111,28 @@ jobs:
 
       - name: Build release tarball
         run: npm run build:release
+
+      - name: Build npm package
+        run: npm run build
+
+      - name: Publish to npm (@rwadada/detour)
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          pkg_name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "${pkg_name}@${version}" version >/dev/null 2>&1; then
+            echo "${pkg_name}@${version} is already published on npm; skipping."
+            exit 0
+          fi
+          userconfig="$(mktemp)"
+          trap 'rm -f "$userconfig"' EXIT
+          if [ -n "$NPM_TOKEN" ]; then
+            printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$userconfig"
+            NPM_CONFIG_USERCONFIG="$userconfig" npm publish --access public --provenance
+          else
+            npm publish --access public --provenance
+          fi
 
       # SLSA build provenance for the tarball (issue #211) — `detour update`
       # and the Homebrew formula both fetch this artifact and run it on

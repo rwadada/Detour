@@ -2,7 +2,8 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Homebrew](https://img.shields.io/badge/homebrew-rwadada%2Fdetour-orange.svg)](https://github.com/rwadada/homebrew-detour)
-[![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](package.json)
+[![npm](https://img.shields.io/npm/v/@rwadada/detour.svg)](https://www.npmjs.com/package/@rwadada/detour)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.12-brightgreen.svg)](package.json)
 [![CI](https://github.com/rwadada/Detour/actions/workflows/pr.yml/badge.svg)](https://github.com/rwadada/Detour/actions/workflows/pr.yml)
 
 A terminal-first, lightweight HTTP debugging proxy for mobile and web, with a real-time web dashboard.
@@ -35,6 +36,7 @@ A terminal-first, lightweight HTTP debugging proxy for mobile and web, with a re
 - [Quick Start](#quick-start)
 - [Getting Started](#getting-started)
   - [Homebrew (Recommended)](#homebrew-recommended)
+  - [npx / npm](#npx--npm)
   - [From source](#from-source)
 - [`detour setup` / `doctor` / `cleanup`](#detour-setup--doctor--cleanup-issue-65)
 - [Web Dashboard](#web-dashboard)
@@ -53,8 +55,12 @@ A terminal-first, lightweight HTTP debugging proxy for mobile and web, with a re
 ## Quick Start
 
 ```bash
-# 1. Install via Homebrew
+# 1a. Install via Homebrew (recommended)
 brew tap rwadada/detour && brew install detour
+
+# 1b. Or run directly via npx / install globally with npm
+npx @rwadada/detour start
+# npm install -g @rwadada/detour
 
 # 2. Start proxy on :8080 and web dashboard on :9080 (auto-opens in browser)
 detour start
@@ -92,6 +98,19 @@ detour update --yes     # same, without the prompt (for scripts)
 Notes: an instance that was running in the foreground comes back as a background daemon (`detour status`/`detour stop` manage it as usual); captured traffic held in memory is lost on restart when you run `detour update` (use `--persist` to keep it) — except for the instance behind the dashboard's **Update now** button, see below; instances started by a Detour older than this feature aren't touched — restart them by hand. Installs other than Homebrew (a source checkout, `npm start`) can still use `--check` but must be updated manually. The `start` arguments are kept in `~/.detour/run/<port>.json` (owner-only permissions), so `--proxy-auth` credentials end up there as well as in the process list.
 
 The dashboard also checks for new releases (the answer is cached for 6 hours, a failed lookup is retried after 10 minutes; set `DETOUR_NO_UPDATE_CHECK=1` to turn it off). The sidebar shows the running version with a **Check for updates** button that re-checks right away, skipping the cache (at most one lookup per 30 seconds, to stay within GitHub's anonymous rate limit). When a newer version exists a banner appears with an **Update now** button, which runs the same `detour update --yes` in a detached process (output goes to `~/.detour/update.log`) and reloads the page once the new version is up; if that process ends without restarting Detour, the banner reports it instead of waiting. Like the CLI, it restarts every tracked instance, not just the one serving the page. The instance serving the page keeps its traffic list across that restart: just before it stops, it writes its finished requests to `~/.detour/update-resume/<port>.json` (owner-only permissions — decrypted traffic can include credentials), and the relaunched instance (started with an internal `--resume-backlog` flag) loads that file back into its backlog and deletes it, so the open page reconnects to the same list instead of an empty one. Requests still in flight or paused at a breakpoint when the old process stops are not carried over, nor are WebSocket connections; a snapshot older than 10 minutes, or one left behind by an update that never relaunched, is ignored and removed on the next start. Other instances restarted by the same update start with an empty list. The button is offered only for Homebrew installs, only when the proxy port is not `0`, and only to a dashboard connection from this machine (loopback, without reverse-proxy `X-Forwarded-*`/`Forwarded` headers) or one that has signed in with the dashboard password (changing the password signs those sessions out of this right) — any other client just sees the banner with a pointer to `detour update`. A raw TCP forwarder or tunnel on the same machine is indistinguishable from a local client, so don't expose a password-less dashboard that way.
+
+### npx / npm
+
+Run Detour on the spot with `npx`, or install the `detour` CLI globally from npm (`@rwadada/detour`, requires Node 22.12+):
+
+```bash
+# Run without installing globally
+npx @rwadada/detour start
+
+# Or install globally and run `detour` directly
+npm install -g @rwadada/detour
+detour start
+```
 
 ### From source
 
