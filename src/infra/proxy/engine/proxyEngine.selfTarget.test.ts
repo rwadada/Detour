@@ -78,6 +78,30 @@ describe('ProxyEngine refuses to relay to its own listeners (issue #205)', () =>
     });
   });
 
+  // A LAN client can spell 127.0.0.1 as an IPv4-mapped IPv6 literal in hex or
+  // longhand; the connection still lands on the protected listener, so every
+  // entry point must refuse it like the plain form.
+  it.each(['[::ffff:7f00:1]', '[0:0:0:0:0:ffff:7f00:1]', '[0:0:0:0:0:ffff:127.0.0.1]'])(
+    'refuses a protected local port written as %s on every entry point',
+    async (host) => {
+      await withProxy(async (proxyPort, protectedPort) => {
+        const target = `${host}:${protectedPort}`;
+        const forwarded = await rawExchange(
+          proxyPort,
+          `GET http://${target}/ HTTP/1.1\r\nHost: 127.0.0.1:${protectedPort}\r\nConnection: close\r\n\r\n`,
+        );
+        expect(forwarded).toMatch(/^HTTP\/1\.1 403/);
+        const tunnel = await rawExchange(proxyPort, `CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`);
+        expect(tunnel).toMatch(/^HTTP\/1\.1 403/);
+        const upgrade = await rawExchange(
+          proxyPort,
+          `GET http://${target}/ws HTTP/1.1\r\nHost: 127.0.0.1:${protectedPort}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+        );
+        expect(upgrade).toMatch(/^HTTP\/1\.1 403/);
+      });
+    },
+  );
+
   it('refuses a ws:// upgrade to a protected local port before the handshake completes', async () => {
     await withProxy(async (proxyPort, protectedPort) => {
       const answer = await rawExchange(

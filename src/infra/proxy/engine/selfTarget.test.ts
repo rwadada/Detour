@@ -1,6 +1,6 @@
 /* eslint-disable sonarjs/no-hardcoded-ip -- address fixtures */
 import { describe, expect, it } from 'vitest';
-import { createSelfTargetGuard } from './selfTarget';
+import { canonicalIp, createSelfTargetGuard } from './selfTarget';
 
 function guardWith(dns: Record<string, string[]> = {}, local: string[] = ['192.168.1.5']) {
   const guard = createSelfTargetGuard(
@@ -137,5 +137,84 @@ describe('createSelfTargetGuard — knowing the bound address', () => {
     expect(await guard.isSelfTarget('::1', PORT)).toBe(true);
     expect(await guard.isSelfTarget('192.168.1.5', PORT)).toBe(true);
     expect(await guard.isSelfTarget('127.0.0.1', PORT)).toBe(false);
+  });
+});
+
+/**
+ * Every spelling of an address connects to the same socket, so the guard has
+ * to recognise all of them — a LAN client writing loopback out longhand
+ * (`[0:0:0:0:0:0:0:1]`) or in the hex IPv4-mapped form WHATWG `URL`
+ * serializes to (`[::ffff:7f00:1]`) must not be relayed into the dashboard.
+ */
+describe('createSelfTargetGuard — non-canonical address spellings', () => {
+  const PORT = 4040;
+
+  function guardFor(listenerAddress: string | undefined) {
+    const guard = createSelfTargetGuard(
+      async () => {
+        throw new Error('ENOTFOUND');
+      },
+      () => ['192.168.1.5', 'fe80::1'],
+    );
+    guard.protectPort(PORT, listenerAddress);
+    return guard;
+  }
+
+  it.each(['0:0:0:0:0:0:0:1', '[0:0:0:0:0:0:0:1]', '0::1', '0000:0000::0001', '::0001', '[0::1]'])(
+    'treats %s as ::1',
+    async (host) => {
+      expect(await guardFor('::1').isSelfTarget(host, PORT)).toBe(true);
+      expect(await guardFor(undefined).isSelfTarget(host, PORT)).toBe(true);
+    },
+  );
+
+  it.each([
+    '::ffff:7f00:1',
+    '[::ffff:7f00:1]',
+    '0:0:0:0:0:ffff:7f00:1',
+    '0:0:0:0:0:ffff:127.0.0.1',
+    '::FFFF:127.0.0.1',
+    '::ffff:7f00:0001',
+  ])('treats the IPv4-mapped spelling %s as 127.0.0.1', async (host) => {
+    expect(await guardFor('127.0.0.1').isSelfTarget(host, PORT)).toBe(true);
+    expect(await guardFor('0.0.0.0').isSelfTarget(host, PORT)).toBe(true);
+  });
+
+  it.each(['0:0:0:0:0:0:0:0', '0::0', '0000::'])('treats the unspecified spelling %s as ::', async (host) => {
+    expect(await guardFor('::1').isSelfTarget(host, PORT)).toBe(true);
+  });
+
+  it('recognises a longhand interface address and one carrying a zone ID', async () => {
+    expect(await guardFor(undefined).isSelfTarget('fe80:0:0:0:0:0:0:1', PORT)).toBe(true);
+    expect(await guardFor(undefined).isSelfTarget('fe80::1%en0', PORT)).toBe(true);
+  });
+
+  it('normalises a listener address given in a non-canonical spelling too', async () => {
+    expect(await guardFor('0:0:0:0:0:0:0:1').isSelfTarget('::1', PORT)).toBe(true);
+    expect(await guardFor('::ffff:7f00:1').isSelfTarget('127.0.0.1', PORT)).toBe(true);
+  });
+
+  it('still keeps other addresses apart however they are written', async () => {
+    expect(await guardFor('::1').isSelfTarget('0:0:0:0:0:0:0:2', PORT)).toBe(false);
+    expect(await guardFor('127.0.0.1').isSelfTarget('::ffff:7f00:2', PORT)).toBe(false);
+    expect(await guardFor(undefined).isSelfTarget('2001:db8:0:0:0:0:0:1', PORT)).toBe(false);
+  });
+});
+
+describe('canonicalIp', () => {
+  it.each([
+    ['0:0:0:0:0:0:0:1', '::1'],
+    ['[0000::0001]', '::1'],
+    ['0:0:0:0:0:0:0:0', '::'],
+    ['::ffff:7f00:1', '127.0.0.1'],
+    ['::FFFF:127.0.0.1', '127.0.0.1'],
+    ['fe80::1%en0', 'fe80::1'],
+    ['2001:DB8:0:0:1:0:0:1', '2001:db8::1:0:0:1'],
+    ['2001:db8:0:1:1:1:1:1', '2001:db8:0:1:1:1:1:1'],
+    ['1:0:0:2:0:0:0:3', '1:0:0:2::3'],
+    ['127.0.0.1', '127.0.0.1'],
+    ['Example.COM', 'example.com'],
+  ])('%s → %s', (input, expected) => {
+    expect(canonicalIp(input)).toBe(expected);
   });
 });

@@ -22,10 +22,68 @@ function stripBrackets(host: string): string {
   return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
 }
 
-/** `::ffff:127.0.0.1` → `127.0.0.1`, so an IPv4-mapped address is judged as the IPv4 address it is. */
-function unmapIPv4(address: string): string {
-  const lower = address.toLowerCase();
-  return lower.startsWith('::ffff:') && net.isIPv4(lower.slice(7)) ? lower.slice(7) : lower;
+/** The eight 16-bit groups of an IPv6 address `net.isIPv6` has already accepted (zone ID removed), expanding `::` and a dotted-quad tail. */
+function ipv6Groups(address: string): number[] {
+  let text = address;
+  const lastColon = text.lastIndexOf(':');
+  const tail = text.slice(lastColon + 1);
+  if (net.isIPv4(tail)) {
+    const [a, b, c, d] = tail.split('.').map(Number) as [number, number, number, number];
+    text = `${text.slice(0, lastColon + 1)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const [head = '', rest] = text.split('::');
+  const headGroups = head === '' ? [] : head.split(':');
+  if (rest === undefined) return headGroups.map((g) => Number.parseInt(g, 16));
+  const restGroups = rest === '' ? [] : rest.split(':');
+  const zeros = Array.from({ length: 8 - headGroups.length - restGroups.length }, () => '0');
+  return [...headGroups, ...zeros, ...restGroups].map((g) => Number.parseInt(g, 16));
+}
+
+/** RFC 5952 text for eight IPv6 groups: lowercase hex, no leading zeros, the longest (first, on a tie) run of two or more zero groups as `::`. */
+function formatIPv6(groups: number[]): string {
+  let bestStart = -1;
+  let bestLength = 1;
+  for (let i = 0; i < groups.length; ) {
+    if (groups[i] !== 0) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < groups.length && groups[j] === 0) j++;
+    if (j - i > bestLength) {
+      bestStart = i;
+      bestLength = j - i;
+    }
+    i = j;
+  }
+  const hex = groups.map((g) => g.toString(16));
+  if (bestStart === -1) return hex.join(':');
+  return `${hex.slice(0, bestStart).join(':')}::${hex.slice(bestStart + bestLength).join(':')}`;
+}
+
+/**
+ * One spelling per address, so comparing two of them as strings means
+ * comparing the addresses. An IPv6 literal has many spellings — `::1`,
+ * `0:0:0:0:0:0:0:1` and `0000::0001` are all loopback, `::ffff:7f00:1` is
+ * `::ffff:127.0.0.1` (and the form WHATWG `URL` serializes it to) — and every
+ * one of them connects to the same socket, so a guard that only knew the
+ * short form could be walked past by writing the address out differently.
+ * IPv6 becomes its RFC 5952 form, an IPv4-mapped address the IPv4 address it
+ * is (`::ffff:127.0.0.1` → `127.0.0.1`), and a zone ID (`fe80::1%en0`) is
+ * dropped, since interface addresses are listed without one. Anything that
+ * isn't an IP literal is returned lowercased.
+ */
+export function canonicalIp(address: string): string {
+  const lower = stripBrackets(address).toLowerCase();
+  const zoneless = lower.includes('%') ? lower.slice(0, lower.indexOf('%')) : lower;
+  if (!net.isIPv6(zoneless)) return lower;
+  const groups = ipv6Groups(zoneless);
+  const mapped = groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff;
+  if (mapped) {
+    const [hi = 0, lo = 0] = groups.slice(6);
+    return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+  }
+  return formatIPv6(groups);
 }
 
 function isLoopbackOrUnspecified(address: string): boolean {
@@ -92,7 +150,7 @@ export function createSelfTargetGuard(
   const listeners: Array<{ port: number; address: string | undefined }> = [];
   return {
     protectPort: (port, address) => {
-      listeners.push({ port, address: address === undefined ? undefined : unmapIPv4(stripBrackets(address)) });
+      listeners.push({ port, address: address === undefined ? undefined : canonicalIp(address) });
     },
     async isSelfTarget(host, port) {
       const onPort = listeners.filter((l) => l.port === port);
@@ -108,8 +166,8 @@ export function createSelfTargetGuard(
           return false;
         }
       }
-      const own = new Set(localAddresses().map(unmapIPv4));
-      const targets = addresses.map(unmapIPv4);
+      const own = new Set(localAddresses().map(canonicalIp));
+      const targets = addresses.map(canonicalIp);
       return onPort.some((l) => targets.some((target) => reachesListener(target, l.address, own)));
     },
   };
