@@ -38,7 +38,8 @@ export function createConnectHandler(deps: ConnectHandlerDeps): OnConnectParams 
    * override that. A CONNECT whose `Host` header names something else than
    * its request-target is never passed through: `handleInterceptOffConnect`
    * relays to the `Host` header, which would be another destination than the
-   * one that was refused.
+   * one that was refused. (Without a Host header it relays to the
+   * request-target itself, so that's fine.)
    */
   const refusedBefore = (
     req: IncomingMessage,
@@ -46,9 +47,12 @@ export function createConnectHandler(deps: ConnectHandlerDeps): OnConnectParams 
     hostHeaderTarget: { host: string; port: number | undefined } | null,
     focusHosts: readonly string[],
   ): boolean => {
-    if (!autoPassthroughHosts || focusHosts.length > 0 || !hostHeaderTarget) return false;
+    if (!autoPassthroughHosts || focusHosts.length > 0) return false;
     const { host, port = 443 } = ProxyEngine.parseHost(req.url ?? '', 443);
-    if (host.toLowerCase() !== hostHeaderTarget.host.toLowerCase() || port !== (hostHeaderTarget.port ?? 443)) {
+    if (
+      hostHeaderTarget &&
+      (host.toLowerCase() !== hostHeaderTarget.host.toLowerCase() || port !== (hostHeaderTarget.port ?? 443))
+    ) {
       return false;
     }
     const clientAddress = (socket as Partial<Socket>).remoteAddress;

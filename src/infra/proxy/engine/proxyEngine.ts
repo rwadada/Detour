@@ -638,12 +638,15 @@ export class ProxyEngine {
       }
       if (i >= this.onConnectHandlers.length) {
         const target = ProxyEngine.parseHost(req.url ?? '', 443);
+        const port = target.port ?? 443;
+        const hostHeader = ProxyEngine.parseHostAndPort(req, 443);
+        // Without a Host header the passthrough relay falls back to the
+        // request-target itself (`interceptOffConnect.ts`), so that's relayable too.
+        const relayable =
+          hostHeader === null ||
+          (hostHeader.host.toLowerCase() === target.host.toLowerCase() && (hostHeader.port ?? 443) === port);
         const clientAddress = (socket as Partial<net.Socket>).remoteAddress;
-        this.establishMitmTunnel(socket, head, internalPort, {
-          host: target.host,
-          port: target.port ?? 443,
-          clientAddress,
-        });
+        this.establishMitmTunnel(socket, head, internalPort, { host: target.host, port, clientAddress, relayable });
         return;
       }
       const fn = this.onConnectHandlers[i++]!;

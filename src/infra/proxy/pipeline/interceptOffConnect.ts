@@ -33,7 +33,10 @@ export function createInterceptOffConnectHandler(deps: InterceptOffConnectDeps) 
 
   // eslint-disable-next-line max-lines-per-function -- CONNECT passthrough lifecycle; tracked under issue #208 (issue #207)
   return function handleInterceptOffConnect(req: IncomingMessage, socket: Duplex, head: Buffer): void {
-    const target = ProxyEngine.parseHostAndPort(req, 443);
+    // A CONNECT without a Host header (HTTP/1.0 style — `openssl s_client
+    // -proxy` sends one) is relayed to its request-target, which is what the
+    // self-target guard already checked, instead of failing with a 502.
+    const target = ProxyEngine.parseHostAndPort(req, 443) ?? ProxyEngine.parseHost(req.url ?? '', 443);
     if (!target?.host) {
       socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
       return;

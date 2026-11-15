@@ -72,7 +72,8 @@ export interface AutoPassthroughHosts {
 }
 
 /** How long a refusal is remembered. */
-export const AUTO_PASSTHROUGH_TTL_MS = 10 * 60_000;
+export const AUTO_PASSTHROUGH_TTL_MINUTES = 10;
+const AUTO_PASSTHROUGH_TTL_MS = AUTO_PASSTHROUGH_TTL_MINUTES * 60_000;
 
 /**
  * How many targets are remembered at most. Anything on the network can use

@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
 import {
-  AUTO_PASSTHROUGH_TTL_MS,
+  AUTO_PASSTHROUGH_TTL_MINUTES,
   type AutoPassthroughHosts,
   clientCertRejectionAlert,
+  createAutoPassthroughHosts,
 } from '../../../domain/autoPassthrough/clientCertRejection';
 import type { CapturedExchange } from '../../../domain/exchange/types';
 import { connectMatchUrl, formatHostPort, isHostExplicitlyFocused } from '../../../domain/focus/focusPolicy';
@@ -17,12 +18,15 @@ export interface ClientCertRejectionDeps {
   autoPassthroughHosts?: AutoPassthroughHosts;
 }
 
+type Outcome = 'passthrough' | 'focused' | 'full' | 'off' | 'untracked' | 'unrelayable';
+
 /** What happens next for a refusing target, worded for the row's error text. */
-function describeOutcome(outcome: 'passthrough' | 'focused' | 'full' | 'off' | 'untracked', hostPort: string): string {
-  const minutes = Math.round(AUTO_PASSTHROUGH_TTL_MS / 60_000);
+function describeOutcome(outcome: Outcome, hostPort: string): string {
   switch (outcome) {
     case 'passthrough':
-      return `for the next ${minutes} minutes, connections from this client address to ${hostPort} are relayed untouched (auto TLS passthrough) so it keeps working, without decryption — toggle Intercept off and on to MITM it again sooner`;
+      return `for the next ${AUTO_PASSTHROUGH_TTL_MINUTES} minutes, connections from this client address to ${hostPort} are relayed untouched (auto TLS passthrough) so it keeps working, without decryption — toggle Intercept off and on to MITM it again sooner`;
+    case 'unrelayable':
+      return "its CONNECT's Host header names another target than the CONNECT itself, so it can't be relayed untouched to the one refused and stays MITM'd";
     case 'focused':
       return `${hostPort} is in Focus, so it stays MITM'd rather than being relayed untouched`;
     case 'full':
@@ -53,27 +57,43 @@ function describeOutcome(outcome: 'passthrough' | 'focused' | 'full' | 'off' | '
  * `CertificatePinner`) completes the handshake and then hangs up, which
  * looks like nothing here.
  *
- * With auto passthrough on, only the first refusal per target makes a row —
- * the ones racing it on other connections say nothing new, and later
- * connections are passthrough rows of their own. With it off, every refusal
- * does, since each is a connection that failed.
+ * Only the first refusal per target within the TTL makes a row — the ones
+ * racing it on other connections say nothing new, and later connections are
+ * passthrough rows of their own. With passthrough off, a client retrying a
+ * host it will never accept would otherwise flood the log the same way.
+ * Refusals that can't be passed through (Focus, the cap, an unknown or
+ * Host-mismatched tunnel) get a row every time: each is a failed connection.
  */
 export function createClientCertRejectionHandler(deps: ClientCertRejectionDeps): OnTlsClientErrorParams {
   const { eventBus, runtimeState, autoPassthroughHosts } = deps;
+  // With passthrough off, refusals already logged within the TTL, so a
+  // retrying client doesn't add a row per attempt.
+  const loggedWhileOff = autoPassthroughHosts ? undefined : createAutoPassthroughHosts();
   return function handleTlsClientError(err, { servername, tunnel }) {
     const alert = clientCertRejectionAlert(err);
     if (!alert) return;
     const target: MitmTunnelInfo | undefined =
-      tunnel ?? (servername ? { host: servername, port: 443, clientAddress: undefined } : undefined);
-    if (!target) return;
+      tunnel ?? (servername ? { host: servername, port: 443, clientAddress: undefined, relayable: false } : undefined);
+    if (!target) {
+      // Nothing names the host (no SNI, and the tunnel is gone): no row to
+      // attach it to, but the refusal itself still gets reported.
+      eventBus.emit('error', {
+        errorKind: 'CLIENT_REJECTED_CERTIFICATE',
+        message: `a client refused Detour's certificate (TLS alert: ${alert}) for a host it didn't name`,
+      });
+      return;
+    }
     const hostPort = formatHostPort(target.host.toLowerCase(), target.port, 443);
 
     // Focus comes first: connectHandler MITMs an explicitly focused host even
     // while it's recorded, so each of its refusals is news and gets a row.
-    let outcome: Parameters<typeof describeOutcome>[0];
-    if (!autoPassthroughHosts) outcome = 'off';
-    else if (isHostExplicitlyFocused(runtimeState.getSnapshot().focusHosts, hostPort)) outcome = 'focused';
+    let outcome: Outcome;
+    if (!autoPassthroughHosts) {
+      if (tunnel && !loggedWhileOff?.add(tunnel)) return;
+      outcome = 'off';
+    } else if (isHostExplicitlyFocused(runtimeState.getSnapshot().focusHosts, hostPort)) outcome = 'focused';
     else if (!tunnel) outcome = 'untracked';
+    else if (!tunnel.relayable) outcome = 'unrelayable';
     else if (autoPassthroughHosts.has(tunnel)) return;
     else outcome = autoPassthroughHosts.add(tunnel) ? 'passthrough' : 'full';
 

@@ -30,8 +30,14 @@ function recordEvents(eventBus: DetourEventBus) {
 }
 
 /** A refusal arriving over a MITM tunnel the engine still knows about. */
-function viaTunnel(host: string, port = 443, clientAddress = '127.0.0.1', servername: string | undefined = host) {
-  return { servername, tunnel: { host, port, clientAddress } };
+function viaTunnel(
+  host: string,
+  port = 443,
+  clientAddress = '127.0.0.1',
+  servername: string | undefined = host,
+  relayable = true,
+) {
+  return { servername, tunnel: { host, port, clientAddress, relayable } };
 }
 
 function setup(
@@ -121,24 +127,46 @@ describe('createClientCertRejectionHandler', () => {
     expect(responses[0]?.error).toMatch(/could no longer be told, so it stays MITM'd/);
   });
 
-  it('logs every refusal, and suggests the fix, while passthrough is off', () => {
+  it('logs a refusal once per target, and suggests the fix, while passthrough is off', () => {
     const { responses, handler } = setup({ passthrough: false });
     handler(CERTIFICATE_UNKNOWN, viaTunnel('api.example.com'));
     handler(CERTIFICATE_UNKNOWN, viaTunnel('api.example.com'));
-    expect(responses).toHaveLength(2);
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('cdn.example.com'));
+    expect(responses.map((r) => r.host)).toEqual(['api.example.com', 'cdn.example.com']);
     expect(responses[0]?.error).toMatch(
       /auto TLS passthrough is off \(--auto-passthrough, or `detour config --auto-passthrough on`/,
     );
   });
 
-  it('ignores handshake failures that are not a certificate refusal, and refusals naming no host at all', () => {
+  it('does not record a target whose CONNECT Host header named something else, and logs each refusal', () => {
+    const { responses, hosts, handler } = setup();
+    const mismatched = viaTunnel('api.example.com', 443, '127.0.0.1', 'api.example.com', false);
+    handler(CERTIFICATE_UNKNOWN, mismatched);
+    handler(CERTIFICATE_UNKNOWN, mismatched);
+    expect(hosts?.has({ clientAddress: '127.0.0.1', host: 'api.example.com', port: 443 })).toBe(false);
+    expect(responses).toHaveLength(2);
+    expect(responses[0]?.error).toMatch(/Host header names another target .* stays MITM'd/);
+  });
+
+  it('ignores handshake failures that are not a certificate refusal', () => {
     const { responses, errors, hosts, handler } = setup();
     handler(new Error('socket hang up'), viaTunnel('api.example.com'));
     handler(new Error('…:tlsv1 alert protocol version:…:SSL alert number 70'), viaTunnel('api.example.com'));
-    handler(CERTIFICATE_UNKNOWN, { servername: undefined, tunnel: undefined });
     expect(responses).toEqual([]);
     expect(errors).toEqual([]);
     expect(hosts?.has({ clientAddress: '127.0.0.1', host: 'api.example.com', port: 443 })).toBe(false);
+  });
+
+  it('still reports a refusal that names no host at all, without a row', () => {
+    const { responses, errors, handler } = setup();
+    handler(CERTIFICATE_UNKNOWN, { servername: undefined, tunnel: undefined });
+    expect(responses).toEqual([]);
+    expect(errors).toEqual([
+      expect.objectContaining({
+        errorKind: 'CLIENT_REJECTED_CERTIFICATE',
+        message: expect.stringMatching(/didn't name/),
+      }),
+    ]);
   });
 });
 

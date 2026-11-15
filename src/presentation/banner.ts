@@ -1,5 +1,5 @@
 import { tokenLandingPath } from '../domain/auth/dashboardAccess';
-import { AUTO_PASSTHROUGH_TTL_MS } from '../domain/autoPassthrough/clientCertRejection';
+import { AUTO_PASSTHROUGH_TTL_MINUTES } from '../domain/autoPassthrough/clientCertRejection';
 import type { RuleEngine } from '../usecase/ruleEngine';
 import { logScriptGateWarnings, logUnreachableRuleWarnings } from './logger';
 
@@ -125,7 +125,7 @@ export function printStartupBanner(info: {
   if (info.caExpiryWarning) console.log(`⚠ ${info.caExpiryWarning}`);
   console.log(
     info.autoPassthrough
-      ? `Auto TLS passthrough: on — a client that refuses this CA for a host gets that host relayed untouched for ${AUTO_PASSTHROUGH_TTL_MS / 60_000} minutes (--no-auto-passthrough)`
+      ? `Auto TLS passthrough: on — a client that refuses this CA for a host gets that host relayed untouched for ${AUTO_PASSTHROUGH_TTL_MINUTES} minutes (--no-auto-passthrough)`
       : 'Auto TLS passthrough: off (--auto-passthrough)',
   );
   const dashboardScheme = info.dashboardTls ? 'https' : 'http';
