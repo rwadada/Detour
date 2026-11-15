@@ -1,4 +1,5 @@
 import type { ProxyAuthCredentials } from '../../domain/auth/proxyAuth';
+import { createAutoPassthroughHosts } from '../../domain/autoPassthrough/clientCertRejection';
 import { normalizeBlockHosts } from '../../domain/blockHosts/blockHostsPolicy';
 import { ExchangeRegistry } from '../../domain/exchange/exchangeRegistry';
 import type {
@@ -18,6 +19,7 @@ import { assertPortAvailable } from '../portCheck';
 import { nodeCommandRunner } from '../process/nodeCommandRunner';
 import { ClientProcessDirectory, isClientProcessLookupSupported } from './clientProcessLookup';
 import { ProxyEngine } from './engine/proxyEngine';
+import { createClientCertRejectionHandler } from './pipeline/clientCertRejection';
 import { createConnectHandler } from './pipeline/connectHandler';
 import { createInterceptOffConnectHandler } from './pipeline/interceptOffConnect';
 import { createProxyErrorHandler } from './pipeline/proxyErrorHandler';
@@ -87,6 +89,14 @@ export interface ProxyServerOptions {
    * `DEFAULT_SCRIPT_TIMEOUT_MS`.
    */
   scriptTimeoutMs?: number;
+  /**
+   * Auto TLS passthrough (`--no-auto-passthrough` turns it off): once a
+   * client refuses Detour's certificate for a host, relay later CONNECTs to
+   * that host as raw TLS instead of MITM-ing them — see
+   * `pipeline/clientCertRejection.ts`. A refusal is logged as a row either way.
+   * @default true
+   */
+  autoPassthrough?: boolean;
 }
 
 export interface ProxyServerHandle {
@@ -182,11 +192,15 @@ export async function startProxyServer(
     runtimeState,
   });
 
+  const autoPassthroughHosts = (options.autoPassthrough ?? true) ? createAutoPassthroughHosts() : undefined;
+  proxy.onTlsClientError(createClientCertRejectionHandler({ eventBus, autoPassthroughHosts }));
+
   proxy.onConnect(
     createConnectHandler({
       eventBus,
       runtimeState,
       handleInterceptOffConnect,
+      autoPassthroughHosts,
     }),
   );
 

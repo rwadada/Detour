@@ -4324,6 +4324,7 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       ['defaultDetach', 'false'],
       ['lanAccess', 'false'],
       ['dashboardPassword', 'off'],
+      ['autoPassthrough', 'true'],
     ])('reports %s = %s when nothing has been configured', async (key, expected) => {
       const { home, env } = withTempHome();
       try {
@@ -4407,6 +4408,24 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
         expect(result.stdout).toContain('lanAccess = true');
         expect(JSON.parse(fs.readFileSync(path.join(home, '.detour', 'config.json'), 'utf8'))).toEqual({
           lanAccess: true,
+        });
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it('persists --auto-passthrough off to ~/.detour/config.json', async () => {
+      const { home, env } = withTempHome();
+      try {
+        const result = await runTsx(['src/cli.ts', 'config', '--auto-passthrough', 'off'], {
+          cwd: REPO_ROOT,
+          reject: false,
+          env,
+        });
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain('autoPassthrough = false');
+        expect(JSON.parse(fs.readFileSync(path.join(home, '.detour', 'config.json'), 'utf8'))).toEqual({
+          autoPassthrough: false,
         });
       } finally {
         fs.rmSync(home, { recursive: true, force: true });

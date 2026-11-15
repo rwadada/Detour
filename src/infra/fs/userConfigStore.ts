@@ -48,6 +48,8 @@ export interface UserConfig {
    * `--proxy-auth` on `detour start` overrides it for that one run.
    */
   proxyAuth?: ProxyAuthCredentials | null;
+  /** Auto TLS passthrough (see `ProxyServerOptions.autoPassthrough`) for `detour start` unless overridden by `--auto-passthrough`/`--no-auto-passthrough` on that invocation. Undefined means "on" — the out-of-the-box default. Set via `detour config --auto-passthrough on|off`; read at `detour start`, so a change needs a restart. */
+  autoPassthrough?: boolean;
   /** Keys this version of detour doesn't know about (an older config written by a future version, hand-edited extras, …) — kept around so `writeUserConfig`'s read-modify-write merge doesn't drop them. */
   [key: string]: unknown;
 }
@@ -68,7 +70,7 @@ export function resolveUserConfigPath(): string {
  * KnownUserConfigFields` (no index signature to collapse into) can.
  */
 type KnownUserConfigFields = Required<
-  Pick<UserConfig, 'defaultDetach' | 'lanAccess' | 'dashboardPasswordHash' | 'proxyAuth'>
+  Pick<UserConfig, 'defaultDetach' | 'lanAccess' | 'dashboardPasswordHash' | 'proxyAuth' | 'autoPassthrough'>
 >;
 
 /**
@@ -81,6 +83,7 @@ const WRITABLE_KEYS = [
   'lanAccess',
   'dashboardPasswordHash',
   'proxyAuth',
+  'autoPassthrough',
 ] as const satisfies readonly (keyof KnownUserConfigFields)[];
 
 /**
@@ -99,6 +102,11 @@ function validateUserConfig(config: UserConfig, configPath: string): void {
   }
   if (config.lanAccess !== undefined && typeof config.lanAccess !== 'boolean') {
     throw new Error(`${configPath}: "lanAccess" must be a boolean (got: ${JSON.stringify(config.lanAccess)})`);
+  }
+  if (config.autoPassthrough !== undefined && typeof config.autoPassthrough !== 'boolean') {
+    throw new Error(
+      `${configPath}: "autoPassthrough" must be a boolean (got: ${JSON.stringify(config.autoPassthrough)})`,
+    );
   }
   if (
     config.dashboardPasswordHash !== undefined &&

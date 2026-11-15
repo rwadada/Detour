@@ -27,6 +27,13 @@ export type OnConnectParams = (
 
 export type OnErrorParams = (context: IContext | null, err?: MaybeError, errorKind?: string) => void;
 
+/**
+ * A client's TLS handshake with the internal MITM server failed, before any
+ * request — `servername` is the SNI it asked for (the host it believed it
+ * was talking to), or `undefined` if it sent none or failed before saying.
+ */
+export type OnTlsClientErrorParams = (err: Error, servername: string | undefined) => void;
+
 export type OnWebsocketRequestParams = (ctx: IWebSocketContext, callback: ErrorCallback) => void;
 type IWebSocketCallback = (err: MaybeError, message?: unknown, flags?: unknown) => void;
 export type OnWebSocketFrameParams = (

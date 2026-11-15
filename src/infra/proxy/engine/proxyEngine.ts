@@ -25,6 +25,7 @@ import type {
   OnErrorParams,
   OnRequestDataParams,
   OnRequestParams,
+  OnTlsClientErrorParams,
   OnWebSocketCloseParams,
   OnWebSocketErrorParams,
   OnWebSocketFrameParams,
@@ -269,6 +270,7 @@ export class ProxyEngine {
   private readonly onWebSocketCloseHandlers: OnWebSocketCloseParams[] = [];
   private readonly onWebSocketErrorHandlers: OnWebSocketErrorParams[] = [];
   private readonly onErrorHandlers: OnErrorParams[] = [];
+  private readonly onTlsClientErrorHandlers: OnTlsClientErrorParams[] = [];
 
   // Typed as plain `http.Agent` (not `https.Agent` for the second one) since
   // that's all `IContext.proxyToServerRequestOptions.agent` ever needs — see
@@ -374,6 +376,12 @@ export class ProxyEngine {
 
   onError(fn: OnErrorParams): this {
     this.onErrorHandlers.push(fn);
+    return this;
+  }
+
+  /** Called when a client's TLS handshake with the internal MITM server fails (Node's `tlsClientError`) — e.g. it refused the per-host certificate. Reported to `onError` handlers as `HTTPS_CLIENT_ERROR` as before, too. */
+  onTlsClientError(fn: OnTlsClientErrorParams): this {
+    this.onTlsClientErrorHandlers.push(fn);
     return this;
   }
 
@@ -522,6 +530,25 @@ export class ProxyEngine {
     server.on('request', (req, res) => this.handleRequest(req as IncomingMessage, res as ServerResponse, true));
     server.on('error', (err) => this.emitError('HTTPS_SERVER_ERROR', null, err));
     server.on('clientError', (err) => this.emitError('HTTPS_CLIENT_ERROR', null, err));
+    // A failed handshake never reaches a request, so it has no exchange of
+    // its own; what it still has is the SNI — the host the client meant.
+    // Destroying the socket here is what Node does anyway when nothing
+    // listens for this event; listening must not change that.
+    server.on('tlsClientError', (err, tlsSocket) => {
+      const servername = typeof tlsSocket.servername === 'string' ? tlsSocket.servername : undefined;
+      for (const fn of this.onTlsClientErrorHandlers) {
+        try {
+          fn(err, servername);
+        } catch (handlerErr) {
+          this.emitError(
+            'ON_TLS_CLIENT_ERROR_ERROR',
+            null,
+            handlerErr instanceof Error ? handlerErr : new Error(String(handlerErr)),
+          );
+        }
+      }
+      tlsSocket.destroy();
+    });
     this.attachWebSocketServer(server, true);
     return server;
   }

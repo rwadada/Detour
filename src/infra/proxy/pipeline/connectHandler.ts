@@ -1,3 +1,4 @@
+import type { AutoPassthroughHosts } from '../../../domain/autoPassthrough/clientCertRejection';
 import { isHostBlocked } from '../../../domain/blockHosts/blockHostsPolicy';
 import { formatHostPort, isHostFocused } from '../../../domain/focus/focusPolicy';
 import type { ProxyRuntimeState } from '../../../usecase/proxyRuntimeState';
@@ -10,16 +11,20 @@ export interface ConnectHandlerDeps {
   eventBus: DetourEventBus;
   runtimeState: ProxyRuntimeState;
   handleInterceptOffConnect: ReturnType<typeof createInterceptOffConnectHandler>;
+  /** Hosts whose clients refused Detour's certificate (auto TLS passthrough); omitted when that's turned off. */
+  autoPassthroughHosts?: AutoPassthroughHosts;
 }
 
 /**
  * The CONNECT tunnel's entry point: denies a Block Hosts match outright,
  * then either lets ProxyEngine MITM-decrypt it as usual (`callback()`) or
  * falls through to `handleInterceptOffConnect`'s raw passthrough while
- * Intercept is off (globally, or for this one host via Focus).
+ * Intercept is off (globally, or for this one host via Focus) or once a
+ * client has refused Detour's certificate for this host (auto TLS
+ * passthrough) — MITM-ing it again would only break that client again.
  */
 export function createConnectHandler(deps: ConnectHandlerDeps): OnConnectParams {
-  const { eventBus, runtimeState, handleInterceptOffConnect } = deps;
+  const { eventBus, runtimeState, handleInterceptOffConnect, autoPassthroughHosts } = deps;
 
   return function handleConnect(req, socket, head, callback) {
     const target = ProxyEngine.parseHostAndPort(req, 443);
@@ -40,7 +45,8 @@ export function createConnectHandler(deps: ConnectHandlerDeps): OnConnectParams 
       return;
     }
     const focused = !formatted || isHostFocused(snapshot.focusHosts, formatted);
-    if (snapshot.interceptEnabled && focused) {
+    const refusedBefore = target?.host !== undefined && autoPassthroughHosts?.has(target.host) === true;
+    if (snapshot.interceptEnabled && focused && !refusedBefore) {
       callback();
       return;
     }
