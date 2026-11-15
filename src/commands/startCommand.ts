@@ -783,6 +783,7 @@ function printBanner(ctx: SessionContext, dashboardHandle: DashboardHandle | und
     insecureUpstream: options.insecureUpstream ?? false,
     upstreamCaCount: options.upstreamCa.length,
     clientCertSet: !!resources.upstreamTls?.cert,
+    autoPassthrough: resolveAutoPassthrough(options),
     caExpiryWarning: caExpiryWarningLine(handle.caCertPath),
   });
 }

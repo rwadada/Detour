@@ -193,7 +193,7 @@ export async function startProxyServer(
   });
 
   const autoPassthroughHosts = (options.autoPassthrough ?? true) ? createAutoPassthroughHosts() : undefined;
-  proxy.onTlsClientError(createClientCertRejectionHandler({ eventBus, autoPassthroughHosts }));
+  proxy.onTlsClientError(createClientCertRejectionHandler({ eventBus, runtimeState, autoPassthroughHosts }));
 
   proxy.onConnect(
     createConnectHandler({

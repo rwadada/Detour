@@ -21,6 +21,7 @@ import type {
   IContext,
   IWebSocketContext,
   MaybeError,
+  MitmTunnelInfo,
   OnConnectParams,
   OnErrorParams,
   OnRequestDataParams,
@@ -271,6 +272,8 @@ export class ProxyEngine {
   private readonly onWebSocketErrorHandlers: OnWebSocketErrorParams[] = [];
   private readonly onErrorHandlers: OnErrorParams[] = [];
   private readonly onTlsClientErrorHandlers: OnTlsClientErrorParams[] = [];
+  /** Open MITM bridges by their loopback local port — the internal TLS server sees that port as its client's remote port (see `onTlsClientError`). */
+  private readonly mitmTunnels = new Map<number, MitmTunnelInfo>();
 
   // Typed as plain `http.Agent` (not `https.Agent` for the second one) since
   // that's all `IContext.proxyToServerRequestOptions.agent` ever needs — see
@@ -379,7 +382,18 @@ export class ProxyEngine {
     return this;
   }
 
-  /** Called when a client's TLS handshake with the internal MITM server fails (Node's `tlsClientError`) — e.g. it refused the per-host certificate. Reported to `onError` handlers as `HTTPS_CLIENT_ERROR` as before, too. */
+  /**
+   * Called when a client's TLS handshake with the internal MITM server fails
+   * (Node's `tlsClientError`) — e.g. it refused the per-host certificate.
+   * The https server still reports it to `onError` handlers as
+   * `HTTPS_CLIENT_ERROR` too (observed on a live device), without the host.
+   *
+   * `tunnel` names the CONNECT it came through: every MITM'd connection
+   * reaches the internal server over a loopback bridge socket of its own
+   * (`establishMitmTunnel`), whose local port is the TLS socket's remote
+   * port. That port is still readable when a client refuses with a TLS
+   * alert; when it isn't (the client vanished first), `tunnel` is undefined.
+   */
   onTlsClientError(fn: OnTlsClientErrorParams): this {
     this.onTlsClientErrorHandlers.push(fn);
     return this;
@@ -531,14 +545,17 @@ export class ProxyEngine {
     server.on('error', (err) => this.emitError('HTTPS_SERVER_ERROR', null, err));
     server.on('clientError', (err) => this.emitError('HTTPS_CLIENT_ERROR', null, err));
     // A failed handshake never reaches a request, so it has no exchange of
-    // its own; what it still has is the SNI — the host the client meant.
-    // Destroying the socket here is what Node does anyway when nothing
-    // listens for this event; listening must not change that.
+    // its own; what it still has is the SNI and the CONNECT it came through
+    // (see `onTlsClientError`). Destroying the socket here is what Node does
+    // anyway when nothing listens for this event; listening must not change
+    // that.
     server.on('tlsClientError', (err, tlsSocket) => {
       const servername = typeof tlsSocket.servername === 'string' ? tlsSocket.servername : undefined;
+      const bridgePort = tlsSocket.remotePort;
+      const tunnel = bridgePort === undefined ? undefined : this.mitmTunnels.get(bridgePort);
       for (const fn of this.onTlsClientErrorHandlers) {
         try {
-          fn(err, servername);
+          fn(err, { servername, tunnel });
         } catch (handlerErr) {
           this.emitError(
             'ON_TLS_CLIENT_ERROR_ERROR',
@@ -609,7 +626,13 @@ export class ProxyEngine {
         return;
       }
       if (i >= this.onConnectHandlers.length) {
-        this.establishMitmTunnel(socket, head, internalPort);
+        const target = ProxyEngine.parseHost(req.url ?? '', 443);
+        const clientAddress = (socket as Partial<net.Socket>).remoteAddress;
+        this.establishMitmTunnel(socket, head, internalPort, {
+          host: target.host,
+          port: target.port ?? 443,
+          clientAddress,
+        });
         return;
       }
       const fn = this.onConnectHandlers[i++]!;
@@ -618,10 +641,19 @@ export class ProxyEngine {
     next();
   }
 
-  private establishMitmTunnel(socket: Duplex, head: Buffer, internalPort: number): void {
+  private establishMitmTunnel(socket: Duplex, head: Buffer, internalPort: number, tunnel: MitmTunnelInfo): void {
     if (socket.destroyed) return;
     socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
     const upstream = net.connect({ port: internalPort, host: '127.0.0.1' }, () => {
+      // Registered before any client byte is piped in, so the internal
+      // server can't fail a handshake on this bridge before it's known.
+      const bridgePort = upstream.localPort;
+      if (bridgePort !== undefined) {
+        this.mitmTunnels.set(bridgePort, tunnel);
+        upstream.once('close', () => {
+          if (this.mitmTunnels.get(bridgePort) === tunnel) this.mitmTunnels.delete(bridgePort);
+        });
+      }
       if (head.length > 0) upstream.write(head);
       socket.pipe(upstream);
       upstream.pipe(socket);

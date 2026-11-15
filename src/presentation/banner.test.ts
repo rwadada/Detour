@@ -54,10 +54,16 @@ describe('printStartupBanner', () => {
       upstreamCaCount: 0,
       clientCertSet: false,
       caExpiryWarning: undefined,
+      autoPassthrough: true,
       ...overrides,
     });
     return logged.join('\n');
   }
+
+  it('reports whether auto TLS passthrough is on', () => {
+    expect(print()).toContain('Auto TLS passthrough: on');
+    expect(print({ autoPassthrough: false })).toContain('Auto TLS passthrough: off (--auto-passthrough)');
+  });
 
   it('reports the proxy port and HTTP/2 state', () => {
     expect(print()).toContain('Detour proxy started → http://localhost:8080 (HTTP/2: on, upstream HTTP/2: on)');

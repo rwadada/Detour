@@ -1,3 +1,4 @@
+/* eslint-disable sonarjs/no-hardcoded-ip -- address fixtures */
 import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -28,66 +29,95 @@ function recordEvents(eventBus: DetourEventBus) {
   return { responses, errors };
 }
 
-describe('createClientCertRejectionHandler', () => {
-  it('logs a refusal as a CONNECT row for the SNI host and records the host for passthrough', () => {
-    const eventBus = new DetourEventBus();
-    const { responses, errors } = recordEvents(eventBus);
-    const hosts = createAutoPassthroughHosts();
-    createClientCertRejectionHandler({ eventBus, autoPassthroughHosts: hosts })(CERTIFICATE_UNKNOWN, 'API.example.com');
+/** A refusal arriving over a MITM tunnel the engine still knows about. */
+function viaTunnel(host: string, port = 443, clientAddress = '127.0.0.1', servername: string | undefined = host) {
+  return { servername, tunnel: { host, port, clientAddress } };
+}
 
-    expect(hosts.has('api.example.com')).toBe(true);
+function setup(
+  options: { passthrough?: boolean; focus?: string[]; hosts?: ReturnType<typeof createAutoPassthroughHosts> } = {},
+) {
+  const eventBus = new DetourEventBus();
+  const events = recordEvents(eventBus);
+  const runtimeState = new ProxyRuntimeState({ ruleEngine: undefined });
+  if (options.focus) runtimeState.update({ focusHosts: options.focus });
+  const hosts = options.passthrough === false ? undefined : (options.hosts ?? createAutoPassthroughHosts());
+  const handler = createClientCertRejectionHandler({ eventBus, runtimeState, autoPassthroughHosts: hosts });
+  return { ...events, hosts, handler };
+}
+
+describe('createClientCertRejectionHandler', () => {
+  it('logs a refusal as a CONNECT row for the tunnel target and records it for passthrough', () => {
+    const { responses, errors, hosts, handler } = setup();
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('API.example.com'));
+
+    expect(hosts?.has({ clientAddress: '127.0.0.1', host: 'api.example.com', port: 443 })).toBe(true);
     expect(responses).toHaveLength(1);
     expect(responses[0]).toMatchObject({ method: 'CONNECT', host: 'api.example.com', url: 'https://api.example.com' });
     expect(responses[0]?.error).toMatch(
       /refused Detour's certificate for api\.example\.com \(TLS alert: certificate unknown\)/,
     );
-    expect(responses[0]?.error).toMatch(/relayed untouched \(auto TLS passthrough\)/);
+    expect(responses[0]?.error).toMatch(/for the next 10 minutes, connections from this client .* relayed untouched/);
     expect(errors).toEqual([expect.objectContaining({ errorKind: 'CLIENT_REJECTED_CERTIFICATE' })]);
   });
 
-  it('logs only the first refusal per host while passthrough is on', () => {
-    const eventBus = new DetourEventBus();
-    const { responses } = recordEvents(eventBus);
-    const handler = createClientCertRejectionHandler({ eventBus, autoPassthroughHosts: createAutoPassthroughHosts() });
-    handler(CERTIFICATE_UNKNOWN, 'api.example.com');
-    handler(CERTIFICATE_UNKNOWN, 'api.example.com');
-    handler(CERTIFICATE_UNKNOWN, 'cdn.example.com');
-    expect(responses.map((r) => r.host)).toEqual(['api.example.com', 'cdn.example.com']);
+  it('keys on what the CONNECT named — port, and an IP literal with the SNI noted', () => {
+    const { responses, hosts, handler } = setup();
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('203.0.113.7', 8443, '127.0.0.1', 'api.example.com'));
+    expect(hosts?.has({ clientAddress: '127.0.0.1', host: '203.0.113.7', port: 8443 })).toBe(true);
+    expect(hosts?.has({ clientAddress: '127.0.0.1', host: 'api.example.com', port: 443 })).toBe(false);
+    expect(responses[0]).toMatchObject({ host: '203.0.113.7:8443', url: 'https://203.0.113.7:8443' });
+    expect(responses[0]?.error).toMatch(/203\.0\.113\.7:8443 \(SNI api\.example\.com\)/);
   });
 
-  it('still logs a refusal, without passthrough, once the remembered hosts are at their limit', () => {
-    const eventBus = new DetourEventBus();
-    const { responses } = recordEvents(eventBus);
-    const hosts = createAutoPassthroughHosts(1);
-    const handler = createClientCertRejectionHandler({ eventBus, autoPassthroughHosts: hosts });
-    handler(CERTIFICATE_UNKNOWN, 'api.example.com');
-    handler(CERTIFICATE_UNKNOWN, 'cdn.example.com');
-    expect(hosts.has('cdn.example.com')).toBe(false);
+  it('logs only the first refusal per target while passthrough is on', () => {
+    const { responses, handler } = setup();
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('api.example.com'));
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('api.example.com'));
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('api.example.com', 443, '192.168.1.20'));
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('cdn.example.com'));
+    expect(responses.map((r) => r.host)).toEqual(['api.example.com', 'api.example.com', 'cdn.example.com']);
+  });
+
+  it('leaves a host the user put in Focus MITM-ed, and says so', () => {
+    const { responses, hosts, handler } = setup({ focus: ['api.example.com'] });
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('api.example.com'));
+    expect(hosts?.has({ clientAddress: '127.0.0.1', host: 'api.example.com', port: 443 })).toBe(false);
+    expect(responses[0]?.error).toMatch(/is in Focus, so it stays MITM'd/);
+  });
+
+  it('still logs a refusal, without passthrough, once the remembered targets are at their limit', () => {
+    const { responses, hosts, handler } = setup({ hosts: createAutoPassthroughHosts({ limit: 1 }) });
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('api.example.com'));
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('cdn.example.com'));
+    expect(hosts?.has({ clientAddress: '127.0.0.1', host: 'cdn.example.com', port: 443 })).toBe(false);
     expect(responses.map((r) => r.host)).toEqual(['api.example.com', 'cdn.example.com']);
     expect(responses[1]?.error).toMatch(/maximum number of hosts, so cdn\.example\.com stays MITM'd/);
   });
 
+  it('logs a refusal whose tunnel is no longer known by its SNI, without passthrough', () => {
+    const { responses, handler } = setup();
+    handler(CERTIFICATE_UNKNOWN, { servername: 'api.example.com', tunnel: undefined });
+    expect(responses[0]).toMatchObject({ host: 'api.example.com' });
+    expect(responses[0]?.error).toMatch(/could no longer be told, so it stays MITM'd/);
+  });
+
   it('logs every refusal, and suggests the fix, while passthrough is off', () => {
-    const eventBus = new DetourEventBus();
-    const { responses } = recordEvents(eventBus);
-    const handler = createClientCertRejectionHandler({ eventBus });
-    handler(CERTIFICATE_UNKNOWN, 'api.example.com');
-    handler(CERTIFICATE_UNKNOWN, 'api.example.com');
+    const { responses, handler } = setup({ passthrough: false });
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('api.example.com'));
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('api.example.com'));
     expect(responses).toHaveLength(2);
     expect(responses[0]?.error).toMatch(/--no-auto-passthrough/);
   });
 
-  it('ignores handshake failures that are not a certificate refusal, and refusals without an SNI', () => {
-    const eventBus = new DetourEventBus();
-    const { responses, errors } = recordEvents(eventBus);
-    const hosts = createAutoPassthroughHosts();
-    const handler = createClientCertRejectionHandler({ eventBus, autoPassthroughHosts: hosts });
-    handler(new Error('socket hang up'), 'api.example.com');
-    handler(new Error('…:tlsv1 alert protocol version:…:SSL alert number 70'), 'api.example.com');
-    handler(CERTIFICATE_UNKNOWN, undefined);
+  it('ignores handshake failures that are not a certificate refusal, and refusals naming no host at all', () => {
+    const { responses, errors, hosts, handler } = setup();
+    handler(new Error('socket hang up'), viaTunnel('api.example.com'));
+    handler(new Error('…:tlsv1 alert protocol version:…:SSL alert number 70'), viaTunnel('api.example.com'));
+    handler(CERTIFICATE_UNKNOWN, { servername: undefined, tunnel: undefined });
     expect(responses).toEqual([]);
     expect(errors).toEqual([]);
-    expect(hosts.has('api.example.com')).toBe(false);
+    expect(hosts?.has({ clientAddress: '127.0.0.1', host: 'api.example.com', port: 443 })).toBe(false);
   });
 });
 
@@ -151,7 +181,7 @@ describe('auto TLS passthrough, end to end', () => {
       const runtimeState = new ProxyRuntimeState({ ruleEngine: undefined });
       const autoPassthroughHosts = createAutoPassthroughHosts();
       const engine = new ProxyEngine();
-      engine.onTlsClientError(createClientCertRejectionHandler({ eventBus, autoPassthroughHosts }));
+      engine.onTlsClientError(createClientCertRejectionHandler({ eventBus, runtimeState, autoPassthroughHosts }));
       engine.onConnect(
         createConnectHandler({
           eventBus,
@@ -191,13 +221,22 @@ describe('auto TLS passthrough, end to end', () => {
           child.stdin?.end();
         });
         await new Promise((resolve) => setTimeout(resolve, 200));
-        expect(autoPassthroughHosts.has('localhost')).toBe(true);
-        expect(
-          responses.some((r) => r.method === 'CONNECT' && r.host === 'localhost' && /refused/.test(r.error ?? '')),
-        ).toBe(true);
+        // The refusal is logged for the CONNECT's own target (found through the
+        // bridge port), and promises passthrough rather than "could no longer be told".
+        const refusal = responses.find((r) => r.method === 'CONNECT' && /refused/.test(r.error ?? ''));
+        expect(refusal?.host).toBe(target);
+        expect(refusal?.error).toMatch(/relayed untouched \(auto TLS passthrough\)/);
 
-        // From then on the tunnel reaches the real upstream untouched.
+        // From then on the tunnel reaches the real upstream untouched — the
+        // lookup in connectHandler keys the same client/host/port as the record.
         expect(await certificateThroughTunnel(engine.httpPort, target)).toBe('fake-upstream');
+        // …but only on that port: the same host on another port is still MITM'd.
+        const other = await startFakeUpstream();
+        try {
+          expect(await certificateThroughTunnel(engine.httpPort, `localhost:${other.port}`)).toBe('localhost');
+        } finally {
+          other.server.close();
+        }
       } finally {
         engine.close();
         upstream.server.close();

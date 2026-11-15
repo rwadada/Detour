@@ -36,39 +36,77 @@ export function clientCertRejectionAlert(error: { message?: unknown } | undefine
   return match ? REJECTION_ALERTS.get(Number(match[1])) : undefined;
 }
 
-/**
- * Hosts whose clients refused Detour's certificate this session, and so are
- * relayed as raw TLS from then on instead of MITM'd (auto TLS passthrough).
- * Keyed by the TLS server name (SNI) the client asked for, lowercased, which
- * is what a CONNECT for the same host names too. Lives as long as the
- * process: restarting Detour (say, after installing the CA properly)
- * starts MITM-ing every host again.
- */
-export interface AutoPassthroughHosts {
-  /** Records `host`; `true` if it wasn't already recorded (and there was room for it). */
-  add(host: string): boolean;
-  has(host: string): boolean;
+/** One CONNECT target, as seen from one client: what a refusal is remembered for. */
+export interface AutoPassthroughTarget {
+  /** The client's address, when known — a refusal only ever speaks for the client that made it. */
+  clientAddress: string | undefined;
+  host: string;
+  port: number;
 }
 
 /**
- * How many hosts are remembered at most. Anything on the network can use the
- * proxy without `--proxy-auth`, and every refusal names a host of the
- * client's choosing (its SNI), so without a bound a client could grow this
- * set for as long as the process runs. A real device session touches tens
- * of hosts; past the cap, a refusing host is simply MITM'd (and refused)
- * again, which is how Detour behaved before auto passthrough.
+ * CONNECT targets whose client refused Detour's certificate, and so are
+ * relayed as raw TLS for a while instead of MITM'd (auto TLS passthrough).
+ *
+ * Keyed by client, host and port — exactly what the CONNECT named, so the
+ * lookup in `connectHandler.ts` matches whatever the client wrote (an IP
+ * literal, a trailing dot), and one client's refusal never turns off
+ * decryption of the same host for another client that does trust the CA,
+ * nor for another port.
+ *
+ * Each entry expires `AUTO_PASSTHROUGH_TTL_MS` after it was recorded, not
+ * after its last use: a client that refused only because the CA wasn't
+ * installed yet gets MITM'd again within minutes, while one that never will
+ * trust it just loses one connection per period before being recorded again.
  */
-const MAX_AUTO_PASSTHROUGH_HOSTS = 10_000;
+export interface AutoPassthroughHosts {
+  /** Records `target`; `true` if it wasn't already recorded (and there was room for it). */
+  add(target: AutoPassthroughTarget): boolean;
+  has(target: AutoPassthroughTarget): boolean;
+}
 
-export function createAutoPassthroughHosts(limit: number = MAX_AUTO_PASSTHROUGH_HOSTS): AutoPassthroughHosts {
-  const hosts = new Set<string>();
+/** How long a refusal is remembered. */
+export const AUTO_PASSTHROUGH_TTL_MS = 10 * 60_000;
+
+/**
+ * How many targets are remembered at most. Anything on the network can use
+ * the proxy without `--proxy-auth`, and every refusal names a host of the
+ * client's choosing, so without a bound a client could grow this set for as
+ * long as the process runs. A real device session touches tens of hosts;
+ * past the cap, a refusing target is simply MITM'd (and refused) again,
+ * which is how Detour behaved before auto passthrough.
+ */
+const MAX_AUTO_PASSTHROUGH_TARGETS = 10_000;
+
+function keyOf(target: AutoPassthroughTarget): string {
+  return `${target.clientAddress ?? ''} ${target.host.toLowerCase()}:${target.port}`;
+}
+
+export function createAutoPassthroughHosts(
+  options: { limit?: number; ttlMs?: number; now?: () => number } = {},
+): AutoPassthroughHosts {
+  const { limit = MAX_AUTO_PASSTHROUGH_TARGETS, ttlMs = AUTO_PASSTHROUGH_TTL_MS, now = Date.now } = options;
+  const expiresAt = new Map<string, number>();
+  const live = (key: string): boolean => {
+    const expiry = expiresAt.get(key);
+    if (expiry === undefined) return false;
+    if (expiry > now()) return true;
+    expiresAt.delete(key);
+    return false;
+  };
+  const pruneExpired = (): void => {
+    const time = now();
+    for (const [key, expiry] of expiresAt) if (expiry <= time) expiresAt.delete(key);
+  };
   return {
-    add(host) {
-      const key = host.toLowerCase();
-      if (hosts.has(key) || hosts.size >= limit) return false;
-      hosts.add(key);
+    add(target) {
+      const key = keyOf(target);
+      if (live(key)) return false;
+      if (expiresAt.size >= limit) pruneExpired();
+      if (expiresAt.size >= limit) return false;
+      expiresAt.set(key, now() + ttlMs);
       return true;
     },
-    has: (host) => hosts.has(host.toLowerCase()),
+    has: (target) => live(keyOf(target)),
   };
 }

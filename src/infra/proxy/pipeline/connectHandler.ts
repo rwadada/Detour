@@ -1,3 +1,6 @@
+import type { IncomingMessage } from 'node:http';
+import type { Socket } from 'node:net';
+import type { Duplex } from 'node:stream';
 import type { AutoPassthroughHosts } from '../../../domain/autoPassthrough/clientCertRejection';
 import { isHostBlocked } from '../../../domain/blockHosts/blockHostsPolicy';
 import { formatHostPort, isHostFocused } from '../../../domain/focus/focusPolicy';
@@ -26,6 +29,14 @@ export interface ConnectHandlerDeps {
 export function createConnectHandler(deps: ConnectHandlerDeps): OnConnectParams {
   const { eventBus, runtimeState, handleInterceptOffConnect, autoPassthroughHosts } = deps;
 
+  /** Whether this client refused Detour's certificate for this exact target recently — keyed the way `ProxyEngine` records a MITM tunnel (see `MitmTunnelInfo`). */
+  const refusedBefore = (req: IncomingMessage, socket: Duplex): boolean => {
+    if (!autoPassthroughHosts) return false;
+    const { host, port } = ProxyEngine.parseHost(req.url ?? '', 443);
+    const clientAddress = (socket as Partial<Socket>).remoteAddress;
+    return autoPassthroughHosts.has({ host, port: port ?? 443, clientAddress });
+  };
+
   return function handleConnect(req, socket, head, callback) {
     const target = ProxyEngine.parseHostAndPort(req, 443);
     const formatted = target?.host ? formatHostPort(target.host, target.port ?? 443, 443) : undefined;
@@ -45,8 +56,10 @@ export function createConnectHandler(deps: ConnectHandlerDeps): OnConnectParams 
       return;
     }
     const focused = !formatted || isHostFocused(snapshot.focusHosts, formatted);
-    const refusedBefore = target?.host !== undefined && autoPassthroughHosts?.has(target.host) === true;
-    if (snapshot.interceptEnabled && focused && !refusedBefore) {
+    // A host put in Focus explicitly is one the user asked to intercept; a
+    // refusal doesn't override that (an empty Focus list asks for nothing).
+    const explicitlyFocused = focused && snapshot.focusHosts.length > 0;
+    if (snapshot.interceptEnabled && focused && (explicitlyFocused || !refusedBefore(req, socket))) {
       callback();
       return;
     }
