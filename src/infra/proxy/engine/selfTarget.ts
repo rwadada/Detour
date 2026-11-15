@@ -34,20 +34,30 @@ function stripBrackets(host: string): string {
   return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
 }
 
-/** WHATWG `URL`'s spelling of an IPv4-mapped IPv6 address: `::ffff:` and the IPv4 address as two hex groups. */
-const IPV4_MAPPED = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/;
+/**
+ * WHATWG `URL`'s spelling of an IPv6 address that embeds an IPv4 one as its
+ * last two hex groups: IPv4-mapped (`::ffff:7f00:1`) and the deprecated
+ * IPv4-compatible form (`::7f00:1`, written `::127.0.0.1`). Treating the
+ * latter as IPv4 too fails closed on a stack that would route it there.
+ */
+const IPV4_EMBEDDED = /^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/;
+
+/** `fe80::/10` — the only addresses whose zone ID picks which host they mean. */
+const LINK_LOCAL = /^fe[89ab][0-9a-f]:/;
 
 /**
  * One spelling per address, so comparing two of them as strings means
  * comparing the addresses. An IPv6 literal has many spellings — `::1`,
- * `0:0:0:0:0:0:0:1` and `0000::0001` are all loopback, `::ffff:7f00:1` is
- * `::ffff:127.0.0.1` — and every one of them connects to the same socket, so
- * a guard that only knew the short form could be walked past by writing the
- * address out differently. IPv6 becomes the RFC 5952 form WHATWG `URL`
- * serializes it to, and an IPv4-mapped address the IPv4 address it is
- * (`::ffff:127.0.0.1` → `127.0.0.1`). A zone ID (`fe80::1%en0`) is kept: it
- * picks the interface, so the same address on two interfaces is two
- * different hosts. Anything that isn't an IP literal is returned lowercased.
+ * `0:0:0:0:0:0:0:1`, `0000::0001` and `::1%lo0` are all loopback,
+ * `::ffff:7f00:1` is `::ffff:127.0.0.1` — and every one of them connects to
+ * the same socket, so a guard that only knew the short form could be walked
+ * past by writing the address out differently. IPv6 becomes the RFC 5952
+ * form WHATWG `URL` serializes it to, and an address embedding IPv4 the IPv4
+ * address it is (`::ffff:127.0.0.1` → `127.0.0.1`). A zone ID is kept only on
+ * a link-local address (`fe80::1%en0`), where it picks the interface and so
+ * the host — the same link-local address on two interfaces is two different
+ * hosts. On any other address the stack ignores it, so it is dropped.
+ * Anything that isn't an IP literal is returned lowercased.
  */
 export function canonicalIp(address: string): string {
   const lower = stripBrackets(address).toLowerCase();
@@ -55,13 +65,19 @@ export function canonicalIp(address: string): string {
   const ip = zoneAt === -1 ? lower : lower.slice(0, zoneAt);
   if (!net.isIPv6(ip)) return lower;
   const serialized = new URL(`http://[${ip}]/`).hostname.slice(1, -1);
-  const mapped = IPV4_MAPPED.exec(serialized);
-  if (mapped) {
-    const hi = Number.parseInt(mapped[1]!, 16);
-    const lo = Number.parseInt(mapped[2]!, 16);
+  const embedded = IPV4_EMBEDDED.exec(serialized);
+  if (embedded) {
+    const hi = Number.parseInt(embedded[1]!, 16);
+    const lo = Number.parseInt(embedded[2]!, 16);
     return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
   }
-  return zoneAt === -1 ? serialized : `${serialized}${lower.slice(zoneAt)}`;
+  return zoneAt !== -1 && LINK_LOCAL.test(serialized) ? `${serialized}${lower.slice(zoneAt)}` : serialized;
+}
+
+/** A canonical address without its zone ID, if it has one. */
+function withoutZone(address: string): string {
+  const zoneAt = address.indexOf('%');
+  return zoneAt === -1 ? address : address.slice(0, zoneAt);
 }
 
 function isLoopbackOrUnspecified(address: string): boolean {
@@ -86,12 +102,16 @@ function loopbackEquivalent(address: string): string {
  * - A specific address (`::1`, `127.0.0.1`, a LAN IP): only that exact address.
  *   An IPv4 server on `127.0.0.1:P` is not what `[::1]:P` reaches, and vice
  *   versa — they are different sockets that happen to share a port number.
+ *   Compared without zone IDs: a listener's bound address (from
+ *   `server.address()`) carries none, so a zone on either side must not keep
+ *   two spellings of the same socket apart. That can over-match a link-local
+ *   listener (the same address on another interface), which fails closed.
  */
 function reachesListener(target: string, listener: string | undefined, own: Set<string>): boolean {
   const local = isLoopbackOrUnspecified(target) || own.has(target);
   if (listener === undefined || listener === '::') return local;
   if (listener === '0.0.0.0') return local && net.isIPv4(target);
-  return loopbackEquivalent(target) === listener;
+  return loopbackEquivalent(withoutZone(target)) === withoutZone(listener);
 }
 
 export interface SelfTargetGuard {
@@ -126,6 +146,17 @@ export function createSelfTargetGuard(
   localAddresses: LocalAddressSource = defaultLocalAddresses,
 ): SelfTargetGuard {
   const listeners: Array<{ port: number; address: string | undefined }> = [];
+  // This machine's interface addresses rarely change, but are re-read on
+  // every check of a protected port; remember each one's canonical form.
+  const canonicalLocals = new Map<string, string>();
+  const canonicalLocal = (address: string): string => {
+    let canonical = canonicalLocals.get(address);
+    if (canonical === undefined) {
+      canonical = canonicalIp(address);
+      canonicalLocals.set(address, canonical);
+    }
+    return canonical;
+  };
   return {
     protectPort: (port, address) => {
       listeners.push({ port, address: address === undefined ? undefined : canonicalIp(address) });
@@ -144,7 +175,7 @@ export function createSelfTargetGuard(
           return false;
         }
       }
-      const own = new Set(localAddresses().map(canonicalIp));
+      const own = new Set(localAddresses().map(canonicalLocal));
       const targets = addresses.map(canonicalIp);
       return onPort.some((l) => targets.some((target) => reachesListener(target, l.address, own)));
     },

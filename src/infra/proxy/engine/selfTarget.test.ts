@@ -200,6 +200,22 @@ describe('createSelfTargetGuard — non-canonical address spellings', () => {
     expect(await guard.isSelfTarget('fe80::1%en0', PORT)).toBe(false);
   });
 
+  // The stack ignores a zone ID on anything but a link-local address, so
+  // `[::1%lo0]` still connects to ::1 — the zone must not hide it.
+  it.each(['::1%lo0', '[::1%1]', '0::1%en0', '::%lo0'])('ignores the zone on non-link-local %s', async (host) => {
+    expect(await guardFor('::1').isSelfTarget(host, PORT)).toBe(true);
+    expect(await guardFor(undefined).isSelfTarget(host, PORT)).toBe(true);
+  });
+
+  it('matches a zoned target against a listener bound to that address', async () => {
+    expect(await guardFor('fe80::1').isSelfTarget('fe80::1%lo0', PORT)).toBe(true);
+    expect(await guardFor('192.168.1.5').isSelfTarget('::ffff:c0a8:105%en0', PORT)).toBe(true);
+  });
+
+  it.each(['::127.0.0.1', '[::7f00:1]'])('treats the IPv4-compatible spelling %s as 127.0.0.1', async (host) => {
+    expect(await guardFor('127.0.0.1').isSelfTarget(host, PORT)).toBe(true);
+  });
+
   it('normalises a listener address given in a non-canonical spelling too', async () => {
     expect(await guardFor('0:0:0:0:0:0:0:1').isSelfTarget('::1', PORT)).toBe(true);
     expect(await guardFor('::ffff:7f00:1').isSelfTarget('127.0.0.1', PORT)).toBe(true);
@@ -222,6 +238,11 @@ describe('canonicalIp', () => {
     ['fe80::1%en0', 'fe80::1%en0'],
     ['[FE80:0::0001%EN0]', 'fe80::1%en0'],
     ['::ffff:7f00:1%en0', '127.0.0.1'],
+    ['::1%lo0', '::1'],
+    ['2001:db8::5%en0', '2001:db8::5'],
+    ['::127.0.0.1', '127.0.0.1'],
+    ['::1', '::1'],
+    ['::', '::'],
     ['2001:DB8:0:0:1:0:0:1', '2001:db8::1:0:0:1'],
     ['2001:db8:0:1:1:1:1:1', '2001:db8:0:1:1:1:1:1'],
     ['1:0:0:2:0:0:0:3', '1:0:0:2::3'],
