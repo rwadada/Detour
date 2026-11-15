@@ -393,6 +393,20 @@ export class ProxyEngine {
     return null;
   }
 
+  /**
+   * A CONNECT's target: its request-target (`req.url`, authority-form
+   * `host:port` — RFC 9110 §9.3.6), never the `Host` header. The self-target
+   * guard judges the request-target (`runConnectHandlers`), so everything
+   * after it — Block Hosts, Focus, and where a passthrough tunnel is relayed —
+   * has to act on that same target: a `Host` header naming something else
+   * (`CONNECT example.com:443` + `Host: localhost:<dashboard>`) must not
+   * steer a tunnel past the guard. `null` when the request-target names no host.
+   */
+  static parseConnectTarget(req: IncomingMessage): { host: string; port: number | undefined } | null {
+    const target = ProxyEngine.parseHost(req.url ?? '', 443);
+    return target.host ? target : null;
+  }
+
   static parseHost(hostString: string, defaultPort?: number): { host: string; port: number | undefined } {
     // A bracketed IPv6 literal (`[::1]`, `[::1]:8443`) is RFC 3986's own way
     // to pair one with an explicit port — required precisely because a bare

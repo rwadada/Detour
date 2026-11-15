@@ -33,7 +33,7 @@ export function createInterceptOffConnectHandler(deps: InterceptOffConnectDeps) 
 
   // eslint-disable-next-line max-lines-per-function -- CONNECT passthrough lifecycle; tracked under issue #208 (issue #207)
   return function handleInterceptOffConnect(req: IncomingMessage, socket: Duplex, head: Buffer): void {
-    const target = ProxyEngine.parseHostAndPort(req, 443);
+    const target = ProxyEngine.parseConnectTarget(req);
     if (!target?.host) {
       socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
       return;

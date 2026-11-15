@@ -22,7 +22,7 @@ export function createConnectHandler(deps: ConnectHandlerDeps): OnConnectParams 
   const { eventBus, runtimeState, handleInterceptOffConnect } = deps;
 
   return function handleConnect(req, socket, head, callback) {
-    const target = ProxyEngine.parseHostAndPort(req, 443);
+    const target = ProxyEngine.parseConnectTarget(req);
     const formatted = target?.host ? formatHostPort(target.host, target.port ?? 443, 443) : undefined;
     const snapshot = runtimeState.getSnapshot();
     if (formatted && isHostBlocked(snapshot.blockHostsState.hosts, formatted)) {
