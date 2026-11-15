@@ -184,20 +184,26 @@ describe('createSelfTargetGuard — non-canonical address spellings', () => {
     expect(await guardFor('::1').isSelfTarget(host, PORT)).toBe(true);
   });
 
-  it('recognises a longhand interface address, and a link-local one only on its own interface', async () => {
-    const guard = createSelfTargetGuard(
-      async () => {
-        throw new Error('ENOTFOUND');
-      },
-      // How the default source lists macOS's lo0 link-local address.
-      () => ['192.168.1.5', 'fe80::1', 'fe80::1%lo0', 'fe80::1%1'],
-    );
-    guard.protectPort(PORT);
-    expect(await guard.isSelfTarget('fe80:0:0:0:0:0:0:1', PORT)).toBe(true);
-    expect(await guard.isSelfTarget('fe80:0::1%lo0', PORT)).toBe(true);
-    expect(await guard.isSelfTarget('[FE80::1%1]', PORT)).toBe(true);
-    // The same address on another interface is a different host (often the LAN router).
-    expect(await guard.isSelfTarget('fe80::1%en0', PORT)).toBe(false);
+  it('recognises a longhand interface address', async () => {
+    expect(await guardFor(undefined).isSelfTarget('fe80:0:0:0:0:0:0:1', PORT)).toBe(true);
+  });
+
+  // macOS delivers `fe80::1%<anything>` — an unknown name, a numeric alias of
+  // lo0's scope ID, the RFC 6874 `%25` form — to lo0's fe80::1, so no list of
+  // this machine's zone spellings can be complete. The zone is ignored, which
+  // fails closed: the same address on another interface is refused too.
+  it.each([
+    'fe80::1%lo0',
+    'fe80::1%1',
+    'fe80::1%01',
+    'fe80::1%0x1',
+    'fe80::1%lo0x',
+    'fe80::1%999',
+    '[fe80::1%25lo0]',
+    'fe80::1%en0',
+  ])('ignores the zone on the link-local address %s', async (host) => {
+    expect(await guardFor(undefined).isSelfTarget(host, PORT)).toBe(true);
+    expect(await guardFor('fe80::1').isSelfTarget(host, PORT)).toBe(true);
   });
 
   // The stack ignores a zone ID on anything but a link-local address, so
@@ -235,8 +241,8 @@ describe('canonicalIp', () => {
     ['0:0:0:0:0:0:0:0', '::'],
     ['::ffff:7f00:1', '127.0.0.1'],
     ['::FFFF:127.0.0.1', '127.0.0.1'],
-    ['fe80::1%en0', 'fe80::1%en0'],
-    ['[FE80:0::0001%EN0]', 'fe80::1%en0'],
+    ['fe80::1%en0', 'fe80::1'],
+    ['[FE80:0::0001%EN0]', 'fe80::1'],
     ['::ffff:7f00:1%en0', '127.0.0.1'],
     ['::1%lo0', '::1'],
     ['2001:db8::5%en0', '2001:db8::5'],
