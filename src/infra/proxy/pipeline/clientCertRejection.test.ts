@@ -55,6 +55,18 @@ describe('createClientCertRejectionHandler', () => {
     expect(responses.map((r) => r.host)).toEqual(['api.example.com', 'cdn.example.com']);
   });
 
+  it('still logs a refusal, without passthrough, once the remembered hosts are at their limit', () => {
+    const eventBus = new DetourEventBus();
+    const { responses } = recordEvents(eventBus);
+    const hosts = createAutoPassthroughHosts(1);
+    const handler = createClientCertRejectionHandler({ eventBus, autoPassthroughHosts: hosts });
+    handler(CERTIFICATE_UNKNOWN, 'api.example.com');
+    handler(CERTIFICATE_UNKNOWN, 'cdn.example.com');
+    expect(hosts.has('cdn.example.com')).toBe(false);
+    expect(responses.map((r) => r.host)).toEqual(['api.example.com', 'cdn.example.com']);
+    expect(responses[1]?.error).toMatch(/maximum number of hosts, so cdn\.example\.com stays MITM'd/);
+  });
+
   it('logs every refusal, and suggests the fix, while passthrough is off', () => {
     const eventBus = new DetourEventBus();
     const { responses } = recordEvents(eventBus);

@@ -39,12 +39,18 @@ export function createClientCertRejectionHandler(deps: ClientCertRejectionDeps):
     const alert = clientCertRejectionAlert(err);
     if (!alert || !servername) return;
     const host = servername.toLowerCase();
-    if (autoPassthroughHosts && !autoPassthroughHosts.add(host)) return;
+    if (autoPassthroughHosts?.has(host)) return;
+    const passedThrough = autoPassthroughHosts?.add(host) === true;
 
     const why = `the client refused Detour's certificate for ${host} (TLS alert: ${alert}) — it doesn't trust the Detour CA (e.g. an Android 7+ app that ignores user-installed CAs) or pins its own certificate`;
-    const what = autoPassthroughHosts
-      ? `later connections to ${host} are relayed untouched (auto TLS passthrough) so it keeps working, without decryption`
-      : `relay it untouched instead with auto TLS passthrough (on unless --no-auto-passthrough), Intercept Off or Focus`;
+    let what: string;
+    if (passedThrough) {
+      what = `later connections to ${host} are relayed untouched (auto TLS passthrough) so it keeps working, without decryption`;
+    } else if (autoPassthroughHosts) {
+      what = `auto TLS passthrough already remembers its maximum number of hosts, so ${host} stays MITM'd; restart Detour, or use Intercept Off or Focus`;
+    } else {
+      what = `relay it untouched instead with auto TLS passthrough (on unless --no-auto-passthrough), Intercept Off or Focus`;
+    }
     const message = `${why}; ${what}`;
 
     const now = Date.now();

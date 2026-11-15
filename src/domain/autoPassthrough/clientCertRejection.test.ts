@@ -48,4 +48,13 @@ describe('createAutoPassthroughHosts', () => {
     expect(hosts.has('Api.Example.Com')).toBe(true);
     expect(hosts.has('other.example.com')).toBe(false);
   });
+
+  it('stops recording new hosts at its limit', () => {
+    const hosts = createAutoPassthroughHosts(2);
+    expect(hosts.add('a.example')).toBe(true);
+    expect(hosts.add('b.example')).toBe(true);
+    expect(hosts.add('c.example')).toBe(false);
+    expect(hosts.has('c.example')).toBe(false);
+    expect(hosts.has('a.example')).toBe(true);
+  });
 });

@@ -45,17 +45,27 @@ export function clientCertRejectionAlert(error: { message?: unknown } | undefine
  * starts MITM-ing every host again.
  */
 export interface AutoPassthroughHosts {
-  /** Records `host`; `true` if it wasn't already recorded. */
+  /** Records `host`; `true` if it wasn't already recorded (and there was room for it). */
   add(host: string): boolean;
   has(host: string): boolean;
 }
 
-export function createAutoPassthroughHosts(): AutoPassthroughHosts {
+/**
+ * How many hosts are remembered at most. Anything on the network can use the
+ * proxy without `--proxy-auth`, and every refusal names a host of the
+ * client's choosing (its SNI), so without a bound a client could grow this
+ * set for as long as the process runs. A real device session touches tens
+ * of hosts; past the cap, a refusing host is simply MITM'd (and refused)
+ * again, which is how Detour behaved before auto passthrough.
+ */
+const MAX_AUTO_PASSTHROUGH_HOSTS = 10_000;
+
+export function createAutoPassthroughHosts(limit: number = MAX_AUTO_PASSTHROUGH_HOSTS): AutoPassthroughHosts {
   const hosts = new Set<string>();
   return {
     add(host) {
       const key = host.toLowerCase();
-      if (hosts.has(key)) return false;
+      if (hosts.has(key) || hosts.size >= limit) return false;
       hosts.add(key);
       return true;
     },
