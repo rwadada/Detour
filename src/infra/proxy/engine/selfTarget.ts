@@ -48,10 +48,12 @@ const IPV4_EMBEDDED = /^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/;
  * interface that happens to share one of this machine's link-local
  * addresses is also refused, and only on one of Detour's own port numbers.
  *
- * Anything that isn't an IP literal is returned lowercased. So is an IPv6
- * literal `URL` won't parse, zone dropped, rather than throwing — a throw
- * here would surface as a rejected `isSelfTarget`, which callers treat as
- * "not self" and relay.
+ * Anything that isn't an IP literal is returned lowercased. An IPv6 literal
+ * `net.isIPv6` accepts but `URL` won't parse becomes `::`, the unspecified
+ * address, which counts as local — refusing it rather than throwing, since a
+ * throw would surface as a rejected `isSelfTarget`, which callers treat as
+ * "not self" and relay, and rather than returning it unnormalized, which
+ * would compare as some other address and be relayed too.
  */
 export function canonicalIp(address: string): string {
   const lower = stripBrackets(address).toLowerCase();
@@ -62,7 +64,7 @@ export function canonicalIp(address: string): string {
   try {
     serialized = new URL(`http://[${ip}]/`).hostname.slice(1, -1);
   } catch {
-    return ip;
+    return '::';
   }
   const embedded = IPV4_EMBEDDED.exec(serialized);
   if (embedded) {
@@ -73,13 +75,22 @@ export function canonicalIp(address: string): string {
   return serialized;
 }
 
-function isLoopbackOrUnspecified(address: string): boolean {
-  return address.startsWith('127.') || address === '0.0.0.0' || address === '::1' || address === '::';
+/**
+ * `0.0.0.0/8` ("this network") as a destination: Linux delivers any of it to
+ * this host the way it does `0.0.0.0`, so `0.0.0.1` counts too (failing
+ * closed on stacks that refuse it instead).
+ */
+function isThisNetworkIPv4(address: string): boolean {
+  return address.startsWith('0.') && net.isIPv4(address);
 }
 
-/** Where a connection to an unspecified address (`0.0.0.0`, `::`: "any address") actually goes — that family's loopback. Any other address is itself. */
+function isLoopbackOrUnspecified(address: string): boolean {
+  return address.startsWith('127.') || isThisNetworkIPv4(address) || address === '::1' || address === '::';
+}
+
+/** Where a connection to an unspecified address (`0.0.0.0/8`, `::`: "any address") actually goes — that family's loopback. Any other address is itself. */
 function loopbackEquivalent(address: string): string {
-  if (address === '0.0.0.0') return '127.0.0.1';
+  if (isThisNetworkIPv4(address)) return '127.0.0.1';
   if (address === '::') return '::1';
   return address;
 }

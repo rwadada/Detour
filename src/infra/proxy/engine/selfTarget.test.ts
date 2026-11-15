@@ -222,6 +222,12 @@ describe('createSelfTargetGuard — non-canonical address spellings', () => {
     expect(await guardFor('127.0.0.1').isSelfTarget(host, PORT)).toBe(true);
   });
 
+  it.each(['0.0.0.1', '0.1.2.3', '::ffff:0:1'])('treats %s in 0.0.0.0/8 like 0.0.0.0', async (host) => {
+    expect(await guardFor('127.0.0.1').isSelfTarget(host, PORT)).toBe(true);
+    expect(await guardFor('0.0.0.0').isSelfTarget(host, PORT)).toBe(true);
+    expect(await guardFor('::1').isSelfTarget(host, PORT)).toBe(false);
+  });
+
   it('normalises a listener address given in a non-canonical spelling too', async () => {
     expect(await guardFor('0:0:0:0:0:0:0:1').isSelfTarget('::1', PORT)).toBe(true);
     expect(await guardFor('::ffff:7f00:1').isSelfTarget('127.0.0.1', PORT)).toBe(true);
