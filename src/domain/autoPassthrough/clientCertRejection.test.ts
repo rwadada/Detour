@@ -79,6 +79,16 @@ describe('createAutoPassthroughHosts', () => {
     expect(hosts.has(phone('api.example.com'))).toBe(false);
   });
 
+  it('forgets every target on clear()', () => {
+    const hosts = createAutoPassthroughHosts();
+    hosts.add(phone('a.example'));
+    hosts.add(phone('b.example', 8443));
+    hosts.clear();
+    expect(hosts.has(phone('a.example'))).toBe(false);
+    expect(hosts.has(phone('b.example', 8443))).toBe(false);
+    expect(hosts.add(phone('a.example'))).toBe(true);
+  });
+
   it('stops recording new targets at its limit, making room again as old ones expire', () => {
     let time = 0;
     const hosts = createAutoPassthroughHosts({ limit: 2, ttlMs: 100, now: () => time });

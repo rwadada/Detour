@@ -12,6 +12,7 @@ import {
   verifyProxyCredentials,
   type ProxyAuthCredentials,
 } from '../../../domain/auth/proxyAuth';
+import { clientCertRejectionAlert } from '../../../domain/autoPassthrough/clientCertRejection';
 import type { ExchangeTiming, UpstreamCertificate } from '../../../domain/exchange/types';
 import { createUpstreamProxyAgents } from '../upstreamProxyAgent';
 import type { UpstreamTlsOptions } from '../upstreamTlsOptions';
@@ -546,7 +547,14 @@ export class ProxyEngine {
 
     server.on('request', (req, res) => this.handleRequest(req as IncomingMessage, res as ServerResponse, true));
     server.on('error', (err) => this.emitError('HTTPS_SERVER_ERROR', null, err));
-    server.on('clientError', (err) => this.emitError('HTTPS_CLIENT_ERROR', null, err));
+    server.on('clientError', (err) => {
+      // A certificate refusal also reaches `tlsClientError` below; when
+      // something listens there (auto TLS passthrough), it reports the refusal
+      // itself, with the host — reporting it here too, hostless, would only
+      // log every refusal twice.
+      if (this.onTlsClientErrorHandlers.length > 0 && clientCertRejectionAlert(err) !== undefined) return;
+      this.emitError('HTTPS_CLIENT_ERROR', null, err);
+    });
     // A failed handshake never reaches a request, so it has no exchange of
     // its own; what it still has is the SNI and the CONNECT it came through
     // (see `onTlsClientError`). Destroying the socket here is what Node does

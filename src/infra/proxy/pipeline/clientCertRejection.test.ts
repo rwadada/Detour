@@ -126,7 +126,9 @@ describe('createClientCertRejectionHandler', () => {
     handler(CERTIFICATE_UNKNOWN, viaTunnel('api.example.com'));
     handler(CERTIFICATE_UNKNOWN, viaTunnel('api.example.com'));
     expect(responses).toHaveLength(2);
-    expect(responses[0]?.error).toMatch(/--no-auto-passthrough/);
+    expect(responses[0]?.error).toMatch(
+      /auto TLS passthrough is off \(--auto-passthrough, or `detour config --auto-passthrough on`/,
+    );
   });
 
   it('ignores handshake failures that are not a certificate refusal, and refusals naming no host at all', () => {
@@ -172,10 +174,10 @@ function startFakeUpstream(): Promise<{ server: tls.Server; port: number }> {
 }
 
 /** Opens a CONNECT tunnel through the proxy and returns the CN of the certificate presented inside it. */
-function certificateThroughTunnel(proxyPort: number, target: string): Promise<string> {
+function certificateThroughTunnel(proxyPort: number, target: string, hostHeader = target): Promise<string> {
   return new Promise((resolve, reject) => {
     const socket = net.connect(proxyPort, '127.0.0.1', () =>
-      socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`),
+      socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${hostHeader}\r\n\r\n`),
     );
     socket.once('data', (head) => {
       if (!/^HTTP\/1\.1 200/.test(head.toString())) return reject(new Error(head.toString()));
@@ -249,7 +251,11 @@ describe('auto TLS passthrough, end to end', () => {
         // From then on the tunnel reaches the real upstream untouched — the
         // lookup in connectHandler keys the same client/host/port as the record.
         expect(await certificateThroughTunnel(engine.httpPort, target)).toBe('fake-upstream');
-        // …but only on that port: the same host on another port is still MITM'd.
+        // A CONNECT whose Host header names something else is never passed
+        // through: the passthrough relay follows the Host header, which isn't
+        // the target that was refused.
+        expect(await certificateThroughTunnel(engine.httpPort, target, `127.0.0.1:${upstream.port}`)).toBe('localhost');
+        // …and only on that port: the same host on another port is still MITM'd.
         const other = await startFakeUpstream();
         try {
           expect(await certificateThroughTunnel(engine.httpPort, `localhost:${other.port}`)).toBe('localhost');

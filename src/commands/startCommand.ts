@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Option, type Command } from 'commander';
 import { hashPassword } from '../domain/auth/passwordHash';
+import { AUTO_PASSTHROUGH_TTL_MS } from '../domain/autoPassthrough/clientCertRejection';
 import { parseProxyAuthFlag, type ProxyAuthCredentials } from '../domain/auth/proxyAuth';
 import { caExpiryWarning } from '../domain/cert/caValidity';
 import { CliExitError } from '../domain/daemon/errors';
@@ -1147,7 +1148,7 @@ export function registerStartCommand(program: Command): void {
     )
     .option(
       '--auto-passthrough',
-      "When a client refuses Detour's certificate for a host with a TLS alert (an app that doesn't trust user-installed CAs, or whose pinning fails the handshake), relay that client's later connections to that host and port as raw TLS for 10 minutes instead of MITM-ing them, so the app keeps working through the proxy — undecrypted. Hosts in Focus stay MITM'd. The refusal is logged as a row either way. On by default (or as set by `autoPassthrough` via `detour config`).",
+      `When a client refuses Detour's certificate for a host with a TLS alert (an app that doesn't trust user-installed CAs, or whose pinning fails the handshake), relay later connections from that client address to that host and port as raw TLS for ${AUTO_PASSTHROUGH_TTL_MS / 60_000} minutes instead of MITM-ing them, so the app keeps working through the proxy — undecrypted. Hosts in Focus stay MITM'd; toggling Intercept or changing Focus forgets every refusal. The refusal is logged as a row either way. On by default (or as set by \`autoPassthrough\` via \`detour config\`).`,
     )
     .option(
       '--no-auto-passthrough',

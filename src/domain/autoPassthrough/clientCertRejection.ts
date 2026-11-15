@@ -48,11 +48,15 @@ export interface AutoPassthroughTarget {
  * CONNECT targets whose client refused Detour's certificate, and so are
  * relayed as raw TLS for a while instead of MITM'd (auto TLS passthrough).
  *
- * Keyed by client, host and port — exactly what the CONNECT named, so the
- * lookup in `connectHandler.ts` matches whatever the client wrote (an IP
- * literal, a trailing dot), and one client's refusal never turns off
- * decryption of the same host for another client that does trust the CA,
- * nor for another port.
+ * Keyed by client address, host and port — exactly what the CONNECT named,
+ * so the lookup in `connectHandler.ts` matches whatever the client wrote (an
+ * IP literal, a trailing dot), and a refusal never turns off decryption of
+ * the same host for another device, nor for another port. A "client" is an
+ * address, not an app: everything on one device (or every local process on
+ * this machine, all 127.0.0.1) shares it, so one app refusing a host relays
+ * that host for the others there too — nothing on the wire tells two apps
+ * on the same address apart. `clear()` (toggling Intercept or changing
+ * Focus) takes it back sooner.
  *
  * Each entry expires `AUTO_PASSTHROUGH_TTL_MS` after it was recorded, not
  * after its last use: a client that refused only because the CA wasn't
@@ -63,6 +67,8 @@ export interface AutoPassthroughHosts {
   /** Records `target`; `true` if it wasn't already recorded (and there was room for it). */
   add(target: AutoPassthroughTarget): boolean;
   has(target: AutoPassthroughTarget): boolean;
+  /** Forgets every target at once — the way to MITM them again before they expire (say, right after installing the CA). */
+  clear(): void;
 }
 
 /** How long a refusal is remembered. */
@@ -85,7 +91,13 @@ function keyOf(target: AutoPassthroughTarget): string {
 export function createAutoPassthroughHosts(
   options: { limit?: number; ttlMs?: number; now?: () => number } = {},
 ): AutoPassthroughHosts {
-  const { limit = MAX_AUTO_PASSTHROUGH_TARGETS, ttlMs = AUTO_PASSTHROUGH_TTL_MS, now = Date.now } = options;
+  // A monotonic clock: a wall-clock step (NTP, sleep/resume) would otherwise
+  // stretch or cut every entry's lifetime and break pruneExpired's ordering.
+  const {
+    limit = MAX_AUTO_PASSTHROUGH_TARGETS,
+    ttlMs = AUTO_PASSTHROUGH_TTL_MS,
+    now = () => performance.now(),
+  } = options;
   const expiresAt = new Map<string, number>();
   const live = (key: string): boolean => {
     const expiry = expiresAt.get(key);
@@ -114,5 +126,6 @@ export function createAutoPassthroughHosts(
       return true;
     },
     has: (target) => live(keyOf(target)),
+    clear: () => expiresAt.clear(),
   };
 }

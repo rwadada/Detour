@@ -156,13 +156,22 @@ export async function startProxyServer(
   // Keyed by ctx.uuid for WebSocket connections.
   const wsConnections = new Map<string, CapturedWebSocketConnection>();
 
+  // Auto TLS passthrough's record of refusing targets (see
+  // `pipeline/clientCertRejection.ts`). Toggling Intercept or changing Focus
+  // clears it — the user taking interception into their own hands is the
+  // natural moment to MITM those hosts again, e.g. right after installing
+  // the CA on a device that had refused it.
+  const autoPassthroughHosts = (options.autoPassthrough ?? true) ? createAutoPassthroughHosts() : undefined;
+
   const handleSetIntercept = (enabled: boolean): void => {
+    autoPassthroughHosts?.clear();
     runtimeState.update({ interceptEnabled: enabled });
     eventBus.emit('interceptChanged', { enabled });
   };
   eventBus.on('setIntercept', handleSetIntercept);
 
   const handleSetFocus = (hosts: string[]): void => {
+    autoPassthroughHosts?.clear();
     const focusHosts = normalizeFocusHosts(hosts);
     runtimeState.update({ focusHosts });
     eventBus.emit('focusChanged', { hosts: focusHosts });
@@ -192,7 +201,6 @@ export async function startProxyServer(
     runtimeState,
   });
 
-  const autoPassthroughHosts = (options.autoPassthrough ?? true) ? createAutoPassthroughHosts() : undefined;
   proxy.onTlsClientError(createClientCertRejectionHandler({ eventBus, runtimeState, autoPassthroughHosts }));
 
   proxy.onConnect(

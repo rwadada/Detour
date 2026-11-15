@@ -3,7 +3,7 @@ import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { AutoPassthroughHosts } from '../../../domain/autoPassthrough/clientCertRejection';
 import { isHostBlocked } from '../../../domain/blockHosts/blockHostsPolicy';
-import { formatHostPort, isHostExplicitlyFocused, isHostFocused } from '../../../domain/focus/focusPolicy';
+import { formatHostPort, isHostFocused } from '../../../domain/focus/focusPolicy';
 import type { ProxyRuntimeState } from '../../../usecase/proxyRuntimeState';
 import type { DetourEventBus } from '../../eventBus';
 import { ProxyEngine } from '../engine/proxyEngine';
@@ -32,14 +32,25 @@ export function createConnectHandler(deps: ConnectHandlerDeps): OnConnectParams 
   /**
    * Whether this client refused Detour's certificate for this exact target
    * recently — keyed the way `ProxyEngine` records a MITM tunnel (see
-   * `MitmTunnelInfo`), and judged on the same `host:port` the refusal handler
-   * (`clientCertRejection.ts`) uses. A host put in Focus explicitly never
-   * counts: the user asked to intercept it.
+   * `MitmTunnelInfo`: the CONNECT request-target). Only reached for a host
+   * Focus doesn't exclude, so a non-empty Focus list means the host was
+   * focused explicitly — the user asked to intercept it, and a refusal doesn't
+   * override that. A CONNECT whose `Host` header names something else than
+   * its request-target is never passed through: `handleInterceptOffConnect`
+   * relays to the `Host` header, which would be another destination than the
+   * one that was refused.
    */
-  const refusedBefore = (req: IncomingMessage, socket: Duplex, focusHosts: readonly string[]): boolean => {
-    if (!autoPassthroughHosts) return false;
+  const refusedBefore = (
+    req: IncomingMessage,
+    socket: Duplex,
+    hostHeaderTarget: { host: string; port: number | undefined } | null,
+    focusHosts: readonly string[],
+  ): boolean => {
+    if (!autoPassthroughHosts || focusHosts.length > 0 || !hostHeaderTarget) return false;
     const { host, port = 443 } = ProxyEngine.parseHost(req.url ?? '', 443);
-    if (isHostExplicitlyFocused(focusHosts, formatHostPort(host.toLowerCase(), port, 443))) return false;
+    if (host.toLowerCase() !== hostHeaderTarget.host.toLowerCase() || port !== (hostHeaderTarget.port ?? 443)) {
+      return false;
+    }
     const clientAddress = (socket as Partial<Socket>).remoteAddress;
     return autoPassthroughHosts.has({ host, port, clientAddress });
   };
@@ -63,7 +74,7 @@ export function createConnectHandler(deps: ConnectHandlerDeps): OnConnectParams 
       return;
     }
     const focused = !formatted || isHostFocused(snapshot.focusHosts, formatted);
-    if (snapshot.interceptEnabled && focused && !refusedBefore(req, socket, snapshot.focusHosts)) {
+    if (snapshot.interceptEnabled && focused && !refusedBefore(req, socket, target, snapshot.focusHosts)) {
       callback();
       return;
     }

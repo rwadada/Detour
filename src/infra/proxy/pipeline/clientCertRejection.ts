@@ -22,13 +22,13 @@ function describeOutcome(outcome: 'passthrough' | 'focused' | 'full' | 'off' | '
   const minutes = Math.round(AUTO_PASSTHROUGH_TTL_MS / 60_000);
   switch (outcome) {
     case 'passthrough':
-      return `for the next ${minutes} minutes, connections from this client to ${hostPort} are relayed untouched (auto TLS passthrough) so it keeps working, without decryption`;
+      return `for the next ${minutes} minutes, connections from this client address to ${hostPort} are relayed untouched (auto TLS passthrough) so it keeps working, without decryption — toggle Intercept off and on to MITM it again sooner`;
     case 'focused':
       return `${hostPort} is in Focus, so it stays MITM'd rather than being relayed untouched`;
     case 'full':
       return `auto TLS passthrough already remembers its maximum number of hosts, so ${hostPort} stays MITM'd; use Intercept Off or Focus to relay it`;
     case 'off':
-      return 'relay it untouched instead with auto TLS passthrough (on unless --no-auto-passthrough), Intercept Off or Focus';
+      return 'auto TLS passthrough is off (--auto-passthrough, or `detour config --auto-passthrough on`, turns it on); Intercept Off or Focus can relay it untouched meanwhile';
     case 'untracked':
       return "the connection it came through could no longer be told, so it stays MITM'd; use Intercept Off or Focus to relay it";
   }

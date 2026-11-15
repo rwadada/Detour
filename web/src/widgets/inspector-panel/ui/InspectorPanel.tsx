@@ -98,7 +98,7 @@ export function InspectorPanel() {
             ? // A row for a handshake that never got anywhere (a client refusing Detour's certificate):
               // the error above says what happened; there was never a request to show.
               'No HTTP exchange to show — the connection failed during the TLS handshake, before any request was sent.'
-            : "Encrypted TLS passthrough — the tunnel was relayed byte-for-byte without being decrypted: Intercept is off, this host is outside Focus, or this client refused Detour's certificate for it earlier (auto TLS passthrough). Headers and body aren't observable this way; turn Intercept on or add the host to Focus to inspect it — and a client that refused the certificate has to trust the Detour CA first."}
+            : "Encrypted TLS passthrough — the tunnel was relayed byte-for-byte without being decrypted: Intercept is off, this host is outside Focus, or this client refused Detour's certificate for it earlier (auto TLS passthrough). Headers and body aren't observable this way; turn Intercept on or add the host to Focus to inspect it — and a client that refused the certificate has to trust the Detour CA first (toggling Intercept off and on, or changing Focus, then forgets its earlier refusals at once)."}
         </div>
       </div>
     );
