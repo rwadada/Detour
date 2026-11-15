@@ -89,10 +89,15 @@ export function createClientCertRejectionHandler(deps: ClientCertRejectionDeps):
     // while it's recorded, so each of its refusals is news and gets a row.
     let outcome: Outcome;
     if (!autoPassthroughHosts) {
-      if (tunnel && !loggedWhileOff?.add(tunnel)) return;
+      // Deduplicated per target within the TTL; a full dedup set just stops
+      // deduplicating — it never swallows a refusal.
+      if (tunnel && loggedWhileOff?.has(tunnel)) return;
+      if (tunnel) loggedWhileOff?.add(tunnel);
       outcome = 'off';
     } else if (isHostExplicitlyFocused(runtimeState.getSnapshot().focusHosts, hostPort)) outcome = 'focused';
-    else if (!tunnel) outcome = 'untracked';
+    // Without a client address there's no client to scope the record to, and
+    // every such connection would share one key.
+    else if (!tunnel?.clientAddress) outcome = 'untracked';
     else if (!tunnel.relayable) outcome = 'unrelayable';
     else if (autoPassthroughHosts.has(tunnel)) return;
     else outcome = autoPassthroughHosts.add(tunnel) ? 'passthrough' : 'full';

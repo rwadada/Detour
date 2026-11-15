@@ -148,6 +148,16 @@ describe('createClientCertRejectionHandler', () => {
     expect(responses[0]?.error).toMatch(/Host header names another target .* stays MITM'd/);
   });
 
+  it('does not record a refusal from a client with no known address — there is nothing to scope it to', () => {
+    const { responses, hosts, handler } = setup();
+    handler(CERTIFICATE_UNKNOWN, {
+      servername: 'api.example.com',
+      tunnel: { host: 'api.example.com', port: 443, clientAddress: undefined, relayable: true },
+    });
+    expect(hosts?.has({ clientAddress: undefined, host: 'api.example.com', port: 443 })).toBe(false);
+    expect(responses[0]?.error).toMatch(/stays MITM'd/);
+  });
+
   it('ignores handshake failures that are not a certificate refusal', () => {
     const { responses, errors, hosts, handler } = setup();
     handler(new Error('socket hang up'), viaTunnel('api.example.com'));

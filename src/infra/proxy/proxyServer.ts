@@ -164,15 +164,18 @@ export async function startProxyServer(
   const autoPassthroughHosts = (options.autoPassthrough ?? true) ? createAutoPassthroughHosts() : undefined;
 
   const handleSetIntercept = (enabled: boolean): void => {
-    autoPassthroughHosts?.clear();
+    if (enabled !== runtimeState.getSnapshot().interceptEnabled) autoPassthroughHosts?.clear();
     runtimeState.update({ interceptEnabled: enabled });
     eventBus.emit('interceptChanged', { enabled });
   };
   eventBus.on('setIntercept', handleSetIntercept);
 
   const handleSetFocus = (hosts: string[]): void => {
-    autoPassthroughHosts?.clear();
     const focusHosts = normalizeFocusHosts(hosts);
+    const previous = runtimeState.getSnapshot().focusHosts;
+    if (focusHosts.length !== previous.length || focusHosts.some((host, i) => host !== previous[i])) {
+      autoPassthroughHosts?.clear();
+    }
     runtimeState.update({ focusHosts });
     eventBus.emit('focusChanged', { hosts: focusHosts });
   };

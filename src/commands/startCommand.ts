@@ -260,7 +260,12 @@ function resolveDashboardHost(options: StartOptions): string {
  * `autoPassthrough`, then on.
  */
 function resolveAutoPassthrough(options: StartOptions): boolean {
-  return options.autoPassthrough ?? loadUserConfig().autoPassthrough ?? true;
+  // A passthrough tunnel connects straight to its destination
+  // (`interceptOffConnect.ts`), not through `--upstream-proxy`; on by default
+  // it would quietly route refusing hosts around a proxy the user configured
+  // on purpose, so with one set it is only on when asked for explicitly.
+  const fallback = options.upstreamProxy === undefined;
+  return options.autoPassthrough ?? loadUserConfig().autoPassthrough ?? fallback;
 }
 
 /**
