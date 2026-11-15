@@ -86,6 +86,25 @@ describe('createClientCertRejectionHandler', () => {
     expect(responses[0]?.error).toMatch(/is in Focus, so it stays MITM'd/);
   });
 
+  it('keeps logging refusals for a recorded target once the user puts it in Focus (it is MITM-ed again)', () => {
+    const eventBus = new DetourEventBus();
+    const { responses } = recordEvents(eventBus);
+    const runtimeState = new ProxyRuntimeState({ ruleEngine: undefined });
+    const hosts = createAutoPassthroughHosts();
+    const handler = createClientCertRejectionHandler({ eventBus, runtimeState, autoPassthroughHosts: hosts });
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('api.example.com'));
+    runtimeState.update({ focusHosts: ['api.example.com'] });
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('api.example.com'));
+    expect(responses).toHaveLength(2);
+    expect(responses[1]?.error).toMatch(/is in Focus, so it stays MITM'd/);
+  });
+
+  it('marks the row as never parsed as HTTP, so the dashboard offers no Replay/Edit & Send for it', () => {
+    const { responses, handler } = setup();
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('api.example.com'));
+    expect(responses[0]?.passthrough).toBe(true);
+  });
+
   it('still logs a refusal, without passthrough, once the remembered targets are at their limit', () => {
     const { responses, hosts, handler } = setup({ hosts: createAutoPassthroughHosts({ limit: 1 }) });
     handler(CERTIFICATE_UNKNOWN, viaTunnel('api.example.com'));

@@ -3,7 +3,7 @@ import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { AutoPassthroughHosts } from '../../../domain/autoPassthrough/clientCertRejection';
 import { isHostBlocked } from '../../../domain/blockHosts/blockHostsPolicy';
-import { formatHostPort, isHostFocused } from '../../../domain/focus/focusPolicy';
+import { formatHostPort, isHostExplicitlyFocused, isHostFocused } from '../../../domain/focus/focusPolicy';
 import type { ProxyRuntimeState } from '../../../usecase/proxyRuntimeState';
 import type { DetourEventBus } from '../../eventBus';
 import { ProxyEngine } from '../engine/proxyEngine';
@@ -29,12 +29,19 @@ export interface ConnectHandlerDeps {
 export function createConnectHandler(deps: ConnectHandlerDeps): OnConnectParams {
   const { eventBus, runtimeState, handleInterceptOffConnect, autoPassthroughHosts } = deps;
 
-  /** Whether this client refused Detour's certificate for this exact target recently — keyed the way `ProxyEngine` records a MITM tunnel (see `MitmTunnelInfo`). */
-  const refusedBefore = (req: IncomingMessage, socket: Duplex): boolean => {
+  /**
+   * Whether this client refused Detour's certificate for this exact target
+   * recently — keyed the way `ProxyEngine` records a MITM tunnel (see
+   * `MitmTunnelInfo`), and judged on the same `host:port` the refusal handler
+   * (`clientCertRejection.ts`) uses. A host put in Focus explicitly never
+   * counts: the user asked to intercept it.
+   */
+  const refusedBefore = (req: IncomingMessage, socket: Duplex, focusHosts: readonly string[]): boolean => {
     if (!autoPassthroughHosts) return false;
-    const { host, port } = ProxyEngine.parseHost(req.url ?? '', 443);
+    const { host, port = 443 } = ProxyEngine.parseHost(req.url ?? '', 443);
+    if (isHostExplicitlyFocused(focusHosts, formatHostPort(host.toLowerCase(), port, 443))) return false;
     const clientAddress = (socket as Partial<Socket>).remoteAddress;
-    return autoPassthroughHosts.has({ host, port: port ?? 443, clientAddress });
+    return autoPassthroughHosts.has({ host, port, clientAddress });
   };
 
   return function handleConnect(req, socket, head, callback) {
@@ -56,10 +63,7 @@ export function createConnectHandler(deps: ConnectHandlerDeps): OnConnectParams 
       return;
     }
     const focused = !formatted || isHostFocused(snapshot.focusHosts, formatted);
-    // A host put in Focus explicitly is one the user asked to intercept; a
-    // refusal doesn't override that (an empty Focus list asks for nothing).
-    const explicitlyFocused = focused && snapshot.focusHosts.length > 0;
-    if (snapshot.interceptEnabled && focused && (explicitlyFocused || !refusedBefore(req, socket))) {
+    if (snapshot.interceptEnabled && focused && !refusedBefore(req, socket, snapshot.focusHosts)) {
       callback();
       return;
     }

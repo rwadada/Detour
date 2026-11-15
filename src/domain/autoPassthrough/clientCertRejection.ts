@@ -94,9 +94,15 @@ export function createAutoPassthroughHosts(
     expiresAt.delete(key);
     return false;
   };
+  // Every entry gets the same TTL and a Map iterates in insertion order, so
+  // the expired ones are always at the front: stop at the first live one
+  // rather than scanning a full set on every refused add.
   const pruneExpired = (): void => {
     const time = now();
-    for (const [key, expiry] of expiresAt) if (expiry <= time) expiresAt.delete(key);
+    for (const [key, expiry] of expiresAt) {
+      if (expiry > time) break;
+      expiresAt.delete(key);
+    }
   };
   return {
     add(target) {

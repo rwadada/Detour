@@ -419,6 +419,8 @@ interface StartResources {
   proxyAuth: ProxyAuthCredentials | undefined;
   historyStore: HistoryStore | undefined;
   historyDbPath: string | undefined;
+  /** Auto TLS passthrough, resolved once (`resolveAutoPassthrough`) so the proxy and the banner can't disagree. */
+  autoPassthrough: boolean;
 }
 
 /** What every step after the proxy is up needs to know — assembled once by `runStartBody`. */
@@ -505,6 +507,7 @@ async function prepareStartResources(
     proxyAuth,
     historyStore,
     historyDbPath,
+    autoPassthrough: resolveAutoPassthrough(options),
   };
 }
 
@@ -626,7 +629,7 @@ async function startProxy(
         proxyAuth: resources.proxyAuth,
         upstreamTls: resources.upstreamTls,
         scriptTimeoutMs: parseScriptTimeoutMs(options.scriptTimeoutMs),
-        autoPassthrough: resolveAutoPassthrough(options),
+        autoPassthrough: resources.autoPassthrough,
       },
       eventBus,
     );
@@ -783,7 +786,7 @@ function printBanner(ctx: SessionContext, dashboardHandle: DashboardHandle | und
     insecureUpstream: options.insecureUpstream ?? false,
     upstreamCaCount: options.upstreamCa.length,
     clientCertSet: !!resources.upstreamTls?.cert,
-    autoPassthrough: resolveAutoPassthrough(options),
+    autoPassthrough: resources.autoPassthrough,
     caExpiryWarning: caExpiryWarningLine(handle.caCertPath),
   });
 }
@@ -1144,7 +1147,7 @@ export function registerStartCommand(program: Command): void {
     )
     .option(
       '--auto-passthrough',
-      "Once a client refuses Detour's certificate for a host (an app that doesn't trust user-installed CAs, or pins its own certificate), relay later connections to that host as raw TLS instead of MITM-ing them, so the app keeps working through the proxy — undecrypted. The refusal is logged as a row either way. On by default (or as set by `autoPassthrough` via `detour config`); remembered until Detour restarts.",
+      "When a client refuses Detour's certificate for a host with a TLS alert (an app that doesn't trust user-installed CAs, or whose pinning fails the handshake), relay that client's later connections to that host and port as raw TLS for 10 minutes instead of MITM-ing them, so the app keeps working through the proxy — undecrypted. Hosts in Focus stay MITM'd. The refusal is logged as a row either way. On by default (or as set by `autoPassthrough` via `detour config`).",
     )
     .option(
       '--no-auto-passthrough',

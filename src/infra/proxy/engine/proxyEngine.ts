@@ -98,6 +98,9 @@ const SHUTDOWN_DRAIN_MS = 3000;
 /** How long a relayed WebSocket leg gets to finish its close handshake once the other leg is gone before it is terminated (issue #206). */
 const WS_CLOSE_GRACE_MS = 2000;
 
+/** How long a closed MITM bridge's tunnel stays findable by its port for a late `tlsClientError` (see `establishMitmTunnel`). */
+const MITM_TUNNEL_FORGET_DELAY_MS = 1000;
+
 /**
  * `httpAgent`/`httpsAgent`'s shared keep-alive tuning (issue #162) — pulled
  * out to a constant so both agents' constructors, and `listen()`'s own
@@ -650,8 +653,14 @@ export class ProxyEngine {
       const bridgePort = upstream.localPort;
       if (bridgePort !== undefined) {
         this.mitmTunnels.set(bridgePort, tunnel);
+        // Forgotten a little after the bridge closes, not at once: a client
+        // that sends its alert and then resets the connection (common on
+        // mobile) can close the bridge before the internal server has read
+        // that alert and raised `tlsClientError`, which still needs this.
         upstream.once('close', () => {
-          if (this.mitmTunnels.get(bridgePort) === tunnel) this.mitmTunnels.delete(bridgePort);
+          setTimeout(() => {
+            if (this.mitmTunnels.get(bridgePort) === tunnel) this.mitmTunnels.delete(bridgePort);
+          }, MITM_TUNNEL_FORGET_DELAY_MS).unref();
         });
       }
       if (head.length > 0) upstream.write(head);

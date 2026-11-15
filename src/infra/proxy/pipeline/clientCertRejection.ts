@@ -5,7 +5,7 @@ import {
   clientCertRejectionAlert,
 } from '../../../domain/autoPassthrough/clientCertRejection';
 import type { CapturedExchange } from '../../../domain/exchange/types';
-import { connectMatchUrl, formatHostPort, isHostFocused } from '../../../domain/focus/focusPolicy';
+import { connectMatchUrl, formatHostPort, isHostExplicitlyFocused } from '../../../domain/focus/focusPolicy';
 import type { ProxyRuntimeState } from '../../../usecase/proxyRuntimeState';
 import type { DetourEventBus } from '../../eventBus';
 import type { MitmTunnelInfo, OnTlsClientErrorParams } from '../engine/types';
@@ -15,16 +15,6 @@ export interface ClientCertRejectionDeps {
   runtimeState: ProxyRuntimeState;
   /** Where refusals are recorded for auto TLS passthrough; omitted when that's turned off (`--no-auto-passthrough`). */
   autoPassthroughHosts?: AutoPassthroughHosts;
-}
-
-/**
- * Whether a host was explicitly put in Focus. An empty Focus list means "no
- * restriction" (`isHostFocused` is then true for everything), which is not a
- * request to intercept this host in particular.
- */
-function isExplicitlyFocused(runtimeState: ProxyRuntimeState, hostPort: string): boolean {
-  const { focusHosts } = runtimeState.getSnapshot();
-  return focusHosts.length > 0 && isHostFocused(focusHosts, hostPort);
 }
 
 /** What happens next for a refusing target, worded for the row's error text. */
@@ -78,11 +68,13 @@ export function createClientCertRejectionHandler(deps: ClientCertRejectionDeps):
     if (!target) return;
     const hostPort = formatHostPort(target.host.toLowerCase(), target.port, 443);
 
+    // Focus comes first: connectHandler MITMs an explicitly focused host even
+    // while it's recorded, so each of its refusals is news and gets a row.
     let outcome: Parameters<typeof describeOutcome>[0];
     if (!autoPassthroughHosts) outcome = 'off';
+    else if (isHostExplicitlyFocused(runtimeState.getSnapshot().focusHosts, hostPort)) outcome = 'focused';
     else if (!tunnel) outcome = 'untracked';
     else if (autoPassthroughHosts.has(tunnel)) return;
-    else if (isExplicitlyFocused(runtimeState, hostPort)) outcome = 'focused';
     else outcome = autoPassthroughHosts.add(tunnel) ? 'passthrough' : 'full';
 
     const sni = servername && servername.toLowerCase() !== target.host.toLowerCase() ? ` (SNI ${servername})` : '';
@@ -100,6 +92,9 @@ export function createClientCertRejectionHandler(deps: ClientCertRejectionDeps):
       requestBodySize: 0,
       responseBodySize: 0,
       startedAt: now,
+      // Never parsed as HTTP, like a passthrough tunnel: the dashboard shows
+      // the error instead of an empty HTTP inspector with Replay/Edit & Send.
+      passthrough: true,
     };
     eventBus.emit('request', exchange);
     eventBus.emit('response', { ...exchange, finishedAt: now, durationMs: 0, error: message });
