@@ -13,77 +13,55 @@ const defaultResolver: HostResolver = async (host) => {
   return results.map((r) => r.address);
 };
 
+/**
+ * A link-local address (`fe80::1` on macOS's `lo0`) is only this machine's on
+ * the interface that carries it — the same text on another interface is
+ * someone else (often the LAN router). So one is listed both bare, as
+ * `os.networkInterfaces` reports it, and with its zone ID in the two ways a
+ * client can write it (`fe80::1%lo0`, `fe80::1%1`), while a zone naming a
+ * different interface matches neither.
+ */
 const defaultLocalAddresses: LocalAddressSource = () =>
-  Object.values(os.networkInterfaces())
-    .flatMap((infos) => infos ?? [])
-    .map((info) => info.address);
+  Object.entries(os.networkInterfaces()).flatMap(([name, infos]) =>
+    (infos ?? []).flatMap((info) =>
+      info.family === 'IPv6' && info.scopeid
+        ? [info.address, `${info.address}%${name}`, `${info.address}%${info.scopeid}`]
+        : [info.address],
+    ),
+  );
 
 function stripBrackets(host: string): string {
   return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
 }
 
-/** The eight 16-bit groups of an IPv6 address `net.isIPv6` has already accepted (zone ID removed), expanding `::` and a dotted-quad tail. */
-function ipv6Groups(address: string): number[] {
-  let text = address;
-  const lastColon = text.lastIndexOf(':');
-  const tail = text.slice(lastColon + 1);
-  if (net.isIPv4(tail)) {
-    const [a, b, c, d] = tail.split('.').map(Number) as [number, number, number, number];
-    text = `${text.slice(0, lastColon + 1)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
-  }
-  const [head = '', rest] = text.split('::');
-  const headGroups = head === '' ? [] : head.split(':');
-  if (rest === undefined) return headGroups.map((g) => Number.parseInt(g, 16));
-  const restGroups = rest === '' ? [] : rest.split(':');
-  const zeros = Array.from({ length: 8 - headGroups.length - restGroups.length }, () => '0');
-  return [...headGroups, ...zeros, ...restGroups].map((g) => Number.parseInt(g, 16));
-}
-
-/** RFC 5952 text for eight IPv6 groups: lowercase hex, no leading zeros, the longest (first, on a tie) run of two or more zero groups as `::`. */
-function formatIPv6(groups: number[]): string {
-  let bestStart = -1;
-  let bestLength = 1;
-  for (let i = 0; i < groups.length; ) {
-    if (groups[i] !== 0) {
-      i++;
-      continue;
-    }
-    let j = i;
-    while (j < groups.length && groups[j] === 0) j++;
-    if (j - i > bestLength) {
-      bestStart = i;
-      bestLength = j - i;
-    }
-    i = j;
-  }
-  const hex = groups.map((g) => g.toString(16));
-  if (bestStart === -1) return hex.join(':');
-  return `${hex.slice(0, bestStart).join(':')}::${hex.slice(bestStart + bestLength).join(':')}`;
-}
+/** WHATWG `URL`'s spelling of an IPv4-mapped IPv6 address: `::ffff:` and the IPv4 address as two hex groups. */
+const IPV4_MAPPED = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/;
 
 /**
  * One spelling per address, so comparing two of them as strings means
  * comparing the addresses. An IPv6 literal has many spellings — `::1`,
  * `0:0:0:0:0:0:0:1` and `0000::0001` are all loopback, `::ffff:7f00:1` is
- * `::ffff:127.0.0.1` (and the form WHATWG `URL` serializes it to) — and every
- * one of them connects to the same socket, so a guard that only knew the
- * short form could be walked past by writing the address out differently.
- * IPv6 becomes its RFC 5952 form, an IPv4-mapped address the IPv4 address it
- * is (`::ffff:127.0.0.1` → `127.0.0.1`), and a zone ID (`fe80::1%en0`) is
- * dropped, since interface addresses are listed without one. Anything that
- * isn't an IP literal is returned lowercased.
+ * `::ffff:127.0.0.1` — and every one of them connects to the same socket, so
+ * a guard that only knew the short form could be walked past by writing the
+ * address out differently. IPv6 becomes the RFC 5952 form WHATWG `URL`
+ * serializes it to, and an IPv4-mapped address the IPv4 address it is
+ * (`::ffff:127.0.0.1` → `127.0.0.1`). A zone ID (`fe80::1%en0`) is kept: it
+ * picks the interface, so the same address on two interfaces is two
+ * different hosts. Anything that isn't an IP literal is returned lowercased.
  */
 export function canonicalIp(address: string): string {
   const lower = stripBrackets(address).toLowerCase();
-  const zoneless = lower.includes('%') ? lower.slice(0, lower.indexOf('%')) : lower;
-  if (!net.isIPv6(zoneless)) return lower;
-  const groups = ipv6Groups(zoneless);
-  const mapped = groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff;
+  const zoneAt = lower.indexOf('%');
+  const ip = zoneAt === -1 ? lower : lower.slice(0, zoneAt);
+  if (!net.isIPv6(ip)) return lower;
+  const serialized = new URL(`http://[${ip}]/`).hostname.slice(1, -1);
+  const mapped = IPV4_MAPPED.exec(serialized);
   if (mapped) {
-    const [hi = 0, lo = 0] = groups.slice(6);
+    const hi = Number.parseInt(mapped[1]!, 16);
+    const lo = Number.parseInt(mapped[2]!, 16);
     return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
   }
-  return formatIPv6(groups);
+  return zoneAt === -1 ? serialized : `${serialized}${lower.slice(zoneAt)}`;
 }
 
 function isLoopbackOrUnspecified(address: string): boolean {

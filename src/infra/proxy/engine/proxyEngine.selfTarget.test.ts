@@ -98,6 +98,18 @@ describe('ProxyEngine refuses to relay to its own listeners (issue #205)', () =>
           `GET http://${target}/ws HTTP/1.1\r\nHost: 127.0.0.1:${protectedPort}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`,
         );
         expect(upgrade).toMatch(/^HTTP\/1\.1 403/);
+
+        // The proxy's own port is protected with the address it is bound to
+        // (127.0.0.1 here), which takes the specific-address comparison
+        // rather than the any-local-address one above.
+        const self = `${host}:${proxyPort}`;
+        const selfTunnel = await rawExchange(proxyPort, `CONNECT ${self} HTTP/1.1\r\nHost: ${self}\r\n\r\n`);
+        expect(selfTunnel).toMatch(/^HTTP\/1\.1 403/);
+        const selfForwarded = await rawExchange(
+          proxyPort,
+          `GET http://${self}/ HTTP/1.1\r\nHost: 127.0.0.1:${proxyPort}\r\nConnection: close\r\n\r\n`,
+        );
+        expect(selfForwarded).toMatch(/^HTTP\/1\.1 403/);
       });
     },
   );

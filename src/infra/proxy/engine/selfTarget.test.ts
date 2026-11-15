@@ -184,9 +184,20 @@ describe('createSelfTargetGuard — non-canonical address spellings', () => {
     expect(await guardFor('::1').isSelfTarget(host, PORT)).toBe(true);
   });
 
-  it('recognises a longhand interface address and one carrying a zone ID', async () => {
-    expect(await guardFor(undefined).isSelfTarget('fe80:0:0:0:0:0:0:1', PORT)).toBe(true);
-    expect(await guardFor(undefined).isSelfTarget('fe80::1%en0', PORT)).toBe(true);
+  it('recognises a longhand interface address, and a link-local one only on its own interface', async () => {
+    const guard = createSelfTargetGuard(
+      async () => {
+        throw new Error('ENOTFOUND');
+      },
+      // How the default source lists macOS's lo0 link-local address.
+      () => ['192.168.1.5', 'fe80::1', 'fe80::1%lo0', 'fe80::1%1'],
+    );
+    guard.protectPort(PORT);
+    expect(await guard.isSelfTarget('fe80:0:0:0:0:0:0:1', PORT)).toBe(true);
+    expect(await guard.isSelfTarget('fe80:0::1%lo0', PORT)).toBe(true);
+    expect(await guard.isSelfTarget('[FE80::1%1]', PORT)).toBe(true);
+    // The same address on another interface is a different host (often the LAN router).
+    expect(await guard.isSelfTarget('fe80::1%en0', PORT)).toBe(false);
   });
 
   it('normalises a listener address given in a non-canonical spelling too', async () => {
@@ -208,7 +219,9 @@ describe('canonicalIp', () => {
     ['0:0:0:0:0:0:0:0', '::'],
     ['::ffff:7f00:1', '127.0.0.1'],
     ['::FFFF:127.0.0.1', '127.0.0.1'],
-    ['fe80::1%en0', 'fe80::1'],
+    ['fe80::1%en0', 'fe80::1%en0'],
+    ['[FE80:0::0001%EN0]', 'fe80::1%en0'],
+    ['::ffff:7f00:1%en0', '127.0.0.1'],
     ['2001:DB8:0:0:1:0:0:1', '2001:db8::1:0:0:1'],
     ['2001:db8:0:1:1:1:1:1', '2001:db8:0:1:1:1:1:1'],
     ['1:0:0:2:0:0:0:3', '1:0:0:2::3'],
