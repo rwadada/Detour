@@ -30,14 +30,8 @@ function recordEvents(eventBus: DetourEventBus) {
 }
 
 /** A refusal arriving over a MITM tunnel the engine still knows about. */
-function viaTunnel(
-  host: string,
-  port = 443,
-  clientAddress = '127.0.0.1',
-  servername: string | undefined = host,
-  relayable = true,
-) {
-  return { servername, tunnel: { host, port, clientAddress, relayable } };
+function viaTunnel(host: string, port = 443, clientAddress = '127.0.0.1', servername: string | undefined = host) {
+  return { servername, tunnel: { host, port, clientAddress } };
 }
 
 function setup(
@@ -138,21 +132,11 @@ describe('createClientCertRejectionHandler', () => {
     );
   });
 
-  it('does not record a target whose CONNECT Host header named something else, and logs each refusal', () => {
-    const { responses, hosts, handler } = setup();
-    const mismatched = viaTunnel('api.example.com', 443, '127.0.0.1', 'api.example.com', false);
-    handler(CERTIFICATE_UNKNOWN, mismatched);
-    handler(CERTIFICATE_UNKNOWN, mismatched);
-    expect(hosts?.has({ clientAddress: '127.0.0.1', host: 'api.example.com', port: 443 })).toBe(false);
-    expect(responses).toHaveLength(2);
-    expect(responses[0]?.error).toMatch(/Host header names another target .* stays MITM'd/);
-  });
-
   it('does not record a refusal from a client with no known address — there is nothing to scope it to', () => {
     const { responses, hosts, handler } = setup();
     handler(CERTIFICATE_UNKNOWN, {
       servername: 'api.example.com',
-      tunnel: { host: 'api.example.com', port: 443, clientAddress: undefined, relayable: true },
+      tunnel: { host: 'api.example.com', port: 443, clientAddress: undefined },
     });
     expect(hosts?.has({ clientAddress: undefined, host: 'api.example.com', port: 443 })).toBe(false);
     expect(responses[0]?.error).toMatch(/stays MITM'd/);
@@ -289,10 +273,11 @@ describe('auto TLS passthrough, end to end', () => {
         // From then on the tunnel reaches the real upstream untouched — the
         // lookup in connectHandler keys the same client/host/port as the record.
         expect(await certificateThroughTunnel(engine.httpPort, target)).toBe('fake-upstream');
-        // A CONNECT whose Host header names something else is never passed
-        // through: the passthrough relay follows the Host header, which isn't
-        // the target that was refused.
-        expect(await certificateThroughTunnel(engine.httpPort, target, `127.0.0.1:${upstream.port}`)).toBe('localhost');
+        // Routing follows the CONNECT's request-target, never its Host header,
+        // so a mismatched Host header changes nothing: still the real upstream.
+        expect(await certificateThroughTunnel(engine.httpPort, target, `127.0.0.1:${upstream.port}`)).toBe(
+          'fake-upstream',
+        );
         // …and only on that port: the same host on another port is still MITM'd.
         const other = await startFakeUpstream();
         try {

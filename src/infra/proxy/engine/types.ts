@@ -33,12 +33,6 @@ export interface MitmTunnelInfo {
   port: number;
   /** The CONNECT socket's remote address, when known. */
   clientAddress: string | undefined;
-  /**
-   * Whether the CONNECT's `Host` header names this same target. A passthrough
-   * tunnel (`interceptOffConnect.ts`) is relayed to the `Host` header's
-   * target, so only then would relaying it reach the one this was about.
-   */
-  relayable: boolean;
 }
 
 /**

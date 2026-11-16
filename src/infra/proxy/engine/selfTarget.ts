@@ -22,19 +22,79 @@ function stripBrackets(host: string): string {
   return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
 }
 
-/** `::ffff:127.0.0.1` → `127.0.0.1`, so an IPv4-mapped address is judged as the IPv4 address it is. */
-function unmapIPv4(address: string): string {
-  const lower = address.toLowerCase();
-  return lower.startsWith('::ffff:') && net.isIPv4(lower.slice(7)) ? lower.slice(7) : lower;
+/**
+ * WHATWG `URL`'s spelling of an IPv6 address that embeds an IPv4 one as its
+ * last two hex groups: IPv4-mapped (`::ffff:7f00:1`) and the deprecated
+ * IPv4-compatible form (`::7f00:1`, written `::127.0.0.1`). Treating the
+ * latter as IPv4 too fails closed on a stack that would route it there — but
+ * only for an embedded address whose first octet isn't 0, since that is all an
+ * IPv4-compatible address ever carried; `::1:2` is an ordinary IPv6 address,
+ * not 0.1.0.2.
+ */
+const IPV4_EMBEDDED = /^::(ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/;
+
+/**
+ * One spelling per address, so comparing two of them as strings means
+ * comparing the addresses. An IPv6 literal has many spellings — `::1`,
+ * `0:0:0:0:0:0:0:1`, `0000::0001` and `::1%lo0` are all loopback,
+ * `::ffff:7f00:1` is `::ffff:127.0.0.1` — and every one of them connects to
+ * the same socket, so a guard that only knew the short form could be walked
+ * past by writing the address out differently. IPv6 becomes the RFC 5952
+ * form WHATWG `URL` serializes it to, and an address embedding IPv4 the IPv4
+ * address it is (`::ffff:127.0.0.1` → `127.0.0.1`).
+ *
+ * The zone ID is always dropped. On a link-local address it does pick an
+ * interface, but the stack is lenient about how it is written — macOS
+ * delivers `fe80::1%lo0x`, `%01`, `%0x1` or a zone naming no interface at
+ * all to lo0 — so no list of "this machine's spellings" can be complete.
+ * Dropping it fails closed: the cost is that a link-local peer on another
+ * interface that happens to share one of this machine's link-local
+ * addresses is also refused, and only on one of Detour's own port numbers.
+ *
+ * Anything that isn't an IP literal is returned lowercased. An IPv6 literal
+ * `net.isIPv6` accepts but `URL` won't parse becomes `::`, the unspecified
+ * address, which counts as local — refusing it rather than throwing, since a
+ * throw would surface as a rejected `isSelfTarget`, which callers treat as
+ * "not self" and relay, and rather than returning it unnormalized, which
+ * would compare as some other address and be relayed too.
+ */
+export function canonicalIp(address: string): string {
+  const lower = stripBrackets(address).toLowerCase();
+  const zoneAt = lower.indexOf('%');
+  const ip = zoneAt === -1 ? lower : lower.slice(0, zoneAt);
+  if (!net.isIPv6(ip)) return lower;
+  let serialized: string;
+  try {
+    serialized = new URL(`http://[${ip}]/`).hostname.slice(1, -1);
+  } catch {
+    return '::';
+  }
+  const embedded = IPV4_EMBEDDED.exec(serialized);
+  if (embedded) {
+    const mapped = embedded[1] !== undefined;
+    const hi = Number.parseInt(embedded[2]!, 16);
+    const lo = Number.parseInt(embedded[3]!, 16);
+    if (mapped || hi >> 8 !== 0) return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+  }
+  return serialized;
+}
+
+/**
+ * `0.0.0.0/8` ("this network") as a destination: Linux delivers any of it to
+ * this host the way it does `0.0.0.0`, so `0.0.0.1` counts too (failing
+ * closed on stacks that refuse it instead).
+ */
+function isThisNetworkIPv4(address: string): boolean {
+  return address.startsWith('0.') && net.isIPv4(address);
 }
 
 function isLoopbackOrUnspecified(address: string): boolean {
-  return address.startsWith('127.') || address === '0.0.0.0' || address === '::1' || address === '::';
+  return address.startsWith('127.') || isThisNetworkIPv4(address) || address === '::1' || address === '::';
 }
 
-/** Where a connection to an unspecified address (`0.0.0.0`, `::`: "any address") actually goes — that family's loopback. Any other address is itself. */
+/** Where a connection to an unspecified address (`0.0.0.0/8`, `::`: "any address") actually goes — that family's loopback. Any other address is itself. */
 function loopbackEquivalent(address: string): string {
-  if (address === '0.0.0.0') return '127.0.0.1';
+  if (isThisNetworkIPv4(address)) return '127.0.0.1';
   if (address === '::') return '::1';
   return address;
 }
@@ -92,7 +152,7 @@ export function createSelfTargetGuard(
   const listeners: Array<{ port: number; address: string | undefined }> = [];
   return {
     protectPort: (port, address) => {
-      listeners.push({ port, address: address === undefined ? undefined : unmapIPv4(stripBrackets(address)) });
+      listeners.push({ port, address: address === undefined ? undefined : canonicalIp(address) });
     },
     async isSelfTarget(host, port) {
       const onPort = listeners.filter((l) => l.port === port);
@@ -108,8 +168,8 @@ export function createSelfTargetGuard(
           return false;
         }
       }
-      const own = new Set(localAddresses().map(unmapIPv4));
-      const targets = addresses.map(unmapIPv4);
+      const own = new Set(localAddresses().map(canonicalIp));
+      const targets = addresses.map(canonicalIp);
       return onPort.some((l) => targets.some((target) => reachesListener(target, l.address, own)));
     },
   };

@@ -18,15 +18,13 @@ export interface ClientCertRejectionDeps {
   autoPassthroughHosts?: AutoPassthroughHosts;
 }
 
-type Outcome = 'passthrough' | 'focused' | 'full' | 'off' | 'untracked' | 'unrelayable';
+type Outcome = 'passthrough' | 'focused' | 'full' | 'off' | 'untracked';
 
 /** What happens next for a refusing target, worded for the row's error text. */
 function describeOutcome(outcome: Outcome, hostPort: string): string {
   switch (outcome) {
     case 'passthrough':
       return `for the next ${AUTO_PASSTHROUGH_TTL_MINUTES} minutes, connections from this client address to ${hostPort} are relayed untouched (auto TLS passthrough) so it keeps working, without decryption — toggle Intercept off and on to MITM it again sooner`;
-    case 'unrelayable':
-      return "its CONNECT's Host header names another target than the CONNECT itself, so it can't be relayed untouched to the one refused and stays MITM'd";
     case 'focused':
       return `${hostPort} is in Focus, so it stays MITM'd rather than being relayed untouched`;
     case 'full':
@@ -61,8 +59,8 @@ function describeOutcome(outcome: Outcome, hostPort: string): string {
  * racing it on other connections say nothing new, and later connections are
  * passthrough rows of their own. With passthrough off, a client retrying a
  * host it will never accept would otherwise flood the log the same way.
- * Refusals that can't be passed through (Focus, the cap, an unknown or
- * Host-mismatched tunnel) get a row every time: each is a failed connection.
+ * Refusals that can't be passed through (Focus, the cap, an unknown tunnel)
+ * get a row every time: each is a failed connection.
  */
 export function createClientCertRejectionHandler(deps: ClientCertRejectionDeps): OnTlsClientErrorParams {
   const { eventBus, runtimeState, autoPassthroughHosts } = deps;
@@ -73,7 +71,7 @@ export function createClientCertRejectionHandler(deps: ClientCertRejectionDeps):
     const alert = clientCertRejectionAlert(err);
     if (!alert) return;
     const target: MitmTunnelInfo | undefined =
-      tunnel ?? (servername ? { host: servername, port: 443, clientAddress: undefined, relayable: false } : undefined);
+      tunnel ?? (servername ? { host: servername, port: 443, clientAddress: undefined } : undefined);
     if (!target) {
       // Nothing names the host (no SNI, and the tunnel is gone): no row to
       // attach it to, but the refusal itself still gets reported.
@@ -98,7 +96,6 @@ export function createClientCertRejectionHandler(deps: ClientCertRejectionDeps):
     // Without a client address there's no client to scope the record to, and
     // every such connection would share one key.
     else if (!tunnel?.clientAddress) outcome = 'untracked';
-    else if (!tunnel.relayable) outcome = 'unrelayable';
     else if (autoPassthroughHosts.has(tunnel)) return;
     else outcome = autoPassthroughHosts.add(tunnel) ? 'passthrough' : 'full';
 

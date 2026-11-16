@@ -419,6 +419,24 @@ export class ProxyEngine {
     return null;
   }
 
+  /**
+   * A CONNECT's target: its request-target (`req.url`, authority-form
+   * `host:port` — RFC 9110 §9.3.6), never the `Host` header. The self-target
+   * guard judges the request-target (`runConnectHandlers`), so everything
+   * after it — Block Hosts, Focus, and where a passthrough tunnel is relayed —
+   * has to act on that same target: a `Host` header naming something else
+   * (`CONNECT example.com:443` + `Host: localhost:<dashboard>`) must not
+   * steer a tunnel past the guard. `null` when the request-target names no
+   * host, or a port that isn't an integer from 1 to 65535 (`net.connect`
+   * would throw on it rather than fail the connection).
+   */
+  static parseConnectTarget(req: IncomingMessage): { host: string; port: number } | null {
+    const target = ProxyEngine.parseHost(req.url ?? '', 443);
+    const port = target.port ?? 443;
+    if (!target.host || !Number.isInteger(port) || port < 1 || port > 65535) return null;
+    return { host: target.host, port };
+  }
+
   static parseHost(hostString: string, defaultPort?: number): { host: string; port: number | undefined } {
     // A bracketed IPv6 literal (`[::1]`, `[::1]:8443`) is RFC 3986's own way
     // to pair one with an explicit port — required precisely because a bare
@@ -621,11 +639,16 @@ export class ProxyEngine {
 
   /** Runs the registered `onConnect` handlers (Block Hosts / Focus / passthrough dispatch — see `proxyServer.ts`); if every one calls back without handling the tunnel itself, MITMs it by bridging the raw client socket into the internal TLS/HTTP2 server. */
   private runConnectHandlers(req: IncomingMessage, socket: Duplex, head: Buffer, internalPort: number): void {
-    const target = ProxyEngine.parseHost(req.url ?? '', 443);
-    this.selfTargets.isSelfTarget(target.host, target.port ?? 443).then(
+    const target = ProxyEngine.parseConnectTarget(req);
+    if (!target) {
+      socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+      return;
+    }
+    // A guard that couldn't decide refuses rather than relays (fails closed).
+    this.selfTargets.isSelfTarget(target.host, target.port).then(
       (isSelf) =>
         isSelf ? rejectSelfTargetConnect(socket) : this.dispatchConnectHandlers(req, socket, head, internalPort),
-      () => this.dispatchConnectHandlers(req, socket, head, internalPort),
+      () => rejectSelfTargetConnect(socket),
     );
   }
 
@@ -637,16 +660,11 @@ export class ProxyEngine {
         return;
       }
       if (i >= this.onConnectHandlers.length) {
-        const target = ProxyEngine.parseHost(req.url ?? '', 443);
-        const port = target.port ?? 443;
-        const hostHeader = ProxyEngine.parseHostAndPort(req, 443);
-        // Without a Host header the passthrough relay falls back to the
-        // request-target itself (`interceptOffConnect.ts`), so that's relayable too.
-        const relayable =
-          hostHeader === null ||
-          (hostHeader.host.toLowerCase() === target.host.toLowerCase() && (hostHeader.port ?? 443) === port);
+        // runConnectHandlers already refused a CONNECT without a usable target.
+        const target = ProxyEngine.parseConnectTarget(req);
+        if (!target) return;
         const clientAddress = (socket as Partial<net.Socket>).remoteAddress;
-        this.establishMitmTunnel(socket, head, internalPort, { host: target.host, port, clientAddress, relayable });
+        this.establishMitmTunnel(socket, head, internalPort, { host: target.host, port: target.port, clientAddress });
         return;
       }
       const fn = this.onConnectHandlers[i++]!;
@@ -777,7 +795,7 @@ export class ProxyEngine {
 
     this.selfTargets.isSelfTarget(hostPort.host, hostPort.port ?? (isSSL ? 443 : 80)).then(
       (isSelf) => (isSelf ? this.rejectSelfTargetRequest(ctx) : this.relayRequest(ctx, hostPort)),
-      () => this.relayRequest(ctx, hostPort),
+      () => this.rejectSelfTargetRequest(ctx),
     );
   }
 
@@ -1401,7 +1419,7 @@ export class ProxyEngine {
     const target = ProxyEngine.parseHost(authority, 80);
     this.selfTargets.isSelfTarget(target.host, target.port ?? 80).then(
       (isSelf) => (isSelf ? callback(false, 403, SELF_TARGET_REJECTION) : callback(true)),
-      () => callback(true),
+      () => callback(false, 403, SELF_TARGET_REJECTION),
     );
   }
 
@@ -1445,7 +1463,7 @@ export class ProxyEngine {
     if (isSSL) {
       this.isSelfTargetUrl(url).then(
         (isSelf) => (isSelf ? this.rejectSelfTargetWebSocket(clientWs) : this.runWebSocketChain(ctx, clientWs)),
-        () => this.runWebSocketChain(ctx, clientWs),
+        () => this.rejectSelfTargetWebSocket(clientWs),
       );
       return;
     }
