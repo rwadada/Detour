@@ -400,11 +400,15 @@ export class ProxyEngine {
    * after it — Block Hosts, Focus, and where a passthrough tunnel is relayed —
    * has to act on that same target: a `Host` header naming something else
    * (`CONNECT example.com:443` + `Host: localhost:<dashboard>`) must not
-   * steer a tunnel past the guard. `null` when the request-target names no host.
+   * steer a tunnel past the guard. `null` when the request-target names no
+   * host, or a port that isn't an integer from 1 to 65535 (`net.connect`
+   * would throw on it rather than fail the connection).
    */
-  static parseConnectTarget(req: IncomingMessage): { host: string; port: number | undefined } | null {
+  static parseConnectTarget(req: IncomingMessage): { host: string; port: number } | null {
     const target = ProxyEngine.parseHost(req.url ?? '', 443);
-    return target.host ? target : null;
+    const port = target.port ?? 443;
+    if (!target.host || !Number.isInteger(port) || port < 1 || port > 65535) return null;
+    return { host: target.host, port };
   }
 
   static parseHost(hostString: string, defaultPort?: number): { host: string; port: number | undefined } {
@@ -580,11 +584,16 @@ export class ProxyEngine {
 
   /** Runs the registered `onConnect` handlers (Block Hosts / Focus / passthrough dispatch — see `proxyServer.ts`); if every one calls back without handling the tunnel itself, MITMs it by bridging the raw client socket into the internal TLS/HTTP2 server. */
   private runConnectHandlers(req: IncomingMessage, socket: Duplex, head: Buffer, internalPort: number): void {
-    const target = ProxyEngine.parseHost(req.url ?? '', 443);
-    this.selfTargets.isSelfTarget(target.host, target.port ?? 443).then(
+    const target = ProxyEngine.parseConnectTarget(req);
+    if (!target) {
+      socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+      return;
+    }
+    // A guard that couldn't decide refuses rather than relays (fails closed).
+    this.selfTargets.isSelfTarget(target.host, target.port).then(
       (isSelf) =>
         isSelf ? rejectSelfTargetConnect(socket) : this.dispatchConnectHandlers(req, socket, head, internalPort),
-      () => this.dispatchConnectHandlers(req, socket, head, internalPort),
+      () => rejectSelfTargetConnect(socket),
     );
   }
 
@@ -712,7 +721,7 @@ export class ProxyEngine {
 
     this.selfTargets.isSelfTarget(hostPort.host, hostPort.port ?? (isSSL ? 443 : 80)).then(
       (isSelf) => (isSelf ? this.rejectSelfTargetRequest(ctx) : this.relayRequest(ctx, hostPort)),
-      () => this.relayRequest(ctx, hostPort),
+      () => this.rejectSelfTargetRequest(ctx),
     );
   }
 
@@ -1336,7 +1345,7 @@ export class ProxyEngine {
     const target = ProxyEngine.parseHost(authority, 80);
     this.selfTargets.isSelfTarget(target.host, target.port ?? 80).then(
       (isSelf) => (isSelf ? callback(false, 403, SELF_TARGET_REJECTION) : callback(true)),
-      () => callback(true),
+      () => callback(false, 403, SELF_TARGET_REJECTION),
     );
   }
 
@@ -1380,7 +1389,7 @@ export class ProxyEngine {
     if (isSSL) {
       this.isSelfTargetUrl(url).then(
         (isSelf) => (isSelf ? this.rejectSelfTargetWebSocket(clientWs) : this.runWebSocketChain(ctx, clientWs)),
-        () => this.runWebSocketChain(ctx, clientWs),
+        () => this.rejectSelfTargetWebSocket(clientWs),
       );
       return;
     }

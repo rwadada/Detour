@@ -26,9 +26,12 @@ function stripBrackets(host: string): string {
  * WHATWG `URL`'s spelling of an IPv6 address that embeds an IPv4 one as its
  * last two hex groups: IPv4-mapped (`::ffff:7f00:1`) and the deprecated
  * IPv4-compatible form (`::7f00:1`, written `::127.0.0.1`). Treating the
- * latter as IPv4 too fails closed on a stack that would route it there.
+ * latter as IPv4 too fails closed on a stack that would route it there — but
+ * only for an embedded address whose first octet isn't 0, since that is all an
+ * IPv4-compatible address ever carried; `::1:2` is an ordinary IPv6 address,
+ * not 0.1.0.2.
  */
-const IPV4_EMBEDDED = /^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/;
+const IPV4_EMBEDDED = /^::(ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/;
 
 /**
  * One spelling per address, so comparing two of them as strings means
@@ -68,9 +71,10 @@ export function canonicalIp(address: string): string {
   }
   const embedded = IPV4_EMBEDDED.exec(serialized);
   if (embedded) {
-    const hi = Number.parseInt(embedded[1]!, 16);
-    const lo = Number.parseInt(embedded[2]!, 16);
-    return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+    const mapped = embedded[1] !== undefined;
+    const hi = Number.parseInt(embedded[2]!, 16);
+    const lo = Number.parseInt(embedded[3]!, 16);
+    if (mapped || hi >> 8 !== 0) return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
   }
   return serialized;
 }

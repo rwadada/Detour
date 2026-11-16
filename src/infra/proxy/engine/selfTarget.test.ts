@@ -253,6 +253,9 @@ describe('canonicalIp', () => {
     ['::1%lo0', '::1'],
     ['2001:db8::5%en0', '2001:db8::5'],
     ['::127.0.0.1', '127.0.0.1'],
+    // An IPv4-compatible address never had a first octet of 0: these are plain IPv6.
+    ['::1:2', '::1:2'],
+    ['::ab:cd', '::ab:cd'],
     ['::1', '::1'],
     ['::', '::'],
     ['2001:DB8:0:0:1:0:0:1', '2001:db8::1:0:0:1'],
