@@ -1,0 +1,11 @@
+{
+  "verify-on-stop": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "./hooks/verify-stop.sh",
+        "timeout": 300
+      }
+    ]
+  }
+}
