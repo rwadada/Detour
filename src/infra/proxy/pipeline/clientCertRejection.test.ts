@@ -175,38 +175,52 @@ function hasOpenssl(): boolean {
 }
 
 /** A self-signed TLS server standing in for the real upstream, so a passthrough tunnel can be told apart from a MITM'd one by the certificate the client sees. */
-function startFakeUpstream(): Promise<{ server: tls.Server; port: number }> {
+function startFakeUpstream(): Promise<{ server: tls.Server; port: number; certPem: string }> {
   const keys = forge.pki.rsa.generateKeyPair(2048);
   const cert = forge.pki.createCertificate();
   cert.publicKey = keys.publicKey;
   cert.serialNumber = '01';
   cert.validity.notBefore = new Date(Date.now() - 60_000);
   cert.validity.notAfter = new Date(Date.now() + 86_400_000);
-  const attrs = [{ name: 'commonName', value: 'fake-upstream' }];
+  // Valid for localhost like Detour's own leaf would be; told apart from it by its issuer's O.
+  const attrs = [
+    { name: 'commonName', value: 'localhost' },
+    { name: 'organizationName', value: 'fake-upstream' },
+  ];
   cert.setSubject(attrs);
   cert.setIssuer(attrs);
+  cert.setExtensions([{ name: 'subjectAltName', altNames: [{ type: 2, value: 'localhost' }] }]);
   cert.sign(keys.privateKey, forge.md.sha256.create());
-  const server = tls.createServer(
-    { key: forge.pki.privateKeyToPem(keys.privateKey), cert: forge.pki.certificateToPem(cert) },
-    (socket) => socket.end(),
+  const certPem = forge.pki.certificateToPem(cert);
+  const server = tls.createServer({ key: forge.pki.privateKeyToPem(keys.privateKey), cert: certPem }, (socket) =>
+    socket.end(),
   );
   return new Promise((resolve) =>
-    server.listen(0, '127.0.0.1', () => resolve({ server, port: (server.address() as net.AddressInfo).port })),
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: (server.address() as net.AddressInfo).port, certPem })),
   );
 }
 
-/** Opens a CONNECT tunnel through the proxy and returns the CN of the certificate presented inside it. */
-function certificateThroughTunnel(proxyPort: number, target: string, hostHeader = target): Promise<string> {
+/**
+ * Opens a CONNECT tunnel through the proxy, verifies the certificate presented
+ * inside it against `ca` (the Detour CA and the fake upstream's own cert), and
+ * returns its issuer's O: `Detour` when MITM'd, `fake-upstream` when relayed.
+ */
+function certificateThroughTunnel(
+  proxyPort: number,
+  target: string,
+  ca: string[],
+  hostHeader = target,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const socket = net.connect(proxyPort, '127.0.0.1', () =>
       socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${hostHeader}\r\n\r\n`),
     );
     socket.once('data', (head) => {
       if (!/^HTTP\/1\.1 200/.test(head.toString())) return reject(new Error(head.toString()));
-      const secure = tls.connect({ socket, servername: 'localhost', rejectUnauthorized: false }, () => {
-        const cn = secure.getPeerCertificate().subject?.CN;
+      const secure = tls.connect({ socket, servername: 'localhost', ca }, () => {
+        const issuer = secure.getPeerCertificate().issuer?.O;
         secure.destroy();
-        resolve(Array.isArray(cn) ? cn.join(',') : (cn ?? ''));
+        resolve(Array.isArray(issuer) ? issuer.join(',') : (issuer ?? ''));
       });
       secure.on('error', reject);
     });
@@ -239,9 +253,13 @@ describe('auto TLS passthrough, end to end', () => {
           engine.listen({ port: 0, host: '127.0.0.1', sslCaDir: dir }, (e) => (e ? reject(e) : resolve())),
         );
         const target = `localhost:${upstream.port}`;
+        // Trusting both the Detour CA and the fake upstream's own cert, so the
+        // tunnel's certificate is verified either way and told apart by issuer.
+        const detourCa = fs.readFileSync(path.join(dir, 'certs', 'ca.pem'), 'utf8');
+        const ca = [detourCa, upstream.certPem];
 
         // Before any refusal the tunnel is MITM'd: the client sees Detour's per-host certificate.
-        expect(await certificateThroughTunnel(engine.httpPort, target)).toBe('localhost');
+        expect(await certificateThroughTunnel(engine.httpPort, target, ca)).toBe('Detour');
 
         // A client that doesn't trust the Detour CA refuses it with a TLS alert (unknown CA).
         await new Promise<void>((resolve) => {
@@ -272,16 +290,16 @@ describe('auto TLS passthrough, end to end', () => {
 
         // From then on the tunnel reaches the real upstream untouched — the
         // lookup in connectHandler keys the same client/host/port as the record.
-        expect(await certificateThroughTunnel(engine.httpPort, target)).toBe('fake-upstream');
+        expect(await certificateThroughTunnel(engine.httpPort, target, ca)).toBe('fake-upstream');
         // Routing follows the CONNECT's request-target, never its Host header,
         // so a mismatched Host header changes nothing: still the real upstream.
-        expect(await certificateThroughTunnel(engine.httpPort, target, `127.0.0.1:${upstream.port}`)).toBe(
+        expect(await certificateThroughTunnel(engine.httpPort, target, ca, `127.0.0.1:${upstream.port}`)).toBe(
           'fake-upstream',
         );
         // …and only on that port: the same host on another port is still MITM'd.
         const other = await startFakeUpstream();
         try {
-          expect(await certificateThroughTunnel(engine.httpPort, `localhost:${other.port}`)).toBe('localhost');
+          expect(await certificateThroughTunnel(engine.httpPort, `localhost:${other.port}`, ca)).toBe('Detour');
         } finally {
           other.server.close();
         }
