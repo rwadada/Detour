@@ -69,6 +69,45 @@ describe('ProxyEngine refuses to relay to its own listeners (issue #205)', () =>
     });
   });
 
+  it.each(['example.com:abc', 'example.com:99999', 'example.com:0', ':443'])(
+    'answers a CONNECT to the unusable target %s with 400 instead of hanging',
+    async (target) => {
+      await withProxy(async (proxyPort) => {
+        const answer = await rawExchange(proxyPort, `CONNECT ${target} HTTP/1.1\r\nHost: example.com:443\r\n\r\n`);
+        expect(answer).toMatch(/^HTTP\/1\.1 400/);
+      });
+    },
+  );
+
+  it('refuses rather than relays when the self-target check itself fails', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-proxy-engine-test-'));
+    const openServer = net.createServer(respondOk);
+    const engine = new ProxyEngine();
+    try {
+      const openPort = await listenOnFreePort(openServer);
+      await new Promise<void>((resolve, reject) =>
+        engine.listen({ port: 0, host: '127.0.0.1', sslCaDir: dir }, (e) => (e ? reject(e) : resolve())),
+      );
+      // Make the guard throw on every check.
+      (engine as unknown as { selfTargets: { isSelfTarget: () => Promise<boolean> } }).selfTargets.isSelfTarget = () =>
+        Promise.reject(new Error('guard broke'));
+      const tunnel = await rawExchange(
+        engine.httpPort,
+        `CONNECT 127.0.0.1:${openPort} HTTP/1.1\r\nHost: 127.0.0.1:${openPort}\r\n\r\n`,
+      );
+      expect(tunnel).toMatch(/^HTTP\/1\.1 403/);
+      const forwarded = await rawExchange(
+        engine.httpPort,
+        `GET http://127.0.0.1:${openPort}/ HTTP/1.1\r\nHost: 127.0.0.1:${openPort}\r\nConnection: close\r\n\r\n`,
+      );
+      expect(forwarded).toMatch(/^HTTP\/1\.1 403/);
+    } finally {
+      engine.close();
+      openServer.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a CONNECT to a protected local port and to the proxy itself, without establishing a tunnel', async () => {
     await withProxy(async (proxyPort, protectedPort) => {
       for (const target of [`127.0.0.1:${protectedPort}`, `localhost:${proxyPort}`]) {
@@ -77,6 +116,42 @@ describe('ProxyEngine refuses to relay to its own listeners (issue #205)', () =>
       }
     });
   });
+
+  // A LAN client can spell 127.0.0.1 as an IPv4-mapped IPv6 literal in hex or
+  // longhand; the connection still lands on the protected listener, so every
+  // entry point must refuse it like the plain form.
+  it.each(['[::ffff:7f00:1]', '[0:0:0:0:0:ffff:7f00:1]', '[0:0:0:0:0:ffff:127.0.0.1]'])(
+    'refuses a protected local port written as %s on every entry point',
+    async (host) => {
+      await withProxy(async (proxyPort, protectedPort) => {
+        const target = `${host}:${protectedPort}`;
+        const forwarded = await rawExchange(
+          proxyPort,
+          `GET http://${target}/ HTTP/1.1\r\nHost: 127.0.0.1:${protectedPort}\r\nConnection: close\r\n\r\n`,
+        );
+        expect(forwarded).toMatch(/^HTTP\/1\.1 403/);
+        const tunnel = await rawExchange(proxyPort, `CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`);
+        expect(tunnel).toMatch(/^HTTP\/1\.1 403/);
+        const upgrade = await rawExchange(
+          proxyPort,
+          `GET http://${target}/ws HTTP/1.1\r\nHost: 127.0.0.1:${protectedPort}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+        );
+        expect(upgrade).toMatch(/^HTTP\/1\.1 403/);
+
+        // The proxy's own port is protected with the address it is bound to
+        // (127.0.0.1 here), which takes the specific-address comparison
+        // rather than the any-local-address one above.
+        const self = `${host}:${proxyPort}`;
+        const selfTunnel = await rawExchange(proxyPort, `CONNECT ${self} HTTP/1.1\r\nHost: ${self}\r\n\r\n`);
+        expect(selfTunnel).toMatch(/^HTTP\/1\.1 403/);
+        const selfForwarded = await rawExchange(
+          proxyPort,
+          `GET http://${self}/ HTTP/1.1\r\nHost: 127.0.0.1:${proxyPort}\r\nConnection: close\r\n\r\n`,
+        );
+        expect(selfForwarded).toMatch(/^HTTP\/1\.1 403/);
+      });
+    },
+  );
 
   it('refuses a ws:// upgrade to a protected local port before the handshake completes', async () => {
     await withProxy(async (proxyPort, protectedPort) => {
