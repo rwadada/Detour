@@ -4,7 +4,7 @@ import type { IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { hashPassword } from '../../domain/auth/passwordHash';
-import { createDashboardAuth, type DashboardAuthDeps, rateLimitKey } from './dashboardAuth';
+import { createDashboardAuth, type DashboardAuthDeps, rateLimitKeys } from './dashboardAuth';
 
 const TOKEN = 'secret-token';
 
@@ -253,9 +253,9 @@ describe('dashboard auth (issue #207)', () => {
   });
 });
 
-describe('dashboard auth — lockout window and address keying', () => {
-  async function failFive(auth: ReturnType<typeof setup>['auth'], ip: string) {
-    for (let i = 0; i < 5; i++) {
+describe('dashboard auth — escalating lockouts and address keying', () => {
+  async function failFrom(auth: ReturnType<typeof setup>['auth'], ip: string, times: number) {
+    for (let i = 0; i < times; i++) {
       const socket = socketOf();
       if (auth.admitConnection(socket, requestFrom(ip)) !== 'needs-login') return;
       await auth.handleLogin(socket, login('wrong'));
@@ -263,40 +263,51 @@ describe('dashboard auth — lockout window and address keying', () => {
     }
   }
 
-  it('lifts a lockout once its window has passed, so a local process cannot lock the owner out for good', async () => {
+  it('lifts a lockout after its window, then locks the next one twice as long', async () => {
     let time = 0;
     const { auth } = setup({ loadPasswordHash: () => passwordHash, now: () => time });
-    await failFive(auth, '127.0.0.1');
+    await failFrom(auth, '127.0.0.1', 5);
     expect(auth.admitConnection(socketOf(), requestFrom('127.0.0.1'))).toBe('rejected');
-    time += 15 * 60_000 - 1;
+    time += 15 * 60_000;
+    expect(auth.admitConnection(socketOf(), requestFrom('127.0.0.1'))).toBe('needs-login');
+    await failFrom(auth, '127.0.0.1', 5);
+    time += 15 * 60_000;
     expect(auth.admitConnection(socketOf(), requestFrom('127.0.0.1'))).toBe('rejected');
-    time += 1;
+    time += 15 * 60_000;
     expect(auth.admitConnection(socketOf(), requestFrom('127.0.0.1'))).toBe('needs-login');
   });
 
-  it('counts an IPv6 client by its /64, so rotating addresses inside it buys no extra attempts', async () => {
+  it('never lets failures short of the limit decay, so pacing guesses buys nothing', async () => {
+    let time = 0;
+    const { auth } = setup({ loadPasswordHash: () => passwordHash, now: () => time });
+    await failFrom(auth, '127.0.0.1', 4);
+    time += 24 * 60 * 60_000;
+    await failFrom(auth, '127.0.0.1', 1);
+    expect(auth.admitConnection(socketOf(), requestFrom('127.0.0.1'))).toBe('rejected');
+  });
+
+  it('counts addresses one by one, but caps an IPv6 /64 rotating addresses inside it', async () => {
     const { auth } = setup({ loadPasswordHash: () => passwordHash });
-    for (let i = 1; i <= 5; i++) {
-      const socket = socketOf();
-      expect(auth.admitConnection(socket, requestFrom(`2001:db8:1:2::${i}`))).toBe('needs-login');
-      await auth.handleLogin(socket, login('wrong'));
-      socket.close();
-    }
-    expect(auth.admitConnection(socketOf(), requestFrom('2001:db8:1:2:abcd::99'))).toBe('rejected');
+    // Another device on the same LAN /64 is not locked out by one device's mistakes.
+    await failFrom(auth, '2001:db8:1:2::1', 5);
+    expect(auth.admitConnection(socketOf(), requestFrom('2001:db8:1:2::1'))).toBe('rejected');
+    expect(auth.admitConnection(socketOf(), requestFrom('2001:db8:1:2::2'))).toBe('needs-login');
+    // But rotating through addresses adds up across the /64.
+    for (let i = 2; i <= 6; i++) await failFrom(auth, `2001:db8:1:2::${i}`, 4);
+    expect(auth.admitConnection(socketOf(), requestFrom('2001:db8:1:2::99'))).toBe('rejected');
     expect(auth.admitConnection(socketOf(), requestFrom('2001:db8:1:3::1'))).toBe('needs-login');
   });
 });
 
-describe('rateLimitKey', () => {
+describe('rateLimitKeys', () => {
   it.each([
-    ['10.0.0.1', '10.0.0.1'],
-    ['::ffff:10.0.0.1', '10.0.0.1'],
-    ['::ffff:a00:1', '10.0.0.1'],
-    ['2001:db8:1:2:3:4:5:6', '2001:db8:1:2::/64'],
-    ['2001:DB8:1:2::9%en0', '2001:db8:1:2::/64'],
-    ['::1', '0:0:0:0::/64'],
-    [undefined, 'unknown'],
-  ])('%s → %s', (address, key) => {
-    expect(rateLimitKey(address)).toBe(key);
+    ['10.0.0.1', { address: '10.0.0.1', prefix: undefined }],
+    ['::ffff:10.0.0.1', { address: '10.0.0.1', prefix: undefined }],
+    ['::ffff:a00:1', { address: '10.0.0.1', prefix: undefined }],
+    ['2001:db8:1:2:3:4:5:6', { address: '2001:db8:1:2:3:4:5:6', prefix: '2001:db8:1:2::/64' }],
+    ['2001:DB8:1:2::9%en0', { address: '2001:db8:1:2::9', prefix: '2001:db8:1:2::/64' }],
+    [undefined, { address: 'unknown', prefix: undefined }],
+  ])('%s → %o', (address, keys) => {
+    expect(rateLimitKeys(address)).toEqual(keys);
   });
 });

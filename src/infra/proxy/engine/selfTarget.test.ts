@@ -1,4 +1,5 @@
 /* eslint-disable sonarjs/no-hardcoded-ip -- address fixtures */
+import dns from 'node:dns';
 import { describe, expect, it } from 'vitest';
 import { canonicalIp, createSelfTargetGuard, SELF_TARGET_LOOKUP_ERROR } from './selfTarget';
 
@@ -320,8 +321,8 @@ describe('createSelfTargetGuard — lookupFor', () => {
     expect((await lookup(guard, PORT)).err?.code).toBe(SELF_TARGET_LOOKUP_ERROR);
   });
 
-  it('leaves other ports alone and honours the requested family', async () => {
-    expect((await lookup(lookupWith([['127.0.0.1']]), PORT + 1)).err).toBeNull();
+  it('leaves other ports to Node’s own lookup and honours the requested family', async () => {
+    expect(lookupWith([['127.0.0.1']]).lookupFor(PORT + 1)).toBe(dns.lookup);
     expect((await lookup(lookupWith([['2001:db8::1']]), PORT, { family: 4 })).err?.code).toBe('ENOTFOUND');
   });
 });

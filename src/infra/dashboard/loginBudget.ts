@@ -1,0 +1,71 @@
+/**
+ * Failed-login bookkeeping for one kind of key (a client address, or an IPv6
+ * /64). `limit` consecutive failures lock the key out; each lockout lasts
+ * twice as long as the one before it (from `baseLockoutMs`, up to
+ * `maxLockoutMs`), and failures short of the limit never decay with time.
+ *
+ * Both halves matter. A lockout that lasted until restart let any local
+ * process (they all share 127.0.0.1) lock the owner out for good; one that
+ * simply expired and reset the count let a client guess `limit - 1` times
+ * per window forever. Escalating lockouts leave a mistyping owner waiting
+ * minutes, while a guesser gets a few dozen tries a day at most.
+ */
+export interface LoginBudget {
+  /** Whether `key` is locked out right now. */
+  isLocked(key: string): boolean;
+  /** Records one failure; returns the failures counted toward the current lockout (reaching `limit` locks the key). */
+  recordFailure(key: string): number;
+  /** Forgets `key` entirely (a successful login). */
+  reset(key: string): void;
+}
+
+interface Entry {
+  failures: number;
+  lockouts: number;
+  lockedUntil: number;
+}
+
+export function createLoginBudget(options: {
+  limit: number;
+  baseLockoutMs: number;
+  maxLockoutMs: number;
+  /** How many keys are tracked at most; the least recently failed is forgotten first. */
+  maxTracked: number;
+  now: () => number;
+}): LoginBudget {
+  const { limit, baseLockoutMs, maxLockoutMs, maxTracked, now } = options;
+  const entries = new Map<string, Entry>();
+
+  /** The entry for `key`, with an elapsed lockout cleared (its failures start over; its lockout count stays). */
+  const current = (key: string): Entry | undefined => {
+    const entry = entries.get(key);
+    if (entry && entry.lockedUntil !== 0 && entry.lockedUntil <= now()) {
+      entry.failures = 0;
+      entry.lockedUntil = 0;
+    }
+    return entry;
+  };
+
+  return {
+    isLocked: (key) => (current(key)?.lockedUntil ?? 0) > now(),
+    recordFailure(key) {
+      const entry = current(key) ?? { failures: 0, lockouts: 0, lockedUntil: 0 };
+      entry.failures++;
+      if (entry.failures >= limit && entry.lockedUntil === 0) {
+        entry.lockouts++;
+        entry.lockedUntil = now() + Math.min(baseLockoutMs * 2 ** (entry.lockouts - 1), maxLockoutMs);
+      }
+      // Re-inserted so the Map stays ordered by last failure; the stalest goes first at the cap.
+      entries.delete(key);
+      if (entries.size >= maxTracked) {
+        const oldest = entries.keys().next().value;
+        if (oldest !== undefined) entries.delete(oldest);
+      }
+      entries.set(key, entry);
+      return entry.failures;
+    },
+    reset: (key) => {
+      entries.delete(key);
+    },
+  };
+}

@@ -135,6 +135,18 @@ function latin1Decode(bytes: Uint8Array): string {
   return new TextDecoder('iso-8859-1').decode(bytes);
 }
 
+function isSvg(contentType: string): boolean {
+  return /^image\/svg\+xml\b/i.test(contentType.trim());
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
 /**
  * Decodes a captured `image/*` body (issue #142) into a `Blob` object URL
  * `<img>` can load directly, reversing `contentEncoding` first via
@@ -154,18 +166,6 @@ function latin1Decode(bytes: Uint8Array): string {
  * content-type/encoding replacing the current one, `enabled` flipping back
  * off, and the component unmounting outright.
  */
-function isSvg(contentType: string): boolean {
-  return /^image\/svg\+xml\b/i.test(contentType.trim());
-}
-
-function toBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  }
-  return btoa(binary);
-}
-
 function useImageObjectUrl(
   body: string | undefined,
   contentType: string | undefined,

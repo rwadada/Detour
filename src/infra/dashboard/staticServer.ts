@@ -92,23 +92,28 @@ function sendFile(filePath: string, req: IncomingMessage, res: ServerResponse, i
       'Content-Type': contentType,
       'Cache-Control': cacheControl,
       'X-Content-Type-Options': 'nosniff',
-      ...(ext === '.html' ? { 'Content-Security-Policy': dashboardCsp(data.toString('utf8')) } : {}),
+      ...(ext === '.html' ? { 'Content-Security-Policy': dashboardCsp(data.toString('utf8'), req.headers.host) } : {}),
     });
     res.end(req.method === 'HEAD' ? undefined : data);
   });
 }
 
 /**
- * The dashboard page's Content-Security-Policy. It renders captured
- * traffic — bodies from arbitrary servers, including `image/svg+xml` shown
- * through `blob:` URLs — and a `blob:` document inherits the policy of the
- * page that created it, so a captured SVG opened in a tab of its own can't
- * run its script with the dashboard's origin (and from there drive the
- * dashboard's WebSocket). Scripts are only the bundle and the page's own
- * inline ones, pinned by hash; inline style stays allowed (attribute styles
- * from React and Tailwind), which can't run code.
+ * The dashboard page's Content-Security-Policy — defence in depth for a page
+ * that renders traffic from arbitrary servers: no script but the bundle and
+ * the page's own inline ones (pinned by hash), no plugins, no framing, no
+ * base-URI tricks. (Captured SVGs are kept off the dashboard's origin by
+ * previewing them as `data:` URLs — see `BodyViewer.tsx`; a CSP alone
+ * doesn't cover a `blob:` opened in a tab of its own.)
+ *
+ * `'unsafe-eval'` is there for protobufjs, which the gRPC body decoder uses
+ * and which builds its decoders with `Function(...)`; it doesn't let markup
+ * run script. Inline style stays allowed (React and Tailwind attribute
+ * styles), which can't run code either. `connect-src` names the WebSocket
+ * origin explicitly, since older WebKit doesn't match `ws:`/`wss:` against
+ * `'self'`.
  */
-export function dashboardCsp(html: string): string {
+export function dashboardCsp(html: string, host?: string): string {
   const hashes = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)].map(
     (m) =>
       `'sha256-${crypto
@@ -116,12 +121,15 @@ export function dashboardCsp(html: string): string {
         .update(m[1] ?? '', 'utf8')
         .digest('base64')}'`,
   );
+  // The Host header already passed the dashboard's allowlist; this only keeps
+  // anything but a host[:port] out of the header value.
+  const wsOrigins = host && /^[A-Za-z0-9.:[\]-]+$/.test(host) ? ` ws://${host} wss://${host}` : '';
   return [
     "default-src 'self'",
-    `script-src 'self' ${hashes.join(' ')}`.trim(),
+    `script-src 'self' 'unsafe-eval' ${hashes.join(' ')}`.trim(),
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' blob: data:",
-    "connect-src 'self'",
+    `connect-src 'self'${wsOrigins}`,
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'self'",

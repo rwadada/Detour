@@ -75,7 +75,9 @@ describe('dashboardCsp', () => {
   it('allows the bundle and the page inline scripts by hash, and nothing else that runs code', () => {
     const csp = dashboardCsp('<script>console.log(1)</script><script type="module" src="/assets/a.js"></script>');
     const expected = crypto.createHash('sha256').update('console.log(1)', 'utf8').digest('base64');
-    expect(csp).toContain(`script-src 'self' 'sha256-${expected}'`);
+    expect(csp).toContain(`script-src 'self' 'unsafe-eval' 'sha256-${expected}'`);
+    expect(dashboardCsp('', 'localhost:9080')).toContain("connect-src 'self' ws://localhost:9080 wss://localhost:9080");
+    expect(dashboardCsp('', 'evil"; script-src *')).toContain("connect-src 'self';");
     expect(csp).not.toMatch(/script-src[^;]*unsafe-inline/);
     expect(csp).toContain("object-src 'none'");
     expect(csp).toContain("frame-ancestors 'none'");

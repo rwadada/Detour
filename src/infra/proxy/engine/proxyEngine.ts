@@ -1505,8 +1505,7 @@ export class ProxyEngine {
   private isSelfTargetUrl(url: string): Promise<boolean> {
     try {
       const target = new URL(url);
-      const defaultPort = target.protocol === 'wss:' || target.protocol === 'https:' ? 443 : 80;
-      return this.selfTargets.isSelfTarget(target.hostname, target.port ? Number(target.port) : defaultPort);
+      return this.selfTargets.isSelfTarget(target.hostname, urlPort(target));
     } catch {
       return Promise.resolve(false);
     }
@@ -1545,9 +1544,7 @@ export class ProxyEngine {
     let lookup: GuardedLookup | undefined;
     if (this.vettedWebSocketUrls.get(ctx) === url) {
       try {
-        const target = new URL(url);
-        const defaultPort = target.protocol === 'wss:' ? 443 : 80;
-        lookup = this.selfTargets.lookupFor(target.port ? Number(target.port) : defaultPort);
+        lookup = this.selfTargets.lookupFor(urlPort(new URL(url)));
       } catch {
         lookup = undefined;
       }
@@ -1673,6 +1670,12 @@ export class ProxyEngine {
       // Best-effort — the connection is already in a broken state either way.
     }
   }
+}
+
+/** The port a `ws:`/`wss:`/`http:`/`https:` URL connects to — its own, or its scheme's default. */
+function urlPort(url: URL): number {
+  if (url.port) return Number(url.port);
+  return url.protocol === 'wss:' || url.protocol === 'https:' ? 443 : 80;
 }
 
 function listenAsync(server: net.Server, port: number, host: string): Promise<void> {

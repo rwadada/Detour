@@ -225,6 +225,9 @@ export function createSelfTargetGuard(
       return reachesOwnListener(addresses, port);
     },
     lookupFor(port) {
+      // No listener of ours on this port: nothing to guard, so ordinary
+      // traffic keeps Node's own lookup (hints, address ordering) unchanged.
+      if (!listeners.some((l) => l.port === port)) return dns.lookup as unknown as GuardedLookup;
       return (hostname, options, callback) => {
         resolve(stripBrackets(hostname)).then(
           (resolved) => answerLookup(hostname, port, options, resolved, reachesOwnListener, callback),
