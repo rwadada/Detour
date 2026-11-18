@@ -1,14 +1,15 @@
 /**
- * Failed-login bookkeeping for one kind of key (a client address, or an IPv6
- * /64). `limit` consecutive failures lock the key out; each lockout lasts
- * twice as long as the one before it (from `baseLockoutMs`, up to
- * `maxLockoutMs`), and failures short of the limit never decay with time.
+ * Failed-login bookkeeping for one kind of key (a client address, or one
+ * shared tally such as "every remote client"). `limit` failures lock the key
+ * out; each lockout lasts twice as long as the one before it (from
+ * `baseLockoutMs`, up to `maxLockoutMs`), and failures short of the limit
+ * never decay with time.
  *
  * Both halves matter. A lockout that lasted until restart let any local
  * process (they all share 127.0.0.1) lock the owner out for good; one that
  * simply expired and reset the count let a client guess `limit - 1` times
  * per window forever. Escalating lockouts leave a mistyping owner waiting
- * minutes, while a guesser gets a few dozen tries a day at most.
+ * minutes, while a guesser is held to a bounded number of tries a day.
  */
 export interface LoginBudget {
   /** Whether `key` is locked out right now. */
@@ -17,6 +18,8 @@ export interface LoginBudget {
   recordFailure(key: string): number;
   /** Forgets `key` entirely (a successful login). */
   reset(key: string): void;
+  /** Takes back one recorded failure (an attempt charged up front that turned out not to be a wrong guess). A lockout it already triggered stays. */
+  refund(key: string): void;
   /** Clears `key`'s failures but keeps its lockout history, so its next lockout still escalates (a shared tally a success shouldn't wipe). An active lockout stays. */
   forgiveFailures(key: string): void;
 }
@@ -82,6 +85,10 @@ export function createLoginBudget(options: {
     },
     reset: (key) => {
       entries.delete(key);
+    },
+    refund: (key) => {
+      const entry = current(key);
+      if (entry && entry.failures > 0) entry.failures--;
     },
     forgiveFailures: (key) => {
       const entry = current(key);

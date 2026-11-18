@@ -25,6 +25,8 @@ const MAX_TRACKED_LOGIN_FAILURE_IPS = 1000;
 /** The first lockout's length; each later one for the same key doubles it, up to a day (see `loginBudget.ts`). */
 const LOGIN_LOCKOUT_MS = 15 * 60_000;
 const LOGIN_LOCKOUT_MAX_MS = 24 * 60 * 60_000;
+/** The escalation cap for a key many clients share (loopback, the remote-wide tally) — see where each is created. */
+const SHARED_LOCKOUT_MAX_MS = 60 * 60_000;
 /**
  * Failures every non-loopback client together may add up before password
  * login is locked out for all of them. A per-address limit alone can be
@@ -112,16 +114,24 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
     maxTracked: MAX_TRACKED_LOGIN_FAILURE_IPS,
     ...lockout,
   });
-  const remoteFailures = createLoginBudget({ limit: MAX_REMOTE_LOGIN_FAILURES, maxTracked: 1, ...lockout });
-  // Loopback gets its own budget that never escalates past the first lockout.
-  // Every local process shares that address, and a process running as the
-  // owner can read the password hash and the token straight out of ~/.detour
-  // anyway, so a long lockout there would only ever lock the owner out.
+  // Escalates only up to an hour: anyone on the network can feed this tally,
+  // so a longer lockout would hand them a long denial of service against every
+  // remote device; an hour still holds a guesser to a few hundred tries a day.
+  const remoteFailures = createLoginBudget({
+    limit: MAX_REMOTE_LOGIN_FAILURES,
+    maxTracked: 1,
+    ...lockout,
+    maxLockoutMs: SHARED_LOCKOUT_MAX_MS,
+  });
+  // Loopback gets its own budget whose lockouts escalate only up to an hour.
+  // Every local process shares that address (so does anything a local tunnel
+  // or reverse proxy forwards), so a day-long lockout would mostly lock the
+  // owner out; an hour still holds a guesser behind it to ~120 tries a day.
   const loopbackFailures = createLoginBudget({
     limit: MAX_LOGIN_FAILURES,
     maxTracked: MAX_TRACKED_LOGIN_FAILURE_IPS,
     ...lockout,
-    maxLockoutMs: LOGIN_LOCKOUT_MS,
+    maxLockoutMs: SHARED_LOCKOUT_MAX_MS,
   });
   const budgetFor = (ip: string) => (isLoopbackAddress(ip) ? loopbackFailures : addressFailures);
   /** Whether a client at `ip` is locked out right now — by its own failures, or (off loopback) by all remote ones. */
@@ -150,6 +160,12 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
   function recordLoginFailure(ip: string): number {
     if (!isLoopbackAddress(ip)) remoteFailures.recordFailure(REMOTE);
     return budgetFor(ip).recordFailure(ip);
+  }
+
+  /** Takes back an attempt `recordLoginFailure` charged up front that turned out not to be a wrong guess. */
+  function refundLoginFailure(ip: string): void {
+    if (!isLoopbackAddress(ip)) remoteFailures.refund(REMOTE);
+    budgetFor(ip).refund(ip);
   }
 
   // Read fresh on every check (connect, login attempt, `setDashboardPassword`) rather than cached once at startup —
@@ -221,12 +237,17 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
     if (ip === undefined || loginInFlight.has(socket)) return;
     // A socket admitted before a lockout began doesn't keep guessing on it:
     // nothing is verified while the lockout lasts.
+    // Closed with the lockout's own reason rather than `authFailed`, which
+    // would read as a wrong password.
     if (lockedOut(ip)) {
-      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(AUTH_FAILED));
       socket.close(1008, 'Too many failed login attempts');
       return;
     }
     loginInFlight.add(socket);
+    // Charged up front and refunded if it turns out right: counting only after
+    // the (slow) verify would let a burst of parallel attempts all pass the
+    // lockout check above before any of them had been counted.
+    const failures = recordLoginFailure(ip);
     try {
       const hash = currentPasswordHash();
       const generation = passwordGeneration;
@@ -246,6 +267,7 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
       // told to try again, but the attempt is not charged to the IP — it was answered against a credential that
       // no longer exists, so it says nothing about whether the client is guessing.
       if (generation !== passwordGeneration) {
+        refundLoginFailure(ip);
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(AUTH_FAILED));
         return;
       }
@@ -263,7 +285,6 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
       }
       // Exponential backoff (issue #159) before even answering: makes each successive wrong guess from this IP
       // slower than the last, on top of scrypt's own ~20ms+ per attempt.
-      const failures = recordLoginFailure(ip);
       await sleep(Math.min(LOGIN_BACKOFF_BASE_MS * 2 ** (failures - 1), LOGIN_BACKOFF_MAX_MS));
       // The socket (or the whole server) could have gone away during that delay — nothing left to answer.
       if (socket.readyState !== WebSocket.OPEN) return;

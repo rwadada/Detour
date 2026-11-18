@@ -17,6 +17,14 @@ const MIME_TYPES: Record<string, string> = {
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
   '.map': 'application/json; charset=utf-8',
+  // Served with `X-Content-Type-Options: nosniff`, so anything the build can
+  // emit needs its real type rather than application/octet-stream.
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.webp': 'image/webp',
+  '.avif': 'image/avif',
+  '.gif': 'image/gif',
+  '.txt': 'text/plain; charset=utf-8',
+  '.wasm': 'application/wasm',
 };
 
 /**

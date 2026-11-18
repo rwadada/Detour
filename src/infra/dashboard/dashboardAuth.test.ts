@@ -336,7 +336,7 @@ describe('dashboard auth — third review round', () => {
     }
   }
 
-  it('never escalates a loopback lockout past the first window', async () => {
+  it('escalates a loopback lockout only up to an hour', async () => {
     let time = 0;
     const { auth } = setup({ loadPasswordHash: () => passwordHash, now: () => time });
     const admit = () => {
@@ -345,12 +345,32 @@ describe('dashboard auth — third review round', () => {
       socket.close();
       return result;
     };
-    for (let round = 0; round < 4; round++) {
+    // 15 min, 30 min, 60 min, then capped at 60 min.
+    for (const minutes of [15, 30, 60, 60, 60]) {
       await failFrom(auth, '127.0.0.1', 5);
+      time += minutes * 60_000 - 1;
       expect(admit()).toBe('rejected');
-      time += 15 * 60_000;
+      time += 1;
       expect(admit()).toBe('needs-login');
     }
+  });
+
+  it('counts parallel attempts before verifying them, so a burst cannot outrun the remote cap', async () => {
+    const { auth } = setup({ loadPasswordHash: () => passwordHash });
+    // 27 guesses in flight at once from 9 addresses (3 sockets each).
+    const sockets: ReturnType<typeof socketOf>[] = [];
+    for (let host = 1; host <= 9; host++) {
+      for (let i = 0; i < 3; i++) {
+        const socket = socketOf();
+        expect(auth.admitConnection(socket, requestFrom(`10.1.0.${host}`))).toBe('needs-login');
+        sockets.push(socket);
+      }
+    }
+    await Promise.all(sockets.map((s) => auth.handleLogin(s, login('wrong'))));
+    // Only the first 25 were verified (and answered authFailed); the rest were
+    // refused on the lockout their predecessors had already been charged for.
+    const answered = sockets.filter((s) => s.send.mock.calls.length > 0).length;
+    expect(answered).toBe(25);
   });
 
   it('does not verify a guess from a socket admitted before its address got locked out', async () => {
