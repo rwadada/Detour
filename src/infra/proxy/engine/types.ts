@@ -27,6 +27,26 @@ export type OnConnectParams = (
 
 export type OnErrorParams = (context: IContext | null, err?: MaybeError, errorKind?: string) => void;
 
+/** The CONNECT a MITM'd TLS connection came in through: the target it asked for, and the client that asked. */
+export interface MitmTunnelInfo {
+  host: string;
+  port: number;
+  /** The CONNECT socket's remote address, when known. */
+  clientAddress: string | undefined;
+}
+
+/**
+ * A client's TLS handshake with the internal MITM server failed, before any
+ * request. `servername` is the SNI it asked for (the host it believed it was
+ * talking to), or `undefined` if it sent none or failed before saying;
+ * `tunnel` is the CONNECT the connection came in through, when it can still
+ * be told (see `ProxyEngine.onTlsClientError`).
+ */
+export type OnTlsClientErrorParams = (
+  err: Error,
+  info: { servername: string | undefined; tunnel: MitmTunnelInfo | undefined },
+) => void;
+
 export type OnWebsocketRequestParams = (ctx: IWebSocketContext, callback: ErrorCallback) => void;
 type IWebSocketCallback = (err: MaybeError, message?: unknown, flags?: unknown) => void;
 export type OnWebSocketFrameParams = (

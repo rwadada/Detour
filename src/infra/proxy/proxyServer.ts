@@ -1,4 +1,5 @@
 import type { ProxyAuthCredentials } from '../../domain/auth/proxyAuth';
+import { createAutoPassthroughHosts } from '../../domain/autoPassthrough/clientCertRejection';
 import { normalizeBlockHosts } from '../../domain/blockHosts/blockHostsPolicy';
 import { ExchangeRegistry } from '../../domain/exchange/exchangeRegistry';
 import type {
@@ -18,6 +19,7 @@ import { assertPortAvailable } from '../portCheck';
 import { nodeCommandRunner } from '../process/nodeCommandRunner';
 import { ClientProcessDirectory, isClientProcessLookupSupported } from './clientProcessLookup';
 import { ProxyEngine } from './engine/proxyEngine';
+import { createClientCertRejectionHandler } from './pipeline/clientCertRejection';
 import { createConnectHandler } from './pipeline/connectHandler';
 import { createInterceptOffConnectHandler } from './pipeline/interceptOffConnect';
 import { createProxyErrorHandler } from './pipeline/proxyErrorHandler';
@@ -87,6 +89,14 @@ export interface ProxyServerOptions {
    * `DEFAULT_SCRIPT_TIMEOUT_MS`.
    */
   scriptTimeoutMs?: number;
+  /**
+   * Auto TLS passthrough (`--no-auto-passthrough` turns it off): once a
+   * client refuses Detour's certificate for a host, relay later CONNECTs to
+   * that host as raw TLS instead of MITM-ing them — see
+   * `pipeline/clientCertRejection.ts`. A refusal is logged as a row either way.
+   * @default true
+   */
+  autoPassthrough?: boolean;
 }
 
 export interface ProxyServerHandle {
@@ -146,7 +156,23 @@ export async function startProxyServer(
   // Keyed by ctx.uuid for WebSocket connections.
   const wsConnections = new Map<string, CapturedWebSocketConnection>();
 
+  // Auto TLS passthrough's record of refusing targets (see
+  // `pipeline/clientCertRejection.ts`). Toggling Intercept or changing Focus
+  // clears it — the user taking interception into their own hands is the
+  // natural moment to MITM those hosts again, e.g. right after installing
+  // the CA on a device that had refused it.
+  const autoPassthroughHosts = (options.autoPassthrough ?? true) ? createAutoPassthroughHosts() : undefined;
+  // Refusals logged without being recorded for passthrough; forgotten with it,
+  // so a retry after the user acted (installed the CA, toggled Intercept)
+  // shows up again instead of staying silent for the rest of the TTL.
+  const loggedRefusals = createAutoPassthroughHosts();
+  const forgetRefusals = (): void => {
+    autoPassthroughHosts?.clear();
+    loggedRefusals.clear();
+  };
+
   const handleSetIntercept = (enabled: boolean): void => {
+    if (enabled !== runtimeState.getSnapshot().interceptEnabled) forgetRefusals();
     runtimeState.update({ interceptEnabled: enabled });
     eventBus.emit('interceptChanged', { enabled });
   };
@@ -154,6 +180,10 @@ export async function startProxyServer(
 
   const handleSetFocus = (hosts: string[]): void => {
     const focusHosts = normalizeFocusHosts(hosts);
+    const previous = runtimeState.getSnapshot().focusHosts;
+    if (focusHosts.length !== previous.length || focusHosts.some((host, i) => host !== previous[i])) {
+      forgetRefusals();
+    }
     runtimeState.update({ focusHosts });
     eventBus.emit('focusChanged', { hosts: focusHosts });
   };
@@ -182,11 +212,16 @@ export async function startProxyServer(
     runtimeState,
   });
 
+  proxy.onTlsClientError(
+    createClientCertRejectionHandler({ eventBus, runtimeState, autoPassthroughHosts, loggedRefusals }),
+  );
+
   proxy.onConnect(
     createConnectHandler({
       eventBus,
       runtimeState,
       handleInterceptOffConnect,
+      autoPassthroughHosts,
     }),
   );
 

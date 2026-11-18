@@ -67,44 +67,64 @@ export function registerConfigCommand(program: Command): void {
       '--proxy-auth <user:pass>',
       'Require these credentials (HTTP Basic, via Proxy-Authorization) from every client of the *proxy* before it will serve them (issue #158) — the counterpart to --dashboard-password, for the port that actually carries traffic. Pass "off" to remove them. Read at `detour start`, so a change needs a restart; the password is stored hashed, never in plaintext.',
     )
-    .action(
-      async (options: { defaultDetach?: string; lan?: string; dashboardPassword?: string; proxyAuth?: string }) => {
-        try {
-          const patch: UserConfig = {};
-          if (options.defaultDetach !== undefined)
-            patch.defaultDetach = parseOnOff(options.defaultDetach, '--default-detach');
-          if (options.lan !== undefined) patch.lanAccess = parseOnOff(options.lan, '--lan');
-          if (options.dashboardPassword !== undefined) {
-            const value = parseDashboardPasswordFlag(options.dashboardPassword);
-            patch.dashboardPasswordHash = value === null ? null : await hashPassword(value);
-          }
-          if (options.proxyAuth !== undefined) {
-            if (options.proxyAuth === 'off') {
-              patch.proxyAuth = null;
-            } else {
-              const { username, password } = parseProxyAuthFlag(options.proxyAuth, '--proxy-auth');
-              patch.proxyAuth = { username, passwordHash: await hashPassword(password) };
-            }
-          }
+    .option(
+      '--auto-passthrough <on|off>',
+      'When "off", `detour start` keeps MITM-ing a host even after its client refused Detour\'s certificate, instead of relaying it as raw TLS from then on (on by default) — override per-invocation with --auto-passthrough/--no-auto-passthrough. Read at `detour start`, so a change needs a restart.',
+    )
+    .action(runConfigCommand);
+}
 
-          if (Object.keys(patch).length > 0) {
-            const written = writeUserConfig(patch);
-            for (const key of Object.keys(patch)) {
-              const [label, value] = describeWrittenConfigField(key, written);
-              console.log(`✔ ${label} = ${value} (${resolveUserConfigPath()})`);
-            }
-            return;
-          }
-          const config = loadUserConfig();
-          console.log(`defaultDetach = ${config.defaultDetach ?? false}`);
-          console.log(`lanAccess = ${config.lanAccess ?? false}`);
-          console.log(`dashboardPassword = ${config.dashboardPasswordHash ? 'on' : 'off'}`);
-          console.log(`proxyAuth = ${describeProxyAuth(config.proxyAuth)}`);
-          console.log(`Config file: ${resolveUserConfigPath()}`);
-        } catch (err) {
-          console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
-          process.exitCode = 1;
-        }
-      },
-    );
+interface ConfigCommandOptions {
+  defaultDetach?: string;
+  lan?: string;
+  dashboardPassword?: string;
+  proxyAuth?: string;
+  autoPassthrough?: string;
+}
+
+/** Turns `detour config`'s flags into a `UserConfig` patch, hashing any password on the way. */
+async function buildConfigPatch(options: ConfigCommandOptions): Promise<UserConfig> {
+  const patch: UserConfig = {};
+  if (options.defaultDetach !== undefined) patch.defaultDetach = parseOnOff(options.defaultDetach, '--default-detach');
+  if (options.lan !== undefined) patch.lanAccess = parseOnOff(options.lan, '--lan');
+  if (options.autoPassthrough !== undefined)
+    patch.autoPassthrough = parseOnOff(options.autoPassthrough, '--auto-passthrough');
+  if (options.dashboardPassword !== undefined) {
+    const value = parseDashboardPasswordFlag(options.dashboardPassword);
+    patch.dashboardPasswordHash = value === null ? null : await hashPassword(value);
+  }
+  if (options.proxyAuth !== undefined) {
+    if (options.proxyAuth === 'off') {
+      patch.proxyAuth = null;
+    } else {
+      const { username, password } = parseProxyAuthFlag(options.proxyAuth, '--proxy-auth');
+      patch.proxyAuth = { username, passwordHash: await hashPassword(password) };
+    }
+  }
+  return patch;
+}
+
+/** `detour config`: writes whatever the flags set, or prints every setting when none were given. */
+async function runConfigCommand(options: ConfigCommandOptions): Promise<void> {
+  try {
+    const patch = await buildConfigPatch(options);
+    if (Object.keys(patch).length > 0) {
+      const written = writeUserConfig(patch);
+      for (const key of Object.keys(patch)) {
+        const [label, value] = describeWrittenConfigField(key, written);
+        console.log(`✔ ${label} = ${value} (${resolveUserConfigPath()})`);
+      }
+      return;
+    }
+    const config = loadUserConfig();
+    console.log(`defaultDetach = ${config.defaultDetach ?? false}`);
+    console.log(`lanAccess = ${config.lanAccess ?? false}`);
+    console.log(`dashboardPassword = ${config.dashboardPasswordHash ? 'on' : 'off'}`);
+    console.log(`proxyAuth = ${describeProxyAuth(config.proxyAuth)}`);
+    console.log(`autoPassthrough = ${config.autoPassthrough ?? true}`);
+    console.log(`Config file: ${resolveUserConfigPath()}`);
+  } catch (err) {
+    console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  }
 }

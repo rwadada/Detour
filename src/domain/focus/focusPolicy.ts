@@ -34,3 +34,12 @@ export function isHostFocused(focusHosts: readonly string[], host: string): bool
   if (focusHosts.length === 0) return true;
   return matchesAnyHostPattern(focusHosts, host);
 }
+
+/**
+ * Whether the user put `host` in Focus on purpose — unlike `isHostFocused`,
+ * an empty Focus list ("no restriction") doesn't count. Auto TLS passthrough
+ * never overrides this: a host the user asked to intercept stays MITM'd.
+ */
+export function isHostExplicitlyFocused(focusHosts: readonly string[], host: string): boolean {
+  return focusHosts.length > 0 && matchesAnyHostPattern(focusHosts, host);
+}

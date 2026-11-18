@@ -1,4 +1,5 @@
 import { tokenLandingPath } from '../domain/auth/dashboardAccess';
+import { AUTO_PASSTHROUGH_TTL_MINUTES } from '../domain/autoPassthrough/clientCertRejection';
 import type { RuleEngine } from '../usecase/ruleEngine';
 import { logScriptGateWarnings, logUnreachableRuleWarnings } from './logger';
 
@@ -109,6 +110,8 @@ export function printStartupBanner(info: {
   clientCertSet: boolean;
   /** The CA-expiry warning line's text (issue #164), or undefined when the CA isn't within 30 days of expiring — resolved by the caller (`domain/cert/caValidity.ts`'s `caExpiryWarning`) since `presentation/` may not read `infra/`'s `ca.pem` itself. An already-expired CA never reaches here: `CertAuthority.load` refuses it, so `detour start` fails before printing any banner at all. */
   caExpiryWarning: string | undefined;
+  /** Whether auto TLS passthrough is on (see `ProxyServerOptions.autoPassthrough`). */
+  autoPassthrough: boolean;
 }): void {
   console.log(
     `Detour proxy started → http://localhost:${info.proxyPort} (HTTP/2: ${info.http2Enabled ? 'on' : 'off'}, upstream HTTP/2: ${info.http2UpstreamEnabled ? 'on' : 'off'})`,
@@ -120,6 +123,11 @@ export function printStartupBanner(info: {
   // renewing means re-trusting it on every device, which is worth a
   // heads-up well before the day everything starts failing at once.
   if (info.caExpiryWarning) console.log(`⚠ ${info.caExpiryWarning}`);
+  console.log(
+    info.autoPassthrough
+      ? `Auto TLS passthrough: on — a client that refuses this CA for a host gets that host relayed untouched for ${AUTO_PASSTHROUGH_TTL_MINUTES} minutes (--no-auto-passthrough)`
+      : 'Auto TLS passthrough: off (--auto-passthrough)',
+  );
   const dashboardScheme = info.dashboardTls ? 'https' : 'http';
   // `/?token=…` when an access token protects the dashboard (issue #205) —
   // opening this URL once trades it for a cookie.

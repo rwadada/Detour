@@ -43,6 +43,17 @@ describe('userConfigStore (fs-backed)', () => {
     expect(() => loadUserConfig(configPath)).toThrow(/must be a boolean/);
   });
 
+  it('writes and reads autoPassthrough back unchanged', () => {
+    writeUserConfig({ autoPassthrough: false }, configPath);
+    expect(loadUserConfig(configPath)).toEqual({ autoPassthrough: false });
+  });
+
+  it('throws when autoPassthrough is not a boolean', () => {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ autoPassthrough: 'off' }));
+    expect(() => loadUserConfig(configPath)).toThrow(/"autoPassthrough" must be a boolean/);
+  });
+
   it('writes and reads dashboardPasswordHash back unchanged', () => {
     writeUserConfig({ dashboardPasswordHash: VALID_HASH_FIXTURE }, configPath);
     expect(loadUserConfig(configPath)).toEqual({ dashboardPasswordHash: VALID_HASH_FIXTURE });

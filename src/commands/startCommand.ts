@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Option, type Command } from 'commander';
 import { hashPassword } from '../domain/auth/passwordHash';
+import { AUTO_PASSTHROUGH_TTL_MINUTES } from '../domain/autoPassthrough/clientCertRejection';
 import { parseProxyAuthFlag, type ProxyAuthCredentials } from '../domain/auth/proxyAuth';
 import { caExpiryWarning } from '../domain/cert/caValidity';
 import { CliExitError } from '../domain/daemon/errors';
@@ -110,6 +111,8 @@ interface StartOptions {
   open: boolean;
   /** `--lan`/`--no-lan`: bind the *dashboard* to every network interface (`0.0.0.0`) instead of just `localhost`, for this invocation — the proxy always binds to every interface regardless (see `PROXY_HOST`'s doc comment). Undefined when neither flag is passed — `resolveDashboardHost` then falls back to `~/.detour/config.json`'s `lanAccess`. Security-sensitive: see `UserConfigState.lanAccess`'s doc comment. */
   lan?: boolean;
+  /** `--auto-passthrough`/`--no-auto-passthrough`: once a client refuses Detour's certificate for a host, relay that host as raw TLS from then on (see `ProxyServerOptions.autoPassthrough`). Undefined when neither flag is passed — `resolveAutoPassthrough` then falls back to `~/.detour/config.json`'s `autoPassthrough`, then on. */
+  autoPassthrough?: boolean;
   /**
    * `--dashboard-tls <on|off>` (issue #159): forces HTTPS on/off for the
    * dashboard, overriding the default of on once `--lan`/`lanAccess` binds
@@ -248,6 +251,23 @@ const SHUTDOWN_TIMEOUT_MS = 6000;
 function resolveDashboardHost(options: StartOptions): string {
   const lan = options.lan ?? loadUserConfig().lanAccess ?? false;
   return lan ? '0.0.0.0' : 'localhost';
+}
+
+/**
+ * Resolves auto TLS passthrough for this invocation, same priority as
+ * `resolveDashboardHost`: an explicit `--auto-passthrough`/
+ * `--no-auto-passthrough`, then `~/.detour/config.json`'s
+ * `autoPassthrough`, then on.
+ */
+function resolveAutoPassthrough(options: StartOptions): boolean {
+  // A passthrough tunnel connects straight to its destination
+  // (`interceptOffConnect.ts`), not through `--upstream-proxy`; on by default
+  // it would quietly route refusing hosts around a proxy the user configured
+  // on purpose, so with one set it is only on when asked for explicitly.
+  // Not even a saved `autoPassthrough: true` turns it on then: only the flag
+  // on this very command line does.
+  if (options.upstreamProxy !== undefined) return options.autoPassthrough ?? false;
+  return options.autoPassthrough ?? loadUserConfig().autoPassthrough ?? true;
 }
 
 /**
@@ -407,6 +427,8 @@ interface StartResources {
   proxyAuth: ProxyAuthCredentials | undefined;
   historyStore: HistoryStore | undefined;
   historyDbPath: string | undefined;
+  /** Auto TLS passthrough, resolved once (`resolveAutoPassthrough`) so the proxy and the banner can't disagree. */
+  autoPassthrough: boolean;
 }
 
 /** What every step after the proxy is up needs to know — assembled once by `runStartBody`. */
@@ -493,6 +515,7 @@ async function prepareStartResources(
     proxyAuth,
     historyStore,
     historyDbPath,
+    autoPassthrough: resolveAutoPassthrough(options),
   };
 }
 
@@ -614,6 +637,7 @@ async function startProxy(
         proxyAuth: resources.proxyAuth,
         upstreamTls: resources.upstreamTls,
         scriptTimeoutMs: parseScriptTimeoutMs(options.scriptTimeoutMs),
+        autoPassthrough: resources.autoPassthrough,
       },
       eventBus,
     );
@@ -770,6 +794,7 @@ function printBanner(ctx: SessionContext, dashboardHandle: DashboardHandle | und
     insecureUpstream: options.insecureUpstream ?? false,
     upstreamCaCount: options.upstreamCa.length,
     clientCertSet: !!resources.upstreamTls?.cert,
+    autoPassthrough: resources.autoPassthrough,
     caExpiryWarning: caExpiryWarningLine(handle.caCertPath),
   });
 }
@@ -1127,6 +1152,14 @@ export function registerStartCommand(program: Command): void {
     .option(
       '--no-http2',
       "Disable HTTP/2 (ALPN) on MITM'd HTTPS connections — every intercepted host falls back to HTTP/1.1 only, matching Detour's behavior before this flag existed. HTTP/2 is negotiated with the client by default; independent of --no-http2-upstream below, which controls the separate proxy→upstream leg.",
+    )
+    .option(
+      '--auto-passthrough',
+      `When a client refuses Detour's certificate for a host with a TLS alert (an app that doesn't trust user-installed CAs, or whose pinning fails the handshake), relay later connections from that client address to that host and port as raw TLS for ${AUTO_PASSTHROUGH_TTL_MINUTES} minutes instead of MITM-ing them, so the app keeps working through the proxy — undecrypted. Hosts in Focus stay MITM'd; toggling Intercept or changing Focus forgets every refusal. The refusal is logged as a row either way. On by default (or as set by \`autoPassthrough\` via \`detour config\`).`,
+    )
+    .option(
+      '--no-auto-passthrough',
+      "Keep MITM-ing a host even after its client refused Detour's certificate — the opposite of --auto-passthrough. Every refusal is still logged as a row.",
     )
     .option(
       '--no-http2-upstream',
