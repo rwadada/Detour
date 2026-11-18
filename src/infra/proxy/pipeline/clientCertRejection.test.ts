@@ -86,6 +86,28 @@ describe('createClientCertRejectionHandler', () => {
     expect(responses[0]?.error).toMatch(/is in Focus, so it stays MITM'd/);
   });
 
+  it('logs a refusal once per target when the record is full, and again after the shared log is cleared', () => {
+    const eventBus = new DetourEventBus();
+    const { responses } = recordEvents(eventBus);
+    const runtimeState = new ProxyRuntimeState({ ruleEngine: undefined });
+    const hosts = createAutoPassthroughHosts({ limit: 1 });
+    const loggedRefusals = createAutoPassthroughHosts();
+    const handler = createClientCertRejectionHandler({
+      eventBus,
+      runtimeState,
+      autoPassthroughHosts: hosts,
+      loggedRefusals,
+    });
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('api.example.com'));
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('cdn.example.com'));
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('cdn.example.com'));
+    expect(responses.map((r) => r.host)).toEqual(['api.example.com', 'cdn.example.com']);
+    expect(responses[1]?.error).toMatch(/turn Intercept off or set Focus to other hosts only/);
+    loggedRefusals.clear();
+    handler(CERTIFICATE_UNKNOWN, viaTunnel('cdn.example.com'));
+    expect(responses).toHaveLength(3);
+  });
+
   it('keeps logging refusals for a recorded target once the user puts it in Focus (it is MITM-ed again)', () => {
     const eventBus = new DetourEventBus();
     const { responses } = recordEvents(eventBus);
@@ -296,6 +318,22 @@ describe('auto TLS passthrough, end to end', () => {
         expect(await certificateThroughTunnel(engine.httpPort, target, ca, `127.0.0.1:${upstream.port}`)).toBe(
           'fake-upstream',
         );
+        // A recorded target only ever carries TLS: a plain-text protocol sent
+        // through it (a faked refusal aimed at a local Redis, say) is cut off.
+        const plain = await new Promise<string>((resolve) => {
+          const s = net.connect(engine.httpPort, '127.0.0.1', () =>
+            s.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`),
+          );
+          let received = '';
+          s.once('data', () => s.write('PING\r\n'));
+          s.on('data', (chunk) => {
+            received += chunk.toString();
+          });
+          s.on('close', () => resolve(received));
+          s.on('error', () => resolve(received));
+        });
+        expect(plain).toMatch(/^HTTP\/1\.1 200/);
+        expect(responses.some((r) => /not a TLS connection/.test(r.error ?? ''))).toBe(true);
         // …and only on that port: the same host on another port is still MITM'd.
         const other = await startFakeUpstream();
         try {

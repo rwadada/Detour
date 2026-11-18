@@ -16,9 +16,19 @@ export interface ClientCertRejectionDeps {
   runtimeState: ProxyRuntimeState;
   /** Where refusals are recorded for auto TLS passthrough; omitted when that's turned off (`--no-auto-passthrough`). */
   autoPassthroughHosts?: AutoPassthroughHosts;
+  /**
+   * Refusals already logged that weren't recorded for passthrough (it's off,
+   * or the record is full), so a client retrying the same target doesn't add a
+   * row per attempt. The owner clears it together with `autoPassthroughHosts`;
+   * omitted, the handler keeps its own.
+   */
+  loggedRefusals?: AutoPassthroughHosts;
 }
 
 type Outcome = 'passthrough' | 'focused' | 'full' | 'off' | 'untracked';
+
+/** How to relay a host untouched by hand. Focus is the list of hosts that *are* MITM'd, so it helps only by leaving this one out. */
+const RELAY_HINT = 'to relay it untouched, turn Intercept off or set Focus to other hosts only';
 
 /** What happens next for a refusing target, worded for the row's error text. */
 function describeOutcome(outcome: Outcome, hostPort: string): string {
@@ -28,11 +38,11 @@ function describeOutcome(outcome: Outcome, hostPort: string): string {
     case 'focused':
       return `${hostPort} is in Focus, so it stays MITM'd rather than being relayed untouched`;
     case 'full':
-      return `auto TLS passthrough already remembers its maximum number of hosts, so ${hostPort} stays MITM'd; use Intercept Off or Focus to relay it`;
+      return `auto TLS passthrough already remembers its maximum number of hosts, so ${hostPort} stays MITM'd; ${RELAY_HINT}`;
     case 'off':
-      return 'auto TLS passthrough is off (--auto-passthrough, or `detour config --auto-passthrough on`, turns it on); Intercept Off or Focus can relay it untouched meanwhile';
+      return `auto TLS passthrough is off (--auto-passthrough, or \`detour config --auto-passthrough on\`, turns it on); ${RELAY_HINT}`;
     case 'untracked':
-      return "the connection it came through could no longer be told, so it stays MITM'd; use Intercept Off or Focus to relay it";
+      return `the connection it came through could no longer be told, so it stays MITM'd; ${RELAY_HINT}`;
   }
 }
 
@@ -64,9 +74,14 @@ function describeOutcome(outcome: Outcome, hostPort: string): string {
  */
 export function createClientCertRejectionHandler(deps: ClientCertRejectionDeps): OnTlsClientErrorParams {
   const { eventBus, runtimeState, autoPassthroughHosts } = deps;
-  // With passthrough off, refusals already logged within the TTL, so a
-  // retrying client doesn't add a row per attempt.
-  const loggedWhileOff = autoPassthroughHosts ? undefined : createAutoPassthroughHosts();
+  const loggedRefusals = deps.loggedRefusals ?? createAutoPassthroughHosts();
+  /** Whether this refusal (not recorded for passthrough) was already logged; records it if not. A full set stops deduplicating rather than swallowing a refusal. */
+  const alreadyLogged = (tunnel: MitmTunnelInfo | undefined): boolean => {
+    if (!tunnel) return false;
+    if (loggedRefusals.has(tunnel)) return true;
+    loggedRefusals.add(tunnel);
+    return false;
+  };
   return function handleTlsClientError(err, { servername, tunnel }) {
     const alert = clientCertRejectionAlert(err);
     if (!alert) return;
@@ -87,17 +102,18 @@ export function createClientCertRejectionHandler(deps: ClientCertRejectionDeps):
     // while it's recorded, so each of its refusals is news and gets a row.
     let outcome: Outcome;
     if (!autoPassthroughHosts) {
-      // Deduplicated per target within the TTL; a full dedup set just stops
-      // deduplicating — it never swallows a refusal.
-      if (tunnel && loggedWhileOff?.has(tunnel)) return;
-      if (tunnel) loggedWhileOff?.add(tunnel);
+      if (alreadyLogged(tunnel)) return;
       outcome = 'off';
     } else if (isHostExplicitlyFocused(runtimeState.getSnapshot().focusHosts, hostPort)) outcome = 'focused';
     // Without a client address there's no client to scope the record to, and
     // every such connection would share one key.
     else if (!tunnel?.clientAddress) outcome = 'untracked';
     else if (autoPassthroughHosts.has(tunnel)) return;
-    else outcome = autoPassthroughHosts.add(tunnel) ? 'passthrough' : 'full';
+    else if (autoPassthroughHosts.add(tunnel)) outcome = 'passthrough';
+    else {
+      if (alreadyLogged(tunnel)) return;
+      outcome = 'full';
+    }
 
     const sni = servername && servername.toLowerCase() !== target.host.toLowerCase() ? ` (SNI ${servername})` : '';
     const message = `the client refused Detour's certificate for ${hostPort}${sni} (TLS alert: ${alert}) — it doesn't trust the Detour CA (e.g. an Android 7+ app that ignores user-installed CAs) or pins its own certificate; ${describeOutcome(outcome, hostPort)}`;

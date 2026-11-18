@@ -85,26 +85,43 @@ const AUTO_PASSTHROUGH_TTL_MS = AUTO_PASSTHROUGH_TTL_MINUTES * 60_000;
  */
 const MAX_AUTO_PASSTHROUGH_TARGETS = 10_000;
 
+/**
+ * How many of those one client address may hold, so a single client (all of
+ * them without `--proxy-auth`) can't fill the shared set with made-up hosts
+ * and leave none for the devices actually being debugged.
+ */
+const MAX_AUTO_PASSTHROUGH_TARGETS_PER_CLIENT = 1_000;
+
 function keyOf(target: AutoPassthroughTarget): string {
   return `${target.clientAddress ?? ''} ${target.host.toLowerCase()}:${target.port}`;
 }
 
 export function createAutoPassthroughHosts(
-  options: { limit?: number; ttlMs?: number; now?: () => number } = {},
+  options: { limit?: number; perClientLimit?: number; ttlMs?: number; now?: () => number } = {},
 ): AutoPassthroughHosts {
   // A monotonic clock: a wall-clock step (NTP, sleep/resume) would otherwise
   // stretch or cut every entry's lifetime and break pruneExpired's ordering.
   const {
     limit = MAX_AUTO_PASSTHROUGH_TARGETS,
+    perClientLimit = MAX_AUTO_PASSTHROUGH_TARGETS_PER_CLIENT,
     ttlMs = AUTO_PASSTHROUGH_TTL_MS,
     now = () => performance.now(),
   } = options;
-  const expiresAt = new Map<string, number>();
+  const entries = new Map<string, { expiry: number; client: string }>();
+  const perClient = new Map<string, number>();
+  const remove = (key: string): void => {
+    const entry = entries.get(key);
+    if (!entry) return;
+    entries.delete(key);
+    const count = (perClient.get(entry.client) ?? 1) - 1;
+    if (count > 0) perClient.set(entry.client, count);
+    else perClient.delete(entry.client);
+  };
   const live = (key: string): boolean => {
-    const expiry = expiresAt.get(key);
-    if (expiry === undefined) return false;
-    if (expiry > now()) return true;
-    expiresAt.delete(key);
+    const entry = entries.get(key);
+    if (entry === undefined) return false;
+    if (entry.expiry > now()) return true;
+    remove(key);
     return false;
   };
   // Every entry gets the same TTL and a Map iterates in insertion order, so
@@ -112,21 +129,26 @@ export function createAutoPassthroughHosts(
   // rather than scanning a full set on every refused add.
   const pruneExpired = (): void => {
     const time = now();
-    for (const [key, expiry] of expiresAt) {
-      if (expiry > time) break;
-      expiresAt.delete(key);
+    for (const [key, entry] of entries) {
+      if (entry.expiry > time) break;
+      remove(key);
     }
   };
   return {
     add(target) {
       const key = keyOf(target);
       if (live(key)) return false;
-      if (expiresAt.size >= limit) pruneExpired();
-      if (expiresAt.size >= limit) return false;
-      expiresAt.set(key, now() + ttlMs);
+      const client = target.clientAddress ?? '';
+      if (entries.size >= limit || (perClient.get(client) ?? 0) >= perClientLimit) pruneExpired();
+      if (entries.size >= limit || (perClient.get(client) ?? 0) >= perClientLimit) return false;
+      entries.set(key, { expiry: now() + ttlMs, client });
+      perClient.set(client, (perClient.get(client) ?? 0) + 1);
       return true;
     },
     has: (target) => live(keyOf(target)),
-    clear: () => expiresAt.clear(),
+    clear: () => {
+      entries.clear();
+      perClient.clear();
+    },
   };
 }

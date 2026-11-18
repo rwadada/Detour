@@ -27,12 +27,22 @@ export interface InterceptOffConnectDeps {
  * below), so a passthrough connection still shows up in the log table
  * instead of vanishing without a trace the moment Intercept is off.
  */
+/** Whether `chunk` begins a TLS handshake record (content type 22, major version 3) — the first bytes of every TLS ClientHello. */
+function isTlsHandshakeStart(chunk: Buffer): boolean {
+  return chunk.length >= 2 && chunk[0] === 0x16 && chunk[1] === 0x03;
+}
+
 // eslint-disable-next-line max-lines-per-function -- CONNECT passthrough handler factory; tracked under issue #208 (issue #207)
 export function createInterceptOffConnectHandler(deps: InterceptOffConnectDeps) {
   const { eventBus, runtimeState } = deps;
 
   // eslint-disable-next-line max-lines-per-function -- CONNECT passthrough lifecycle; tracked under issue #208 (issue #207)
-  return function handleInterceptOffConnect(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+  return function handleInterceptOffConnect(
+    req: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    options: { requireTlsClientHello?: boolean } = {},
+  ): void {
     const target = ProxyEngine.parseConnectTarget(req);
     if (!target?.host) {
       socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
@@ -78,19 +88,43 @@ export function createInterceptOffConnectHandler(deps: InterceptOffConnectDeps) 
           passthrough: true,
         };
         eventBus.emit('request', tunnelExchange);
-        if (head.length > 0) upstream.write(head);
-        const liveSnapshot = runtimeState.getSnapshot();
-        const throttleState = liveSnapshot.throttleState;
-        if (throttleState.enabled && (throttleState.upKbps > 0 || throttleState.packetLossPct > 0)) {
-          socket.pipe(createThrottleTransform(throttleState.upKbps, throttleState.packetLossPct)).pipe(upstream);
-        } else {
-          socket.pipe(upstream);
+        const relay = (first: Buffer) => {
+          if (first.length > 0) upstream.write(first);
+          const throttleState = runtimeState.getSnapshot().throttleState;
+          if (throttleState.enabled && (throttleState.upKbps > 0 || throttleState.packetLossPct > 0)) {
+            socket.pipe(createThrottleTransform(throttleState.upKbps, throttleState.packetLossPct)).pipe(upstream);
+          } else {
+            socket.pipe(upstream);
+          }
+          if (throttleState.enabled && (throttleState.downKbps > 0 || throttleState.packetLossPct > 0)) {
+            upstream.pipe(createThrottleTransform(throttleState.downKbps, throttleState.packetLossPct)).pipe(socket);
+          } else {
+            upstream.pipe(socket);
+          }
+        };
+        if (!options.requireTlsClientHello) {
+          relay(head);
+          return;
         }
-        if (throttleState.enabled && (throttleState.downKbps > 0 || throttleState.packetLossPct > 0)) {
-          upstream.pipe(createThrottleTransform(throttleState.downKbps, throttleState.packetLossPct)).pipe(socket);
-        } else {
-          upstream.pipe(socket);
-        }
+        // Auto TLS passthrough only ever stands in for a TLS connection the
+        // client refused to let Detour MITM: relay it only if it opens with a
+        // TLS handshake record, so it can't be turned into a raw TCP tunnel
+        // (to a local Redis, say) by a client that faked a refusal.
+        const check = (first: Buffer) => {
+          if (isTlsHandshakeStart(first)) {
+            relay(first);
+            return;
+          }
+          closeTunnelExchange('not a TLS connection — auto TLS passthrough only relays TLS');
+          socket.destroy();
+          upstream.destroy();
+        };
+        if (head.length > 0) check(head);
+        else
+          socket.once('data', (chunk: Buffer) => {
+            socket.pause();
+            check(chunk);
+          });
       };
       const throttleState = runtimeState.getSnapshot().throttleState;
       const latency = throttleState.enabled ? throttleState.latencyMs : 0;

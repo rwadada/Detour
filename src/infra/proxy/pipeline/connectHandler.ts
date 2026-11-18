@@ -65,8 +65,13 @@ export function createConnectHandler(deps: ConnectHandlerDeps): OnConnectParams 
       return;
     }
     const focused = !formatted || isHostFocused(snapshot.focusHosts, formatted);
-    if (snapshot.interceptEnabled && focused && !refusedBefore(socket, target, snapshot.focusHosts)) {
-      callback();
+    if (snapshot.interceptEnabled && focused) {
+      if (!refusedBefore(socket, target, snapshot.focusHosts)) {
+        callback();
+        return;
+      }
+      // Relayed only because of an earlier refusal: it must actually be TLS.
+      handleInterceptOffConnect(req, socket, head, { requireTlsClientHello: true });
       return;
     }
     handleInterceptOffConnect(req, socket, head);

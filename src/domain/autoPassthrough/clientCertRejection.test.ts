@@ -89,6 +89,15 @@ describe('createAutoPassthroughHosts', () => {
     expect(hosts.add(phone('a.example'))).toBe(true);
   });
 
+  it('caps how many targets one client may hold, without starving another client', () => {
+    const hosts = createAutoPassthroughHosts({ perClientLimit: 2 });
+    const attacker = (host: string) => ({ clientAddress: '192.168.1.66', host, port: 443 });
+    expect(hosts.add(attacker('a.invalid'))).toBe(true);
+    expect(hosts.add(attacker('b.invalid'))).toBe(true);
+    expect(hosts.add(attacker('c.invalid'))).toBe(false);
+    expect(hosts.add(phone('api.example.com'))).toBe(true);
+  });
+
   it('stops recording new targets at its limit, making room again as old ones expire', () => {
     let time = 0;
     const hosts = createAutoPassthroughHosts({ limit: 2, ttlMs: 100, now: () => time });

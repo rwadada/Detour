@@ -94,7 +94,7 @@ export function InspectorPanel() {
           </Button>
         </div>
         <div className="flex flex-1 items-center justify-center p-4 text-center text-sm text-[var(--muted)]">
-          {exchange.error && exchange.durationMs === 0
+          {exchange.error?.includes("refused Detour's certificate")
             ? // A row for a handshake that never got anywhere (a client refusing Detour's certificate):
               // the error above says what happened; there was never a request to show.
               'No HTTP exchange to show — the connection failed during the TLS handshake, before any request was sent.'

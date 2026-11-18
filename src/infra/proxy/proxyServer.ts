@@ -162,9 +162,17 @@ export async function startProxyServer(
   // natural moment to MITM those hosts again, e.g. right after installing
   // the CA on a device that had refused it.
   const autoPassthroughHosts = (options.autoPassthrough ?? true) ? createAutoPassthroughHosts() : undefined;
+  // Refusals logged without being recorded for passthrough; forgotten with it,
+  // so a retry after the user acted (installed the CA, toggled Intercept)
+  // shows up again instead of staying silent for the rest of the TTL.
+  const loggedRefusals = createAutoPassthroughHosts();
+  const forgetRefusals = (): void => {
+    autoPassthroughHosts?.clear();
+    loggedRefusals.clear();
+  };
 
   const handleSetIntercept = (enabled: boolean): void => {
-    if (enabled !== runtimeState.getSnapshot().interceptEnabled) autoPassthroughHosts?.clear();
+    if (enabled !== runtimeState.getSnapshot().interceptEnabled) forgetRefusals();
     runtimeState.update({ interceptEnabled: enabled });
     eventBus.emit('interceptChanged', { enabled });
   };
@@ -174,7 +182,7 @@ export async function startProxyServer(
     const focusHosts = normalizeFocusHosts(hosts);
     const previous = runtimeState.getSnapshot().focusHosts;
     if (focusHosts.length !== previous.length || focusHosts.some((host, i) => host !== previous[i])) {
-      autoPassthroughHosts?.clear();
+      forgetRefusals();
     }
     runtimeState.update({ focusHosts });
     eventBus.emit('focusChanged', { hosts: focusHosts });
@@ -204,7 +212,9 @@ export async function startProxyServer(
     runtimeState,
   });
 
-  proxy.onTlsClientError(createClientCertRejectionHandler({ eventBus, runtimeState, autoPassthroughHosts }));
+  proxy.onTlsClientError(
+    createClientCertRejectionHandler({ eventBus, runtimeState, autoPassthroughHosts, loggedRefusals }),
+  );
 
   proxy.onConnect(
     createConnectHandler({
