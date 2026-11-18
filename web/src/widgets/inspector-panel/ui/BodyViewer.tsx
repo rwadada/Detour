@@ -154,6 +154,18 @@ function latin1Decode(bytes: Uint8Array): string {
  * content-type/encoding replacing the current one, `enabled` flipping back
  * off, and the component unmounting outright.
  */
+function isSvg(contentType: string): boolean {
+  return /^image\/svg\+xml\b/i.test(contentType.trim());
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
 function useImageObjectUrl(
   body: string | undefined,
   contentType: string | undefined,
@@ -179,6 +191,16 @@ function useImageObjectUrl(
       // "Decoding…" for a body that in fact failed to decode.
       if (!bytes) {
         setResult({ body, contentType, contentEncoding, url: undefined });
+        return;
+      }
+      // An SVG is a document that can carry script. A `blob:` URL keeps the
+      // dashboard's origin, so one opened in a tab of its own ("Open image in
+      // new tab") would run a captured SVG's script as the dashboard — and
+      // Chrome doesn't apply this page's CSP to a blob opened that way. A
+      // `data:` URL gets an opaque origin instead (and can't be opened as a
+      // top-level document at all), while still rendering in the <img>.
+      if (isSvg(contentType)) {
+        setResult({ body, contentType, contentEncoding, url: `data:image/svg+xml;base64,${toBase64(bytes)}` });
         return;
       }
       createdUrl = URL.createObjectURL(new Blob([bytes as BufferSource], { type: contentType }));

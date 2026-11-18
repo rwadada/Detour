@@ -1,4 +1,5 @@
 import type { IncomingMessage } from 'node:http';
+import net from 'node:net';
 import WebSocket from 'ws';
 import { requestHasValidToken } from '../../domain/auth/dashboardAccess';
 import { verifyPassword } from '../../domain/auth/passwordHash';
@@ -20,6 +21,13 @@ const LOGIN_BACKOFF_MAX_MS = 320;
  * toward whichever IP happens to hit it first.
  */
 const MAX_TRACKED_LOGIN_FAILURE_IPS = 1000;
+/**
+ * How long an IP stays locked out after its last failed attempt. Without an
+ * expiry the lockout lasted until restart — and since every local process
+ * shares 127.0.0.1, any of them could lock the owner out of a password-
+ * protected dashboard for good just by failing five times.
+ */
+const LOGIN_LOCKOUT_MS = 15 * 60_000;
 
 const AUTH_FAILED: DashboardServerMessage = { type: 'authFailed' };
 
@@ -32,6 +40,8 @@ export interface DashboardAuthDeps {
   sendInitialPayload: (socket: WebSocket) => void;
   /** The wait before a failed login is answered (issue #159's backoff). Injectable so tests need not really wait. */
   sleep?: (ms: number) => Promise<void>;
+  /** The clock a lockout expires by. Injectable so tests need not really wait. */
+  now?: () => number;
 }
 
 /** What `admitConnection` decided for a new socket. */
@@ -58,9 +68,38 @@ export interface DashboardAuth {
   handleLogin: (socket: WebSocket, message: Extract<DashboardClientMessage, { type: 'login' }>) => Promise<void>;
 }
 
-/** The IP a connection's rate-limit counters are tracked under — the raw socket address, not anything a client-controlled header could spoof. */
+/**
+ * The key a connection's rate-limit counters are tracked under — from the raw
+ * socket address, not anything a client-controlled header could spoof. An
+ * IPv6 address counts by its /64 (one host usually owns a whole /64 and can
+ * pick fresh addresses in it at will, which would otherwise reset its count
+ * with every address); an IPv4-mapped one counts as the IPv4 address it is.
+ */
+export function rateLimitKey(remoteAddress: string | undefined): string {
+  if (!remoteAddress) return 'unknown';
+  const address = remoteAddress.toLowerCase().split('%')[0]!;
+  if (!net.isIPv6(address)) return address;
+  const serialized = new URL(`http://[${address}]/`).hostname.slice(1, -1);
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(serialized);
+  if (mapped) {
+    const hi = Number.parseInt(mapped[1]!, 16);
+    const lo = Number.parseInt(mapped[2]!, 16);
+    return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+  }
+  const groups = expandIPv6(serialized);
+  return `${groups.slice(0, 4).join(':')}::/64`;
+}
+
+/** The eight groups of an RFC 5952 IPv6 address, `::` expanded. */
+function expandIPv6(address: string): string[] {
+  const [head = '', tail] = address.split('::');
+  const left = head ? head.split(':') : [];
+  const right = tail ? tail.split(':') : [];
+  return [...left, ...Array<string>(8 - left.length - right.length).fill('0'), ...right];
+}
+
 function clientIp(req: IncomingMessage): string {
-  return req.socket.remoteAddress ?? 'unknown';
+  return rateLimitKey(req.socket.remoteAddress);
 }
 
 function realSleep(ms: number): Promise<void> {
@@ -83,7 +122,18 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
   // the initial snapshot. A `login` that arrives while one's already in flight for that socket is dropped rather than
   // queued — a real client only ever has one outstanding attempt at a time.
   const loginInFlight = new WeakSet<WebSocket>();
-  const loginFailuresByIp = new Map<string, number>();
+  const loginFailuresByIp = new Map<string, { failures: number; lastAt: number }>();
+  const now = deps.now ?? Date.now;
+  /** `ip`'s current failure count, forgetting it once its lockout window has passed. */
+  function failuresFor(ip: string): number {
+    const entry = loginFailuresByIp.get(ip);
+    if (!entry) return 0;
+    if (now() - entry.lastAt >= LOGIN_LOCKOUT_MS) {
+      loginFailuresByIp.delete(ip);
+      return 0;
+    }
+    return entry.failures;
+  }
   const unauthenticatedSocketCountByIp = new Map<string, number>();
   // Which sockets currently hold a counted slot in `unauthenticatedSocketCountByIp` — released exactly once,
   // whichever of "authenticated" or "closed" happens first, so the count never double-decrements.
@@ -105,12 +155,14 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
 
   /** Records one more login failure for `ip` and returns its new total, evicting the oldest-tracked IP first at the cap. */
   function recordLoginFailure(ip: string): number {
-    const failures = (loginFailuresByIp.get(ip) ?? 0) + 1;
+    const failures = failuresFor(ip) + 1;
     if (!loginFailuresByIp.has(ip) && loginFailuresByIp.size >= MAX_TRACKED_LOGIN_FAILURE_IPS) {
       const oldestIp = loginFailuresByIp.keys().next().value;
       if (oldestIp !== undefined) loginFailuresByIp.delete(oldestIp);
     }
-    loginFailuresByIp.set(ip, failures);
+    // Re-inserted so the Map stays ordered by last failure (the eviction above takes the stalest).
+    loginFailuresByIp.delete(ip);
+    loginFailuresByIp.set(ip, { failures, lastAt: now() });
     return failures;
   }
 
@@ -153,7 +205,7 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
     const ip = clientIp(req);
     // An IP that's already exhausted its attempts doesn't get a fresh set just by reconnecting — closing a socket
     // and opening a new one is free, so a per-socket-only limit would defend nothing.
-    if ((loginFailuresByIp.get(ip) ?? 0) >= MAX_LOGIN_FAILURES) {
+    if (failuresFor(ip) >= MAX_LOGIN_FAILURES) {
       socket.close(1008, 'Too many failed login attempts');
       return 'rejected';
     }

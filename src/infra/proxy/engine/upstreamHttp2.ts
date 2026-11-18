@@ -6,6 +6,7 @@ import { findHeader } from '../../../domain/exchange/headers';
 import type { UpstreamCertificate } from '../../../domain/exchange/types';
 import type { UpstreamTlsOptions } from '../upstreamTlsOptions';
 import { UPSTREAM_KEEP_ALIVE_TIMEOUT_MS } from './keepAliveTiming';
+import type { GuardedLookup } from './selfTarget';
 import type { ProxyToServerRequestOptions } from './types';
 import { captureUpstreamCertificate } from './upstreamCertificate';
 
@@ -166,7 +167,12 @@ export class UpstreamHttp2Pool {
    * receive the probe's own fresh socket/timing/certificate, so the same
    * socket is never handed to two different requests.
    */
-  async acquire(host: string, port: number, tlsOptions: UpstreamTlsOptions | undefined): Promise<AcquiredConnection> {
+  async acquire(
+    host: string,
+    port: number,
+    tlsOptions: UpstreamTlsOptions | undefined,
+    lookup?: GuardedLookup,
+  ): Promise<AcquiredConnection> {
     const key = `${host}:${port}`;
 
     const existingSession = this.sessions.get(key);
@@ -187,7 +193,7 @@ export class UpstreamHttp2Pool {
 
     let probe = this.pending.get(key);
     if (!probe) {
-      const promise = this.probe(host, port, tlsOptions);
+      const promise = this.probe(host, port, tlsOptions, lookup);
       probe = { promise, claimed: false };
       this.pending.set(key, probe);
       promise.finally(() => {
@@ -228,7 +234,13 @@ export class UpstreamHttp2Pool {
     };
   }
 
-  private probe(host: string, port: number, tlsOptions: UpstreamTlsOptions | undefined): Promise<ProbeResult> {
+  // eslint-disable-next-line max-lines-per-function -- one TLS+ALPN probe with its timing/cleanup; the lookup parameter (DNS-rebinding guard) pushed it just past the limit
+  private probe(
+    host: string,
+    port: number,
+    tlsOptions: UpstreamTlsOptions | undefined,
+    lookup: GuardedLookup | undefined,
+  ): Promise<ProbeResult> {
     return new Promise((resolve, reject) => {
       const startedAt = Date.now();
       let lookupAt: number | undefined;
@@ -237,6 +249,7 @@ export class UpstreamHttp2Pool {
       const socket = tls.connect({
         host,
         port,
+        lookup, // the self-target guard's own resolution (`SelfTargetGuard.lookupFor`); undefined = DNS as usual
         servername: net.isIP(host) === 0 ? host : undefined,
         ALPNProtocols: ['h2', 'http/1.1'],
         // Spread, not individually-named `ca: tlsOptions?.ca, ...` fields:

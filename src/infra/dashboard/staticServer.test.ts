@@ -1,10 +1,11 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { serveStatic } from './staticServer';
+import { dashboardCsp, serveStatic } from './staticServer';
 
 let root: string;
 let server: http.Server;
@@ -67,5 +68,17 @@ describe('serveStatic', () => {
     const response = await requestRaw('/..%2F..%2Fetc%2Fpasswd');
     expect(response.status).toBe(400);
     expect(response.body).toBe('Bad Request');
+  });
+});
+
+describe('dashboardCsp', () => {
+  it('allows the bundle and the page inline scripts by hash, and nothing else that runs code', () => {
+    const csp = dashboardCsp('<script>console.log(1)</script><script type="module" src="/assets/a.js"></script>');
+    const expected = crypto.createHash('sha256').update('console.log(1)', 'utf8').digest('base64');
+    expect(csp).toContain(`script-src 'self' 'sha256-${expected}'`);
+    expect(csp).not.toMatch(/script-src[^;]*unsafe-inline/);
+    expect(csp).toContain("object-src 'none'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("img-src 'self' blob: data:");
   });
 });

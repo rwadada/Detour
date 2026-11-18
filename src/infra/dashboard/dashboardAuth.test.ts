@@ -4,7 +4,7 @@ import type { IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { hashPassword } from '../../domain/auth/passwordHash';
-import { createDashboardAuth, type DashboardAuthDeps } from './dashboardAuth';
+import { createDashboardAuth, type DashboardAuthDeps, rateLimitKey } from './dashboardAuth';
 
 const TOKEN = 'secret-token';
 
@@ -250,5 +250,53 @@ describe('dashboard auth (issue #207)', () => {
       broken = true;
       expect(auth.admitConnection(socketOf(), requestFrom('10.0.0.1'))).toBe('needs-login');
     });
+  });
+});
+
+describe('dashboard auth — lockout window and address keying', () => {
+  async function failFive(auth: ReturnType<typeof setup>['auth'], ip: string) {
+    for (let i = 0; i < 5; i++) {
+      const socket = socketOf();
+      if (auth.admitConnection(socket, requestFrom(ip)) !== 'needs-login') return;
+      await auth.handleLogin(socket, login('wrong'));
+      socket.close();
+    }
+  }
+
+  it('lifts a lockout once its window has passed, so a local process cannot lock the owner out for good', async () => {
+    let time = 0;
+    const { auth } = setup({ loadPasswordHash: () => passwordHash, now: () => time });
+    await failFive(auth, '127.0.0.1');
+    expect(auth.admitConnection(socketOf(), requestFrom('127.0.0.1'))).toBe('rejected');
+    time += 15 * 60_000 - 1;
+    expect(auth.admitConnection(socketOf(), requestFrom('127.0.0.1'))).toBe('rejected');
+    time += 1;
+    expect(auth.admitConnection(socketOf(), requestFrom('127.0.0.1'))).toBe('needs-login');
+  });
+
+  it('counts an IPv6 client by its /64, so rotating addresses inside it buys no extra attempts', async () => {
+    const { auth } = setup({ loadPasswordHash: () => passwordHash });
+    for (let i = 1; i <= 5; i++) {
+      const socket = socketOf();
+      expect(auth.admitConnection(socket, requestFrom(`2001:db8:1:2::${i}`))).toBe('needs-login');
+      await auth.handleLogin(socket, login('wrong'));
+      socket.close();
+    }
+    expect(auth.admitConnection(socketOf(), requestFrom('2001:db8:1:2:abcd::99'))).toBe('rejected');
+    expect(auth.admitConnection(socketOf(), requestFrom('2001:db8:1:3::1'))).toBe('needs-login');
+  });
+});
+
+describe('rateLimitKey', () => {
+  it.each([
+    ['10.0.0.1', '10.0.0.1'],
+    ['::ffff:10.0.0.1', '10.0.0.1'],
+    ['::ffff:a00:1', '10.0.0.1'],
+    ['2001:db8:1:2:3:4:5:6', '2001:db8:1:2::/64'],
+    ['2001:DB8:1:2::9%en0', '2001:db8:1:2::/64'],
+    ['::1', '0:0:0:0::/64'],
+    [undefined, 'unknown'],
+  ])('%s → %s', (address, key) => {
+    expect(rateLimitKey(address)).toBe(key);
   });
 });

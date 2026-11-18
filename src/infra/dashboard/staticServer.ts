@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -87,7 +88,43 @@ function sendFile(filePath: string, req: IncomingMessage, res: ServerResponse, i
     // cached — otherwise a rebuilt dashboard can end up pointing at assets
     // that no longer exist.
     const cacheControl = ext === '.html' ? 'no-store' : 'public, max-age=3600';
-    res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': cacheControl });
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Cache-Control': cacheControl,
+      'X-Content-Type-Options': 'nosniff',
+      ...(ext === '.html' ? { 'Content-Security-Policy': dashboardCsp(data.toString('utf8')) } : {}),
+    });
     res.end(req.method === 'HEAD' ? undefined : data);
   });
+}
+
+/**
+ * The dashboard page's Content-Security-Policy. It renders captured
+ * traffic — bodies from arbitrary servers, including `image/svg+xml` shown
+ * through `blob:` URLs — and a `blob:` document inherits the policy of the
+ * page that created it, so a captured SVG opened in a tab of its own can't
+ * run its script with the dashboard's origin (and from there drive the
+ * dashboard's WebSocket). Scripts are only the bundle and the page's own
+ * inline ones, pinned by hash; inline style stays allowed (attribute styles
+ * from React and Tailwind), which can't run code.
+ */
+export function dashboardCsp(html: string): string {
+  const hashes = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)].map(
+    (m) =>
+      `'sha256-${crypto
+        .createHash('sha256')
+        .update(m[1] ?? '', 'utf8')
+        .digest('base64')}'`,
+  );
+  return [
+    "default-src 'self'",
+    `script-src 'self' ${hashes.join(' ')}`.trim(),
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' blob: data:",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join('; ');
 }

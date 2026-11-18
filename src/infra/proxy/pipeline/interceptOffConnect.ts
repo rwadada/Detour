@@ -8,11 +8,20 @@ import type { ProxyRuntimeState } from '../../../usecase/proxyRuntimeState';
 import { resolveConnectRoute } from '../../../usecase/resolveConnectRoute';
 import type { DetourEventBus } from '../../eventBus';
 import { ProxyEngine } from '../engine/proxyEngine';
+import type { GuardedLookup } from '../engine/selfTarget';
 import { createThrottleTransform } from '../throttleTransform';
 
 export interface InterceptOffConnectDeps {
   eventBus: DetourEventBus;
   runtimeState: ProxyRuntimeState;
+  /**
+   * The self-target guard's connection `lookup` for a port (`ProxyEngine.guardedLookup`):
+   * the tunnel to the CONNECT's own target resolves through it, so a
+   * DNS-rebinding name can't pass the up-front check with one answer and
+   * connect to Detour's own listener with another. Omitted in tests that
+   * don't wire an engine.
+   */
+  guardedLookup?: (port: number) => GuardedLookup;
 }
 
 /**
@@ -34,7 +43,7 @@ function isTlsHandshakeStart(chunk: Buffer): boolean {
 
 // eslint-disable-next-line max-lines-per-function -- CONNECT passthrough handler factory; tracked under issue #208 (issue #207)
 export function createInterceptOffConnectHandler(deps: InterceptOffConnectDeps) {
-  const { eventBus, runtimeState } = deps;
+  const { eventBus, runtimeState, guardedLookup } = deps;
 
   // eslint-disable-next-line max-lines-per-function -- CONNECT passthrough lifecycle; tracked under issue #208 (issue #207)
   return function handleInterceptOffConnect(
@@ -69,7 +78,10 @@ export function createInterceptOffConnectHandler(deps: InterceptOffConnectDeps) 
     };
 
     let established = false;
-    const upstream = net.connect({ host: destHost, port: destPort }, () => {
+    // A route rule's destination is the user's own (SECURITY.md allows one
+    // pointing at a Detour port), so only the CONNECT's own target is held to the guard.
+    const lookup = route ? undefined : guardedLookup?.(destPort);
+    const upstream = net.connect({ host: destHost, port: destPort, ...(lookup ? { lookup } : {}) }, () => {
       const finishConnect = () => {
         if (socket.destroyed || upstream.destroyed) return;
         established = true;
