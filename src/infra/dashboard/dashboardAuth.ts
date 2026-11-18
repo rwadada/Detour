@@ -122,10 +122,21 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
     maxTracked: MAX_TRACKED_LOGIN_FAILURE_IPS,
     ...lockout,
   });
+  // Loopback gets its own budget that never escalates past the first lockout.
+  // Every local process shares that address, and a process running as the
+  // owner can read the password hash and the token straight out of ~/.detour
+  // anyway, so a long lockout there would only ever lock the owner out.
+  const loopbackFailures = createLoginBudget({
+    limit: MAX_LOGIN_FAILURES,
+    maxTracked: MAX_TRACKED_LOGIN_FAILURE_IPS,
+    ...lockout,
+    maxLockoutMs: LOGIN_LOCKOUT_MS,
+  });
+  const budgetFor = (ip: string) => (ip.startsWith('127.') || ip === '::1' ? loopbackFailures : addressFailures);
   const prefixBySocket = new WeakMap<WebSocket, string | undefined>();
   /** Whether a client at `ip` (and its /64, for IPv6) is locked out right now. */
   const lockedOut = (ip: string, prefix: string | undefined): boolean =>
-    addressFailures.isLocked(ip) || (prefix !== undefined && prefixFailures.isLocked(prefix));
+    budgetFor(ip).isLocked(ip) || (prefix !== undefined && prefixFailures.isLocked(prefix));
   const unauthenticatedSocketCountByIp = new Map<string, number>();
   // Which sockets currently hold a counted slot in `unauthenticatedSocketCountByIp` — released exactly once,
   // whichever of "authenticated" or "closed" happens first, so the count never double-decrements.
@@ -148,7 +159,7 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
   /** Records one more login failure for `ip` (and its /64); returns its count toward the current lockout. */
   function recordLoginFailure(ip: string, prefix: string | undefined): number {
     if (prefix !== undefined) prefixFailures.recordFailure(prefix);
-    return addressFailures.recordFailure(ip);
+    return budgetFor(ip).recordFailure(ip);
   }
 
   // Read fresh on every check (connect, login attempt, `setDashboardPassword`) rather than cached once at startup —
@@ -219,6 +230,13 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
     // log in (it cannot reach here through the server), and re-deriving an address could charge a different key.
     const ip = ipBySocket.get(socket);
     if (ip === undefined || loginInFlight.has(socket)) return;
+    // A socket admitted before its address (or /64) got locked out doesn't
+    // keep guessing on it: nothing is verified while the lockout lasts.
+    if (lockedOut(ip, prefixBySocket.get(socket))) {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(AUTH_FAILED));
+      socket.close(1008, 'Too many failed login attempts');
+      return;
+    }
     loginInFlight.add(socket);
     try {
       const hash = currentPasswordHash();
@@ -243,7 +261,11 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
         return;
       }
       if (verified) {
-        addressFailures.reset(ip);
+        budgetFor(ip).reset(ip);
+        // The /64's tally too: otherwise a household's occasional typos, each
+        // followed by a successful login, would add up to a lockout over time.
+        const prefix = prefixBySocket.get(socket);
+        if (prefix !== undefined) prefixFailures.reset(prefix);
         releaseUnauthenticatedSlot(socket, ip);
         authenticatedSockets.add(socket);
         passwordVerifiedSockets.add(socket);

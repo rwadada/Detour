@@ -114,7 +114,8 @@ function sendFile(filePath: string, req: IncomingMessage, res: ServerResponse, i
  * `'self'`.
  */
 export function dashboardCsp(html: string, host?: string): string {
-  const hashes = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)].map(
+  // `\ssrc=`, not `\bsrc=`: `data-src=` must not pass for an external script.
+  const hashes = [...html.matchAll(/<script(?![^>]*\ssrc\s*=)[^>]*>([\s\S]*?)<\/script>/gi)].map(
     (m) =>
       `'sha256-${crypto
         .createHash('sha256')

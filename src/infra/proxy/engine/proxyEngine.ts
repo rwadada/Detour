@@ -281,7 +281,7 @@ export class ProxyEngine {
   /** The target each request's self-target check judged (`relayRequest`), so the connection can be held to it (`guardedLookupFor`). */
   private readonly vettedTargets = new WeakMap<Context, { host: string; port: number }>();
   /** The same for WebSocket upgrades: the upstream URL as it stood when the guard judged it. */
-  private readonly vettedWebSocketUrls = new WeakMap<WsContext, string>();
+  private readonly vettedWebSocketUrls = new WeakMap<WsContext, { host: string; port: number }>();
 
   // Typed as plain `http.Agent` (not `https.Agent` for the second one) since
   // that's all `IContext.proxyToServerRequestOptions.agent` ever needs — see
@@ -1487,7 +1487,12 @@ export class ProxyEngine {
       headers[key] = flattenHeaderValue(upgradeReq.headers[key]);
     }
     ctx.proxyToServerWebSocketOptions = { url, headers };
-    this.vettedWebSocketUrls.set(ctx, url);
+    try {
+      const judged = new URL(url);
+      this.vettedWebSocketUrls.set(ctx, { host: judged.hostname, port: urlPort(judged) });
+    } catch {
+      // An unparseable URL fails the upstream connection anyway.
+    }
 
     // A `wss://` upgrade inside a MITM tunnel never went through
     // `verifyClient`, and its CONNECT target can differ from the upgrade's
@@ -1539,15 +1544,18 @@ export class ProxyEngine {
     // `forwardRequest` already applies to the HTTP(S) path, so
     // `--upstream-ca`/`--insecure-upstream`/`--client-cert` reach a wss://
     // upstream too instead of always using Node's default verification.
-    // Held to the self-target guard's own resolution while the URL is still
-    // the one the guard judged (a `route` rule's destination is the user's own).
+    // Held to the self-target guard's own resolution while the host and port
+    // are still the ones the guard judged — a rule rewriting only the path
+    // keeps it; a `route` rule's new destination is the user's own.
     let lookup: GuardedLookup | undefined;
-    if (this.vettedWebSocketUrls.get(ctx) === url) {
-      try {
-        lookup = this.selfTargets.lookupFor(urlPort(new URL(url)));
-      } catch {
-        lookup = undefined;
+    const vetted = this.vettedWebSocketUrls.get(ctx);
+    try {
+      const target = new URL(url);
+      if (vetted && vetted.host === target.hostname && vetted.port === urlPort(target)) {
+        lookup = this.selfTargets.lookupFor(vetted.port);
       }
+    } catch {
+      lookup = undefined;
     }
     const serverWs = new WebSocket(url, {
       headers,

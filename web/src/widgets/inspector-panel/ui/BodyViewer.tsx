@@ -135,8 +135,15 @@ function latin1Decode(bytes: Uint8Array): string {
   return new TextDecoder('iso-8859-1').decode(bytes);
 }
 
-function isSvg(contentType: string): boolean {
-  return /^image\/svg\+xml\b/i.test(contentType.trim());
+/**
+ * Raster formats a browser only ever decodes as pixels. Anything else under
+ * `image/` (`image/svg+xml`, or any `image/whatever+xml`) can be rendered as
+ * a document with script, so it must not get a same-origin `blob:` URL.
+ */
+const RASTER_IMAGE = /^image\/(png|jpeg|pjpeg|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon|apng)\s*(;|$)/i;
+
+function isScriptCapableImage(contentType: string): boolean {
+  return !RASTER_IMAGE.test(contentType.trim());
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -193,14 +200,16 @@ function useImageObjectUrl(
         setResult({ body, contentType, contentEncoding, url: undefined });
         return;
       }
-      // An SVG is a document that can carry script. A `blob:` URL keeps the
-      // dashboard's origin, so one opened in a tab of its own ("Open image in
-      // new tab") would run a captured SVG's script as the dashboard — and
-      // Chrome doesn't apply this page's CSP to a blob opened that way. A
-      // `data:` URL gets an opaque origin instead (and can't be opened as a
-      // top-level document at all), while still rendering in the <img>.
-      if (isSvg(contentType)) {
-        setResult({ body, contentType, contentEncoding, url: `data:image/svg+xml;base64,${toBase64(bytes)}` });
+      // An SVG (or any other image/*+xml) is a document that can carry
+      // script. A `blob:` URL keeps the dashboard's origin, so one opened in a
+      // tab of its own ("Open image in new tab") would run a captured image's
+      // script as the dashboard — and Chrome doesn't apply this page's CSP to
+      // a blob opened that way. A `data:` URL gets an opaque origin instead,
+      // while still rendering in the <img>. Only known raster formats, which
+      // can't carry script, keep the cheaper `blob:` URL.
+      if (isScriptCapableImage(contentType)) {
+        const mime = contentType.split(';')[0]!.trim();
+        setResult({ body, contentType, contentEncoding, url: `data:${mime};base64,${toBase64(bytes)}` });
         return;
       }
       createdUrl = URL.createObjectURL(new Blob([bytes as BufferSource], { type: contentType }));

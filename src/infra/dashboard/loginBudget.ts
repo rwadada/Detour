@@ -46,6 +46,23 @@ export function createLoginBudget(options: {
     return entry;
   };
 
+  /**
+   * Makes room for one more key: the least recently failed one that isn't
+   * locked out right now — forgetting a locked key would lift its lockout and
+   * restart its escalation, which a client able to mint keys (an IPv6 range)
+   * could do on purpose. Only if every tracked key is locked does the stalest go.
+   */
+  const evictOne = (): void => {
+    for (const [key, entry] of entries) {
+      if (entry.lockedUntil <= now()) {
+        entries.delete(key);
+        return;
+      }
+    }
+    const oldest = entries.keys().next().value;
+    if (oldest !== undefined) entries.delete(oldest);
+  };
+
   return {
     isLocked: (key) => (current(key)?.lockedUntil ?? 0) > now(),
     recordFailure(key) {
@@ -57,10 +74,7 @@ export function createLoginBudget(options: {
       }
       // Re-inserted so the Map stays ordered by last failure; the stalest goes first at the cap.
       entries.delete(key);
-      if (entries.size >= maxTracked) {
-        const oldest = entries.keys().next().value;
-        if (oldest !== undefined) entries.delete(oldest);
-      }
+      if (entries.size >= maxTracked) evictOne();
       entries.set(key, entry);
       return entry.failures;
     },
