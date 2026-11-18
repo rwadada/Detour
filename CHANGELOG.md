@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.5.0](https://github.com/rwadada/Detour/compare/v2.4.0...v2.5.0) (2026-11-18)
+
+
+### Features
+
+* **proxy:** auto TLS passthrough for hosts whose client refuses Detour's certificate ([2a482e6](https://github.com/rwadada/Detour/commit/2a482e6944c97f242b7f7ee537ae916a5b22a3e4))
+* **proxy:** auto TLS passthrough for hosts whose client refuses Detour's certificate ([87df662](https://github.com/rwadada/Detour/commit/87df6621f1d0b572a967902422ab8d2363b16ea6))
+
+
+### Bug Fixes
+
+* **deps:** dedupe vite and bump the biome config schema ([7b6be18](https://github.com/rwadada/Detour/commit/7b6be18a1afcd0fcfb4f36b1fe54ba86f6bed142))
+* **proxy:** agy review follow-ups for auto TLS passthrough ([bc4b685](https://github.com/rwadada/Detour/commit/bc4b68534783296af7661745e06658a91fdb43f9))
+* **proxy:** always drop the zone ID when canonicalizing self-target addresses ([dc354df](https://github.com/rwadada/Detour/commit/dc354dfb12e93e1e04b47437b35105ab359b8989))
+* **proxy:** bound the auto-passthrough host set ([4aa297f](https://github.com/rwadada/Detour/commit/4aa297f10979238f1a37c55dd95038d40c8675be))
+* **proxy:** canonicalize IP literals in the self-target guard ([3f8fef3](https://github.com/rwadada/Detour/commit/3f8fef3c321f6ca6892b8d88235b07311ccbeed2))
+* **proxy:** drop zone IDs except on link-local addresses in the self-target guard ([2153334](https://github.com/rwadada/Detour/commit/2153334df47551f8372d9ad360d5bc88ee4b5bb3))
+* **proxy:** fail closed in the self-target guard and validate CONNECT targets ([06e014d](https://github.com/rwadada/Detour/commit/06e014d0ef6f7aa45a0771736a4550ab2e5be4df))
+* **proxy:** fail closed on unparseable IPv6 and cover 0.0.0.0/8 in the self-target guard ([1f4e0cc](https://github.com/rwadada/Detour/commit/1f4e0ccb2354787e896f85ded05b649d25dd2037))
+* **proxy:** fifth review round for auto TLS passthrough ([3c3bd67](https://github.com/rwadada/Detour/commit/3c3bd6726b5844db5a5b85aeb6027b9222d8993f))
+* **proxy:** fourth review round for auto TLS passthrough ([82f19cd](https://github.com/rwadada/Detour/commit/82f19cdafef75050457d67ffd3ebf10626a1e25d))
+* **proxy:** harden the self-target guard and CONNECT target handling ([ef96469](https://github.com/rwadada/Detour/commit/ef964696e790635c15c26e36633fab67d367c84c))
+* **proxy:** keep zone IDs and use WHATWG URL to canonicalize addresses ([dafa09f](https://github.com/rwadada/Detour/commit/dafa09f61a78b06d9fc35a2412d6ce435d3a1bc6))
+* **proxy:** key auto passthrough on the CONNECT's client, host and port, with a 10-minute expiry ([d1c1211](https://github.com/rwadada/Detour/commit/d1c12114735759d35eef683a563f39dc3d79a713))
+* **proxy:** review follow-ups for auto TLS passthrough ([7afa379](https://github.com/rwadada/Detour/commit/7afa379f09757bd6c74493ab7cae9bd6aed61110))
+* **proxy:** route CONNECT by its request-target, not the Host header ([f6ce9f6](https://github.com/rwadada/Detour/commit/f6ce9f6183433f444b2aaa7bae1bb3dbf077b5f8))
+* **proxy:** third review round for auto TLS passthrough ([5a4215d](https://github.com/rwadada/Detour/commit/5a4215d3d0cf2c06a95ebbf010d8dc2d574fb8f0))
+
 ## [2.4.0](https://github.com/rwadada/Detour/compare/v2.3.2...v2.4.0) (2026-11-07)
 
 
