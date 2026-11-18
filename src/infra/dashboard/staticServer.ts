@@ -98,6 +98,23 @@ function sendFile(filePath: string, req: IncomingMessage, res: ServerResponse, i
   });
 }
 
+/** The last page scanned and its inline-script hashes — index.html only changes on a rebuild. */
+let hashCache: { html: string; hashes: string[] } | undefined;
+
+/** CSP hash sources for `html`'s inline scripts. `\ssrc=`, not `\bsrc=`: `data-src=` must not pass for an external script. */
+function inlineScriptHashes(html: string): string[] {
+  if (hashCache?.html === html) return hashCache.hashes;
+  const hashes = [...html.matchAll(/<script(?![^>]*\ssrc\s*=)[^>]*>([\s\S]*?)<\/script>/gi)].map(
+    (m) =>
+      `'sha256-${crypto
+        .createHash('sha256')
+        .update(m[1] ?? '', 'utf8')
+        .digest('base64')}'`,
+  );
+  hashCache = { html, hashes };
+  return hashes;
+}
+
 /**
  * The dashboard page's Content-Security-Policy — defence in depth for a page
  * that renders traffic from arbitrary servers: no script but the bundle and
@@ -114,14 +131,7 @@ function sendFile(filePath: string, req: IncomingMessage, res: ServerResponse, i
  * `'self'`.
  */
 export function dashboardCsp(html: string, host?: string): string {
-  // `\ssrc=`, not `\bsrc=`: `data-src=` must not pass for an external script.
-  const hashes = [...html.matchAll(/<script(?![^>]*\ssrc\s*=)[^>]*>([\s\S]*?)<\/script>/gi)].map(
-    (m) =>
-      `'sha256-${crypto
-        .createHash('sha256')
-        .update(m[1] ?? '', 'utf8')
-        .digest('base64')}'`,
-  );
+  const hashes = inlineScriptHashes(html);
   // The Host header already passed the dashboard's allowlist; this only keeps
   // anything but a host[:port] out of the header value.
   const wsOrigins = host && /^[A-Za-z0-9.:[\]-]+$/.test(host) ? ` ws://${host} wss://${host}` : '';

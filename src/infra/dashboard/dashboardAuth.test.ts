@@ -4,7 +4,7 @@ import type { IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { hashPassword } from '../../domain/auth/passwordHash';
-import { createDashboardAuth, type DashboardAuthDeps, rateLimitKeys } from './dashboardAuth';
+import { createDashboardAuth, type DashboardAuthDeps, rateLimitKey } from './dashboardAuth';
 
 const TOKEN = 'secret-token';
 
@@ -292,29 +292,37 @@ describe('dashboard auth — escalating lockouts and address keying', () => {
     expect(auth.admitConnection(socketOf(), requestFrom('127.0.0.1'))).toBe('rejected');
   });
 
-  it('counts addresses one by one, but caps an IPv6 /64 rotating addresses inside it', async () => {
+  it('counts addresses one by one, but caps remote failures summed over every address', async () => {
     const { auth } = setup({ loadPasswordHash: () => passwordHash });
-    // Another device on the same LAN /64 is not locked out by one device's mistakes.
+    const admit = (ip: string) => {
+      const socket = socketOf();
+      const result = auth.admitConnection(socket, requestFrom(ip));
+      socket.close();
+      return result;
+    };
+    // Another device is not locked out by one device's mistakes.
     await failFrom(auth, '2001:db8:1:2::1', 5);
-    expect(auth.admitConnection(socketOf(), requestFrom('2001:db8:1:2::1'))).toBe('rejected');
-    expect(auth.admitConnection(socketOf(), requestFrom('2001:db8:1:2::2'))).toBe('needs-login');
-    // But rotating through addresses adds up across the /64.
-    for (let i = 2; i <= 6; i++) await failFrom(auth, `2001:db8:1:2::${i}`, 4);
-    expect(auth.admitConnection(socketOf(), requestFrom('2001:db8:1:2::99'))).toBe('rejected');
-    expect(auth.admitConnection(socketOf(), requestFrom('2001:db8:1:3::1'))).toBe('needs-login');
+    expect(admit('2001:db8:1:2::1')).toBe('rejected');
+    expect(admit('2001:db8:9:9::2')).toBe('needs-login');
+    // But rotating through addresses — from any range — adds up.
+    for (let i = 2; i <= 6; i++) await failFrom(auth, `2001:db8:${i}::1`, 4);
+    expect(admit('2001:db8:ffff::1')).toBe('rejected');
+    expect(admit('10.0.0.77')).toBe('rejected');
+    // The owner at the machine itself is never caught by it.
+    expect(admit('127.0.0.1')).toBe('needs-login');
+    expect(admit('::1')).toBe('needs-login');
   });
 });
 
-describe('rateLimitKeys', () => {
+describe('rateLimitKey', () => {
   it.each([
-    ['10.0.0.1', { address: '10.0.0.1', prefix: undefined }],
-    ['::ffff:10.0.0.1', { address: '10.0.0.1', prefix: undefined }],
-    ['::ffff:a00:1', { address: '10.0.0.1', prefix: undefined }],
-    ['2001:db8:1:2:3:4:5:6', { address: '2001:db8:1:2:3:4:5:6', prefix: '2001:db8:1:2::/64' }],
-    ['2001:DB8:1:2::9%en0', { address: '2001:db8:1:2::9', prefix: '2001:db8:1:2::/64' }],
-    [undefined, { address: 'unknown', prefix: undefined }],
-  ])('%s → %o', (address, keys) => {
-    expect(rateLimitKeys(address)).toEqual(keys);
+    ['10.0.0.1', '10.0.0.1'],
+    ['::ffff:10.0.0.1', '10.0.0.1'],
+    ['::ffff:a00:1', '10.0.0.1'],
+    ['2001:DB8:1:2::9%en0', '2001:db8:1:2::9'],
+    [undefined, 'unknown'],
+  ])('%s → %s', (address, key) => {
+    expect(rateLimitKey(address)).toBe(key);
   });
 });
 
@@ -355,7 +363,7 @@ describe('dashboard auth — third review round', () => {
     expect(sendInitialPayload).not.toHaveBeenCalled();
   });
 
-  it('clears the /64 tally on a successful login, so a household’s occasional typos never add up', async () => {
+  it('clears the remote tally’s failures on a successful login, so the LAN’s occasional typos never add up', async () => {
     const { auth } = setup({ loadPasswordHash: () => passwordHash });
     for (let i = 1; i <= 8; i++) {
       await failFrom(auth, `2001:db8:1:2::${i}`, 4);

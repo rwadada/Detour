@@ -265,7 +265,11 @@ describe('auto TLS passthrough, end to end', () => {
         createConnectHandler({
           eventBus,
           runtimeState,
-          handleInterceptOffConnect: createInterceptOffConnectHandler({ eventBus, runtimeState }),
+          handleInterceptOffConnect: createInterceptOffConnectHandler({
+            eventBus,
+            runtimeState,
+            guardedLookup: (port) => engine.guardedLookup(port),
+          }),
           autoPassthroughHosts,
         }),
       );

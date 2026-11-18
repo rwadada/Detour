@@ -17,6 +17,8 @@ export interface LoginBudget {
   recordFailure(key: string): number;
   /** Forgets `key` entirely (a successful login). */
   reset(key: string): void;
+  /** Clears `key`'s failures but keeps its lockout history, so its next lockout still escalates (a shared tally a success shouldn't wipe). An active lockout stays. */
+  forgiveFailures(key: string): void;
 }
 
 interface Entry {
@@ -80,6 +82,10 @@ export function createLoginBudget(options: {
     },
     reset: (key) => {
       entries.delete(key);
+    },
+    forgiveFailures: (key) => {
+      const entry = current(key);
+      if (entry && entry.lockedUntil === 0) entry.failures = 0;
     },
   };
 }

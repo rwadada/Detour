@@ -88,8 +88,23 @@ function isThisNetworkIPv4(address: string): boolean {
   return address.startsWith('0.') && net.isIPv4(address);
 }
 
+/**
+ * Whether two host spellings name the same host for deciding if a connection
+ * still goes to the target the guard judged: case, a trailing dot and IPv6
+ * brackets don't make a different host.
+ */
+export function sameHost(a: string, b: string): boolean {
+  const norm = (h: string) => canonicalIp(h).replace(/\.$/, '');
+  return norm(a) === norm(b);
+}
+
+/** Whether a canonical address (`canonicalIp`) is loopback: 127.0.0.0/8 or ::1. */
+export function isLoopbackAddress(address: string): boolean {
+  return address.startsWith('127.') || address === '::1';
+}
+
 function isLoopbackOrUnspecified(address: string): boolean {
-  return address.startsWith('127.') || isThisNetworkIPv4(address) || address === '::1' || address === '::';
+  return isLoopbackAddress(address) || isThisNetworkIPv4(address) || address === '::';
 }
 
 /** Where a connection to an unspecified address (`0.0.0.0/8`, `::`: "any address") actually goes — that family's loopback. Any other address is itself. */

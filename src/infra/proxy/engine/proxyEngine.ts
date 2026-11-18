@@ -37,7 +37,7 @@ import type {
   UpstreamResponse,
 } from './types';
 import { UPSTREAM_KEEP_ALIVE_TIMEOUT_MS } from './keepAliveTiming';
-import { createSelfTargetGuard, type GuardedLookup } from './selfTarget';
+import { createSelfTargetGuard, type GuardedLookup, sameHost } from './selfTarget';
 import { captureUpstreamCertificate } from './upstreamCertificate';
 import {
   adaptHttp2Response,
@@ -539,7 +539,7 @@ export class ProxyEngine {
     const vetted = this.vettedTargets.get(ctx);
     const defaultPort = ctx.isSSL ? 443 : 80;
     const numericPort = typeof port === 'number' ? port : Number(port ?? defaultPort);
-    if (!vetted || vetted.host !== host || vetted.port !== numericPort) return undefined;
+    if (!vetted || !sameHost(vetted.host, host) || vetted.port !== numericPort) return undefined;
     return this.selfTargets.lookupFor(numericPort);
   }
 
@@ -1551,7 +1551,7 @@ export class ProxyEngine {
     const vetted = this.vettedWebSocketUrls.get(ctx);
     try {
       const target = new URL(url);
-      if (vetted && vetted.host === target.hostname && vetted.port === urlPort(target)) {
+      if (vetted && sameHost(vetted.host, target.hostname) && vetted.port === urlPort(target)) {
         lookup = this.selfTargets.lookupFor(vetted.port);
       }
     } catch {
