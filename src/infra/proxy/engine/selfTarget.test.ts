@@ -1,6 +1,7 @@
 /* eslint-disable sonarjs/no-hardcoded-ip -- address fixtures */
+import dns from 'node:dns';
 import { describe, expect, it } from 'vitest';
-import { canonicalIp, createSelfTargetGuard } from './selfTarget';
+import { canonicalIp, createSelfTargetGuard, SELF_TARGET_LOOKUP_ERROR } from './selfTarget';
 
 function guardWith(dns: Record<string, string[]> = {}, local: string[] = ['192.168.1.5']) {
   const guard = createSelfTargetGuard(
@@ -265,5 +266,63 @@ describe('canonicalIp', () => {
     ['Example.COM', 'example.com'],
   ])('%s → %s', (input, expected) => {
     expect(canonicalIp(input)).toBe(expected);
+  });
+});
+
+/**
+ * The connection's own lookup is the guard: checking a name up front and
+ * letting the connection resolve it again would let a DNS-rebinding name
+ * (TTL 0) answer a public address to the check and loopback to the connection.
+ */
+describe('createSelfTargetGuard — lookupFor', () => {
+  const PORT = 4040;
+
+  function lookupWith(answers: string[][]) {
+    let call = 0;
+    const guard = createSelfTargetGuard(
+      async () => answers[Math.min(call++, answers.length - 1)]!,
+      () => ['192.168.1.5'],
+    );
+    guard.protectPort(PORT, '127.0.0.1');
+    return guard;
+  }
+
+  function lookup(
+    guard: ReturnType<typeof createSelfTargetGuard>,
+    port: number,
+    options: { all?: boolean; family?: number } = {},
+  ) {
+    return new Promise<{ err: NodeJS.ErrnoException | null; result: unknown }>((resolve) =>
+      guard.lookupFor(port)('rebind.example', options, (err, address, family) =>
+        resolve({ err, result: options.all ? address : { address, family } }),
+      ),
+    );
+  }
+
+  it('refuses a name resolving to a protected listener, with a recognisable code', async () => {
+    const { err } = await lookup(lookupWith([['127.0.0.1']]), PORT);
+    expect(err?.code).toBe(SELF_TARGET_LOOKUP_ERROR);
+  });
+
+  it('hands back the very answer it judged when it is safe', async () => {
+    expect(await lookup(lookupWith([['203.0.113.10']]), PORT)).toEqual({
+      err: null,
+      result: { address: '203.0.113.10', family: 4 },
+    });
+    expect((await lookup(lookupWith([['203.0.113.10', '2001:db8::1']]), PORT, { all: true })).result).toEqual([
+      { address: '203.0.113.10', family: 4 },
+      { address: '2001:db8::1', family: 6 },
+    ]);
+  });
+
+  it('judges each connection on its own answer, so a rebinding name is caught when it turns to loopback', async () => {
+    const guard = lookupWith([['203.0.113.10'], ['127.0.0.1']]);
+    expect(await guard.isSelfTarget('rebind.example', PORT)).toBe(false);
+    expect((await lookup(guard, PORT)).err?.code).toBe(SELF_TARGET_LOOKUP_ERROR);
+  });
+
+  it('leaves other ports to Node’s own lookup and honours the requested family', async () => {
+    expect(lookupWith([['127.0.0.1']]).lookupFor(PORT + 1)).toBe(dns.lookup);
+    expect((await lookup(lookupWith([['2001:db8::1']]), PORT, { family: 4 })).err?.code).toBe('ENOTFOUND');
   });
 });

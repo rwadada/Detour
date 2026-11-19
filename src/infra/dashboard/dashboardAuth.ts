@@ -3,6 +3,8 @@ import WebSocket from 'ws';
 import { requestHasValidToken } from '../../domain/auth/dashboardAccess';
 import { verifyPassword } from '../../domain/auth/passwordHash';
 import type { DashboardClientMessage, DashboardServerMessage } from '../../domain/dashboard/protocol';
+import { canonicalIp, isLoopbackAddress } from '../proxy/engine/selfTarget';
+import { createLoginBudget } from './loginBudget';
 
 // Login rate limiting (issue #159). Tracked by *IP*, not per-socket — closing a socket and opening a fresh one is
 // free, so a per-socket counter would reset on every reconnect and defend nothing. In-memory only: resetting on a
@@ -20,6 +22,22 @@ const LOGIN_BACKOFF_MAX_MS = 320;
  * toward whichever IP happens to hit it first.
  */
 const MAX_TRACKED_LOGIN_FAILURE_IPS = 1000;
+/** The first lockout's length; each later one for the same key doubles it, up to a day (see `loginBudget.ts`). */
+const LOGIN_LOCKOUT_MS = 15 * 60_000;
+const LOGIN_LOCKOUT_MAX_MS = 24 * 60 * 60_000;
+/** The escalation cap for a key many clients share (loopback, the remote-wide tally) — see where each is created. */
+const SHARED_LOCKOUT_MAX_MS = 60 * 60_000;
+/**
+ * Failures every non-loopback client together may add up before password
+ * login is locked out for all of them. A per-address limit alone can be
+ * walked past by a client able to change addresses (an IPv6 range hands out
+ * as many as it likes); this one counts across addresses, so it can't.
+ * Loopback is left out of it, so the owner at the machine itself is never
+ * locked out by what the network does.
+ */
+const MAX_REMOTE_LOGIN_FAILURES = 25;
+/** The key of that shared, all-remote-clients tally. */
+const REMOTE = 'remote';
 
 const AUTH_FAILED: DashboardServerMessage = { type: 'authFailed' };
 
@@ -32,6 +50,8 @@ export interface DashboardAuthDeps {
   sendInitialPayload: (socket: WebSocket) => void;
   /** The wait before a failed login is answered (issue #159's backoff). Injectable so tests need not really wait. */
   sleep?: (ms: number) => Promise<void>;
+  /** The clock a lockout expires by. Injectable so tests need not really wait. */
+  now?: () => number;
 }
 
 /** What `admitConnection` decided for a new socket. */
@@ -58,9 +78,13 @@ export interface DashboardAuth {
   handleLogin: (socket: WebSocket, message: Extract<DashboardClientMessage, { type: 'login' }>) => Promise<void>;
 }
 
-/** The IP a connection's rate-limit counters are tracked under — the raw socket address, not anything a client-controlled header could spoof. */
-function clientIp(req: IncomingMessage): string {
-  return req.socket.remoteAddress ?? 'unknown';
+/**
+ * The key a connection's rate-limit counters are tracked under — the raw
+ * socket address in one spelling (an IPv4-mapped one counts as the IPv4
+ * address it is), not anything a client-controlled header could spoof.
+ */
+export function rateLimitKey(remoteAddress: string | undefined): string {
+  return remoteAddress ? canonicalIp(remoteAddress) : 'unknown';
 }
 
 function realSleep(ms: number): Promise<void> {
@@ -83,7 +107,36 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
   // the initial snapshot. A `login` that arrives while one's already in flight for that socket is dropped rather than
   // queued — a real client only ever has one outstanding attempt at a time.
   const loginInFlight = new WeakSet<WebSocket>();
-  const loginFailuresByIp = new Map<string, number>();
+  const now = deps.now ?? Date.now;
+  const lockout = { baseLockoutMs: LOGIN_LOCKOUT_MS, maxLockoutMs: LOGIN_LOCKOUT_MAX_MS, now };
+  const addressFailures = createLoginBudget({
+    limit: MAX_LOGIN_FAILURES,
+    maxTracked: MAX_TRACKED_LOGIN_FAILURE_IPS,
+    ...lockout,
+  });
+  // Escalates only up to an hour: anyone on the network can feed this tally,
+  // so a longer lockout would hand them a long denial of service against every
+  // remote device; an hour still holds a guesser to a few hundred tries a day.
+  const remoteFailures = createLoginBudget({
+    limit: MAX_REMOTE_LOGIN_FAILURES,
+    maxTracked: 1,
+    ...lockout,
+    maxLockoutMs: SHARED_LOCKOUT_MAX_MS,
+  });
+  // Loopback gets its own budget whose lockouts escalate only up to an hour.
+  // Every local process shares that address (so does anything a local tunnel
+  // or reverse proxy forwards), so a day-long lockout would mostly lock the
+  // owner out; an hour still holds a guesser behind it to ~120 tries a day.
+  const loopbackFailures = createLoginBudget({
+    limit: MAX_LOGIN_FAILURES,
+    maxTracked: MAX_TRACKED_LOGIN_FAILURE_IPS,
+    ...lockout,
+    maxLockoutMs: SHARED_LOCKOUT_MAX_MS,
+  });
+  const budgetFor = (ip: string) => (isLoopbackAddress(ip) ? loopbackFailures : addressFailures);
+  /** Whether a client at `ip` is locked out right now — by its own failures, or (off loopback) by all remote ones. */
+  const lockedOut = (ip: string): boolean =>
+    budgetFor(ip).isLocked(ip) || (!isLoopbackAddress(ip) && remoteFailures.isLocked(REMOTE));
   const unauthenticatedSocketCountByIp = new Map<string, number>();
   // Which sockets currently hold a counted slot in `unauthenticatedSocketCountByIp` — released exactly once,
   // whichever of "authenticated" or "closed" happens first, so the count never double-decrements.
@@ -103,15 +156,16 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
     else unauthenticatedSocketCountByIp.set(ip, current - 1);
   }
 
-  /** Records one more login failure for `ip` and returns its new total, evicting the oldest-tracked IP first at the cap. */
+  /** Records one more login failure for `ip` (and, off loopback, the remote tally); returns its count toward the current lockout. */
   function recordLoginFailure(ip: string): number {
-    const failures = (loginFailuresByIp.get(ip) ?? 0) + 1;
-    if (!loginFailuresByIp.has(ip) && loginFailuresByIp.size >= MAX_TRACKED_LOGIN_FAILURE_IPS) {
-      const oldestIp = loginFailuresByIp.keys().next().value;
-      if (oldestIp !== undefined) loginFailuresByIp.delete(oldestIp);
-    }
-    loginFailuresByIp.set(ip, failures);
-    return failures;
+    if (!isLoopbackAddress(ip)) remoteFailures.recordFailure(REMOTE);
+    return budgetFor(ip).recordFailure(ip);
+  }
+
+  /** Takes back an attempt `recordLoginFailure` charged up front that turned out not to be a wrong guess. */
+  function refundLoginFailure(ip: string): void {
+    if (!isLoopbackAddress(ip)) remoteFailures.refund(REMOTE);
+    budgetFor(ip).refund(ip);
   }
 
   // Read fresh on every check (connect, login attempt, `setDashboardPassword`) rather than cached once at startup —
@@ -150,10 +204,10 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
     }
     if (authenticatedSockets.has(socket)) return 'authenticated';
 
-    const ip = clientIp(req);
+    const ip = rateLimitKey(req.socket.remoteAddress);
     // An IP that's already exhausted its attempts doesn't get a fresh set just by reconnecting — closing a socket
     // and opening a new one is free, so a per-socket-only limit would defend nothing.
-    if ((loginFailuresByIp.get(ip) ?? 0) >= MAX_LOGIN_FAILURES) {
+    if (lockedOut(ip)) {
       socket.close(1008, 'Too many failed login attempts');
       return 'rejected';
     }
@@ -181,7 +235,19 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
     // log in (it cannot reach here through the server), and re-deriving an address could charge a different key.
     const ip = ipBySocket.get(socket);
     if (ip === undefined || loginInFlight.has(socket)) return;
+    // A socket admitted before a lockout began doesn't keep guessing on it:
+    // nothing is verified while the lockout lasts.
+    // Closed with the lockout's own reason rather than `authFailed`, which
+    // would read as a wrong password.
+    if (lockedOut(ip)) {
+      socket.close(1008, 'Too many failed login attempts');
+      return;
+    }
     loginInFlight.add(socket);
+    // Charged up front and refunded if it turns out right: counting only after
+    // the (slow) verify would let a burst of parallel attempts all pass the
+    // lockout check above before any of them had been counted.
+    const failures = recordLoginFailure(ip);
     try {
       const hash = currentPasswordHash();
       const generation = passwordGeneration;
@@ -201,11 +267,16 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
       // told to try again, but the attempt is not charged to the IP — it was answered against a credential that
       // no longer exists, so it says nothing about whether the client is guessing.
       if (generation !== passwordGeneration) {
+        refundLoginFailure(ip);
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(AUTH_FAILED));
         return;
       }
       if (verified) {
-        loginFailuresByIp.delete(ip);
+        budgetFor(ip).reset(ip);
+        // The remote tally's failures too (not its lockout history): otherwise
+        // the LAN's occasional typos, each followed by a successful login,
+        // would add up to a lockout over time.
+        if (!isLoopbackAddress(ip)) remoteFailures.forgiveFailures(REMOTE);
         releaseUnauthenticatedSlot(socket, ip);
         authenticatedSockets.add(socket);
         passwordVerifiedSockets.add(socket);
@@ -214,7 +285,6 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
       }
       // Exponential backoff (issue #159) before even answering: makes each successive wrong guess from this IP
       // slower than the last, on top of scrypt's own ~20ms+ per attempt.
-      const failures = recordLoginFailure(ip);
       await sleep(Math.min(LOGIN_BACKOFF_BASE_MS * 2 ** (failures - 1), LOGIN_BACKOFF_MAX_MS));
       // The socket (or the whole server) could have gone away during that delay — nothing left to answer.
       if (socket.readyState !== WebSocket.OPEN) return;
@@ -222,7 +292,7 @@ export function createDashboardAuth(deps: DashboardAuthDeps): DashboardAuth {
       // Issue #159's acceptance criterion: the 5th consecutive failure from an IP ends that socket outright, rather
       // than leaving it free to keep guessing — reconnecting doesn't help either, since `admitConnection` checks
       // this same counter before a new socket is ever handed an `authRequired` at all.
-      if (failures >= MAX_LOGIN_FAILURES) {
+      if (failures >= MAX_LOGIN_FAILURES || lockedOut(ip)) {
         socket.close(1008, 'Too many failed login attempts');
       }
     } finally {

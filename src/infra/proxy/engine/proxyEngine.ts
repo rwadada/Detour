@@ -37,7 +37,7 @@ import type {
   UpstreamResponse,
 } from './types';
 import { UPSTREAM_KEEP_ALIVE_TIMEOUT_MS } from './keepAliveTiming';
-import { createSelfTargetGuard } from './selfTarget';
+import { createSelfTargetGuard, type GuardedLookup, sameHost } from './selfTarget';
 import { captureUpstreamCertificate } from './upstreamCertificate';
 import {
   adaptHttp2Response,
@@ -278,6 +278,10 @@ export class ProxyEngine {
   private readonly onTlsClientErrorHandlers: OnTlsClientErrorParams[] = [];
   /** Open MITM bridges by their loopback local port — the internal TLS server sees that port as its client's remote port (see `onTlsClientError`). */
   private readonly mitmTunnels = new Map<number, MitmTunnelInfo>();
+  /** The target each request's self-target check judged (`relayRequest`), so the connection can be held to it (`guardedLookupFor`). */
+  private readonly vettedTargets = new WeakMap<Context, { host: string; port: number }>();
+  /** The same for WebSocket upgrades: the upstream URL as it stood when the guard judged it. */
+  private readonly vettedWebSocketUrls = new WeakMap<WsContext, { host: string; port: number }>();
 
   // Typed as plain `http.Agent` (not `https.Agent` for the second one) since
   // that's all `IContext.proxyToServerRequestOptions.agent` ever needs — see
@@ -512,6 +516,31 @@ export class ProxyEngine {
   /** Whether `host:port` is one of this process's own listeners — the same judgement the relay applies (issue #205), exposed so the dashboard's Replay / Edit & Send (issue #214) can refuse such a target too. */
   isSelfTarget(host: string, port: number): Promise<boolean> {
     return this.selfTargets.isSelfTarget(host, port);
+  }
+
+  /** A connection `lookup` that refuses a name resolving to one of this process's listeners on `port` — see `SelfTargetGuard.lookupFor`. For the CONNECT passthrough relay (`interceptOffConnect.ts`). */
+  guardedLookup(port: number): GuardedLookup {
+    return this.selfTargets.lookupFor(port);
+  }
+
+  /**
+   * The guarded `lookup` for a request's upstream connection, when it goes to
+   * the very target its self-target check judged. A `route` rule that
+   * redirected it elsewhere is the user's own choice (SECURITY.md allows
+   * pointing one at a Detour port deliberately), so that connection resolves
+   * normally. An IP literal never calls `lookup`; the up-front check already
+   * judged it with no second resolution to race.
+   */
+  private guardedLookupFor(
+    ctx: Context,
+    host: string,
+    port: number | string | null | undefined,
+  ): GuardedLookup | undefined {
+    const vetted = this.vettedTargets.get(ctx);
+    const defaultPort = ctx.isSSL ? 443 : 80;
+    const numericPort = typeof port === 'number' ? port : Number(port ?? defaultPort);
+    if (!vetted || !sameHost(vetted.host, host) || vetted.port !== numericPort) return undefined;
+    return this.selfTargets.lookupFor(numericPort);
   }
 
   /** Marks a port some other listener in this process owns (the dashboard) as off-limits to relayed traffic (issue #205). `address` is what that listener is bound to — see `SelfTargetGuard.protectPort`. */
@@ -810,6 +839,7 @@ export class ProxyEngine {
   private relayRequest(ctx: Context, hostPort: { host: string; port: number | undefined }): void {
     const req = ctx.clientToProxyRequest;
     const isSSL = ctx.isSSL;
+    this.vettedTargets.set(ctx, { host: hostPort.host, port: hostPort.port ?? (isSSL ? 443 : 80) });
 
     const headers: Record<string, string> = {};
     for (const key in req.headers) {
@@ -861,7 +891,7 @@ export class ProxyEngine {
     }
 
     const port = typeof opts.port === 'number' ? opts.port : Number(opts.port ?? 443);
-    this.http2Pool.acquire(opts.host, port, this.upstreamTls).then(
+    this.http2Pool.acquire(opts.host, port, this.upstreamTls, this.guardedLookupFor(ctx, opts.host, port)).then(
       (acquired) => this.dispatchWithAcquiredConnection(ctx, opts, timing, acquired),
       (err) =>
         this.emitError('PROXY_TO_SERVER_REQUEST_ERROR', ctx, err instanceof Error ? err : new Error(String(err))),
@@ -920,7 +950,8 @@ export class ProxyEngine {
       upstreamReq = requestOverSecuredSocket(opts, presetSocket, onResponse);
     } else {
       const transport = ctx.isSSL ? https : http;
-      upstreamReq = transport.request(opts, onResponse);
+      const lookup = this.guardedLookupFor(ctx, opts.host, opts.port);
+      upstreamReq = transport.request(lookup ? { ...opts, lookup } : opts, onResponse);
     }
     ctx.proxyToServerRequest = upstreamReq;
 
@@ -1456,6 +1487,12 @@ export class ProxyEngine {
       headers[key] = flattenHeaderValue(upgradeReq.headers[key]);
     }
     ctx.proxyToServerWebSocketOptions = { url, headers };
+    try {
+      const judged = new URL(url);
+      this.vettedWebSocketUrls.set(ctx, { host: judged.hostname, port: urlPort(judged) });
+    } catch {
+      // An unparseable URL fails the upstream connection anyway.
+    }
 
     // A `wss://` upgrade inside a MITM tunnel never went through
     // `verifyClient`, and its CONNECT target can differ from the upgrade's
@@ -1473,8 +1510,7 @@ export class ProxyEngine {
   private isSelfTargetUrl(url: string): Promise<boolean> {
     try {
       const target = new URL(url);
-      const defaultPort = target.protocol === 'wss:' || target.protocol === 'https:' ? 443 : 80;
-      return this.selfTargets.isSelfTarget(target.hostname, target.port ? Number(target.port) : defaultPort);
+      return this.selfTargets.isSelfTarget(target.hostname, urlPort(target));
     } catch {
       return Promise.resolve(false);
     }
@@ -1508,7 +1544,24 @@ export class ProxyEngine {
     // `forwardRequest` already applies to the HTTP(S) path, so
     // `--upstream-ca`/`--insecure-upstream`/`--client-cert` reach a wss://
     // upstream too instead of always using Node's default verification.
-    const serverWs = new WebSocket(url, { headers, ...(ctx.isSSL ? this.upstreamTls : undefined) });
+    // Held to the self-target guard's own resolution while the host and port
+    // are still the ones the guard judged — a rule rewriting only the path
+    // keeps it; a `route` rule's new destination is the user's own.
+    let lookup: GuardedLookup | undefined;
+    const vetted = this.vettedWebSocketUrls.get(ctx);
+    try {
+      const target = new URL(url);
+      if (vetted && sameHost(vetted.host, target.hostname) && vetted.port === urlPort(target)) {
+        lookup = this.selfTargets.lookupFor(vetted.port);
+      }
+    } catch {
+      lookup = undefined;
+    }
+    const serverWs = new WebSocket(url, {
+      headers,
+      ...(ctx.isSSL ? this.upstreamTls : undefined),
+      ...(lookup ? { lookup } : {}),
+    });
     ctx.serverWs = serverWs;
     for (const leg of [clientWs, serverWs]) {
       this.liveWebSockets.add(leg);
@@ -1625,6 +1678,12 @@ export class ProxyEngine {
       // Best-effort — the connection is already in a broken state either way.
     }
   }
+}
+
+/** The port a `ws:`/`wss:`/`http:`/`https:` URL connects to — its own, or its scheme's default. */
+function urlPort(url: URL): number {
+  if (url.port) return Number(url.port);
+  return url.protocol === 'wss:' || url.protocol === 'https:' ? 443 : 80;
 }
 
 function listenAsync(server: net.Server, port: number, host: string): Promise<void> {

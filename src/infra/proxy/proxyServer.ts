@@ -210,6 +210,7 @@ export async function startProxyServer(
   const handleInterceptOffConnect = createInterceptOffConnectHandler({
     eventBus,
     runtimeState,
+    guardedLookup: (port) => proxy.guardedLookup(port),
   });
 
   proxy.onTlsClientError(

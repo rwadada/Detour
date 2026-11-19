@@ -46,7 +46,11 @@ describe('CONNECT routing follows the request-target, not the Host header', () =
       createConnectHandler({
         eventBus,
         runtimeState,
-        handleInterceptOffConnect: createInterceptOffConnectHandler({ eventBus, runtimeState }),
+        handleInterceptOffConnect: createInterceptOffConnectHandler({
+          eventBus,
+          runtimeState,
+          guardedLookup: (port) => engine.guardedLookup(port),
+        }),
       }),
     );
     const allowed = await namedServer('allowed');
@@ -91,7 +95,11 @@ describe('CONNECT routing follows the request-target, not the Host header', () =
       createConnectHandler({
         eventBus,
         runtimeState,
-        handleInterceptOffConnect: createInterceptOffConnectHandler({ eventBus, runtimeState }),
+        handleInterceptOffConnect: createInterceptOffConnectHandler({
+          eventBus,
+          runtimeState,
+          guardedLookup: (port) => engine.guardedLookup(port),
+        }),
       }),
     );
     const allowed = await namedServer('allowed');

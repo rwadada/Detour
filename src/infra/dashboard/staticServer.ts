@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -16,6 +17,14 @@ const MIME_TYPES: Record<string, string> = {
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
   '.map': 'application/json; charset=utf-8',
+  // Served with `X-Content-Type-Options: nosniff`, so anything the build can
+  // emit needs its real type rather than application/octet-stream.
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.webp': 'image/webp',
+  '.avif': 'image/avif',
+  '.gif': 'image/gif',
+  '.txt': 'text/plain; charset=utf-8',
+  '.wasm': 'application/wasm',
 };
 
 /**
@@ -87,7 +96,62 @@ function sendFile(filePath: string, req: IncomingMessage, res: ServerResponse, i
     // cached — otherwise a rebuilt dashboard can end up pointing at assets
     // that no longer exist.
     const cacheControl = ext === '.html' ? 'no-store' : 'public, max-age=3600';
-    res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': cacheControl });
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Cache-Control': cacheControl,
+      'X-Content-Type-Options': 'nosniff',
+      ...(ext === '.html' ? { 'Content-Security-Policy': dashboardCsp(data.toString('utf8'), req.headers.host) } : {}),
+    });
     res.end(req.method === 'HEAD' ? undefined : data);
   });
+}
+
+/** The last page scanned and its inline-script hashes — index.html only changes on a rebuild. */
+let hashCache: { html: string; hashes: string[] } | undefined;
+
+/** CSP hash sources for `html`'s inline scripts. `\ssrc=`, not `\bsrc=`: `data-src=` must not pass for an external script. */
+function inlineScriptHashes(html: string): string[] {
+  if (hashCache?.html === html) return hashCache.hashes;
+  const hashes = [...html.matchAll(/<script(?![^>]*\ssrc\s*=)[^>]*>([\s\S]*?)<\/script>/gi)].map(
+    (m) =>
+      `'sha256-${crypto
+        .createHash('sha256')
+        .update(m[1] ?? '', 'utf8')
+        .digest('base64')}'`,
+  );
+  hashCache = { html, hashes };
+  return hashes;
+}
+
+/**
+ * The dashboard page's Content-Security-Policy — defence in depth for a page
+ * that renders traffic from arbitrary servers: no script but the bundle and
+ * the page's own inline ones (pinned by hash), no plugins, no framing, no
+ * base-URI tricks. (Captured SVGs are kept off the dashboard's origin by
+ * previewing them as `data:` URLs — see `BodyViewer.tsx`; a CSP alone
+ * doesn't cover a `blob:` opened in a tab of its own.)
+ *
+ * `'unsafe-eval'` is there for protobufjs, which the gRPC body decoder uses
+ * and which builds its decoders with `Function(...)`; it doesn't let markup
+ * run script. Inline style stays allowed (React and Tailwind attribute
+ * styles), which can't run code either. `connect-src` names the WebSocket
+ * origin explicitly, since older WebKit doesn't match `ws:`/`wss:` against
+ * `'self'`.
+ */
+export function dashboardCsp(html: string, host?: string): string {
+  const hashes = inlineScriptHashes(html);
+  // The Host header already passed the dashboard's allowlist; this only keeps
+  // anything but a host[:port] out of the header value.
+  const wsOrigins = host && /^[A-Za-z0-9.:[\]-]+$/.test(host) ? ` ws://${host} wss://${host}` : '';
+  return [
+    "default-src 'self'",
+    `script-src 'self' 'unsafe-eval' ${hashes.join(' ')}`.trim(),
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' blob: data:",
+    `connect-src 'self'${wsOrigins}`,
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join('; ');
 }

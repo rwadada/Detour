@@ -4,7 +4,7 @@ import type { IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { hashPassword } from '../../domain/auth/passwordHash';
-import { createDashboardAuth, type DashboardAuthDeps } from './dashboardAuth';
+import { createDashboardAuth, type DashboardAuthDeps, rateLimitKey } from './dashboardAuth';
 
 const TOKEN = 'secret-token';
 
@@ -250,5 +250,148 @@ describe('dashboard auth (issue #207)', () => {
       broken = true;
       expect(auth.admitConnection(socketOf(), requestFrom('10.0.0.1'))).toBe('needs-login');
     });
+  });
+});
+
+describe('dashboard auth — escalating lockouts and address keying', () => {
+  async function failFrom(auth: ReturnType<typeof setup>['auth'], ip: string, times: number) {
+    for (let i = 0; i < times; i++) {
+      const socket = socketOf();
+      if (auth.admitConnection(socket, requestFrom(ip)) !== 'needs-login') return;
+      await auth.handleLogin(socket, login('wrong'));
+      socket.close();
+    }
+  }
+
+  it('lifts a lockout after its window, then locks the next one twice as long', async () => {
+    let time = 0;
+    const { auth } = setup({ loadPasswordHash: () => passwordHash, now: () => time });
+    const admit = (ip: string) => {
+      const socket = socketOf();
+      const result = auth.admitConnection(socket, requestFrom(ip));
+      socket.close();
+      return result;
+    };
+    await failFrom(auth, '10.0.0.5', 5);
+    expect(admit('10.0.0.5')).toBe('rejected');
+    time += 15 * 60_000;
+    expect(admit('10.0.0.5')).toBe('needs-login');
+    await failFrom(auth, '10.0.0.5', 5);
+    time += 15 * 60_000;
+    expect(admit('10.0.0.5')).toBe('rejected');
+    time += 15 * 60_000;
+    expect(admit('10.0.0.5')).toBe('needs-login');
+  });
+
+  it('never lets failures short of the limit decay, so pacing guesses buys nothing', async () => {
+    let time = 0;
+    const { auth } = setup({ loadPasswordHash: () => passwordHash, now: () => time });
+    await failFrom(auth, '127.0.0.1', 4);
+    time += 24 * 60 * 60_000;
+    await failFrom(auth, '127.0.0.1', 1);
+    expect(auth.admitConnection(socketOf(), requestFrom('127.0.0.1'))).toBe('rejected');
+  });
+
+  it('counts addresses one by one, but caps remote failures summed over every address', async () => {
+    const { auth } = setup({ loadPasswordHash: () => passwordHash });
+    const admit = (ip: string) => {
+      const socket = socketOf();
+      const result = auth.admitConnection(socket, requestFrom(ip));
+      socket.close();
+      return result;
+    };
+    // Another device is not locked out by one device's mistakes.
+    await failFrom(auth, '2001:db8:1:2::1', 5);
+    expect(admit('2001:db8:1:2::1')).toBe('rejected');
+    expect(admit('2001:db8:9:9::2')).toBe('needs-login');
+    // But rotating through addresses — from any range — adds up.
+    for (let i = 2; i <= 6; i++) await failFrom(auth, `2001:db8:${i}::1`, 4);
+    expect(admit('2001:db8:ffff::1')).toBe('rejected');
+    expect(admit('10.0.0.77')).toBe('rejected');
+    // The owner at the machine itself is never caught by it.
+    expect(admit('127.0.0.1')).toBe('needs-login');
+    expect(admit('::1')).toBe('needs-login');
+  });
+});
+
+describe('rateLimitKey', () => {
+  it.each([
+    ['10.0.0.1', '10.0.0.1'],
+    ['::ffff:10.0.0.1', '10.0.0.1'],
+    ['::ffff:a00:1', '10.0.0.1'],
+    ['2001:DB8:1:2::9%en0', '2001:db8:1:2::9'],
+    [undefined, 'unknown'],
+  ])('%s → %s', (address, key) => {
+    expect(rateLimitKey(address)).toBe(key);
+  });
+});
+
+describe('dashboard auth — third review round', () => {
+  async function failFrom(auth: ReturnType<typeof setup>['auth'], ip: string, times: number) {
+    for (let i = 0; i < times; i++) {
+      const socket = socketOf();
+      if (auth.admitConnection(socket, requestFrom(ip)) !== 'needs-login') return;
+      await auth.handleLogin(socket, login('wrong'));
+      socket.close();
+    }
+  }
+
+  it('escalates a loopback lockout only up to an hour', async () => {
+    let time = 0;
+    const { auth } = setup({ loadPasswordHash: () => passwordHash, now: () => time });
+    const admit = () => {
+      const socket = socketOf();
+      const result = auth.admitConnection(socket, requestFrom('127.0.0.1'));
+      socket.close();
+      return result;
+    };
+    // 15 min, 30 min, 60 min, then capped at 60 min.
+    for (const minutes of [15, 30, 60, 60, 60]) {
+      await failFrom(auth, '127.0.0.1', 5);
+      time += minutes * 60_000 - 1;
+      expect(admit()).toBe('rejected');
+      time += 1;
+      expect(admit()).toBe('needs-login');
+    }
+  });
+
+  it('counts parallel attempts before verifying them, so a burst cannot outrun the remote cap', async () => {
+    const { auth } = setup({ loadPasswordHash: () => passwordHash });
+    // 27 guesses in flight at once from 9 addresses (3 sockets each).
+    const sockets: ReturnType<typeof socketOf>[] = [];
+    for (let host = 1; host <= 9; host++) {
+      for (let i = 0; i < 3; i++) {
+        const socket = socketOf();
+        expect(auth.admitConnection(socket, requestFrom(`10.1.0.${host}`))).toBe('needs-login');
+        sockets.push(socket);
+      }
+    }
+    await Promise.all(sockets.map((s) => auth.handleLogin(s, login('wrong'))));
+    // Only the first 25 were verified (and answered authFailed); the rest were
+    // refused on the lockout their predecessors had already been charged for.
+    const answered = sockets.filter((s) => s.send.mock.calls.length > 0).length;
+    expect(answered).toBe(25);
+  });
+
+  it('does not verify a guess from a socket admitted before its address got locked out', async () => {
+    const { auth, sendInitialPayload } = setup({ loadPasswordHash: () => passwordHash });
+    const early = socketOf();
+    expect(auth.admitConnection(early, requestFrom('10.0.0.9'))).toBe('needs-login');
+    await failFrom(auth, '10.0.0.9', 5);
+    await auth.handleLogin(early, login('correct horse'));
+    expect(auth.isAuthenticated(early)).toBe(false);
+    expect(sendInitialPayload).not.toHaveBeenCalled();
+  });
+
+  it('clears the remote tally’s failures on a successful login, so the LAN’s occasional typos never add up', async () => {
+    const { auth } = setup({ loadPasswordHash: () => passwordHash });
+    for (let i = 1; i <= 8; i++) {
+      await failFrom(auth, `2001:db8:1:2::${i}`, 4);
+      const ok = socketOf();
+      expect(auth.admitConnection(ok, requestFrom(`2001:db8:1:2::${i}`))).toBe('needs-login');
+      await auth.handleLogin(ok, login('correct horse'));
+      expect(auth.isAuthenticated(ok)).toBe(true);
+    }
+    expect(auth.admitConnection(socketOf(), requestFrom('2001:db8:1:2::99'))).toBe('needs-login');
   });
 });

@@ -88,8 +88,23 @@ function isThisNetworkIPv4(address: string): boolean {
   return address.startsWith('0.') && net.isIPv4(address);
 }
 
+/**
+ * Whether two host spellings name the same host for deciding if a connection
+ * still goes to the target the guard judged: case, a trailing dot and IPv6
+ * brackets don't make a different host.
+ */
+export function sameHost(a: string, b: string): boolean {
+  const norm = (h: string) => canonicalIp(h).replace(/\.$/, '');
+  return norm(a) === norm(b);
+}
+
+/** Whether a canonical address (`canonicalIp`) is loopback: 127.0.0.0/8 or ::1. */
+export function isLoopbackAddress(address: string): boolean {
+  return address.startsWith('127.') || address === '::1';
+}
+
 function isLoopbackOrUnspecified(address: string): boolean {
-  return address.startsWith('127.') || isThisNetworkIPv4(address) || address === '::1' || address === '::';
+  return isLoopbackAddress(address) || isThisNetworkIPv4(address) || address === '::';
 }
 
 /** Where a connection to an unspecified address (`0.0.0.0/8`, `::`: "any address") actually goes — that family's loopback. Any other address is itself. */
@@ -143,6 +158,53 @@ export interface SelfTargetGuard {
    * `localhost:3000`, a `route` rule pointing at localhost are legitimate).
    */
   isSelfTarget(host: string, port: number): Promise<boolean>;
+  /**
+   * A `lookup` for `net.connect` / `http.request` / `tls.connect` to `port`
+   * that resolves the host and refuses (error code
+   * `SELF_TARGET_LOOKUP_ERROR`) if any answer reaches one of this process's
+   * listeners on that port. The check and the connection then use the very
+   * same answers: checking with `isSelfTarget` and letting the connection
+   * resolve the name again would let a DNS-rebinding name (TTL 0) answer a
+   * public address to the check and 127.0.0.1 to the connection.
+   */
+  lookupFor(port: number): GuardedLookup;
+}
+
+/** Node's `lookup` option signature (`net.LookupFunction`, single-address form). */
+export type GuardedLookup = (
+  hostname: string,
+  options: { family?: number | string; all?: boolean },
+  callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
+) => void;
+
+type LookupAllCallback = (err: NodeJS.ErrnoException | null, addresses: { address: string; family: number }[]) => void;
+
+/** The error code a `lookupFor` lookup fails with when the host resolves to one of Detour's own listeners. */
+export const SELF_TARGET_LOOKUP_ERROR = 'EDETOURSELFTARGET';
+
+/** Answers a `lookupFor` lookup from `resolved`: the family-matching addresses, unless any reaches one of Detour's own listeners on `port`. */
+function answerLookup(
+  hostname: string,
+  port: number,
+  options: { family?: number | string; all?: boolean },
+  resolved: string[],
+  reachesOwnListener: (addresses: string[], port: number) => boolean,
+  callback: Parameters<GuardedLookup>[2],
+): void {
+  const family = options.family === 4 || options.family === 6 ? options.family : 0;
+  const addresses = resolved.filter((a) => family === 0 || net.isIP(a) === family);
+  if (addresses.length === 0) {
+    callback(Object.assign(new Error(`getaddrinfo ENOTFOUND ${hostname}`), { code: 'ENOTFOUND' }), '', 4);
+    return;
+  }
+  if (reachesOwnListener(addresses, port)) {
+    const err = new Error(`${hostname}:${port} resolves to one of this process's own listeners`);
+    callback(Object.assign(err, { code: SELF_TARGET_LOOKUP_ERROR }), '', 4);
+    return;
+  }
+  const entries = addresses.map((address) => ({ address, family: net.isIP(address) }));
+  if (options.all) (callback as unknown as LookupAllCallback)(null, entries);
+  else callback(null, entries[0]!.address, entries[0]!.family);
 }
 
 export function createSelfTargetGuard(
@@ -150,13 +212,20 @@ export function createSelfTargetGuard(
   localAddresses: LocalAddressSource = defaultLocalAddresses,
 ): SelfTargetGuard {
   const listeners: Array<{ port: number; address: string | undefined }> = [];
+  /** Whether any of `addresses` (already resolved IPs) reaches a protected listener on `port`. */
+  const reachesOwnListener = (addresses: string[], port: number): boolean => {
+    const onPort = listeners.filter((l) => l.port === port);
+    if (onPort.length === 0) return false;
+    const own = new Set(localAddresses().map(canonicalIp));
+    const targets = addresses.map(canonicalIp);
+    return onPort.some((l) => targets.some((target) => reachesListener(target, l.address, own)));
+  };
   return {
     protectPort: (port, address) => {
       listeners.push({ port, address: address === undefined ? undefined : canonicalIp(address) });
     },
     async isSelfTarget(host, port) {
-      const onPort = listeners.filter((l) => l.port === port);
-      if (onPort.length === 0) return false;
+      if (!listeners.some((l) => l.port === port)) return false;
       const bare = stripBrackets(host);
       let addresses: string[];
       if (net.isIP(bare)) {
@@ -168,9 +237,18 @@ export function createSelfTargetGuard(
           return false;
         }
       }
-      const own = new Set(localAddresses().map(canonicalIp));
-      const targets = addresses.map(canonicalIp);
-      return onPort.some((l) => targets.some((target) => reachesListener(target, l.address, own)));
+      return reachesOwnListener(addresses, port);
+    },
+    lookupFor(port) {
+      // No listener of ours on this port: nothing to guard, so ordinary
+      // traffic keeps Node's own lookup (hints, address ordering) unchanged.
+      if (!listeners.some((l) => l.port === port)) return dns.lookup as unknown as GuardedLookup;
+      return (hostname, options, callback) => {
+        resolve(stripBrackets(hostname)).then(
+          (resolved) => answerLookup(hostname, port, options, resolved, reachesOwnListener, callback),
+          (err: NodeJS.ErrnoException) => callback(err, '', 4),
+        );
+      };
     },
   };
 }

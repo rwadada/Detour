@@ -136,6 +136,25 @@ function latin1Decode(bytes: Uint8Array): string {
 }
 
 /**
+ * Raster formats a browser only ever decodes as pixels. Anything else under
+ * `image/` (`image/svg+xml`, or any `image/whatever+xml`) can be rendered as
+ * a document with script, so it must not get a same-origin `blob:` URL.
+ */
+const RASTER_IMAGE = /^image\/(png|jpeg|pjpeg|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon|apng)\s*(;|$)/i;
+
+function isScriptCapableImage(contentType: string): boolean {
+  return !RASTER_IMAGE.test(contentType.trim());
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+/**
  * Decodes a captured `image/*` body (issue #142) into a `Blob` object URL
  * `<img>` can load directly, reversing `contentEncoding` first via
  * `decodeCapturedBytesAsync` — never through `useDecodedBody`'s UTF-8 text
@@ -179,6 +198,18 @@ function useImageObjectUrl(
       // "Decoding…" for a body that in fact failed to decode.
       if (!bytes) {
         setResult({ body, contentType, contentEncoding, url: undefined });
+        return;
+      }
+      // An SVG (or any other image/*+xml) is a document that can carry
+      // script. A `blob:` URL keeps the dashboard's origin, so one opened in a
+      // tab of its own ("Open image in new tab") would run a captured image's
+      // script as the dashboard — and Chrome doesn't apply this page's CSP to
+      // a blob opened that way. A `data:` URL gets an opaque origin instead,
+      // while still rendering in the <img>. Only known raster formats, which
+      // can't carry script, keep the cheaper `blob:` URL.
+      if (isScriptCapableImage(contentType)) {
+        const mime = contentType.split(';')[0]!.trim();
+        setResult({ body, contentType, contentEncoding, url: `data:${mime};base64,${toBase64(bytes)}` });
         return;
       }
       createdUrl = URL.createObjectURL(new Blob([bytes as BufferSource], { type: contentType }));
