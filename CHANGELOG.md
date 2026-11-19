@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.5.1](https://github.com/rwadada/Detour/compare/v2.5.0...v2.5.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* **security:** fourth review round for dashboard login limits ([9fde203](https://github.com/rwadada/Detour/commit/9fde20396d38cf62b4b398f0cdc9147443dcefaa))
+* **security:** harden upstream DNS resolution, dashboard content isolation and login limits ([7df8344](https://github.com/rwadada/Detour/commit/7df83440d34e336d664030a147bc17b04566d0f3))
+* **security:** pin upstream DNS to the self-target check, isolate captured SVGs, expire login lockouts ([3bd6b14](https://github.com/rwadada/Detour/commit/3bd6b14d684ef8bbf5f50d0909471208da4dc1c1))
+* **security:** review follow-ups for DNS pinning, dashboard CSP and login lockouts ([a6cd900](https://github.com/rwadada/Detour/commit/a6cd900791c2e28916feb1357fa7042d87ba02a4))
+* **security:** second review round for login lockouts and image isolation ([60405f8](https://github.com/rwadada/Detour/commit/60405f8009a064dc35fdd1eada24d04eddc25acc))
+* **security:** third review round — remote-wide login cap, consistent guard targets ([e11eca0](https://github.com/rwadada/Detour/commit/e11eca027189a36cf3474fef84260bbcc8a349de))
+
 ## [2.5.0](https://github.com/rwadada/Detour/compare/v2.4.0...v2.5.0) (2026-11-18)
 
 
