@@ -1,5 +1,5 @@
 import type WebSocket from 'ws';
-import type { DashboardClientMessage, DashboardServerMessage } from '../../domain/dashboard/protocol';
+import type { DashboardClientMessage, DashboardServerMessage, UserConfigState } from '../../domain/dashboard/protocol';
 import { hashPassword } from '../../domain/auth/passwordHash';
 import type { CapturedExchange } from '../../domain/exchange/types';
 import { toWireExchange } from '../../domain/exchange/wireExchange';
@@ -11,7 +11,13 @@ import { describeError } from './describeError';
 type MessageOf<T extends DashboardClientMessage['type']> = Extract<DashboardClientMessage, { type: T }>;
 
 /** The `detour start` defaults the Settings panel edits — the only ones `setUserConfig` writes. */
-const SETTINGS_PANEL_KEYS = ['defaultDetach', 'lanAccess'] as const;
+// A `Record` over every `UserConfigState` toggle but the password (which has its own message), so one added to the
+// Settings panel without being listed here fails the typecheck instead of being silently dropped by the server.
+const SETTINGS_PANEL_KEY_SET = { defaultDetach: true, lanAccess: true } as const satisfies Record<
+  Exclude<keyof UserConfigState, 'dashboardPasswordSet'>,
+  true
+>;
+const SETTINGS_PANEL_KEYS = Object.keys(SETTINGS_PANEL_KEY_SET) as (keyof typeof SETTINGS_PANEL_KEY_SET)[];
 
 /**
  * Keeps only the Settings panel's own keys from a `setUserConfig` patch.

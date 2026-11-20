@@ -4572,6 +4572,7 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
         // would connect straight to its destination, around that proxy. Never contacted at startup.
         cli = await startDetourCli(['--upstream-proxy', 'http://127.0.0.1:9'], env);
         expect(cli.stdout()).toContain('Intercept: on (--no-intercept)');
+        expect(cli.stdout()).toContain('not applied with --upstream-proxy');
         expect(await readDashboardState(cli.dashboardPort, 'focus')).toEqual({ hosts: [] });
       } finally {
         await cli?.kill();

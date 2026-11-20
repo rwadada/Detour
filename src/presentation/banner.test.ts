@@ -57,6 +57,7 @@ describe('printStartupBanner', () => {
       autoPassthrough: true,
       interceptEnabled: true,
       focusHosts: [],
+      savedInterceptFocusIgnored: false,
       ...overrides,
     });
     return logged.join('\n');
@@ -86,6 +87,13 @@ describe('printStartupBanner', () => {
       expect(banner).toContain('Focus (api.example.com) applies once Intercept is turned on.');
       expect(banner).not.toContain('Focus: api.example.com');
       expect(print({ interceptEnabled: false })).not.toContain('Focus');
+    });
+
+    it('warns when saved defaults were left out because of --upstream-proxy', () => {
+      expect(print()).not.toContain('not applied with --upstream-proxy');
+      expect(print({ savedInterceptFocusIgnored: true })).toContain(
+        '⚠ the Intercept/Focus defaults saved with `detour config` are not applied with --upstream-proxy',
+      );
     });
   });
 

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { isValidPasswordHash } from '../../domain/auth/passwordHash';
 import { isValidProxyAuthCredentials, type ProxyAuthCredentials } from '../../domain/auth/proxyAuth';
+import { invalidHostPatternReason } from '../../domain/focus/focusPolicy';
 
 /**
  * Persistent user preferences for `detour start`, distinct from a run's
@@ -128,12 +129,13 @@ function validateUserConfig(config: UserConfig, configPath: string): void {
   }
   if (
     config.focusHosts !== undefined &&
-    // Non-empty too: a blank entry normalizes away, and a list of only blanks would silently mean "Focus off".
+    // Each one a pattern that could match a host (the same check as `--focus`): a blank entry normalizes away, and
+    // a URL or a space-joined pair never matches — either way the saved Focus would not be what it looks like.
     (!Array.isArray(config.focusHosts) ||
-      !config.focusHosts.every((host) => typeof host === 'string' && host.trim() !== ''))
+      !config.focusHosts.every((host) => typeof host === 'string' && invalidHostPatternReason(host) === undefined))
   ) {
     throw new Error(
-      `${configPath}: "focusHosts" must be an array of non-empty host pattern strings (got: ${JSON.stringify(config.focusHosts)})`,
+      `${configPath}: "focusHosts" must be an array of host patterns like "api.example.com" or "*.example.net" (got: ${JSON.stringify(config.focusHosts)})`,
     );
   }
   if (

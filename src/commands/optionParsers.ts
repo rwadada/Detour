@@ -1,5 +1,6 @@
 import { isDumpLevel } from '../domain/dump/dumpPolicy';
 import type { DumpLevel } from '../domain/dump/dumpPolicy';
+import { invalidHostPatternReason } from '../domain/focus/focusPolicy';
 import { isSetupTarget, SETUP_TARGETS } from '../domain/setup/targets';
 import type { SetupTarget } from '../domain/setup/targets';
 
@@ -78,13 +79,13 @@ export function parseHostPatternList(value: string, flag: string): string[] {
       `${flag} needs at least one host pattern, e.g. ${flag} api.example.com (got: ${JSON.stringify(value)})`,
     );
   }
-  // A pattern is matched against a bare `host` or `host:port`; a URL or a path can never match one, so it would
-  // silently leave every host undecrypted.
-  const notAHost = patterns.find((pattern) => pattern.includes('/'));
-  if (notAHost !== undefined) {
-    throw new Error(
-      `${flag} takes host patterns (api.example.com, *.example.net, host:8443), not URLs or paths (got: ${JSON.stringify(notAHost)})`,
-    );
+  for (const pattern of patterns) {
+    const reason = invalidHostPatternReason(pattern);
+    if (reason !== undefined) {
+      throw new Error(
+        `${flag} takes host patterns (api.example.com, *.example.net, host:8443) — ${JSON.stringify(pattern)} can never match a host: ${reason}`,
+      );
+    }
   }
   return patterns;
 }
@@ -96,6 +97,8 @@ export function parseHostPatternList(value: string, flag: string): string[] {
  * starts a fresh list.
  */
 export function collectFocusPatterns(value: string, previous: string[] | boolean | undefined): string[] {
+  // `detour config --focus off` clears Focus; here that would be a pattern matching no host, so say what to use.
+  if (value.trim().toLowerCase() === 'off') throw new Error('--focus off is not a host pattern — use --no-focus');
   return [...(Array.isArray(previous) ? previous : []), ...parseHostPatternList(value, '--focus')];
 }
 

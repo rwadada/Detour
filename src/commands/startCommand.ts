@@ -462,6 +462,8 @@ interface StartResources {
   /** Intercept and Focus at startup (issue #301), resolved once so the proxy, the dashboard and the banner agree. */
   interceptEnabled: boolean;
   focusHosts: string[];
+  /** Whether a saved `intercept: false` / `focusHosts` was left out because of `--upstream-proxy` (see `resolveInterceptEnabled`). */
+  savedInterceptFocusIgnored: boolean;
 }
 
 /** What every step after the proxy is up needs to know — assembled once by `runStartBody`. */
@@ -532,6 +534,11 @@ async function prepareStartResources(
   const autoPassthrough = resolveAutoPassthrough(options, userConfig);
   const interceptEnabled = resolveInterceptEnabled(options, userConfig);
   const focusHosts = resolveFocusHosts(options, userConfig);
+  // Said in the banner, so a saved "use Detour only as a route" setup doesn't silently start decrypting.
+  const savedInterceptFocusIgnored =
+    options.upstreamProxy !== undefined &&
+    ((options.intercept === undefined && userConfig.intercept === false) ||
+      (options.focus === undefined && (userConfig.focusHosts?.length ?? 0) > 0));
 
   // A bad `--persist` path (unwritable directory, an unsupported Node runtime) fails startup rather than every
   // exchange thereafter silently going unpersisted.
@@ -558,6 +565,7 @@ async function prepareStartResources(
     autoPassthrough,
     interceptEnabled,
     focusHosts,
+    savedInterceptFocusIgnored,
   };
 }
 
@@ -752,7 +760,7 @@ async function startDashboard(ctx: SessionContext, requestedDashboardPort: numbe
         host: ctx.dashboardHost,
         proxyPort: handle.port,
         initialInterceptState: { enabled: ctx.resources.interceptEnabled },
-        initialFocusState: { hosts: ctx.resources.focusHosts },
+        initialFocusState: { hosts: [...ctx.resources.focusHosts] },
         isSelfTarget: handle.isSelfTarget,
         ruleEngine,
         ruleProfileStore: fsRuleProfileStore,
@@ -843,6 +851,7 @@ function printBanner(ctx: SessionContext, dashboardHandle: DashboardHandle | und
     autoPassthrough: resources.autoPassthrough,
     interceptEnabled: resources.interceptEnabled,
     focusHosts: resources.focusHosts,
+    savedInterceptFocusIgnored: resources.savedInterceptFocusIgnored,
     caExpiryWarning: caExpiryWarningLine(handle.caCertPath),
   });
 }

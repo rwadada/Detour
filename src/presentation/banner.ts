@@ -57,6 +57,9 @@ const PROXY_OPEN_WARNING =
 const INSECURE_UPSTREAM_WARNING =
   'upstream TLS certificate verification is OFF for this entire session — every proxied HTTPS request accepts whatever certificate the upstream server presents, self-signed, expired, or otherwise. Only use this against a server you trust on a network you trust; prefer `--upstream-ca <path>` to trust a specific CA instead of disabling verification outright';
 
+const SAVED_INTERCEPT_FOCUS_IGNORED_WARNING =
+  'the Intercept/Focus defaults saved with `detour config` are not applied with --upstream-proxy — a connection left undecrypted would go straight to its destination, around that proxy. Pass --no-intercept / --focus on the command line to use them anyway';
+
 /**
  * The banner's Intercept and Focus lines (issue #301). Focus only matters
  * while Intercept is on, so it is reported as ignored rather than as if it
@@ -137,6 +140,8 @@ export function printStartupBanner(info: {
   interceptEnabled: boolean;
   /** Focus's host patterns at startup (issue #301's `--focus`), normalized; empty means Focus off. */
   focusHosts: readonly string[];
+  /** Whether a saved `intercept: false` / `focusHosts` was not applied because of `--upstream-proxy`. */
+  savedInterceptFocusIgnored: boolean;
 }): void {
   console.log(
     `Detour proxy started → http://localhost:${info.proxyPort} (HTTP/2: ${info.http2Enabled ? 'on' : 'off'}, upstream HTTP/2: ${info.http2UpstreamEnabled ? 'on' : 'off'})`,
@@ -154,6 +159,7 @@ export function printStartupBanner(info: {
       : 'Auto TLS passthrough: off (--auto-passthrough)',
   );
   for (const line of interceptBannerLines(info.interceptEnabled, info.focusHosts)) console.log(line);
+  if (info.savedInterceptFocusIgnored) console.log(`⚠ ${SAVED_INTERCEPT_FOCUS_IGNORED_WARNING}`);
   const dashboardScheme = info.dashboardTls ? 'https' : 'http';
   // `/?token=…` when an access token protects the dashboard (issue #205) —
   // opening this URL once trades it for a cookie.

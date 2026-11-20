@@ -13,9 +13,20 @@ describe('parseHostPatternList (issue #301)', () => {
     expect(() => parseHostPatternList(' , ', '--focus')).toThrow(/--focus needs at least one host pattern/);
   });
 
-  it('rejects a URL or a path, which could never match a host', () => {
-    expect(() => parseHostPatternList('https://api.example.com', '--focus')).toThrow(/not URLs or paths/);
+  it('rejects a URL, a path, or patterns joined by something other than a comma — none could ever match a host', () => {
+    expect(() => parseHostPatternList('https://api.example.com', '--focus')).toThrow(/a URL or a path/);
     expect(() => parseHostPatternList('ok.example, api.example.com/v1', '--focus')).toThrow(/"api\.example\.com\/v1"/);
+    expect(() => parseHostPatternList('a.example b.example', '--focus')).toThrow(/separate patterns with commas/);
+    expect(() => parseHostPatternList('a.example;b.example', '--focus')).toThrow(/separate patterns with commas/);
+  });
+
+  it('accepts globs, ports and IP literals', () => {
+    expect(parseHostPatternList('*.example.net,api-1.example.com:8443,10.0.0.?,[::1]:8080', '--focus')).toEqual([
+      '*.example.net',
+      'api-1.example.com:8443',
+      '10.0.0.?',
+      '[::1]:8080',
+    ]);
   });
 });
 
@@ -27,5 +38,9 @@ describe('collectFocusPatterns (issue #301)', () => {
 
   it('starts a fresh list after an earlier --no-focus', () => {
     expect(collectFocusPatterns('a.com', false)).toEqual(['a.com']);
+  });
+
+  it('points `--focus off` at --no-focus instead of taking "off" as a host', () => {
+    expect(() => collectFocusPatterns(' OFF ', undefined)).toThrow(/use --no-focus/);
   });
 });

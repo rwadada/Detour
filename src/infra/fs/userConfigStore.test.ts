@@ -67,11 +67,9 @@ describe('userConfigStore (fs-backed)', () => {
 
   it('throws when focusHosts is not an array of strings', () => {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    for (const focusHosts of ['api.example.com', [1], null, [''], ['ok.example', '  ']]) {
+    for (const focusHosts of ['api.example.com', [1], null, [''], ['ok.example', '  '], ['https://api.example.com']]) {
       fs.writeFileSync(configPath, JSON.stringify({ focusHosts }));
-      expect(() => loadUserConfig(configPath)).toThrow(
-        /"focusHosts" must be an array of non-empty host pattern strings/,
-      );
+      expect(() => loadUserConfig(configPath)).toThrow(/"focusHosts" must be an array of host patterns/);
     }
   });
 
