@@ -50,6 +50,10 @@ export interface UserConfig {
   proxyAuth?: ProxyAuthCredentials | null;
   /** Auto TLS passthrough (see `ProxyServerOptions.autoPassthrough`) for `detour start` unless overridden by `--auto-passthrough`/`--no-auto-passthrough` on that invocation. Undefined means "on" — the out-of-the-box default. Set via `detour config --auto-passthrough on|off`; read at `detour start`, so a change needs a restart. */
   autoPassthrough?: boolean;
+  /** Intercept's state at `detour start` (issue #301) unless overridden by `--intercept`/`--no-intercept` on that invocation. Undefined means "on". Set via `detour config --intercept on|off`; read at `detour start`, so a change needs a restart (the dashboard toggle changes only the running session). */
+  intercept?: boolean;
+  /** Focus host patterns at `detour start` (issue #301) unless overridden by `--focus`/`--no-focus` on that invocation. Undefined or empty means Focus off (every host is intercepted). Set via `detour config --focus <patterns>` (`"off"` clears it); read at `detour start`. */
+  focusHosts?: string[];
   /** Keys this version of detour doesn't know about (an older config written by a future version, hand-edited extras, …) — kept around so `writeUserConfig`'s read-modify-write merge doesn't drop them. */
   [key: string]: unknown;
 }
@@ -70,7 +74,16 @@ export function resolveUserConfigPath(): string {
  * KnownUserConfigFields` (no index signature to collapse into) can.
  */
 type KnownUserConfigFields = Required<
-  Pick<UserConfig, 'defaultDetach' | 'lanAccess' | 'dashboardPasswordHash' | 'proxyAuth' | 'autoPassthrough'>
+  Pick<
+    UserConfig,
+    | 'defaultDetach'
+    | 'lanAccess'
+    | 'dashboardPasswordHash'
+    | 'proxyAuth'
+    | 'autoPassthrough'
+    | 'intercept'
+    | 'focusHosts'
+  >
 >;
 
 /**
@@ -84,6 +97,8 @@ const WRITABLE_KEYS = [
   'dashboardPasswordHash',
   'proxyAuth',
   'autoPassthrough',
+  'intercept',
+  'focusHosts',
 ] as const satisfies readonly (keyof KnownUserConfigFields)[];
 
 /**
@@ -106,6 +121,17 @@ function validateUserConfig(config: UserConfig, configPath: string): void {
   if (config.autoPassthrough !== undefined && typeof config.autoPassthrough !== 'boolean') {
     throw new Error(
       `${configPath}: "autoPassthrough" must be a boolean (got: ${JSON.stringify(config.autoPassthrough)})`,
+    );
+  }
+  if (config.intercept !== undefined && typeof config.intercept !== 'boolean') {
+    throw new Error(`${configPath}: "intercept" must be a boolean (got: ${JSON.stringify(config.intercept)})`);
+  }
+  if (
+    config.focusHosts !== undefined &&
+    (!Array.isArray(config.focusHosts) || !config.focusHosts.every((host) => typeof host === 'string'))
+  ) {
+    throw new Error(
+      `${configPath}: "focusHosts" must be an array of host pattern strings (got: ${JSON.stringify(config.focusHosts)})`,
     );
   }
   if (

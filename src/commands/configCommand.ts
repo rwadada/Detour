@@ -4,8 +4,9 @@ import { parseProxyAuthFlag } from '../domain/auth/proxyAuth';
 import type { ProxyAuthCredentials } from '../domain/auth/proxyAuth';
 import type { UserConfig } from '../infra/fs/userConfigStore';
 import { loadUserConfig, resolveUserConfigPath, writeUserConfig } from '../infra/fs/userConfigStore';
+import { normalizeFocusHosts } from '../domain/focus/focusPolicy';
 import { LAN_ACCESS_WARNING } from '../presentation/banner';
-import { parseOnOff } from './optionParsers';
+import { parseHostPatternList, parseOnOff } from './optionParsers';
 
 /**
  * Renders `proxyAuth` for a `detour config` line — never the raw object
@@ -27,6 +28,7 @@ function describeProxyAuth(proxyAuth: ProxyAuthCredentials | null | undefined): 
 function describeWrittenConfigField(key: string, written: UserConfig): [label: string, value: unknown] {
   if (key === 'dashboardPasswordHash') return ['dashboardPassword', written.dashboardPasswordHash ? 'on' : 'off'];
   if (key === 'proxyAuth') return ['proxyAuth', describeProxyAuth(written.proxyAuth)];
+  if (key === 'focusHosts') return ['focusHosts', describeFocusHosts(written.focusHosts)];
   return [key, written[key]];
 }
 
@@ -71,6 +73,14 @@ export function registerConfigCommand(program: Command): void {
       '--auto-passthrough <on|off>',
       'When "off", `detour start` keeps MITM-ing a host even after its client refused Detour\'s certificate, instead of relaying it as raw TLS from then on (on by default) — override per-invocation with --auto-passthrough/--no-auto-passthrough. Read at `detour start`, so a change needs a restart.',
     )
+    .option(
+      '--intercept <on|off>',
+      'When "off", `detour start` begins with Intercept off: every HTTPS connection is relayed untouched, nothing is decrypted (on by default) — for using Detour only as a route (e.g. to this machine\'s VPN). Override per-invocation with --intercept/--no-intercept; the dashboard can still toggle it. Read at `detour start`, so a change needs a restart.',
+    )
+    .option(
+      '--focus <patterns>',
+      'Host patterns `detour start` begins with in Focus, comma-separated (e.g. "api.example.com,*.example.net"): only matching hosts are decrypted, every other host is relayed untouched. Pass "off" to clear it (every host is decrypted, the default). Override per-invocation with --focus/--no-focus; the dashboard can still change it. Read at `detour start`, so a change needs a restart.',
+    )
     .action(runConfigCommand);
 }
 
@@ -80,6 +90,18 @@ interface ConfigCommandOptions {
   dashboardPassword?: string;
   proxyAuth?: string;
   autoPassthrough?: string;
+  intercept?: string;
+  focus?: string;
+}
+
+/** `detour config --focus`: `"off"` clears it (stored as `[]`), anything else is a host pattern list. */
+function parseFocusConfigFlag(value: string): string[] {
+  return value === 'off' ? [] : normalizeFocusHosts(parseHostPatternList(value, '--focus'));
+}
+
+/** Renders `focusHosts` for a `detour config` line. */
+function describeFocusHosts(focusHosts: readonly string[] | undefined): string {
+  return focusHosts && focusHosts.length > 0 ? focusHosts.join(', ') : 'off';
 }
 
 /** Turns `detour config`'s flags into a `UserConfig` patch, hashing any password on the way. */
@@ -89,6 +111,8 @@ async function buildConfigPatch(options: ConfigCommandOptions): Promise<UserConf
   if (options.lan !== undefined) patch.lanAccess = parseOnOff(options.lan, '--lan');
   if (options.autoPassthrough !== undefined)
     patch.autoPassthrough = parseOnOff(options.autoPassthrough, '--auto-passthrough');
+  if (options.intercept !== undefined) patch.intercept = parseOnOff(options.intercept, '--intercept');
+  if (options.focus !== undefined) patch.focusHosts = parseFocusConfigFlag(options.focus);
   if (options.dashboardPassword !== undefined) {
     const value = parseDashboardPasswordFlag(options.dashboardPassword);
     patch.dashboardPasswordHash = value === null ? null : await hashPassword(value);
@@ -122,6 +146,8 @@ async function runConfigCommand(options: ConfigCommandOptions): Promise<void> {
     console.log(`dashboardPassword = ${config.dashboardPasswordHash ? 'on' : 'off'}`);
     console.log(`proxyAuth = ${describeProxyAuth(config.proxyAuth)}`);
     console.log(`autoPassthrough = ${config.autoPassthrough ?? true}`);
+    console.log(`intercept = ${config.intercept ?? true}`);
+    console.log(`focusHosts = ${describeFocusHosts(config.focusHosts)}`);
     console.log(`Config file: ${resolveUserConfigPath()}`);
   } catch (err) {
     console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);

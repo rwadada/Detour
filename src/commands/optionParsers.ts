@@ -61,6 +61,36 @@ export function collectRepeatable(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
+/**
+ * Splits a `--focus` value (issue #301) into host patterns: a comma-separated
+ * list (`a.com,*.b.com`), trimmed, empties dropped. An empty result is an
+ * error rather than "Focus off" — that is what `--no-focus` / `"off"` say —
+ * so a script that forgot to fill in a value fails instead of quietly
+ * intercepting every host.
+ */
+export function parseHostPatternList(value: string, flag: string): string[] {
+  const patterns = value
+    .split(',')
+    .map((pattern) => pattern.trim())
+    .filter((pattern) => pattern !== '');
+  if (patterns.length === 0) {
+    throw new Error(
+      `${flag} needs at least one host pattern, e.g. ${flag} api.example.com (got: ${JSON.stringify(value)})`,
+    );
+  }
+  return patterns;
+}
+
+/**
+ * Commander collector for the repeatable `detour start --focus <patterns>`.
+ * `previous` is `undefined` before the first `--focus`, and `false` after a
+ * `--no-focus` earlier on the same command line — a later `--focus` then
+ * starts a fresh list.
+ */
+export function collectFocusPatterns(value: string, previous: string[] | boolean | undefined): string[] {
+  return [...(Array.isArray(previous) ? previous : []), ...parseHostPatternList(value, '--focus')];
+}
+
 /** Validates `--target`, narrowing it to `SetupTarget` — a plain guard clause doesn't narrow `options.target` itself since it's a mutable object property, so this gives `runSetupCommand` a local value TypeScript can track. */
 export function parseSetupTarget(value: string | undefined): SetupTarget | undefined {
   if (value === undefined) return undefined;

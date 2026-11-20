@@ -54,6 +54,25 @@ describe('userConfigStore (fs-backed)', () => {
     expect(() => loadUserConfig(configPath)).toThrow(/"autoPassthrough" must be a boolean/);
   });
 
+  it('writes and reads intercept and focusHosts back unchanged (issue #301)', () => {
+    writeUserConfig({ intercept: false, focusHosts: ['api.example.com', '*.cdn.example'] }, configPath);
+    expect(loadUserConfig(configPath)).toEqual({ intercept: false, focusHosts: ['api.example.com', '*.cdn.example'] });
+  });
+
+  it('throws when intercept is not a boolean', () => {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ intercept: 'off' }));
+    expect(() => loadUserConfig(configPath)).toThrow(/"intercept" must be a boolean/);
+  });
+
+  it('throws when focusHosts is not an array of strings', () => {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    for (const focusHosts of ['api.example.com', [1], null]) {
+      fs.writeFileSync(configPath, JSON.stringify({ focusHosts }));
+      expect(() => loadUserConfig(configPath)).toThrow(/"focusHosts" must be an array of host pattern strings/);
+    }
+  });
+
   it('writes and reads dashboardPasswordHash back unchanged', () => {
     writeUserConfig({ dashboardPasswordHash: VALID_HASH_FIXTURE }, configPath);
     expect(loadUserConfig(configPath)).toEqual({ dashboardPasswordHash: VALID_HASH_FIXTURE });

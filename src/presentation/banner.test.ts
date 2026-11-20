@@ -55,6 +55,8 @@ describe('printStartupBanner', () => {
       clientCertSet: false,
       caExpiryWarning: undefined,
       autoPassthrough: true,
+      interceptEnabled: true,
+      focusHosts: [],
       ...overrides,
     });
     return logged.join('\n');
@@ -63,6 +65,28 @@ describe('printStartupBanner', () => {
   it('reports whether auto TLS passthrough is on', () => {
     expect(print()).toContain('Auto TLS passthrough: on');
     expect(print({ autoPassthrough: false })).toContain('Auto TLS passthrough: off (--auto-passthrough)');
+  });
+
+  describe('Intercept and Focus at startup (issue #301)', () => {
+    it('reports Intercept on and Focus off by default', () => {
+      const banner = print();
+      expect(banner).toContain('Intercept: on (--no-intercept)');
+      expect(banner).toContain('Focus: off — every host is decrypted (--focus <patterns>)');
+    });
+
+    it('lists the Focus patterns when set', () => {
+      expect(print({ focusHosts: ['api.example.com', '*.example.net'] })).toContain(
+        'Focus: api.example.com, *.example.net — only these hosts are decrypted',
+      );
+    });
+
+    it('reports Intercept off, with Focus as pending rather than in effect', () => {
+      const banner = print({ interceptEnabled: false, focusHosts: ['api.example.com'] });
+      expect(banner).toContain('Intercept: off — every HTTPS connection is relayed untouched, nothing is decrypted');
+      expect(banner).toContain('Focus (api.example.com) applies once Intercept is turned on.');
+      expect(banner).not.toContain('Focus: api.example.com');
+      expect(print({ interceptEnabled: false })).not.toContain('Focus');
+    });
   });
 
   it('reports the proxy port and HTTP/2 state', () => {

@@ -58,6 +58,27 @@ const INSECURE_UPSTREAM_WARNING =
   'upstream TLS certificate verification is OFF for this entire session — every proxied HTTPS request accepts whatever certificate the upstream server presents, self-signed, expired, or otherwise. Only use this against a server you trust on a network you trust; prefer `--upstream-ca <path>` to trust a specific CA instead of disabling verification outright';
 
 /**
+ * The banner's Intercept and Focus lines (issue #301). Focus only matters
+ * while Intercept is on, so it is reported as ignored rather than as if it
+ * were in effect when Intercept starts off.
+ */
+export function interceptBannerLines(interceptEnabled: boolean, focusHosts: readonly string[]): string[] {
+  if (!interceptEnabled) {
+    const focusNote =
+      focusHosts.length > 0 ? ` Focus (${focusHosts.join(', ')}) applies once Intercept is turned on.` : '';
+    return [
+      `Intercept: off — every HTTPS connection is relayed untouched, nothing is decrypted (--intercept, or the dashboard).${focusNote}`,
+    ];
+  }
+  return [
+    'Intercept: on (--no-intercept)',
+    focusHosts.length > 0
+      ? `Focus: ${focusHosts.join(', ')} — only these hosts are decrypted, every other host is relayed untouched (--no-focus)`
+      : 'Focus: off — every host is decrypted (--focus <patterns>)',
+  ];
+}
+
+/**
  * Formats `detour start`'s banner. Everything it reports is passed in
  * already resolved — whether the dashboard SPA is built, this machine's LAN
  * addresses, the upstream proxy URL with its credentials already redacted —
@@ -112,6 +133,10 @@ export function printStartupBanner(info: {
   caExpiryWarning: string | undefined;
   /** Whether auto TLS passthrough is on (see `ProxyServerOptions.autoPassthrough`). */
   autoPassthrough: boolean;
+  /** Intercept's state at startup (issue #301's `--no-intercept`). */
+  interceptEnabled: boolean;
+  /** Focus's host patterns at startup (issue #301's `--focus`), normalized; empty means Focus off. */
+  focusHosts: readonly string[];
 }): void {
   console.log(
     `Detour proxy started → http://localhost:${info.proxyPort} (HTTP/2: ${info.http2Enabled ? 'on' : 'off'}, upstream HTTP/2: ${info.http2UpstreamEnabled ? 'on' : 'off'})`,
@@ -128,6 +153,7 @@ export function printStartupBanner(info: {
       ? `Auto TLS passthrough: on — a client that refuses this CA for a host gets that host relayed untouched for ${AUTO_PASSTHROUGH_TTL_MINUTES} minutes (--no-auto-passthrough)`
       : 'Auto TLS passthrough: off (--auto-passthrough)',
   );
+  for (const line of interceptBannerLines(info.interceptEnabled, info.focusHosts)) console.log(line);
   const dashboardScheme = info.dashboardTls ? 'https' : 'http';
   // `/?token=…` when an access token protects the dashboard (issue #205) —
   // opening this URL once trades it for a cookie.

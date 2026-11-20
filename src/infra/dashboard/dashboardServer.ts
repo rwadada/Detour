@@ -110,6 +110,15 @@ export interface DashboardServerOptions {
    * dashboard itself don't need to fabricate one.
    */
   proxyPort?: number;
+  /**
+   * The proxy's Intercept and Focus state at startup (issue #301's
+   * `--no-intercept` / `--focus`) — what a client connecting before either
+   * has been changed is told. The proxy owns the state; this only seeds the
+   * dashboard's mirror of it, which then follows the `*Changed` events.
+   * @default { enabled: true } / { hosts: [] }
+   */
+  initialInterceptState?: InterceptState;
+  initialFocusState?: FocusState;
   /** @default 500 */
   backlogSize?: number;
   /**
@@ -700,8 +709,8 @@ function createSessionState(options: DashboardServerOptions): SessionState {
   // Mirrors the proxy server's own state (which is the source of truth) so a
   // newly-connecting client can be told the current state without a round trip
   // — kept in sync via the `*Changed` events, the same way `backlog` mirrors traffic.
-  let interceptState: InterceptState = { enabled: true };
-  let focusState: FocusState = { hosts: [] };
+  let interceptState: InterceptState = options.initialInterceptState ?? { enabled: true };
+  let focusState: FocusState = options.initialFocusState ?? { hosts: [] };
   let throttleState: ThrottleState = { enabled: false, downKbps: 0, upKbps: 0, latencyMs: 0, packetLossPct: 0 };
   let blockHostsState: BlockHostsState = { hosts: [], mode: 'forbidden' };
 
