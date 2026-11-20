@@ -133,24 +133,37 @@ const SQLITE_SIDECAR_SUFFIXES = ['-journal', '-wal', '-shm'] as const;
  * user pointed `--persist <path>` into is left alone — it isn't ours to
  * chmod (it may be a shared directory), and the file inside is 0600 anyway.
  *
+ * Leftover journal/WAL/SHM sidecars are tightened too, before SQLite opens
+ * (and possibly replays) them. SQLite creates new ones with the database
+ * file's own mode, so they stay 0600 from then on.
+ *
  * No-op on Windows apart from creating the file: it has no POSIX permission
  * bits.
  */
 function restrictHistoryDbToOwner(dbPath: string): void {
+  // `:memory:` and `file:` URIs aren't plain paths: SQLite handles them itself, and pre-creating a file named after them would leave a stray file in the cwd.
+  if (dbPath === ':memory:' || dbPath.startsWith('file:')) return;
   fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: DB_DIR_MODE });
   // `a`: creates the file with DB_FILE_MODE if missing, never truncates an existing database.
   fs.closeSync(fs.openSync(dbPath, 'a', DB_FILE_MODE));
-  if (process.platform !== 'win32') fs.chmodSync(dbPath, DB_FILE_MODE);
+  if (process.platform === 'win32') return;
+  for (const filePath of [dbPath, ...SQLITE_SIDECAR_SUFFIXES.map((suffix) => `${dbPath}${suffix}`)]) {
+    tightenIfOwned(filePath);
+  }
 }
 
-function restrictSidecarsToOwner(dbPath: string): void {
-  if (process.platform === 'win32') return;
-  for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
-    try {
-      fs.chmodSync(`${dbPath}${suffix}`, DB_FILE_MODE);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-    }
+/**
+ * chmods `filePath` to 0600, skipping a missing file and one owned by another
+ * user (EPERM — e.g. left behind by an earlier `sudo detour start`): that file
+ * isn't ours to change, and refusing to start over it would be a regression
+ * for a database SQLite can still open.
+ */
+function tightenIfOwned(filePath: string): void {
+  try {
+    fs.chmodSync(filePath, DB_FILE_MODE);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'EPERM') throw err;
   }
 }
 
@@ -173,10 +186,6 @@ export function openHistoryStore(dbPath: string): HistoryStore {
   restrictHistoryDbToOwner(dbPath);
   const db: DatabaseSyncType = new DatabaseSync(dbPath);
   db.exec(SCHEMA);
-  // SQLite creates its journal/WAL/SHM sidecars with the database file's own
-  // mode, so the file above being 0600 already covers them — tightened here
-  // anyway in case one was left behind world-readable by an older Detour.
-  restrictSidecarsToOwner(dbPath);
 
   const upsert = db.prepare(
     'INSERT OR REPLACE INTO exchanges (id, started_at, method, host, url, status_code, data) VALUES (?, ?, ?, ?, ?, ?, ?)',

@@ -50,6 +50,21 @@ describe.skipIf(!isHistoryPersistenceSupported())('openHistoryStore', () => {
     store.close();
   });
 
+  it('leaves `:memory:` to SQLite instead of creating a file by that name', () => {
+    const cwd = process.cwd();
+    const dir = path.dirname(tmpDbPath());
+    process.chdir(dir);
+    try {
+      const store = openHistoryStore(':memory:');
+      store.record(exchange());
+      expect(store.query({ limit: 10 }).items).toHaveLength(1);
+      store.close();
+      expect(fs.readdirSync(dir)).toEqual([]);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
   describe.skipIf(process.platform === 'win32')('file permissions (issue #303)', () => {
     it('creates the database 0600 and a missing parent directory 0700, whatever the umask', () => {
       // eslint-disable-next-line sonarjs/file-permissions -- the umask a typical shell has, so the test proves the code does not rely on it.

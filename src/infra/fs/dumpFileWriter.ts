@@ -17,14 +17,31 @@ const DUMP_FILE_MODE = 0o600;
  */
 export function resolveDumpDir(dir: string = path.join(os.homedir(), '.detour', 'dumps')): string {
   fs.mkdirSync(dir, { recursive: true, mode: DUMP_DIR_MODE });
-  if (process.platform !== 'win32') fs.chmodSync(dir, DUMP_DIR_MODE);
+  if (process.platform !== 'win32') {
+    try {
+      fs.chmodSync(dir, DUMP_DIR_MODE);
+    } catch (err) {
+      // Owned by another user (an earlier `sudo detour start`): not ours to change, and startup shouldn't fail over it.
+      if ((err as NodeJS.ErrnoException).code !== 'EPERM') throw err;
+    }
+  }
   return dir;
 }
 
-/** Writes one dump file 0600 — `mode` alone only applies when the file is created, and a response overwrites its request's file. */
+/**
+ * Writes one dump file 0600. `mode` alone only applies when the file is
+ * created, and a response overwrites its request's file (which an older
+ * Detour may have left 0644) — so the mode is fixed on the open descriptor
+ * after truncating and before any of the new content is written.
+ */
 function writeOwnerOnly(filePath: string, content: string): void {
-  fs.writeFileSync(filePath, content, { encoding: 'utf8', mode: DUMP_FILE_MODE });
-  if (process.platform !== 'win32') fs.chmodSync(filePath, DUMP_FILE_MODE);
+  const fd = fs.openSync(filePath, 'w', DUMP_FILE_MODE);
+  try {
+    if (process.platform !== 'win32') fs.fchmodSync(fd, DUMP_FILE_MODE);
+    fs.writeFileSync(fd, content, 'utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 /**
