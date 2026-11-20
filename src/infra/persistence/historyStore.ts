@@ -120,6 +120,40 @@ function buildWhereClause(query: HistoryQuery): { sql: string; params: (string |
   return { sql: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', params };
 }
 
+const DB_FILE_MODE = 0o600;
+const DB_DIR_MODE = 0o700;
+const SQLITE_SIDECAR_SUFFIXES = ['-journal', '-wal', '-shm'] as const;
+
+/**
+ * The database holds decrypted traffic (headers and bodies), so it gets the
+ * same owner-only treatment as the CA key and the dashboard token (issue
+ * #303) instead of whatever the umask gives `new DatabaseSync` (often 0644).
+ * The file is created 0600 before SQLite opens it, and an existing one is
+ * tightened. Directories this creates are 0700; an existing directory the
+ * user pointed `--persist <path>` into is left alone — it isn't ours to
+ * chmod (it may be a shared directory), and the file inside is 0600 anyway.
+ *
+ * No-op on Windows apart from creating the file: it has no POSIX permission
+ * bits.
+ */
+function restrictHistoryDbToOwner(dbPath: string): void {
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: DB_DIR_MODE });
+  // `a`: creates the file with DB_FILE_MODE if missing, never truncates an existing database.
+  fs.closeSync(fs.openSync(dbPath, 'a', DB_FILE_MODE));
+  if (process.platform !== 'win32') fs.chmodSync(dbPath, DB_FILE_MODE);
+}
+
+function restrictSidecarsToOwner(dbPath: string): void {
+  if (process.platform === 'win32') return;
+  for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
+    try {
+      fs.chmodSync(`${dbPath}${suffix}`, DB_FILE_MODE);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+  }
+}
+
 /**
  * Opens (creating if necessary, including parent directories) a SQLite
  * database at `dbPath` for `--persist`. Throws if `node:sqlite` isn't
@@ -136,9 +170,13 @@ export function openHistoryStore(dbPath: string): HistoryStore {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
 
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  restrictHistoryDbToOwner(dbPath);
   const db: DatabaseSyncType = new DatabaseSync(dbPath);
   db.exec(SCHEMA);
+  // SQLite creates its journal/WAL/SHM sidecars with the database file's own
+  // mode, so the file above being 0600 already covers them — tightened here
+  // anyway in case one was left behind world-readable by an older Detour.
+  restrictSidecarsToOwner(dbPath);
 
   const upsert = db.prepare(
     'INSERT OR REPLACE INTO exchanges (id, started_at, method, host, url, status_code, data) VALUES (?, ?, ?, ?, ?, ?, ?)',

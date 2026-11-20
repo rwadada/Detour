@@ -50,6 +50,51 @@ describe.skipIf(!isHistoryPersistenceSupported())('openHistoryStore', () => {
     store.close();
   });
 
+  describe.skipIf(process.platform === 'win32')('file permissions (issue #303)', () => {
+    it('creates the database 0600 and a missing parent directory 0700, whatever the umask', () => {
+      // eslint-disable-next-line sonarjs/file-permissions -- the umask a typical shell has, so the test proves the code does not rely on it.
+      const previousUmask = process.umask(0o022);
+      try {
+        const dbPath = path.join(path.dirname(tmpDbPath()), 'nested', 'history.db');
+        const store = openHistoryStore(dbPath);
+        store.record(exchange());
+        expect(fs.statSync(dbPath).mode & 0o777).toBe(0o600);
+        expect(fs.statSync(path.dirname(dbPath)).mode & 0o777).toBe(0o700);
+        store.close();
+      } finally {
+        process.umask(previousUmask);
+      }
+    });
+
+    it('tightens an existing world-readable database and its leftover sidecar files, keeping their data', () => {
+      const dbPath = tmpDbPath();
+      const first = openHistoryStore(dbPath);
+      first.record(exchange());
+      first.close();
+      // eslint-disable-next-line sonarjs/file-permissions -- test fixture simulating a pre-fix, world-readable file/directory.
+      fs.chmodSync(dbPath, 0o644);
+      const walPath = `${dbPath}-wal`;
+      fs.writeFileSync(walPath, '', { mode: 0o644 });
+      // eslint-disable-next-line sonarjs/file-permissions -- test fixture simulating a pre-fix, world-readable file/directory.
+      fs.chmodSync(walPath, 0o644);
+
+      const second = openHistoryStore(dbPath);
+      expect(fs.statSync(dbPath).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(walPath).mode & 0o777).toBe(0o600);
+      expect(second.query({ limit: 10 }).items).toHaveLength(1);
+      second.close();
+    });
+
+    it('leaves an existing directory the user pointed --persist into alone', () => {
+      const dbPath = tmpDbPath();
+      // eslint-disable-next-line sonarjs/file-permissions -- test fixture simulating a pre-fix, world-readable file/directory.
+      fs.chmodSync(path.dirname(dbPath), 0o755);
+      openHistoryStore(dbPath).close();
+      expect(fs.statSync(path.dirname(dbPath)).mode & 0o777).toBe(0o755);
+      expect(fs.statSync(dbPath).mode & 0o777).toBe(0o600);
+    });
+  });
+
   it('round-trips a recorded exchange back out via query', () => {
     const store = openHistoryStore(tmpDbPath());
     store.record(exchange());
