@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CapturedExchange, CapturedWebSocketConnection } from '../../domain/exchange/types';
 import type { GrpcExchangeInfo } from '../../domain/grpc/grpcDumpFormat';
 import { resolveDumpDir, writeExchangeDumpFile, writeWebSocketDumpFile } from './dumpFileWriter';
@@ -33,9 +33,17 @@ function baseExchange(overrides: Partial<CapturedExchange> = {}): CapturedExchan
 
 describe('resolveDumpDir', () => {
   it('creates and returns ~/.detour/dumps', () => {
-    const dir = resolveDumpDir();
-    expect(fs.existsSync(dir)).toBe(true);
-    expect(dir).toBe(path.join(os.homedir(), '.detour', 'dumps'));
+    // A temp home, so running the tests never creates or chmods the developer's real ~/.detour.
+    const home = tmpDir();
+    dirs.push(home);
+    const homedir = vi.spyOn(os, 'homedir').mockReturnValue(home);
+    try {
+      const dir = resolveDumpDir();
+      expect(fs.existsSync(dir)).toBe(true);
+      expect(dir).toBe(path.join(home, '.detour', 'dumps'));
+    } finally {
+      homedir.mockRestore();
+    }
   });
 
   it.skipIf(process.platform === 'win32')(

@@ -100,6 +100,33 @@ describe.skipIf(!isHistoryPersistenceSupported())('openHistoryStore', () => {
       second.close();
     });
 
+    it('creates a database named by a `file:` URI 0600 too, whatever the umask', () => {
+      const dir = path.dirname(tmpDbPath());
+      // eslint-disable-next-line sonarjs/file-permissions -- the umask a typical shell has, so the test proves the code does not rely on it.
+      const previousUmask = process.umask(0o022);
+      try {
+        const store = openHistoryStore(`file:${path.join(dir, 'uri.db')}`);
+        store.record(exchange());
+        store.close();
+        expect(fs.statSync(path.join(dir, 'uri.db')).mode & 0o777).toBe(0o600);
+      } finally {
+        process.umask(previousUmask);
+      }
+    });
+
+    it('does not chmod through a sidecar path that is a symlink', () => {
+      const dbPath = tmpDbPath();
+      const target = path.join(path.dirname(dbPath), 'someone-elses-file');
+      fs.writeFileSync(target, '');
+      // eslint-disable-next-line sonarjs/file-permissions -- test fixture: a file that is not Detour's and must keep its mode.
+      fs.chmodSync(target, 0o644);
+      fs.symlinkSync(target, `${dbPath}-shm`);
+
+      openHistoryStore(dbPath).close();
+
+      expect(fs.statSync(target).mode & 0o777).toBe(0o644);
+    });
+
     it('leaves an existing directory the user pointed --persist into alone', () => {
       const dbPath = tmpDbPath();
       // eslint-disable-next-line sonarjs/file-permissions -- test fixture simulating a pre-fix, world-readable file/directory.
