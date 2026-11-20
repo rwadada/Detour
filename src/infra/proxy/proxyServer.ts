@@ -34,6 +34,11 @@ import { createScriptResponseHookHandler } from './pipeline/scriptResponseHook';
 import { createWebSocketHandlers } from './pipeline/webSocketHandlers';
 import type { UpstreamTlsOptions } from './upstreamTlsOptions';
 
+/** How many auto TLS passthrough records the dashboard is sent (soonest to lapse first); `total` says how many exist. */
+const AUTO_PASSTHROUGH_ENTRIES_SHOWN = 100;
+/** Records made within this window go out to the dashboard as one `autoPassthroughChanged`. */
+const AUTO_PASSTHROUGH_ANNOUNCE_DELAY_MS = 250;
+
 export interface ProxyServerOptions {
   port: number;
   host?: string;
@@ -167,21 +172,32 @@ export async function startProxyServer(
   const recordedRefusals = (options.autoPassthrough ?? true) ? createAutoPassthroughHosts() : undefined;
   // What the dashboard shows (issue #302). Each entry's expiry goes out as a
   // wall-clock time, so a client counts it down itself and no message is
-  // needed when one lapses.
+  // needed when one lapses. Without `--proxy-auth` anything on the network can
+  // make refusals, so the list sent is capped and announcements are coalesced:
+  // otherwise a flood of refusals would send every dashboard the whole
+  // (up to 10,000-entry) record once per new entry.
   const autoPassthroughState = (): AutoPassthroughState => {
     const now = Date.now();
+    const records = recordedRefusals?.list() ?? [];
     return {
       enabled: recordedRefusals !== undefined,
-      entries: (recordedRefusals?.list() ?? []).map(({ clientAddress, host, port, remainingMs }) => ({
+      entries: records.slice(0, AUTO_PASSTHROUGH_ENTRIES_SHOWN).map(({ clientAddress, host, port, remainingMs }) => ({
         ...(clientAddress !== undefined ? { clientAddress } : {}),
         host,
         port,
         expiresAt: Math.round(now + remainingMs),
       })),
+      total: records.length,
     };
   };
+  let announceTimer: ReturnType<typeof setTimeout> | undefined;
   const announceAutoPassthrough = (): void => {
-    eventBus.emit('autoPassthroughChanged', autoPassthroughState());
+    if (announceTimer !== undefined) return;
+    announceTimer = setTimeout(() => {
+      announceTimer = undefined;
+      eventBus.emit('autoPassthroughChanged', autoPassthroughState());
+    }, AUTO_PASSTHROUGH_ANNOUNCE_DELAY_MS);
+    announceTimer.unref();
   };
   // The same record, telling the dashboard about every target it newly takes in.
   const autoPassthroughHosts = recordedRefusals && notifyingOnAdd(recordedRefusals, announceAutoPassthrough);
@@ -347,6 +363,7 @@ export async function startProxyServer(
             stop: () =>
               new Promise<void>((res) => {
                 eventBus.off('forgetAutoPassthrough', handleForgetAutoPassthrough);
+                clearTimeout(announceTimer);
                 eventBus.off('breakpointResume', handleBreakpointResume);
                 eventBus.off('setIntercept', handleSetIntercept);
                 eventBus.off('setFocus', handleSetFocus);

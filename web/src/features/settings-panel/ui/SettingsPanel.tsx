@@ -160,7 +160,14 @@ function AutoPassthroughSection() {
         </span>
       </div>
       <AutoPassthroughDescription enabled={autoPassthrough.enabled} />
-      {autoPassthrough.enabled && <AutoPassthroughRecords entries={entries} now={now} onForgetAll={forgetAll} />}
+      {autoPassthrough.enabled && (
+        <AutoPassthroughRecords
+          entries={entries}
+          notShown={autoPassthrough.total - autoPassthrough.entries.length}
+          now={now}
+          onForgetAll={forgetAll}
+        />
+      )}
     </section>
   );
 }
@@ -189,16 +196,19 @@ function AutoPassthroughDescription({ enabled }: { enabled: boolean }) {
 /** The targets relayed untouched right now, each with the time it has left, and the button that forgets them all. */
 function AutoPassthroughRecords({
   entries,
+  notShown,
   now,
   onForgetAll,
 }: {
   entries: AutoPassthroughEntry[];
+  /** Records the server holds beyond the ones it sent (it sends the soonest-to-lapse 100). */
+  notShown: number;
   now: number;
   onForgetAll: () => void;
 }) {
   return (
     <>
-      {entries.length === 0 ? (
+      {entries.length === 0 && notShown === 0 ? (
         <p className="mb-2 text-xs text-[var(--muted)]">Nothing is being relayed untouched right now.</p>
       ) : (
         <ul aria-label="Targets relayed untouched" className="mb-2 space-y-1">
@@ -216,12 +226,13 @@ function AutoPassthroughRecords({
               </span>
             </li>
           ))}
+          {notShown > 0 && <li className="px-2 text-xs text-[var(--muted)]">and {notShown} more not shown</li>}
         </ul>
       )}
       <button
         type="button"
         onClick={onForgetAll}
-        disabled={entries.length === 0}
+        disabled={entries.length === 0 && notShown === 0}
         className="rounded-md border border-[var(--border)] px-3 py-1 text-xs text-[var(--muted)] hover:bg-[var(--row-hover)] disabled:opacity-50"
       >
         Forget all

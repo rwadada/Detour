@@ -53,6 +53,7 @@ describe('startDashboardServer — auto TLS passthrough (issue #302)', () => {
   const recorded: AutoPassthroughState = {
     enabled: true,
     entries: [{ clientAddress: '127.0.0.1', host: 'api.example.com', port: 443, expiresAt: 1_900_000_000_000 }],
+    total: 1,
   };
 
   it('sends the current state to a client as it connects', async () => {
@@ -73,7 +74,7 @@ describe('startDashboardServer — auto TLS passthrough (issue #302)', () => {
   it('relays every change to every connected client', async () => {
     const eventBus = new DetourEventBus();
     handle = await startDashboardServer(
-      { port: 0, autoPassthroughState: () => ({ enabled: true, entries: [] }) },
+      { port: 0, autoPassthroughState: () => ({ enabled: true, entries: [], total: 0 }) },
       eventBus,
     );
     const first = connect();

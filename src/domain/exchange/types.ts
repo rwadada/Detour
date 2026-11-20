@@ -399,6 +399,8 @@ export interface FocusState {
 export interface AutoPassthroughState {
   enabled: boolean;
   entries: AutoPassthroughEntry[];
+  /** How many targets are recorded in all — `entries` holds at most the first 100 of them, soonest to lapse first. */
+  total: number;
 }
 
 export interface AutoPassthroughEntry {

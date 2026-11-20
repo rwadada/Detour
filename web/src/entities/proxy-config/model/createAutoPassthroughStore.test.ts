@@ -14,6 +14,7 @@ describe('createAutoPassthroughStore (issue #302)', () => {
     const state = {
       enabled: true,
       entries: [{ clientAddress: '127.0.0.1', host: 'a.example', port: 443, expiresAt: 5 }],
+      total: 1,
     };
     fake.emit({ type: 'autoPassthrough', state });
     expect(store.getState().autoPassthrough).toEqual(state);
@@ -29,7 +30,7 @@ describe('createAutoPassthroughStore (issue #302)', () => {
 describe('liveAutoPassthroughEntries', () => {
   it('drops lapsed entries and orders the rest soonest-to-lapse first', () => {
     const entry = (host: string, expiresAt: number) => ({ host, port: 443, expiresAt });
-    const state = { enabled: true, entries: [entry('late', 300), entry('gone', 100), entry('soon', 200)] };
+    const state = { enabled: true, entries: [entry('late', 300), entry('gone', 100), entry('soon', 200)], total: 3 };
     expect(liveAutoPassthroughEntries(state, 100).map((e) => e.host)).toEqual(['soon', 'late']);
   });
 });
