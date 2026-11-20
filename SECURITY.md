@@ -59,10 +59,18 @@ dashboard run on your own machine. Worth knowing up front:
 - **The proxy itself is reachable from your local network unconditionally**
   — `--lan`/`lanAccess` doesn't gate it, and never has; a proxy nothing else
   on the network can reach isn't very useful. `--lan`/`lanAccess` only
-  widens the **dashboard's** exposure the same way, from localhost-only to
-  your whole LAN, with no authentication by default. Only enable it on a
-  network you trust, and set a dashboard password
-  (`detour config --dashboard-password`) when you do.
+  widens where the **dashboard** listens, from localhost-only to every
+  interface; it does not relax authentication — the access token (or the
+  dashboard password, when one is set) is still required, exactly as on
+  localhost. Because the token, the password and the decrypted traffic would
+  otherwise cross the LAN in the clear, `--lan` also serves the dashboard
+  over HTTPS by default (a leaf certificate from Detour's own CA;
+  `--dashboard-tls off` turns that off). The Dashboard URL printed at startup
+  carries the token, so anyone who sees it — over your shoulder, in a shared
+  screenshot or chat — gets full dashboard access. Only enable `--lan` on a
+  network you trust; a dashboard password
+  (`detour config --dashboard-password`) gives you a secret you choose and
+  type in rather than one carried in a URL.
 - **The proxy must never be a stepping stone to the dashboard.** Because the
   proxy listens on every interface while the dashboard defaults to
   localhost-only, a LAN client could otherwise ask the proxy to fetch
@@ -97,10 +105,12 @@ dashboard run on your own machine. Worth knowing up front:
   --allow-scripts` is required before a `script` rule's `beforeRequest`/
   `beforeResponse` hooks actually execute — without it, a matching `script`
   rule is skipped (with a warning), not run. This exists because the
-  dashboard can reach an *existing* `script` rule over the network with
-  nothing but a dashboard password (or, if none is set, nothing at all)
-  standing between a remote client and code execution with the CA private
-  key's permissions. Every dashboard action that can change what's active —
+  dashboard can still edit an *existing* `script` rule (anything but its
+  `path`: what it matches, whether it's enabled), so the
+  dashboard's secret (the access token, or the dashboard password) would be
+  the only thing standing between whoever holds it — possibly from across the
+  LAN with `--lan` — and code execution with the CA private key's
+  permissions. Every dashboard action that can change what's active —
   `setRules` and `applyRuleProfile` alike — also refuses to add a brand-new
   `script` rule or change an existing one's `path`, regardless of
   `--allow-scripts`; that half of the chain (a rules.json file, or a saved
