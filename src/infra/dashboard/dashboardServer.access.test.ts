@@ -29,7 +29,11 @@ describe('startDashboardServer — access token (issue #205)', () => {
   });
 
   afterEach(async () => {
-    for (const socket of sockets) socket.close();
+    for (const socket of sockets) {
+      // A socket still connecting emits "WebSocket was closed before the connection was established" when torn down; that is expected here, not a failure.
+      socket.on('error', () => {});
+      socket.terminate();
+    }
     await handle?.stop();
     handle = undefined;
     fs.rmSync(dir, { recursive: true, force: true });
@@ -52,12 +56,27 @@ describe('startDashboardServer — access token (issue #205)', () => {
     return socket;
   }
 
-  /** Every message a socket receives during `ms`, in order. */
-  function collect(socket: WebSocket, ms = 150): Promise<DashboardServerMessage[]> {
+  /**
+   * Every message a socket receives, in order, from its first message until
+   * `settleMs` after it — long enough to catch anything sent alongside or
+   * right after the first one (and to prove nothing else was). The window
+   * starts at the first message, not when the socket is created: on a slow
+   * CI runner the handshake alone can outlast a fixed window, which left this
+   * suite flaky with `[]` (issue #305). Gives up after `firstMessageTimeoutMs`
+   * with whatever arrived (nothing), so a missing message fails the assertion
+   * rather than hanging the test.
+   */
+  function collect(socket: WebSocket, settleMs = 150, firstMessageTimeoutMs = 5000): Promise<DashboardServerMessage[]> {
     return new Promise((resolve) => {
       const seen: DashboardServerMessage[] = [];
-      socket.on('message', (raw) => seen.push(JSON.parse(raw.toString()) as DashboardServerMessage));
-      setTimeout(() => resolve(seen), ms);
+      let timer = setTimeout(() => resolve(seen), firstMessageTimeoutMs);
+      socket.on('message', (raw) => {
+        seen.push(JSON.parse(raw.toString()) as DashboardServerMessage);
+        if (seen.length === 1) {
+          clearTimeout(timer);
+          timer = setTimeout(() => resolve(seen), settleMs);
+        }
+      });
     });
   }
 
