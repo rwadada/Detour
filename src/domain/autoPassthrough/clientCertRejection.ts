@@ -69,6 +69,13 @@ export interface AutoPassthroughHosts {
   has(target: AutoPassthroughTarget): boolean;
   /** Forgets every target at once — the way to MITM them again before they expire (say, right after installing the CA). */
   clear(): void;
+  /** Every target still recorded, oldest first, with how long until it expires (issue #302: shown in the dashboard). */
+  list(): AutoPassthroughRecord[];
+}
+
+/** One recorded target and the time it has left. */
+export interface AutoPassthroughRecord extends AutoPassthroughTarget {
+  remainingMs: number;
 }
 
 /** How long a refusal is remembered. */
@@ -96,6 +103,18 @@ function keyOf(target: AutoPassthroughTarget): string {
   return `${target.clientAddress ?? ''} ${target.host.toLowerCase()}:${target.port}`;
 }
 
+/** `hosts`, calling `onAdded` after every target it newly records (issue #302: so the dashboard hears of it). */
+export function notifyingOnAdd(hosts: AutoPassthroughHosts, onAdded: () => void): AutoPassthroughHosts {
+  return {
+    ...hosts,
+    add: (target) => {
+      const added = hosts.add(target);
+      if (added) onAdded();
+      return added;
+    },
+  };
+}
+
 export function createAutoPassthroughHosts(
   options: { limit?: number; perClientLimit?: number; ttlMs?: number; now?: () => number } = {},
 ): AutoPassthroughHosts {
@@ -107,7 +126,7 @@ export function createAutoPassthroughHosts(
     ttlMs = AUTO_PASSTHROUGH_TTL_MS,
     now = () => performance.now(),
   } = options;
-  const entries = new Map<string, { expiry: number; client: string }>();
+  const entries = new Map<string, { expiry: number; client: string; target: AutoPassthroughTarget }>();
   const perClient = new Map<string, number>();
   const remove = (key: string): void => {
     const entry = entries.get(key);
@@ -141,7 +160,11 @@ export function createAutoPassthroughHosts(
       const client = target.clientAddress ?? '';
       if (entries.size >= limit || (perClient.get(client) ?? 0) >= perClientLimit) pruneExpired();
       if (entries.size >= limit || (perClient.get(client) ?? 0) >= perClientLimit) return false;
-      entries.set(key, { expiry: now() + ttlMs, client });
+      entries.set(key, {
+        expiry: now() + ttlMs,
+        client,
+        target: { clientAddress: target.clientAddress, host: target.host, port: target.port },
+      });
       perClient.set(client, (perClient.get(client) ?? 0) + 1);
       return true;
     },
@@ -149,6 +172,11 @@ export function createAutoPassthroughHosts(
     clear: () => {
       entries.clear();
       perClient.clear();
+    },
+    list: () => {
+      pruneExpired();
+      const time = now();
+      return [...entries.values()].map(({ expiry, target }) => ({ ...target, remainingMs: expiry - time }));
     },
   };
 }

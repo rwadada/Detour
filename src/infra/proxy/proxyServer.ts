@@ -1,8 +1,9 @@
 import type { ProxyAuthCredentials } from '../../domain/auth/proxyAuth';
-import { createAutoPassthroughHosts } from '../../domain/autoPassthrough/clientCertRejection';
+import { createAutoPassthroughHosts, notifyingOnAdd } from '../../domain/autoPassthrough/clientCertRejection';
 import { normalizeBlockHosts } from '../../domain/blockHosts/blockHostsPolicy';
 import { ExchangeRegistry } from '../../domain/exchange/exchangeRegistry';
 import type {
+  AutoPassthroughState,
   BlockHostsState,
   BreakpointResumeCommand,
   CapturedWebSocketConnection,
@@ -123,6 +124,8 @@ export interface ProxyServerHandle {
   protectLocalPort(port: number, address?: string): void;
   /** Whether `host:port` is one of this process's own listeners (the proxy, the dashboard, …) — see `ProxyEngine.isSelfTarget`. */
   isSelfTarget(host: string, port: number): Promise<boolean>;
+  /** Auto TLS passthrough's current state (issue #302) — whether it is on, and the targets recorded right now. Changes are announced with `autoPassthroughChanged`. */
+  autoPassthroughState(): AutoPassthroughState;
   stop(): Promise<void>;
 }
 
@@ -161,15 +164,40 @@ export async function startProxyServer(
   // clears it — the user taking interception into their own hands is the
   // natural moment to MITM those hosts again, e.g. right after installing
   // the CA on a device that had refused it.
-  const autoPassthroughHosts = (options.autoPassthrough ?? true) ? createAutoPassthroughHosts() : undefined;
+  const recordedRefusals = (options.autoPassthrough ?? true) ? createAutoPassthroughHosts() : undefined;
+  // What the dashboard shows (issue #302). Each entry's expiry goes out as a
+  // wall-clock time, so a client counts it down itself and no message is
+  // needed when one lapses.
+  const autoPassthroughState = (): AutoPassthroughState => {
+    const now = Date.now();
+    return {
+      enabled: recordedRefusals !== undefined,
+      entries: (recordedRefusals?.list() ?? []).map(({ clientAddress, host, port, remainingMs }) => ({
+        ...(clientAddress !== undefined ? { clientAddress } : {}),
+        host,
+        port,
+        expiresAt: Math.round(now + remainingMs),
+      })),
+    };
+  };
+  const announceAutoPassthrough = (): void => {
+    eventBus.emit('autoPassthroughChanged', autoPassthroughState());
+  };
+  // The same record, telling the dashboard about every target it newly takes in.
+  const autoPassthroughHosts = recordedRefusals && notifyingOnAdd(recordedRefusals, announceAutoPassthrough);
   // Refusals logged without being recorded for passthrough; forgotten with it,
   // so a retry after the user acted (installed the CA, toggled Intercept)
   // shows up again instead of staying silent for the rest of the TTL.
   const loggedRefusals = createAutoPassthroughHosts();
-  const forgetRefusals = (): void => {
-    autoPassthroughHosts?.clear();
+  /** `announce: 'always'` answers an explicit request even when there was nothing to forget. */
+  const forgetRefusals = (announce: 'if-changed' | 'always' = 'if-changed'): void => {
+    const hadRecords = (recordedRefusals?.list().length ?? 0) > 0;
+    recordedRefusals?.clear();
     loggedRefusals.clear();
+    if (hadRecords || announce === 'always') announceAutoPassthrough();
   };
+  const handleForgetAutoPassthrough = (): void => forgetRefusals('always');
+  eventBus.on('forgetAutoPassthrough', handleForgetAutoPassthrough);
 
   const handleSetIntercept = (enabled: boolean): void => {
     if (enabled !== runtimeState.getSnapshot().interceptEnabled) forgetRefusals();
@@ -315,8 +343,10 @@ export async function startProxyServer(
             },
             protectLocalPort: (port, address) => proxy.protectLocalPort(port, address),
             isSelfTarget: (host, port) => proxy.isSelfTarget(host, port),
+            autoPassthroughState,
             stop: () =>
               new Promise<void>((res) => {
+                eventBus.off('forgetAutoPassthrough', handleForgetAutoPassthrough);
                 eventBus.off('breakpointResume', handleBreakpointResume);
                 eventBus.off('setIntercept', handleSetIntercept);
                 eventBus.off('setFocus', handleSetFocus);

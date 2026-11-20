@@ -1,6 +1,6 @@
 /* eslint-disable sonarjs/no-hardcoded-ip -- address fixtures */
 import { describe, expect, it } from 'vitest';
-import { clientCertRejectionAlert, createAutoPassthroughHosts } from './clientCertRejection';
+import { clientCertRejectionAlert, createAutoPassthroughHosts, notifyingOnAdd } from './clientCertRejection';
 
 describe('clientCertRejectionAlert', () => {
   it.each([
@@ -77,6 +77,34 @@ describe('createAutoPassthroughHosts', () => {
     for (time = 10; time < 100; time += 10) expect(hosts.has(phone('api.example.com'))).toBe(true);
     time = 100;
     expect(hosts.has(phone('api.example.com'))).toBe(false);
+  });
+
+  it('lists the targets still recorded, oldest first, with the time each has left (issue #302)', () => {
+    let time = 0;
+    const hosts = createAutoPassthroughHosts({ ttlMs: 100, now: () => time });
+    hosts.add(phone('a.example'));
+    time = 30;
+    hosts.add({ clientAddress: undefined, host: 'B.example', port: 8443 });
+    time = 50;
+    expect(hosts.list()).toEqual([
+      { clientAddress: '127.0.0.1', host: 'a.example', port: 443, remainingMs: 50 },
+      { clientAddress: undefined, host: 'B.example', port: 8443, remainingMs: 80 },
+    ]);
+    time = 100;
+    expect(hosts.list()).toEqual([{ clientAddress: undefined, host: 'B.example', port: 8443, remainingMs: 30 }]);
+    hosts.clear();
+    expect(hosts.list()).toEqual([]);
+  });
+
+  it('notifyingOnAdd calls back only for a target it newly records (issue #302)', () => {
+    let calls = 0;
+    const hosts = notifyingOnAdd(createAutoPassthroughHosts(), () => calls++);
+    expect(hosts.add(phone('a.example'))).toBe(true);
+    expect(hosts.add(phone('a.example'))).toBe(false);
+    expect(calls).toBe(1);
+    expect(hosts.has(phone('a.example'))).toBe(true);
+    hosts.clear();
+    expect(hosts.list()).toEqual([]);
   });
 
   it('forgets every target on clear()', () => {

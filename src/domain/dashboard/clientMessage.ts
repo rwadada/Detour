@@ -145,6 +145,7 @@ const VALIDATORS: { [T in DashboardClientMessage['type']]: Validator } = {
   startUpdate: () => null,
   checkUpdate: () => null,
   setAdbReverse: (m) => check([typeof m.enabled === 'boolean', 'enabled must be a boolean']),
+  forgetAutoPassthrough: () => null,
 };
 
 export type ParsedClientMessage = { ok: true; message: DashboardClientMessage } | { ok: false; reason: string };

@@ -3,6 +3,7 @@ import https from 'node:https';
 import path from 'node:path';
 import WebSocket, { WebSocketServer } from 'ws';
 import type {
+  AutoPassthroughState,
   BlockHostsState,
   CapturedExchange,
   CapturedWebSocketConnection,
@@ -110,6 +111,14 @@ export interface DashboardServerOptions {
    * dashboard itself don't need to fabricate one.
    */
   proxyPort?: number;
+  /**
+   * The proxy's auto TLS passthrough state right now (issue #302,
+   * `ProxyServerHandle.autoPassthroughState`) — sent to each client as it
+   * connects; later changes arrive as `autoPassthroughChanged`. Omitted (tests,
+   * `detour serve`) → no `autoPassthrough` message, and the Settings section
+   * stays hidden.
+   */
+  autoPassthroughState?: () => AutoPassthroughState;
   /** @default 500 */
   backlogSize?: number;
   /**
@@ -656,6 +665,7 @@ const FORWARDED_EVENTS = [
   'focusChanged',
   'throttleChanged',
   'blockHostsChanged',
+  'autoPassthroughChanged',
   'wsOpen',
   'wsFrame',
   'wsClose',
@@ -687,6 +697,7 @@ function createExchangeBacklog(options: DashboardServerOptions): RingBuffer<Capt
   return backlog;
 }
 
+// eslint-disable-next-line max-lines-per-function -- one declarative listener per relayed proxy event (FORWARDED_EVENTS)
 function createSessionState(options: DashboardServerOptions): SessionState {
   const backlog = createExchangeBacklog(options);
   // Mirrors `backlog` above, but for WebSocket connections (issue #17) —
@@ -756,6 +767,7 @@ function createSessionState(options: DashboardServerOptions): SessionState {
         blockHostsState = state;
         broadcast({ type: 'blockHosts', state });
       },
+      autoPassthroughChanged: (state) => broadcast({ type: 'autoPassthrough', state }),
       wsOpen: forwardWs('wsOpen'),
       wsFrame: forwardWs('wsFrame'),
       wsClose: forwardWs('wsClose'),
@@ -825,6 +837,7 @@ function createInitialPayloadSender(deps: InitialPayloadDeps): (socket: WebSocke
     send({ type: 'focus', state: state.getFocusState() });
     send({ type: 'throttle', state: state.getThrottleState() });
     send({ type: 'blockHosts', state: state.getBlockHostsState() });
+    if (options.autoPassthroughState) send({ type: 'autoPassthrough', state: options.autoPassthroughState() });
     send(deps.rulesMessage());
     send(deps.ruleProfilesMessage());
     send(deps.userConfigMessage());

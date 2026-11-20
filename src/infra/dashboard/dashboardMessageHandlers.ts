@@ -87,6 +87,7 @@ export function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerT
     setFocus: (message) => void eventBus.emit('setFocus', message.hosts),
     setThrottle: (message) => void eventBus.emit('setThrottle', message.state),
     setBlockHosts: (message) => void eventBus.emit('setBlockHosts', message.state),
+    forgetAutoPassthrough: () => void eventBus.emit('forgetAutoPassthrough'),
 
     startUpdate: async (_message, socket) => {
       socket.send(JSON.stringify(await deps.startUpdate(socket)));

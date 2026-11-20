@@ -708,6 +708,7 @@ async function startDashboard(ctx: SessionContext, requestedDashboardPort: numbe
         host: ctx.dashboardHost,
         proxyPort: handle.port,
         isSelfTarget: handle.isSelfTarget,
+        autoPassthroughState: handle.autoPassthroughState,
         ruleEngine,
         ruleProfileStore: fsRuleProfileStore,
         tlsKeyCert,

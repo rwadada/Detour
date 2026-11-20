@@ -1,5 +1,6 @@
 import { getDashboardConnection } from '@/shared/api';
 import { createAdbReverseStore } from './model/createAdbReverseStore';
+import { createAutoPassthroughStore } from './model/createAutoPassthroughStore';
 import { createBlockHostsStore } from './model/createBlockHostsStore';
 import { createFocusStore } from './model/createFocusStore';
 import { createInterceptStore } from './model/createInterceptStore';
@@ -12,6 +13,12 @@ export {
   type AdbReverseInfo,
   type AdbReverseStoreState,
 } from './model/createAdbReverseStore';
+export {
+  createAutoPassthroughStore,
+  formatRemaining,
+  liveAutoPassthroughEntries,
+  type AutoPassthroughStoreState,
+} from './model/createAutoPassthroughStore';
 export {
   createBlockHostsStore,
   DEFAULT_BLOCK_HOSTS_STATE,
@@ -48,3 +55,4 @@ export const useFocusStore = createFocusStore(getDashboardConnection());
 export const useThrottleStore = createThrottleStore(getDashboardConnection());
 export const useBlockHostsStore = createBlockHostsStore(getDashboardConnection());
 export const useAdbReverseStore = createAdbReverseStore(getDashboardConnection());
+export const useAutoPassthroughStore = createAutoPassthroughStore(getDashboardConnection());
