@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CapturedExchange } from '../../domain/exchange/types';
 import { isHistoryPersistenceSupported, openHistoryStore } from './historyStore';
@@ -112,6 +113,20 @@ describe.skipIf(!isHistoryPersistenceSupported())('openHistoryStore', () => {
       } finally {
         process.umask(previousUmask);
       }
+    });
+
+    it('tightens an existing database named by a `file:///` URI, keeping its data', () => {
+      const dbPath = tmpDbPath();
+      const first = openHistoryStore(dbPath);
+      first.record(exchange());
+      first.close();
+      // eslint-disable-next-line sonarjs/file-permissions -- test fixture simulating a pre-fix, world-readable file/directory.
+      fs.chmodSync(dbPath, 0o644);
+
+      const second = openHistoryStore(`${pathToFileURL(dbPath).href}?cache=private`);
+      expect(fs.statSync(dbPath).mode & 0o777).toBe(0o600);
+      expect(second.query({ limit: 10 }).items).toHaveLength(1);
+      second.close();
     });
 
     it('does not chmod through a sidecar path that is a symlink', () => {

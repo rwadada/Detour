@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import type { HistoryQuery } from '../../domain/dashboard/protocol';
 import type { CapturedExchange, WireExchange } from '../../domain/exchange/types';
 import { fromWireExchange, toWireExchange } from '../../domain/exchange/wireExchange';
+import { createOwnerOnlyFile, OWNER_ONLY_DIR_MODE, tightenIfOwned } from '../fs/ownerOnly';
 
 export interface HistoryQueryResult {
   items: CapturedExchange[];
@@ -120,64 +122,49 @@ function buildWhereClause(query: HistoryQuery): { sql: string; params: (string |
   return { sql: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', params };
 }
 
-const DB_FILE_MODE = 0o600;
-const DB_DIR_MODE = 0o700;
 const SQLITE_SIDECAR_SUFFIXES = ['-journal', '-wal', '-shm'] as const;
+
+/**
+ * The filesystem path SQLite will use for `dbPath`, or `undefined` for an
+ * in-memory database. node:sqlite resolves a `file:` URI itself (SQLite URI
+ * filenames: `file:rel.db`, `file:///abs.db`, optional `?query`), so the
+ * owner-only handling below resolves it the same way rather than skipping
+ * it. A URI it can't make sense of is left to SQLite (and its own error).
+ */
+function historyDbFilePath(dbPath: string): string | undefined {
+  if (dbPath === ':memory:') return undefined;
+  if (!dbPath.startsWith('file:')) return dbPath;
+  const queryStart = dbPath.indexOf('?');
+  const query = queryStart === -1 ? '' : dbPath.slice(queryStart + 1);
+  if (/(?:^|&)mode=memory(?:&|$)/.test(query)) return undefined;
+  const rest = dbPath.slice('file:'.length, queryStart === -1 ? undefined : queryStart);
+  if (rest === ':memory:' || rest === '') return undefined;
+  try {
+    return rest.startsWith('//') ? fileURLToPath(`file:${rest}`) : decodeURIComponent(rest);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * The database holds decrypted traffic (headers and bodies), so it gets the
  * same owner-only treatment as the CA key and the dashboard token (issue
  * #303) instead of whatever the umask gives `new DatabaseSync` (often 0644).
- * A new database is created 0600 by opening it under a 0077 umask (see
- * `openOwnerOnly`), which also covers a `file:` URI that SQLite resolves
- * itself. An existing database is tightened, along with any leftover
+ * A new database file is created empty and 0600 before SQLite opens it. An
+ * existing one this user owns is tightened, along with any leftover
  * journal/WAL/SHM sidecars, before SQLite opens (and possibly replays)
  * them; SQLite creates new sidecars with the database file's own mode.
  * Directories this creates are 0700; an existing directory the user pointed
  * `--persist <path>` into is left alone — it isn't ours to chmod (it may be a
  * shared directory), and the file inside is 0600 anyway.
  */
-function restrictExistingHistoryFiles(dbPath: string): void {
-  // `:memory:` and `file:` URIs aren't plain paths: SQLite resolves them itself.
-  if (dbPath === ':memory:' || dbPath.startsWith('file:')) return;
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: DB_DIR_MODE });
-  if (process.platform === 'win32') return;
-  for (const filePath of [dbPath, ...SQLITE_SIDECAR_SUFFIXES.map((suffix) => `${dbPath}${suffix}`)]) {
-    tightenIfOwnedFile(filePath);
-  }
-}
-
-/**
- * chmods `filePath` to 0600 when it is a regular file — never through a
- * symlink, whose target may be someone else's file. Skips a missing file and
- * one owned by another user (EPERM, e.g. left behind by an earlier `sudo
- * detour start`): it isn't ours to change, and refusing to start over it
- * would be a regression for a database SQLite can still open.
- */
-function tightenIfOwnedFile(filePath: string): void {
-  try {
-    if (!fs.lstatSync(filePath).isFile()) return;
-    fs.chmodSync(filePath, DB_FILE_MODE);
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT' && code !== 'EPERM') throw err;
-  }
-}
-
-/**
- * Runs `open` (SQLite creating the database file synchronously) under a 0077
- * umask, so a newly created file is 0600 whatever the shell's umask is. Safe
- * despite the umask being process-wide: `open` is synchronous, so nothing
- * else runs on this thread until the previous umask is restored. No-op on
- * Windows, which has no POSIX permission bits.
- */
-function openOwnerOnly<T>(open: () => T): T {
-  if (process.platform === 'win32') return open();
-  const previous = process.umask(0o077);
-  try {
-    return open();
-  } finally {
-    process.umask(previous);
+function restrictHistoryFilesToOwner(dbPath: string): void {
+  const filePath = historyDbFilePath(dbPath);
+  if (filePath === undefined) return;
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: OWNER_ONLY_DIR_MODE });
+  if (createOwnerOnlyFile(filePath)) return;
+  for (const existing of [filePath, ...SQLITE_SIDECAR_SUFFIXES.map((suffix) => `${filePath}${suffix}`)]) {
+    tightenIfOwned(existing, 'file');
   }
 }
 
@@ -197,12 +184,9 @@ export function openHistoryStore(dbPath: string): HistoryStore {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
 
-  restrictExistingHistoryFiles(dbPath);
-  const db: DatabaseSyncType = openOwnerOnly(() => {
-    const opened = new DatabaseSync(dbPath);
-    opened.exec(SCHEMA);
-    return opened;
-  });
+  restrictHistoryFilesToOwner(dbPath);
+  const db: DatabaseSyncType = new DatabaseSync(dbPath);
+  db.exec(SCHEMA);
 
   const upsert = db.prepare(
     'INSERT OR REPLACE INTO exchanges (id, started_at, method, host, url, status_code, data) VALUES (?, ?, ?, ?, ?, ?, ?)',
