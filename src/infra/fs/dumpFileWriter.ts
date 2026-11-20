@@ -4,14 +4,19 @@ import path from 'node:path';
 import { formatExchangeDump, formatWebSocketDump } from '../../domain/dump/dumpPolicy';
 import type { CapturedExchange, CapturedWebSocketConnection } from '../../domain/exchange/types';
 import { formatGrpcSection, type GrpcExchangeInfo } from '../../domain/grpc/grpcDumpFormat';
+import { OWNER_ONLY_DIR_MODE, tightenIfOwned, writeOwnerOnlyFile } from './ownerOnly';
 
 /**
  * Directory `--dump file` writes one redacted dump file per exchange into
- * (`~/.detour/dumps`), mirroring `certStore.ts`'s `resolveCertDir`.
+ * (`~/.detour/dumps`), mirroring `certStore.ts`'s `resolveCertDir`. Header
+ * values are redacted but bodies are not, so the directory is owner-only
+ * like the CA key directory (issue #303), and an existing one this user owns
+ * that an older Detour left world-readable is tightened. Each dump is written
+ * 0600 as a new file (see `writeOwnerOnlyFile`).
  */
-export function resolveDumpDir(): string {
-  const dir = path.join(os.homedir(), '.detour', 'dumps');
-  fs.mkdirSync(dir, { recursive: true });
+export function resolveDumpDir(dir: string = path.join(os.homedir(), '.detour', 'dumps')): string {
+  fs.mkdirSync(dir, { recursive: true, mode: OWNER_ONLY_DIR_MODE });
+  tightenIfOwned(dir, 'directory');
   return dir;
 }
 
@@ -31,7 +36,7 @@ export function writeExchangeDumpFile(
   const content = grpcInfo
     ? `${formatExchangeDump(exchange)}\n${formatGrpcSection(grpcInfo)}`
     : formatExchangeDump(exchange);
-  fs.writeFileSync(path.join(dumpDir, `${safeId}.txt`), content, 'utf8');
+  writeOwnerOnlyFile(path.join(dumpDir, `${safeId}.txt`), content);
 }
 
 /**
@@ -43,5 +48,5 @@ export function writeExchangeDumpFile(
  */
 export function writeWebSocketDumpFile(connection: Readonly<CapturedWebSocketConnection>, dumpDir: string): void {
   const safeId = connection.id.replace(/[^a-zA-Z0-9_-]/g, '_');
-  fs.writeFileSync(path.join(dumpDir, `ws-${safeId}.txt`), formatWebSocketDump(connection), 'utf8');
+  writeOwnerOnlyFile(path.join(dumpDir, `ws-${safeId}.txt`), formatWebSocketDump(connection));
 }
