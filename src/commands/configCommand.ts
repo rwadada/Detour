@@ -94,9 +94,9 @@ interface ConfigCommandOptions {
   focus?: string;
 }
 
-/** `detour config --focus`: `"off"` clears it (stored as `[]`), anything else is a host pattern list. */
+/** `detour config --focus`: `"off"` (any case, surrounding spaces ignored) clears it (stored as `[]`), anything else is a host pattern list. */
 function parseFocusConfigFlag(value: string): string[] {
-  return value === 'off' ? [] : normalizeFocusHosts(parseHostPatternList(value, '--focus'));
+  return value.trim().toLowerCase() === 'off' ? [] : normalizeFocusHosts(parseHostPatternList(value, '--focus'));
 }
 
 /** Renders `focusHosts` for a `detour config` line. */

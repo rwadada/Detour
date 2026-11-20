@@ -10,6 +10,24 @@ import { describeError } from './describeError';
 
 type MessageOf<T extends DashboardClientMessage['type']> = Extract<DashboardClientMessage, { type: T }>;
 
+/** The `detour start` defaults the Settings panel edits — the only ones `setUserConfig` writes. */
+const SETTINGS_PANEL_KEYS = ['defaultDetach', 'lanAccess'] as const;
+
+/**
+ * Keeps only the Settings panel's own keys from a `setUserConfig` patch.
+ * `writeUserConfig` accepts every config key `detour config` can set; the
+ * rest of them (proxy credentials, Intercept/Focus defaults, …) are changed
+ * with `detour config` on this machine, not over the dashboard socket.
+ * The password has its own message (`setDashboardPassword`).
+ */
+function settingsPanelPatch(state: MessageOf<'setUserConfig'>['state']): Parameters<typeof writeUserConfig>[0] {
+  const patch: Parameters<typeof writeUserConfig>[0] = {};
+  for (const key of SETTINGS_PANEL_KEYS) {
+    if (Object.hasOwn(state, key)) patch[key] = state[key];
+  }
+  return patch;
+}
+
 /** Every message an authenticated socket may send (`login` is answered before authentication, never here). */
 type AuthenticatedMessageType = Exclude<DashboardClientMessage['type'], 'login'>;
 
@@ -106,7 +124,7 @@ export function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerT
 
     setUserConfig: (message) => {
       try {
-        deps.persistUserConfig(message.state);
+        deps.persistUserConfig(settingsPanelPatch(message.state));
         broadcast(deps.userConfigMessage());
       } catch (err) {
         broadcastError('USER_CONFIG_WRITE_ERROR', describeError(err));

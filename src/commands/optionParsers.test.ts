@@ -12,6 +12,11 @@ describe('parseHostPatternList (issue #301)', () => {
   it('rejects a value with no pattern at all instead of meaning "Focus off"', () => {
     expect(() => parseHostPatternList(' , ', '--focus')).toThrow(/--focus needs at least one host pattern/);
   });
+
+  it('rejects a URL or a path, which could never match a host', () => {
+    expect(() => parseHostPatternList('https://api.example.com', '--focus')).toThrow(/not URLs or paths/);
+    expect(() => parseHostPatternList('ok.example, api.example.com/v1', '--focus')).toThrow(/"api\.example\.com\/v1"/);
+  });
 });
 
 describe('collectFocusPatterns (issue #301)', () => {

@@ -128,10 +128,12 @@ function validateUserConfig(config: UserConfig, configPath: string): void {
   }
   if (
     config.focusHosts !== undefined &&
-    (!Array.isArray(config.focusHosts) || !config.focusHosts.every((host) => typeof host === 'string'))
+    // Non-empty too: a blank entry normalizes away, and a list of only blanks would silently mean "Focus off".
+    (!Array.isArray(config.focusHosts) ||
+      !config.focusHosts.every((host) => typeof host === 'string' && host.trim() !== ''))
   ) {
     throw new Error(
-      `${configPath}: "focusHosts" must be an array of host pattern strings (got: ${JSON.stringify(config.focusHosts)})`,
+      `${configPath}: "focusHosts" must be an array of non-empty host pattern strings (got: ${JSON.stringify(config.focusHosts)})`,
     );
   }
   if (

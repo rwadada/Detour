@@ -78,6 +78,14 @@ export function parseHostPatternList(value: string, flag: string): string[] {
       `${flag} needs at least one host pattern, e.g. ${flag} api.example.com (got: ${JSON.stringify(value)})`,
     );
   }
+  // A pattern is matched against a bare `host` or `host:port`; a URL or a path can never match one, so it would
+  // silently leave every host undecrypted.
+  const notAHost = patterns.find((pattern) => pattern.includes('/'));
+  if (notAHost !== undefined) {
+    throw new Error(
+      `${flag} takes host patterns (api.example.com, *.example.net, host:8443), not URLs or paths (got: ${JSON.stringify(notAHost)})`,
+    );
+  }
   return patterns;
 }
 

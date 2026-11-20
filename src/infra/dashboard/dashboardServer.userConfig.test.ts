@@ -97,6 +97,22 @@ describe('startDashboardServer — userConfig / setUserConfig', () => {
     expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ lanAccess: true });
   });
 
+  it('setUserConfig writes only the Settings panel keys, ignoring any other config key in the patch', async () => {
+    handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);
+    const socket = connect();
+    await waitForMessage(socket, (m) => m.type === 'userConfig'); // initial snapshot
+
+    socket.send(
+      JSON.stringify({
+        type: 'setUserConfig',
+        state: { lanAccess: true, intercept: false, focusHosts: ['x.example'], autoPassthrough: false },
+      }),
+    );
+    await waitForMessage(socket, (m) => m.type === 'userConfig' && m.state.lanAccess === true);
+
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ lanAccess: true });
+  });
+
   it('setUserConfig on one field never clobbers another already set', async () => {
     fs.writeFileSync(configPath, JSON.stringify({ defaultDetach: true }));
     handle = await startDashboardServer({ port: 0, userConfigPath: configPath }, eventBus);

@@ -17,7 +17,7 @@ import { fsFileWatcher, fsRulesFileReader, fsRulesFileWriter } from '../infra/fs
 import { findLiveRunState, removeRunState, reserveRunState, writeRunState } from '../infra/fs/runStateStore';
 import { tokenLandingPath } from '../domain/auth/dashboardAccess';
 import { resolveDashboardToken } from '../infra/fs/dashboardAccessStore';
-import { loadUserConfig } from '../infra/fs/userConfigStore';
+import { loadUserConfig, type UserConfig } from '../infra/fs/userConfigStore';
 import { buildGrpcExchangeInfo } from '../infra/grpc/grpcExchangeInfo';
 import { ProtoRegistry } from '../infra/grpc/protoRegistry';
 import { startAdbReverseWatcher } from '../infra/adb/adbReverseWatcher';
@@ -265,7 +265,7 @@ function resolveDashboardHost(options: StartOptions): string {
  * `--no-auto-passthrough`, then `~/.detour/config.json`'s
  * `autoPassthrough`, then on.
  */
-function resolveAutoPassthrough(options: StartOptions): boolean {
+function resolveAutoPassthrough(options: StartOptions, config: UserConfig): boolean {
   // A passthrough tunnel connects straight to its destination
   // (`interceptOffConnect.ts`), not through `--upstream-proxy`; on by default
   // it would quietly route refusing hosts around a proxy the user configured
@@ -273,18 +273,31 @@ function resolveAutoPassthrough(options: StartOptions): boolean {
   // Not even a saved `autoPassthrough: true` turns it on then: only the flag
   // on this very command line does.
   if (options.upstreamProxy !== undefined) return options.autoPassthrough ?? false;
-  return options.autoPassthrough ?? loadUserConfig().autoPassthrough ?? true;
+  return options.autoPassthrough ?? config.autoPassthrough ?? true;
 }
 
-/** Intercept's state at startup (issue #301): `--intercept`/`--no-intercept`, then `~/.detour/config.json`'s `intercept`, then on. */
-function resolveInterceptEnabled(options: StartOptions): boolean {
-  return options.intercept ?? loadUserConfig().intercept ?? true;
+/**
+ * Intercept's state at startup (issue #301): `--intercept`/`--no-intercept`,
+ * then `~/.detour/config.json`'s `intercept`, then on. With `--upstream-proxy`
+ * the saved value is ignored, for the same reason as `resolveAutoPassthrough`:
+ * with Intercept off every tunnel connects straight to its destination, around
+ * that proxy, so only the flag on this very command line may ask for that.
+ */
+function resolveInterceptEnabled(options: StartOptions, config: UserConfig): boolean {
+  if (options.upstreamProxy !== undefined) return options.intercept ?? true;
+  return options.intercept ?? config.intercept ?? true;
 }
 
-/** Focus's host patterns at startup (issue #301): `--focus`/`--no-focus`, then `~/.detour/config.json`'s `focusHosts`, then none (Focus off). */
-function resolveFocusHosts(options: StartOptions): string[] {
+/**
+ * Focus's host patterns at startup (issue #301): `--focus`/`--no-focus`, then
+ * `~/.detour/config.json`'s `focusHosts`, then none (Focus off). With
+ * `--upstream-proxy` the saved list is ignored like `intercept` above: a host
+ * outside Focus is tunneled straight to its destination, around that proxy.
+ */
+function resolveFocusHosts(options: StartOptions, config: UserConfig): string[] {
   if (options.focus === false) return [];
-  return normalizeFocusHosts(options.focus ?? loadUserConfig().focusHosts ?? []);
+  const saved = options.upstreamProxy !== undefined ? undefined : config.focusHosts;
+  return normalizeFocusHosts(options.focus ?? saved ?? []);
 }
 
 /**
@@ -513,6 +526,13 @@ async function prepareStartResources(
   // can authenticate against.
   const proxyAuth = await resolveProxyAuth(options);
 
+  // Read once, so the three settings come from the same version of the file; before `--persist` below, so an
+  // invalid config.json fails startup without leaving the history database open.
+  const userConfig = loadUserConfig();
+  const autoPassthrough = resolveAutoPassthrough(options, userConfig);
+  const interceptEnabled = resolveInterceptEnabled(options, userConfig);
+  const focusHosts = resolveFocusHosts(options, userConfig);
+
   // A bad `--persist` path (unwritable directory, an unsupported Node runtime) fails startup rather than every
   // exchange thereafter silently going unpersisted.
   let historyStore: HistoryStore | undefined;
@@ -535,9 +555,9 @@ async function prepareStartResources(
     proxyAuth,
     historyStore,
     historyDbPath,
-    autoPassthrough: resolveAutoPassthrough(options),
-    interceptEnabled: resolveInterceptEnabled(options),
-    focusHosts: resolveFocusHosts(options),
+    autoPassthrough,
+    interceptEnabled,
+    focusHosts,
   };
 }
 
