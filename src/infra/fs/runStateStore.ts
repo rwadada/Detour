@@ -71,21 +71,16 @@ export function reserveRunState(state: RunState): boolean {
 /**
  * Takes a stale reservation out of the way, returning whether the slot is
  * free now. A reservation still in use is judged by name and left untouched.
- * One judged stale is renamed to a name only this process uses and removed
- * only if it is still the very file judged (same inode): deleting by name
- * after the read could otherwise delete a live reservation that replaced the
- * stale one in between, letting both win. If it was replaced, the newcomer is
- * put back (and stands); only a third reservation landing in that instant
- * could still slip in — a stale leftover and three racing starts at once.
+ * One judged stale is renamed to a name only this process uses and judged
+ * again there — deleting by name after the first read could delete a live
+ * reservation that replaced the stale one in between, letting both win (an
+ * inode comparison can't tell them apart: a freed inode is reused at once on
+ * Linux). If the parked file turns out to be in use, it is put back; only a
+ * third reservation landing in that instant could still slip in — a stale
+ * leftover and three racing starts at once.
  */
 function moveAsideIfStale(filePath: string): boolean {
-  let judged: fs.Stats;
-  try {
-    judged = fs.statSync(filePath);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true;
-    throw err;
-  }
+  if (!fs.existsSync(filePath)) return true;
   if (isInUse(filePath)) return false;
   const parked = `${filePath}.${process.pid}.parked`;
   try {
@@ -94,7 +89,7 @@ function moveAsideIfStale(filePath: string): boolean {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true;
     throw err;
   }
-  if (fs.statSync(parked).ino === judged.ino) {
+  if (!isInUse(parked)) {
     fs.rmSync(parked, { force: true });
     return true;
   }
