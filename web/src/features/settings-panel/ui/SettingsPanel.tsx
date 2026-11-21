@@ -449,11 +449,12 @@ function StartupDefaultsSection() {
           role="alert"
           className="rounded-md border border-[var(--status-5xx)] bg-[var(--status-5xx)]/10 px-2.5 py-2 text-xs text-[var(--status-5xx)]"
         >
-          ⚠ LAN access has no login of any kind — anyone on your network could reach the dashboard, view decrypted HTTPS
-          traffic through it, or edit rules. (The proxy itself is always reachable from your network regardless of this
-          setting, and unauthenticated too unless you set <code className="font-mono-ui">--proxy-auth</code> — a proxy
-          nothing else on the network can reach isn't much of a proxy.) Only turn this on if you trust every device on
-          your network.
+          ⚠ With LAN access, anyone on your network can reach the dashboard. It still asks for the access token (or the
+          dashboard password, once one is set) and is served over HTTPS by default — but whoever has the Dashboard URL
+          with its token can view decrypted HTTPS traffic or edit rules, so share it with no one. (The proxy itself is
+          always reachable from your network regardless of this setting, and unauthenticated unless you set{' '}
+          <code className="font-mono-ui">--proxy-auth</code> — a proxy nothing else on the network can reach isn&apos;t
+          much of a proxy.) Only turn this on if you trust your network.
         </p>
         {toggle('lanAccess', 'Allow LAN access', true)}
       </div>
