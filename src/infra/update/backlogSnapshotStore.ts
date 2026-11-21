@@ -5,8 +5,6 @@ import type { CapturedExchange } from '../../domain/exchange/types';
 import { parseBacklogSnapshot, serializeBacklogSnapshot } from '../../domain/update/backlogSnapshot';
 import { ensureOwnerOnlyDir, OWNER_ONLY_FILE_MODE } from '../fs/ownerOnly';
 
-// The snapshot holds decrypted traffic (Authorization headers, bodies…) — owner-only, like the run-state files.
-
 function snapshotDir(): string {
   return path.join(os.homedir(), '.detour', 'update-resume');
 }
@@ -16,6 +14,7 @@ export function backlogSnapshotPath(requestedPort: number): string {
   return path.join(snapshotDir(), `${requestedPort}.json`);
 }
 
+/** The snapshot holds decrypted traffic (Authorization headers, bodies…), so it is owner-only like the run-state files. Its temporary file has a fixed name, so one a crash left behind is swept by the next discard/take. */
 export function writeBacklogSnapshot(
   requestedPort: number,
   items: readonly CapturedExchange[],
