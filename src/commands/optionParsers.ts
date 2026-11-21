@@ -1,5 +1,6 @@
 import { isDumpLevel } from '../domain/dump/dumpPolicy';
 import type { DumpLevel } from '../domain/dump/dumpPolicy';
+import { invalidHostPatternReason } from '../domain/focus/focusPolicy';
 import { isSetupTarget, SETUP_TARGETS } from '../domain/setup/targets';
 import type { SetupTarget } from '../domain/setup/targets';
 
@@ -59,6 +60,46 @@ export function describeError(err: unknown): string {
 /** Accumulates a repeatable flag's values into an array (commander's convention for a repeatable option) — shared by `--proto <path>` and `--upstream-ca <path>` (issue #160) so the two can't drift apart despite being logically identical. */
 export function collectRepeatable(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+/**
+ * Splits a `--focus` value (issue #301) into host patterns: a comma-separated
+ * list (`a.com,*.b.com`), trimmed, empties dropped. An empty result is an
+ * error rather than "Focus off" — that is what `--no-focus` / `"off"` say —
+ * so a script that forgot to fill in a value fails instead of quietly
+ * intercepting every host.
+ */
+export function parseHostPatternList(value: string, flag: string): string[] {
+  const patterns = value
+    .split(',')
+    .map((pattern) => pattern.trim())
+    .filter((pattern) => pattern !== '');
+  if (patterns.length === 0) {
+    throw new Error(
+      `${flag} needs at least one host pattern, e.g. ${flag} api.example.com (got: ${JSON.stringify(value)})`,
+    );
+  }
+  for (const pattern of patterns) {
+    const reason = invalidHostPatternReason(pattern);
+    if (reason !== undefined) {
+      throw new Error(
+        `${flag} takes host patterns (api.example.com, *.example.net, host:8443) — ${JSON.stringify(pattern)} can never match a host: ${reason}`,
+      );
+    }
+  }
+  return patterns;
+}
+
+/**
+ * Commander collector for the repeatable `detour start --focus <patterns>`.
+ * `previous` is `undefined` before the first `--focus`, and `false` after a
+ * `--no-focus` earlier on the same command line — a later `--focus` then
+ * starts a fresh list.
+ */
+export function collectFocusPatterns(value: string, previous: string[] | boolean | undefined): string[] {
+  // `detour config --focus off` clears Focus; here that would be a pattern matching no host, so say what to use.
+  if (value.trim().toLowerCase() === 'off') throw new Error('--focus off is not a host pattern — use --no-focus');
+  return [...(Array.isArray(previous) ? previous : []), ...parseHostPatternList(value, '--focus')];
 }
 
 /** Validates `--target`, narrowing it to `SetupTarget` — a plain guard clause doesn't narrow `options.target` itself since it's a mutable object property, so this gives `runSetupCommand` a local value TypeScript can track. */

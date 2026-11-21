@@ -15,6 +15,26 @@ export function connectMatchUrl(host: string, port: number): string {
   return `https://${formatHostPort(host, port, 443)}`;
 }
 
+/** What a host glob can contain: hostname/IP characters, `:` for a port (or IPv6), `[]` for a bracketed IPv6 literal, and the `*`/`?` wildcards. */
+const HOST_PATTERN_CHARS = /^[a-z0-9.\-_*?:[\]]+$/i;
+
+/**
+ * Why `pattern` could never match a host (`host` or `host:port`, see
+ * `isHostFocused`), or `undefined` when it could. A URL, a path, or two
+ * patterns joined by a space or `;` instead of a comma would otherwise be
+ * accepted and silently match nothing — so a saved or startup Focus would
+ * leave every host undecrypted (issue #301).
+ */
+export function invalidHostPatternReason(pattern: string): string | undefined {
+  const trimmed = pattern.trim();
+  if (trimmed === '') return 'it is empty';
+  if (trimmed.includes('/')) return 'it is a URL or a path, not a host';
+  if (!HOST_PATTERN_CHARS.test(trimmed)) {
+    return 'it contains characters a host never has (separate patterns with commas)';
+  }
+  return undefined;
+}
+
 /** Trims/lowercases/dedupes a raw Focus host list (see `FocusState`), dropping empty entries. */
 export function normalizeFocusHosts(hosts: readonly string[]): string[] {
   return normalizeHostPatterns(hosts);

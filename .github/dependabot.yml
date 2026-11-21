@@ -19,12 +19,19 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
-      # Vitest and its companion packages must move together: `@vitest/*`
-      # pin the exact `vitest` version as a peer, so bumping one alone
-      # (what a per-package PR does) fails to install. Listed first so it
-      # wins over `minor-and-patch` below for these packages.
-      vitest:
-        patterns: ["vitest", "@vitest/*"]
+      # Vite, Vitest and their companion packages must move together
+      # (issue #306), and are listed first so this group wins over
+      # `minor-and-patch` below for them:
+      # - `@vitest/*` pin the exact `vitest` version as a peer, so bumping
+      #   one alone (what a per-package PR does) fails to install.
+      # - The root and web/ must share a single hoisted `vite`: vitest and
+      #   @vitejs/plugin-react resolve the root copy, web/vite.config.ts the
+      #   web one, and two copies make `tsc` fail with "TS2321: Excessive
+      #   stack depth". `vite` is declared in both package.json files with
+      #   the same range so a bump updates both; `npm run check:single-copies`
+      #   (part of verify) fails with the real cause if they drift apart.
+      vite-and-vitest:
+        patterns: ["vite", "@vitejs/*", "vitest", "@vitest/*"]
       minor-and-patch:
         update-types: ["minor", "patch"]
     ignore:

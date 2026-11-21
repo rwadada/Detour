@@ -7,6 +7,7 @@ import { AUTO_PASSTHROUGH_TTL_MINUTES } from '../domain/autoPassthrough/clientCe
 import { parseProxyAuthFlag, type ProxyAuthCredentials } from '../domain/auth/proxyAuth';
 import { caExpiryWarning } from '../domain/cert/caValidity';
 import { CliExitError } from '../domain/daemon/errors';
+import { normalizeFocusHosts } from '../domain/focus/focusPolicy';
 import { resolveCertDir } from '../infra/certStore';
 import { startDashboardServer, WEB_DIST_DIR } from '../infra/dashboard/dashboardServer';
 import { DetourEventBus } from '../infra/eventBus';
@@ -16,7 +17,7 @@ import { fsFileWatcher, fsRulesFileReader, fsRulesFileWriter } from '../infra/fs
 import { findLiveRunState, removeRunState, reserveRunState, writeRunState } from '../infra/fs/runStateStore';
 import { tokenLandingPath } from '../domain/auth/dashboardAccess';
 import { resolveDashboardToken } from '../infra/fs/dashboardAccessStore';
-import { loadUserConfig } from '../infra/fs/userConfigStore';
+import { loadUserConfig, type UserConfig } from '../infra/fs/userConfigStore';
 import { buildGrpcExchangeInfo } from '../infra/grpc/grpcExchangeInfo';
 import { ProtoRegistry } from '../infra/grpc/protoRegistry';
 import { startAdbReverseWatcher } from '../infra/adb/adbReverseWatcher';
@@ -52,6 +53,7 @@ import {
 import { RuleEngine } from '../usecase/ruleEngine';
 import { DEFAULT_SCRIPT_TIMEOUT_MS } from '../usecase/runScriptHooks';
 import {
+  collectFocusPatterns,
   collectRepeatable,
   describeError,
   parseDumpLevel,
@@ -113,6 +115,10 @@ interface StartOptions {
   lan?: boolean;
   /** `--auto-passthrough`/`--no-auto-passthrough`: once a client refuses Detour's certificate for a host, relay that host as raw TLS from then on (see `ProxyServerOptions.autoPassthrough`). Undefined when neither flag is passed — `resolveAutoPassthrough` then falls back to `~/.detour/config.json`'s `autoPassthrough`, then on. */
   autoPassthrough?: boolean;
+  /** `--intercept`/`--no-intercept` (issue #301): Intercept's state at startup. Undefined when neither flag is passed — `resolveInterceptEnabled` then falls back to `~/.detour/config.json`'s `intercept`, then on. */
+  intercept?: boolean;
+  /** `--focus <patterns>` (repeatable, comma-separated) / `--no-focus` (issue #301): Focus's host patterns at startup; `false` for `--no-focus`. Undefined when neither is passed — `resolveFocusHosts` then falls back to `~/.detour/config.json`'s `focusHosts`, then Focus off. */
+  focus?: string[] | false;
   /**
    * `--dashboard-tls <on|off>` (issue #159): forces HTTPS on/off for the
    * dashboard, overriding the default of on once `--lan`/`lanAccess` binds
@@ -259,7 +265,7 @@ function resolveDashboardHost(options: StartOptions): string {
  * `--no-auto-passthrough`, then `~/.detour/config.json`'s
  * `autoPassthrough`, then on.
  */
-function resolveAutoPassthrough(options: StartOptions): boolean {
+function resolveAutoPassthrough(options: StartOptions, config: UserConfig): boolean {
   // A passthrough tunnel connects straight to its destination
   // (`interceptOffConnect.ts`), not through `--upstream-proxy`; on by default
   // it would quietly route refusing hosts around a proxy the user configured
@@ -267,7 +273,31 @@ function resolveAutoPassthrough(options: StartOptions): boolean {
   // Not even a saved `autoPassthrough: true` turns it on then: only the flag
   // on this very command line does.
   if (options.upstreamProxy !== undefined) return options.autoPassthrough ?? false;
-  return options.autoPassthrough ?? loadUserConfig().autoPassthrough ?? true;
+  return options.autoPassthrough ?? config.autoPassthrough ?? true;
+}
+
+/**
+ * Intercept's state at startup (issue #301): `--intercept`/`--no-intercept`,
+ * then `~/.detour/config.json`'s `intercept`, then on. With `--upstream-proxy`
+ * the saved value is ignored, for the same reason as `resolveAutoPassthrough`:
+ * with Intercept off every tunnel connects straight to its destination, around
+ * that proxy, so only the flag on this very command line may ask for that.
+ */
+function resolveInterceptEnabled(options: StartOptions, config: UserConfig): boolean {
+  if (options.upstreamProxy !== undefined) return options.intercept ?? true;
+  return options.intercept ?? config.intercept ?? true;
+}
+
+/**
+ * Focus's host patterns at startup (issue #301): `--focus`/`--no-focus`, then
+ * `~/.detour/config.json`'s `focusHosts`, then none (Focus off). With
+ * `--upstream-proxy` the saved list is ignored like `intercept` above: a host
+ * outside Focus is tunneled straight to its destination, around that proxy.
+ */
+function resolveFocusHosts(options: StartOptions, config: UserConfig): string[] {
+  if (options.focus === false) return [];
+  const saved = options.upstreamProxy !== undefined ? undefined : config.focusHosts;
+  return normalizeFocusHosts(options.focus ?? saved ?? []);
 }
 
 /**
@@ -429,6 +459,11 @@ interface StartResources {
   historyDbPath: string | undefined;
   /** Auto TLS passthrough, resolved once (`resolveAutoPassthrough`) so the proxy and the banner can't disagree. */
   autoPassthrough: boolean;
+  /** Intercept and Focus at startup (issue #301), resolved once so the proxy, the dashboard and the banner agree. */
+  interceptEnabled: boolean;
+  focusHosts: string[];
+  /** Whether a saved `intercept: false` / `focusHosts` was left out because of `--upstream-proxy` (see `resolveInterceptEnabled`). */
+  savedInterceptFocusIgnored: boolean;
 }
 
 /** What every step after the proxy is up needs to know — assembled once by `runStartBody`. */
@@ -493,6 +528,18 @@ async function prepareStartResources(
   // can authenticate against.
   const proxyAuth = await resolveProxyAuth(options);
 
+  // Read once, so the three settings come from the same version of the file; before `--persist` below, so an
+  // invalid config.json fails startup without leaving the history database open.
+  const userConfig = loadUserConfig();
+  const autoPassthrough = resolveAutoPassthrough(options, userConfig);
+  const interceptEnabled = resolveInterceptEnabled(options, userConfig);
+  const focusHosts = resolveFocusHosts(options, userConfig);
+  // Said in the banner, so a saved "use Detour only as a route" setup doesn't silently start decrypting.
+  const savedInterceptFocusIgnored =
+    options.upstreamProxy !== undefined &&
+    ((options.intercept === undefined && userConfig.intercept === false) ||
+      (options.focus === undefined && (userConfig.focusHosts?.length ?? 0) > 0));
+
   // A bad `--persist` path (unwritable directory, an unsupported Node runtime) fails startup rather than every
   // exchange thereafter silently going unpersisted.
   let historyStore: HistoryStore | undefined;
@@ -515,7 +562,10 @@ async function prepareStartResources(
     proxyAuth,
     historyStore,
     historyDbPath,
-    autoPassthrough: resolveAutoPassthrough(options),
+    autoPassthrough,
+    interceptEnabled,
+    focusHosts,
+    savedInterceptFocusIgnored,
   };
 }
 
@@ -638,6 +688,8 @@ async function startProxy(
         upstreamTls: resources.upstreamTls,
         scriptTimeoutMs: parseScriptTimeoutMs(options.scriptTimeoutMs),
         autoPassthrough: resources.autoPassthrough,
+        initialInterceptEnabled: resources.interceptEnabled,
+        initialFocusHosts: resources.focusHosts,
       },
       eventBus,
     );
@@ -707,6 +759,8 @@ async function startDashboard(ctx: SessionContext, requestedDashboardPort: numbe
         },
         host: ctx.dashboardHost,
         proxyPort: handle.port,
+        initialInterceptState: { enabled: ctx.resources.interceptEnabled },
+        initialFocusState: { hosts: [...ctx.resources.focusHosts] },
         isSelfTarget: handle.isSelfTarget,
         autoPassthroughState: handle.autoPassthroughState,
         ruleEngine,
@@ -796,6 +850,9 @@ function printBanner(ctx: SessionContext, dashboardHandle: DashboardHandle | und
     upstreamCaCount: options.upstreamCa.length,
     clientCertSet: !!resources.upstreamTls?.cert,
     autoPassthrough: resources.autoPassthrough,
+    interceptEnabled: resources.interceptEnabled,
+    focusHosts: resources.focusHosts,
+    savedInterceptFocusIgnored: resources.savedInterceptFocusIgnored,
     caExpiryWarning: caExpiryWarningLine(handle.caCertPath),
   });
 }
@@ -1162,6 +1219,20 @@ export function registerStartCommand(program: Command): void {
       '--no-auto-passthrough',
       "Keep MITM-ing a host even after its client refused Detour's certificate — the opposite of --auto-passthrough. Every refusal is still logged as a row.",
     )
+    .option(
+      '--intercept',
+      'Start with Intercept on: HTTPS is decrypted (subject to Focus). The default, unless `intercept` is set off via `detour config`.',
+    )
+    .option(
+      '--no-intercept',
+      "Start with Intercept off (issue #301): every HTTPS connection is relayed untouched and nothing is decrypted — for using Detour only as a route (e.g. to this machine's VPN), including for apps that won't accept its CA. The dashboard can still turn it on.",
+    )
+    .option(
+      '--focus <patterns>',
+      'Start with these host patterns in Focus (issue #301): only matching hosts are decrypted, every other host is relayed untouched. Comma-separated and repeatable (`--focus api.example.com --focus "*.example.net"`); a pattern without `:port` matches the default port only. Overrides `focusHosts` from `detour config`; the dashboard can still change it.',
+      collectFocusPatterns,
+    )
+    .option('--no-focus', 'Start with Focus off (every host is decrypted), ignoring `focusHosts` from `detour config`.')
     .option(
       '--no-http2-upstream',
       'Pin the proxy→upstream leg to HTTP/1.1 (issue #166), skipping the ALPN probe that otherwise negotiates HTTP/2 with a real upstream server that offers it. On by default: Detour ALPN-probes each upstream host on its first request and multiplexes further requests to it over that session once negotiated. Independent of --no-http2 above, which only affects the client-facing side; always effectively off when --upstream-proxy is set, regardless of this flag.',

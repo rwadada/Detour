@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CapturedExchange, CapturedWebSocketConnection } from '../../domain/exchange/types';
 import type { GrpcExchangeInfo } from '../../domain/grpc/grpcDumpFormat';
 import { resolveDumpDir, writeExchangeDumpFile, writeWebSocketDumpFile } from './dumpFileWriter';
@@ -33,9 +33,69 @@ function baseExchange(overrides: Partial<CapturedExchange> = {}): CapturedExchan
 
 describe('resolveDumpDir', () => {
   it('creates and returns ~/.detour/dumps', () => {
-    const dir = resolveDumpDir();
-    expect(fs.existsSync(dir)).toBe(true);
-    expect(dir).toBe(path.join(os.homedir(), '.detour', 'dumps'));
+    // A temp home, so running the tests never creates or chmods the developer's real ~/.detour.
+    const home = tmpDir();
+    dirs.push(home);
+    const homedir = vi.spyOn(os, 'homedir').mockReturnValue(home);
+    try {
+      const dir = resolveDumpDir();
+      expect(fs.existsSync(dir)).toBe(true);
+      expect(dir).toBe(path.join(home, '.detour', 'dumps'));
+    } finally {
+      homedir.mockRestore();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'creates the directory owner-only and tightens an existing one (issue #303)',
+    () => {
+      const base = tmpDir();
+      dirs.push(base);
+      // eslint-disable-next-line sonarjs/file-permissions -- the umask a typical shell has, so the test proves the code does not rely on it.
+      const previousUmask = process.umask(0o022);
+      try {
+        const created = resolveDumpDir(path.join(base, 'dumps'));
+        expect(fs.statSync(created).mode & 0o777).toBe(0o700);
+        // eslint-disable-next-line sonarjs/file-permissions -- test fixture simulating a pre-fix, world-readable file/directory.
+        fs.chmodSync(created, 0o755);
+        resolveDumpDir(created);
+        expect(fs.statSync(created).mode & 0o777).toBe(0o700);
+      } finally {
+        process.umask(previousUmask);
+      }
+    },
+  );
+});
+
+describe.skipIf(process.platform === 'win32')('dump file permissions (issue #303)', () => {
+  it('writes exchange and WebSocket dumps 0600, including when overwriting a world-readable file', () => {
+    const dir = tmpDir();
+    dirs.push(dir);
+    // eslint-disable-next-line sonarjs/file-permissions -- the umask a typical shell has, so the test proves the code does not rely on it.
+    const previousUmask = process.umask(0o022);
+    try {
+      fs.writeFileSync(path.join(dir, 'ex-1.txt'), 'old', { mode: 0o644 });
+      // eslint-disable-next-line sonarjs/file-permissions -- test fixture simulating a pre-fix, world-readable file/directory.
+      fs.chmodSync(path.join(dir, 'ex-1.txt'), 0o644);
+      writeExchangeDumpFile(baseExchange(), dir);
+      expect(fs.statSync(path.join(dir, 'ex-1.txt')).mode & 0o777).toBe(0o600);
+
+      const connection: CapturedWebSocketConnection = {
+        id: 'ws-1',
+        url: 'wss://example.com/socket',
+        host: 'example.com',
+        isSSL: true,
+        requestHeaders: {},
+        openedAt: 0,
+        frames: [],
+        frameCount: 0,
+        framesTruncated: false,
+      };
+      writeWebSocketDumpFile(connection, dir);
+      expect(fs.statSync(path.join(dir, 'ws-ws-1.txt')).mode & 0o777).toBe(0o600);
+    } finally {
+      process.umask(previousUmask);
+    }
   });
 });
 

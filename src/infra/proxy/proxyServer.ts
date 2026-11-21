@@ -103,6 +103,18 @@ export interface ProxyServerOptions {
    * @default true
    */
   autoPassthrough?: boolean;
+  /**
+   * Intercept's state at startup (issue #301, `--no-intercept`): off relays
+   * every CONNECT untouched. The dashboard can still toggle it afterwards.
+   * @default true
+   */
+  initialInterceptEnabled?: boolean;
+  /**
+   * Focus's host patterns at startup (issue #301, `--focus`): when non-empty,
+   * only matching hosts are MITM'd. The dashboard can still change it.
+   * @default []
+   */
+  initialFocusHosts?: readonly string[];
 }
 
 export interface ProxyServerHandle {
@@ -151,7 +163,11 @@ export async function startProxyServer(
   const sslCaDir = resolveCertDir();
 
   // Centralized runtime state (Intercept, Focus, Throttle, Block Hosts, RuleEngine) — issue #208.
-  const runtimeState = new ProxyRuntimeState({ ruleEngine: options.ruleEngine });
+  const runtimeState = new ProxyRuntimeState({
+    ruleEngine: options.ruleEngine,
+    interceptEnabled: options.initialInterceptEnabled,
+    focusHosts: normalizeFocusHosts(options.initialFocusHosts ?? []),
+  });
 
   // Issue #147, macOS-only (see `ClientProcessDirectory`'s own doc comment)
   const clientProcessDirectory = isClientProcessLookupSupported()
