@@ -1,6 +1,6 @@
 {
   "name": "@rwadada/detour",
-  "version": "2.5.1",
+  "version": "2.6.0",
   "description": "A terminal-first, lightweight HTTP debugging proxy for mobile and web, with a real-time web dashboard.",
   "homepage": "https://detour.rwadada.com/",
   "repository": {
