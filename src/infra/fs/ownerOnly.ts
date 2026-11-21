@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 
 /**
  * Owner-only file helpers for files that hold decrypted traffic or secrets
@@ -16,6 +17,22 @@ export const OWNER_ONLY_DIR_MODE = 0o700;
 
 function hasCode(err: unknown, ...codes: string[]): boolean {
   return codes.includes((err as NodeJS.ErrnoException).code ?? '');
+}
+
+/**
+ * Creates `dir` (and any missing parents) 0700, and tightens `dir` itself to
+ * 0700 if it already existed — `mkdir`'s mode applies only to directories it
+ * creates. Only `dir`: an existing parent such as `~/.detour` is tightened by
+ * `resolveCertDir` on every start, not here.
+ * Meant for Detour's own directories (`~/.detour` and those under it): it
+ * follows a symlink, so a user who keeps `~/.detour` elsewhere gets the real
+ * directory protected, and it throws when it can't (a directory owned by
+ * someone else) rather than carry on with secrets in a directory others can
+ * read. No-op for the permission part on Windows.
+ */
+export function ensureOwnerOnlyDir(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true, mode: OWNER_ONLY_DIR_MODE });
+  if (process.platform !== 'win32') fs.chmodSync(dir, OWNER_ONLY_DIR_MODE);
 }
 
 /**
@@ -74,9 +91,11 @@ export function createOwnerOnlyFile(filePath: string): boolean {
  * written into.
  */
 export function writeOwnerOnlyFile(filePath: string, content: string): void {
-  const tmpPath = writeOwnerOnlyTemp(filePath, content);
+  // A symlinked file (a config kept in a dotfiles repo) is replaced where it really lives, so the link survives.
+  const target = symlinkTarget(filePath) ?? filePath;
+  const tmpPath = writeOwnerOnlyTemp(target, content);
   try {
-    fs.renameSync(tmpPath, filePath);
+    fs.renameSync(tmpPath, target);
   } catch (err) {
     fs.rmSync(tmpPath, { force: true });
     throw err;
@@ -112,8 +131,46 @@ export function publishOwnerOnlyFile(filePath: string, content: string): boolean
   }
 }
 
+/** The file a symlink at `filePath` points to, or `undefined` when `filePath` isn't a symlink (or doesn't exist). */
+function symlinkTarget(filePath: string): string | undefined {
+  try {
+    return fs.lstatSync(filePath).isSymbolicLink() ? fs.realpathSync(filePath) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A temporary file this old was left by a process that died between writing and renaming it. */
+const STALE_TEMP_MS = 60_000;
+
+/**
+ * Removes temporary files a crashed writer left next to `filePath` (they hold
+ * the same secrets as the file). Only old ones: a fresh one may belong to
+ * another process that is about to rename it into place.
+ */
+function sweepStaleTemps(filePath: string): void {
+  const dir = path.dirname(filePath);
+  const prefix = `${path.basename(filePath)}.`;
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !/^\d+\.tmp$/.test(name.slice(prefix.length))) continue;
+    const stalePath = path.join(dir, name);
+    try {
+      if (Date.now() - fs.lstatSync(stalePath).mtimeMs > STALE_TEMP_MS) fs.rmSync(stalePath, { force: true });
+    } catch {
+      // Gone already, or not ours to remove: either way nothing to do.
+    }
+  }
+}
+
 /** Writes `content` to a fresh 0600 temporary file next to `filePath` and returns its path. */
 function writeOwnerOnlyTemp(filePath: string, content: string): string {
+  sweepStaleTemps(filePath);
   const tmpPath = `${filePath}.${process.pid}.tmp`;
   // A leftover from a crashed run (or a symlink planted there) may have any mode or target; `wx` needs it gone.
   fs.rmSync(tmpPath, { force: true });

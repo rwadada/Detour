@@ -2,7 +2,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createOwnerOnlyFile, publishOwnerOnlyFile, tightenIfOwned, writeOwnerOnlyFile } from './ownerOnly';
+import {
+  createOwnerOnlyFile,
+  ensureOwnerOnlyDir,
+  publishOwnerOnlyFile,
+  tightenIfOwned,
+  writeOwnerOnlyFile,
+} from './ownerOnly';
 
 const dirs: string[] = [];
 function tmpDir(): string {
@@ -87,6 +93,38 @@ describe('writeOwnerOnlyFile', () => {
   });
 });
 
+describe('writeOwnerOnlyFile through a symlink and after a crash', () => {
+  it.skipIf(process.platform === 'win32')('replaces the file a symlink points to, keeping the link', () => {
+    const dir = tmpDir();
+    const real = path.join(dir, 'real.json');
+    fs.writeFileSync(real, 'old');
+    const link = path.join(dir, 'config.json');
+    fs.symlinkSync(real, link);
+
+    writeOwnerOnlyFile(link, 'new');
+
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(real, 'utf8')).toBe('new');
+    expect(modeOf(real)).toBe(0o600);
+  });
+
+  it('removes a temporary file a crashed writer left long ago, but not a fresh one', () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'secret.json');
+    const stale = `${file}.111111.tmp`;
+    const fresh = `${file}.222222.tmp`;
+    fs.writeFileSync(stale, 'leaked');
+    fs.writeFileSync(fresh, 'in flight');
+    const longAgo = new Date(Date.now() - 10 * 60_000);
+    fs.utimesSync(stale, longAgo, longAgo);
+
+    writeOwnerOnlyFile(file, 'content');
+
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(fresh)).toBe(true);
+  });
+});
+
 describe('publishOwnerOnlyFile', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -112,5 +150,21 @@ describe('publishOwnerOnlyFile', () => {
     expect(publishOwnerOnlyFile(file, 'second')).toBe(false);
     expect(fs.readFileSync(file, 'utf8')).toBe('first');
     expect(fs.readdirSync(dir)).toEqual(['slot.json']);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('ensureOwnerOnlyDir', () => {
+  it('creates missing directories 0700 and tightens an existing one, through a symlink', () => {
+    const base = tmpDir();
+    const nested = path.join(base, 'a', 'b');
+    ensureOwnerOnlyDir(nested);
+    expect(modeOf(nested)).toBe(0o700);
+
+    const real = path.join(base, 'real');
+    fs.mkdirSync(real);
+    loosen(real, 0o755);
+    fs.symlinkSync(real, path.join(base, 'link'));
+    ensureOwnerOnlyDir(path.join(base, 'link'));
+    expect(modeOf(real)).toBe(0o700);
   });
 });

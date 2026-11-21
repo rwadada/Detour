@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isValidDashboardToken } from '../../domain/auth/dashboardAccess';
 import { loadOrCreateDashboardToken, resolveDashboardToken } from './dashboardAccessStore';
 
@@ -16,6 +16,22 @@ describe('loadOrCreateDashboardToken', () => {
 
   afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('adopts the token of an instance that created it first, instead of overwriting it', () => {
+    const winner = loadOrCreateDashboardToken(path.join(dir, 'other-token'));
+    const linkSync = fs.linkSync;
+    // Another instance starting at the same moment writes its token just before this one tries to create the file.
+    const spy = vi.spyOn(fs, 'linkSync').mockImplementation((existing, target) => {
+      fs.writeFileSync(target, `${winner}\n`);
+      linkSync(existing, target);
+    });
+    try {
+      expect(loadOrCreateDashboardToken(tokenPath)).toBe(winner);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fs.readFileSync(tokenPath, 'utf8').trim()).toBe(winner);
   });
 
   it('creates a valid token on first use, and keeps returning the same one (so a restart or update does not lock tabs out)', () => {

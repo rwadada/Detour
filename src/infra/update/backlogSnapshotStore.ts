@@ -3,10 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { CapturedExchange } from '../../domain/exchange/types';
 import { parseBacklogSnapshot, serializeBacklogSnapshot } from '../../domain/update/backlogSnapshot';
-
-/** The snapshot holds decrypted traffic (Authorization headers, bodies…) — owner-only, like the run-state files. */
-const FILE_MODE = 0o600;
-const DIR_MODE = 0o700;
+import { ensureOwnerOnlyDir, OWNER_ONLY_FILE_MODE } from '../fs/ownerOnly';
 
 function snapshotDir(): string {
   return path.join(os.homedir(), '.detour', 'update-resume');
@@ -17,20 +14,19 @@ export function backlogSnapshotPath(requestedPort: number): string {
   return path.join(snapshotDir(), `${requestedPort}.json`);
 }
 
+/** The snapshot holds decrypted traffic (Authorization headers, bodies…), so it is owner-only like the run-state files. Its temporary file has a fixed name, so one a crash left behind is swept by the next discard/take. */
 export function writeBacklogSnapshot(
   requestedPort: number,
   items: readonly CapturedExchange[],
   now: number = Date.now(),
 ): void {
   const dir = snapshotDir();
-  fs.mkdirSync(dir, { recursive: true, mode: DIR_MODE });
-  // `mode` only applies when the directory is created; tighten one that already existed.
-  fs.chmodSync(dir, DIR_MODE);
+  ensureOwnerOnlyDir(dir);
   const filePath = backlogSnapshotPath(requestedPort);
   const tmpPath = tmpSnapshotPath(requestedPort);
   removeQuietly(tmpPath);
   try {
-    fs.writeFileSync(tmpPath, serializeBacklogSnapshot(items, now), { mode: FILE_MODE });
+    fs.writeFileSync(tmpPath, serializeBacklogSnapshot(items, now), { mode: OWNER_ONLY_FILE_MODE });
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
     removeQuietly(tmpPath);
