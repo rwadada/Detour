@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.6.0](https://github.com/rwadada/Detour/compare/v2.5.1...v2.6.0) (2026-11-21)
+
+
+### Features
+
+* **cli:** add --no-intercept / --focus start options and config defaults ([fd4b49c](https://github.com/rwadada/Detour/commit/fd4b49c6366f6150a67bede37b6f54376e992c7a))
+* **cli:** add --no-intercept / --focus start options and config defaults ([afc8dab](https://github.com/rwadada/Detour/commit/afc8daba886845ec8661a687ddec52a75eada6c4)), closes [#301](https://github.com/rwadada/Detour/issues/301)
+* **dashboard:** show auto TLS passthrough state and records, with Forget all ([ed7d413](https://github.com/rwadada/Detour/commit/ed7d413d5958e2bd194e3dc39751a77acf824553))
+* **dashboard:** show auto TLS passthrough state and records, with Forget all ([8e7041f](https://github.com/rwadada/Detour/commit/8e7041f77e66e3922890ad09d9bbfb2b29a0fd38)), closes [#302](https://github.com/rwadada/Detour/issues/302)
+
+
+### Bug Fixes
+
+* **cli:** keep saved intercept/focus defaults from bypassing --upstream-proxy ([1970316](https://github.com/rwadada/Detour/commit/1970316e131fb65ed2043ec08040ae81ef9cf8e3))
+* **cli:** reject Focus patterns that can never match, warn on ignored defaults ([14fcea8](https://github.com/rwadada/Detour/commit/14fcea8fdb64f3118c82a37e7467855a62d38fe3))
+* **dashboard:** cap and coalesce auto TLS passthrough updates ([abd9f03](https://github.com/rwadada/Detour/commit/abd9f0306e75f5bca5e081b01dfca90a788c91e3))
+* **dashboard:** send remaining time, refresh hidden records, forget at once ([806441a](https://github.com/rwadada/Detour/commit/806441a074e70dcf8c36e66f30b0545810154ad1))
+* **persistence:** create the --persist history DB and dump files owner-only ([a020746](https://github.com/rwadada/Detour/commit/a020746936c5c0ff486d601908fffcefed70bb55))
+* **persistence:** create the --persist history DB and dump files owner-only ([613805b](https://github.com/rwadada/Detour/commit/613805bacac5e0d9409c7d6c26b9759891c79420)), closes [#303](https://github.com/rwadada/Detour/issues/303)
+* **persistence:** open the history DB under a 0077 umask instead of pre-creating it ([a44852b](https://github.com/rwadada/Detour/commit/a44852b7298294b039d6dae67fc47476685e6299))
+* **persistence:** tighten before opening, tolerate foreign-owned files ([21201c5](https://github.com/rwadada/Detour/commit/21201c5f0144fdff7fe2fc2a364baf4e3d80bd1a))
+* **proxy:** keep the lapse refresh from holding back new auto passthrough records ([3ab3f42](https://github.com/rwadada/Detour/commit/3ab3f423f658715611c2682f423fb3b3e9bb33c3))
+
 ## [2.5.1](https://github.com/rwadada/Detour/compare/v2.5.0...v2.5.1) (2026-11-19)
 
 
