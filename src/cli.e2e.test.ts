@@ -819,6 +819,33 @@ function setIntercept(dashboardPort: number, enabled: boolean): Promise<void> {
 }
 
 /**
+ * The state the dashboard reports for `type` (`intercept`, `focus`, …) to a
+ * client that has just connected — i.e. what it was started with, before
+ * anything changed it (issue #301).
+ */
+function readDashboardState(dashboardPort: number, type: string, timeoutMs = 5000): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://localhost:${dashboardPort}/ws?token=${E2E_DASHBOARD_TOKEN}`);
+    const fail = (reason: string) => {
+      clearTimeout(timer);
+      socket.terminate();
+      reject(new Error(`no "${type}" message from the dashboard: ${reason}`));
+    };
+    const timer = setTimeout(() => fail(`timed out after ${timeoutMs}ms`), timeoutMs);
+    socket.on('message', (raw) => {
+      const message = JSON.parse(raw.toString()) as { type: string; state?: unknown };
+      if (message.type === type) {
+        clearTimeout(timer);
+        socket.close();
+        resolve(message.state);
+      }
+    });
+    socket.on('close', () => fail('the socket closed first'));
+    socket.on('error', (err) => fail(err.message));
+  });
+}
+
+/**
  * Sets the "Focus" host allowlist through the dashboard's `/ws`, the same
  * way `setIntercept` toggles interception — waits for the server to
  * broadcast the change back before resolving.
@@ -2201,6 +2228,23 @@ describe('detour start (CLI, end-to-end)', () => {
       }
     });
 
+    it('--no-intercept starts with intercept off: a CONNECT is blind-tunneled from the first connection (issue #301)', async () => {
+      const upstream = await startMarkerEchoServer('upstream');
+      cli = await startDetourCli(['--no-intercept']);
+
+      let socket: net.Socket | undefined;
+      try {
+        expect(cli.stdout()).toContain('Intercept: off — every HTTPS connection is relayed untouched');
+        expect(await readDashboardState(cli.dashboardPort, 'intercept')).toEqual({ enabled: false });
+        // No setIntercept round trip first: the very first tunnel is already a raw relay.
+        socket = await connectTunnel(cli.port, '127.0.0.1', upstream.port);
+        expect(await writeAndRead(socket, 'ping')).toBe('upstream:ping');
+      } finally {
+        socket?.destroy();
+        await upstream.close();
+      }
+    });
+
     it('blind-tunnels a CONNECT while intercept is off instead of MITM-decrypting it', async () => {
       const upstream = await startMarkerEchoServer('upstream');
       cli = await startDetourCli();
@@ -2403,6 +2447,39 @@ describe('detour start (CLI, end-to-end)', () => {
         await original.close();
         await routed.close();
         await somewhereElse.close();
+      }
+    });
+
+    it('--focus at startup applies a mock rule to the focused host only, with no dashboard round trip (issue #301)', async () => {
+      const focused = await startEchoServer();
+      const unfocused = await startEchoServer();
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'detour-e2e-'));
+      const rulesPath = path.join(tmpDir, 'rules.json');
+      fs.writeFileSync(
+        rulesPath,
+        JSON.stringify({
+          rules: [
+            {
+              name: 'e2e-mock',
+              // eslint-disable-next-line sonarjs/no-clear-text-protocols -- rule-matcher glob string, never used as an outbound request URL
+              match: { url: 'http://*/mocked' },
+              action: { type: 'mock', status: 200, body: { mocked: true } },
+            },
+          ],
+        }),
+      );
+      cli = await startDetourCli(['--rules', rulesPath, '--focus', `127.0.0.1:${focused.port}`]);
+
+      try {
+        expect(cli.stdout()).toContain(`Focus: 127.0.0.1:${focused.port} — only these hosts are decrypted`);
+        expect(await readDashboardState(cli.dashboardPort, 'focus')).toEqual({ hosts: [`127.0.0.1:${focused.port}`] });
+        const focusedResult = await requestThroughProxy(cli.port, focused.port, '/mocked');
+        expect(JSON.parse(focusedResult.body)).toEqual({ mocked: true });
+        const unfocusedResult = await requestThroughProxy(cli.port, unfocused.port, '/mocked');
+        expect(JSON.parse(unfocusedResult.body)).toEqual({ method: 'GET', path: '/mocked', body: '' });
+      } finally {
+        await focused.close();
+        await unfocused.close();
       }
     });
 
@@ -4325,6 +4402,8 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
       ['lanAccess', 'false'],
       ['dashboardPassword', 'off'],
       ['autoPassthrough', 'true'],
+      ['intercept', 'true'],
+      ['focusHosts', 'off'],
     ])('reports %s = %s when nothing has been configured', async (key, expected) => {
       const { home, env } = withTempHome();
       try {
@@ -4431,6 +4510,75 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
         fs.rmSync(home, { recursive: true, force: true });
       }
     });
+
+    it('persists --intercept off and a normalized --focus list, and "off" clears Focus (issue #301)', async () => {
+      const { home, env } = withTempHome();
+      const configPath = path.join(home, '.detour', 'config.json');
+      try {
+        const set = await runTsx(
+          ['src/cli.ts', 'config', '--intercept', 'off', '--focus', ' API.example.com, *.example.net '],
+          { cwd: REPO_ROOT, reject: false, env },
+        );
+        expect(set.exitCode).toBe(0);
+        expect(set.stdout).toContain('intercept = false');
+        expect(set.stdout).toContain('focusHosts = api.example.com, *.example.net');
+        expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({
+          intercept: false,
+          focusHosts: ['api.example.com', '*.example.net'],
+        });
+
+        const cleared = await runTsx(['src/cli.ts', 'config', '--focus', ' OFF '], {
+          cwd: REPO_ROOT,
+          reject: false,
+          env,
+        });
+        expect(cleared.exitCode).toBe(0);
+        expect(cleared.stdout).toContain('focusHosts = off');
+        expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ intercept: false, focusHosts: [] });
+
+        const empty = await runTsx(['src/cli.ts', 'config', '--focus', ' , '], { cwd: REPO_ROOT, reject: false, env });
+        expect(empty.exitCode).not.toBe(0);
+        expect(empty.stderr).toContain('--focus needs at least one host pattern');
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it('detour start begins with the saved intercept/focus defaults, and --intercept / --no-focus override them (issue #301)', async () => {
+      const { home, env } = withTempHome();
+      let cli: Awaited<ReturnType<typeof startDetourCli>> | undefined;
+      try {
+        const saved = await runTsx(['src/cli.ts', 'config', '--intercept', 'off', '--focus', '127.0.0.1:9'], {
+          cwd: REPO_ROOT,
+          reject: false,
+          env,
+        });
+        expect(saved.exitCode).toBe(0);
+
+        cli = await startDetourCli([], env);
+        expect(cli.stdout()).toContain('Intercept: off — every HTTPS connection is relayed untouched');
+        expect(await readDashboardState(cli.dashboardPort, 'intercept')).toEqual({ enabled: false });
+        expect(await readDashboardState(cli.dashboardPort, 'focus')).toEqual({ hosts: ['127.0.0.1:9'] });
+        await cli.kill();
+
+        cli = await startDetourCli(['--intercept', '--no-focus'], env);
+        expect(cli.stdout()).toContain('Intercept: on (--no-intercept)');
+        expect(cli.stdout()).toContain('Focus: off — every host is decrypted');
+        expect(await readDashboardState(cli.dashboardPort, 'intercept')).toEqual({ enabled: true });
+        expect(await readDashboardState(cli.dashboardPort, 'focus')).toEqual({ hosts: [] });
+        await cli.kill();
+
+        // With --upstream-proxy the saved defaults are ignored: a tunnel with Intercept off (or outside Focus)
+        // would connect straight to its destination, around that proxy. Never contacted at startup.
+        cli = await startDetourCli(['--upstream-proxy', 'http://127.0.0.1:9'], env);
+        expect(cli.stdout()).toContain('Intercept: on (--no-intercept)');
+        expect(cli.stdout()).toContain('not applied with --upstream-proxy');
+        expect(await readDashboardState(cli.dashboardPort, 'focus')).toEqual({ hosts: [] });
+      } finally {
+        await cli?.kill();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    }, 60_000);
 
     it('the proxy is reachable on the network with no --lan at all — it always binds to every interface, --headless included', async () => {
       const port = await findFreePort();
