@@ -53,12 +53,64 @@ describe('runStateStore', () => {
       expect(fs.readdirSync(runDir)).toEqual(['18080.json']);
     });
 
+    it('leaves a live reservation exactly as it was, and nothing parked beside it', () => {
+      expect(reserveRunState(state({ startedAt: 7 }))).toBe(true);
+      const before = fs.readFileSync(path.join(runDir, '18080.json'), 'utf8');
+
+      expect(reserveRunState(state({ startedAt: 8 }))).toBe(false);
+
+      expect(fs.readFileSync(path.join(runDir, '18080.json'), 'utf8')).toBe(before);
+      expect(fs.readdirSync(runDir)).toEqual(['18080.json']);
+    });
+
+    it.skipIf(process.platform === 'win32')('does not reuse a leftover temporary file, whatever its mode', () => {
+      fs.mkdirSync(runDir, { recursive: true });
+      const leftover = path.join(runDir, `18080.json.${process.pid}.tmp`);
+      fs.writeFileSync(leftover, 'old');
+      // eslint-disable-next-line sonarjs/file-permissions -- test fixture: a world-readable leftover from a crash.
+      fs.chmodSync(leftover, 0o644);
+
+      expect(reserveRunState(state())).toBe(true);
+
+      expect(fs.statSync(path.join(runDir, '18080.json')).mode & 0o777).toBe(0o600);
+      expect(fs.readdirSync(runDir)).toEqual(['18080.json']);
+    });
+
+    it('treats a fresh unparseable file as a write in progress, and an old one as a crashed leftover', () => {
+      fs.mkdirSync(runDir, { recursive: true });
+      const filePath = path.join(runDir, '18080.json');
+      fs.writeFileSync(filePath, '');
+      expect(reserveRunState(state())).toBe(false);
+      expect(fs.readFileSync(filePath, 'utf8')).toBe('');
+
+      const longAgo = new Date(Date.now() - 60_000);
+      fs.utimesSync(filePath, longAgo, longAgo);
+      expect(reserveRunState(state())).toBe(true);
+      expect(findLiveRunState(18080)?.pid).toBe(process.pid);
+    });
+
     it('takes over a reservation whose holder is gone', () => {
       fs.mkdirSync(runDir, { recursive: true });
       // A PID that can't belong to a live process (beyond any real pid_max).
       fs.writeFileSync(path.join(runDir, '18080.json'), JSON.stringify(state({ pid: 2 ** 30 })));
       expect(reserveRunState(state())).toBe(true);
       expect(findLiveRunState(18080)?.pid).toBe(process.pid);
+    });
+  });
+
+  describe('findLiveRunState', () => {
+    it('removes an unparseable file as a crashed leftover, but not one that may still be being written', () => {
+      fs.mkdirSync(runDir, { recursive: true });
+      const filePath = path.join(runDir, '18080.json');
+      fs.writeFileSync(filePath, '');
+
+      expect(findLiveRunState(18080)).toBeUndefined();
+      expect(fs.existsSync(filePath)).toBe(true);
+
+      const longAgo = new Date(Date.now() - 60_000);
+      fs.utimesSync(filePath, longAgo, longAgo);
+      expect(findLiveRunState(18080)).toBeUndefined();
+      expect(fs.existsSync(filePath)).toBe(false);
     });
   });
 

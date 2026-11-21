@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { createOwnerOnlyFile, tightenIfOwned, writeOwnerOnlyFile } from './ownerOnly';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createOwnerOnlyFile, publishOwnerOnlyFile, tightenIfOwned, writeOwnerOnlyFile } from './ownerOnly';
 
 const dirs: string[] = [];
 function tmpDir(): string {
@@ -84,5 +84,33 @@ describe('writeOwnerOnlyFile', () => {
       expect(modeOf(file)).toBe(0o600);
       expect(fs.statSync(file).ino).not.toBe(oldInode);
     }
+  });
+});
+
+describe('publishOwnerOnlyFile', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('creates the file with its content when the name is free, and refuses when it is taken', () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'slot.json');
+    expect(publishOwnerOnlyFile(file, 'first')).toBe(true);
+    expect(publishOwnerOnlyFile(file, 'second')).toBe(false);
+    expect(fs.readFileSync(file, 'utf8')).toBe('first');
+    expect(fs.readdirSync(dir)).toEqual(['slot.json']);
+    if (process.platform !== 'win32') expect(modeOf(file)).toBe(0o600);
+  });
+
+  it('falls back to an exclusive create where the filesystem has no hard links', () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'slot.json');
+    vi.spyOn(fs, 'linkSync').mockImplementation(() => {
+      throw Object.assign(new Error('operation not supported'), { code: 'ENOTSUP' });
+    });
+    expect(publishOwnerOnlyFile(file, 'first')).toBe(true);
+    expect(publishOwnerOnlyFile(file, 'second')).toBe(false);
+    expect(fs.readFileSync(file, 'utf8')).toBe('first');
+    expect(fs.readdirSync(dir)).toEqual(['slot.json']);
   });
 });

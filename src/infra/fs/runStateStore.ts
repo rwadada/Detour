@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { RunState } from '../../domain/daemon/types';
-import { writeOwnerOnlyFile } from './ownerOnly';
+import { publishOwnerOnlyFile, writeOwnerOnlyFile } from './ownerOnly';
 
 /** Directory holding one JSON state file per tracked `detour start` process, keyed by its requested `--port` (~/.detour/run) — mirroring `certStore.ts`'s `resolveCertDir`/`dumpFileWriter.ts`'s `resolveDumpDir`. */
 export function resolveRunDir(): string {
@@ -11,8 +11,15 @@ export function resolveRunDir(): string {
   return dir;
 }
 
-/** State files carry the original `detour start` arguments, which can include credentials (`--proxy-auth`) — owner-only, like the process list entry they mirror. */
-const STATE_FILE_MODE = 0o600;
+/**
+ * State files carry the original `detour start` arguments, which can include
+ * credentials (`--proxy-auth`), so they are written owner-only (`ownerOnly.ts`).
+ *
+ * A file that doesn't parse is taken for a crashed leftover and removed —
+ * unless it was modified this recently, in which case it may be another
+ * process's write still in progress (an older Detour wrote in place).
+ */
+const UNPARSEABLE_GRACE_MS = 5_000;
 
 function runStateFilePath(requestedPort: number): string {
   return path.join(resolveRunDir(), `${requestedPort}.json`);
@@ -44,37 +51,66 @@ export function writeRunState(state: RunState): void {
  * a corrupt leftover, deleted it and won too — both then started, and one
  * failed on the port with exit 1 instead of reporting exit 3.)
  *
- * Self-heals a stale reservation the same way `findLiveRunState` does: an
- * `EEXIST` whose PID is no longer alive is removed and the reservation
- * retried once. Returns whether the reservation was won — the caller (see
+ * Self-heals a stale reservation: an `EEXIST` whose PID is no longer alive is
+ * moved aside (`moveAsideIfStale`) and the reservation retried once. Returns whether the reservation was won — the caller (see
  * `cli.ts`'s `runStart`) must `removeRunState` this same port if anything
  * after a successful reservation fails, and otherwise overwrite it with
  * `writeRunState` once the real proxy/dashboard ports are known.
  */
 export function reserveRunState(state: RunState): boolean {
   const filePath = runStateFilePath(state.requestedPort);
-  const tryCreate = (): boolean => {
-    const tmpPath = `${filePath}.${process.pid}.reserving`;
-    fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), { mode: STATE_FILE_MODE });
-    try {
-      fs.linkSync(tmpPath, filePath);
-      return true;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
-      throw err;
-    } finally {
-      fs.rmSync(tmpPath, { force: true });
-    }
-  };
-
-  if (tryCreate()) return true;
-  // Lost the race, or found a stale leftover from a process that crashed
-  // without cleaning up — `findLiveRunState` tells them apart, and removes
-  // the file itself if it's stale (see its own doc comment).
-  if (findLiveRunState(state.requestedPort)) return false;
-  // Stale entry is gone now — try once more. A second EEXIST here just
+  const content = JSON.stringify(state, null, 2);
+  if (publishOwnerOnlyFile(filePath, content)) return true;
+  // Lost the race, or found a stale leftover from a process that crashed without cleaning up.
+  if (!moveAsideIfStale(filePath)) return false;
+  // The stale entry is gone now — try once more. A second EEXIST here just
   // means another process won the reservation in between; a fair loss.
-  return tryCreate();
+  return publishOwnerOnlyFile(filePath, content);
+}
+
+/**
+ * Takes a stale reservation out of the way, returning whether the slot is
+ * free now. The file is first renamed to a name only this process uses, and
+ * only then judged: deciding from a read and deleting by name afterwards
+ * would delete a live reservation that replaced the stale one in between
+ * (another starter got there first), letting both win. One that turns out to
+ * be live is put back.
+ */
+function moveAsideIfStale(filePath: string): boolean {
+  const parked = `${filePath}.${process.pid}.parked`;
+  try {
+    fs.renameSync(filePath, parked);
+  } catch (err) {
+    // Already gone: whoever removed it, the slot is free to try for.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    throw err;
+  }
+  const parkedState = readRunStateFile(parked);
+  const stillInUse = parkedState
+    ? isProcessAlive(parkedState.pid)
+    : // Unparseable but fresh: possibly another process still writing it (see `UNPARSEABLE_GRACE_MS`).
+      modifiedWithin(parked, UNPARSEABLE_GRACE_MS);
+  if (stillInUse) {
+    try {
+      fs.linkSync(parked, filePath);
+    } catch (err) {
+      // EEXIST: yet another reservation took the name meanwhile — it stands, and this one is still a loss.
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+    fs.rmSync(parked, { force: true });
+    return false;
+  }
+  fs.rmSync(parked, { force: true });
+  return true;
+}
+
+/** Parses a state file, or `undefined` when it is missing or doesn't parse. */
+function readRunStateFile(filePath: string): RunState | undefined {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8')) as RunState;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Removes the state file for `requestedPort`, if any. A no-op if it's already gone (e.g. a concurrent `detour stop` already removed it). */
@@ -133,8 +169,9 @@ export function findLiveRunState(requestedPort: number): RunState | undefined {
   try {
     state = JSON.parse(raw) as RunState;
   } catch {
-    // Corrupt/partial write — treat the same as "not running" rather than crash the caller.
-    fs.rmSync(filePath, { force: true });
+    // Corrupt/partial write — treat the same as "not running" rather than crash the caller, and remove it unless
+    // it may still be being written (see `UNPARSEABLE_GRACE_MS`).
+    if (!modifiedWithin(filePath, UNPARSEABLE_GRACE_MS)) fs.rmSync(filePath, { force: true });
     return undefined;
   }
   if (!isProcessAlive(state.pid)) {
@@ -142,6 +179,14 @@ export function findLiveRunState(requestedPort: number): RunState | undefined {
     return undefined;
   }
   return state;
+}
+
+function modifiedWithin(filePath: string, ms: number): boolean {
+  try {
+    return Date.now() - fs.statSync(filePath).mtimeMs < ms;
+  } catch {
+    return false;
+  }
 }
 
 /** Every instance currently tracked as running, across all ports (self-healing stale entries as `findLiveRunState` does). */
