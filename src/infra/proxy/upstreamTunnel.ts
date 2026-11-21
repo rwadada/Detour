@@ -171,18 +171,25 @@ async function connectViaSocksProxy(
     destination: { host: destinationHost, port },
     timeout: CONNECT_TIMEOUT_MS,
   });
-  if (options.signal?.aborted) {
-    socket.destroy();
-    throw new Error('aborted');
-  }
   // `socks` hands over bytes that arrived with its handshake by emitting them, then resumes the socket, both on
   // its next turn: hold them across that turn, then pause and put them back so they wait for the caller's pipe.
+  // Nothing else listens for 'error' meanwhile (`socks` has let go of the socket), so catch it here.
   const held: Buffer[] = [];
   const hold = (chunk: Buffer) => held.push(chunk);
+  let earlyError: Error | undefined;
+  const catchError = (err: Error) => {
+    earlyError = err;
+  };
   socket.on('data', hold);
+  socket.on('error', catchError);
   await new Promise((resolve) => setImmediate(resolve));
   socket.pause();
   socket.off('data', hold);
+  socket.off('error', catchError);
+  if (earlyError || options.signal?.aborted) {
+    socket.destroy();
+    throw earlyError ?? new Error('aborted');
+  }
   if (held.length > 0) socket.unshift(Buffer.concat(held));
   return socket;
 }
