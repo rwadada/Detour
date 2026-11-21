@@ -16,6 +16,7 @@ describe('parseClientMessage', () => {
   it.each([
     { type: 'login', password: 'pw' },
     { type: 'setIntercept', enabled: false },
+    { type: 'forgetAutoPassthrough' },
     { type: 'setFocus', hosts: ['a.example'] },
     { type: 'setThrottle', state: { enabled: true, downKbps: 1, upKbps: 1, latencyMs: 0, packetLossPct: 0 } },
     { type: 'setBlockHosts', state: { hosts: ['x'], mode: 'reset' } },

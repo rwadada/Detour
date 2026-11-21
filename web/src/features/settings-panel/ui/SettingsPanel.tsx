@@ -1,13 +1,17 @@
-import { type FormEvent, useState } from 'react';
+import { type FormEvent, useEffect, useState } from 'react';
 import {
+  formatRemaining,
+  liveAutoPassthroughEntries,
   PRESETS,
   presetFor,
   ThrottleFields,
   useAdbReverseStore,
+  useAutoPassthroughStore,
   useBlockHostsStore,
   useFocusStore,
   useInterceptStore,
   useThrottleStore,
+  type LocalAutoPassthroughEntry,
   type PresetKey,
 } from '@/entities/proxy-config';
 import { useUserConfigStore } from '@/entities/user-config';
@@ -18,7 +22,7 @@ import { HostChipList, Select } from '@/shared/ui';
 
 /**
  * Consolidated form for every global proxy toggle (issue #24's "Settings
- * panel"): Intercept, Focus, Throttle, Block Hosts, and the theme
+ * panel"): Intercept, Focus, auto TLS passthrough, Throttle, Block Hosts, and the theme
  * preference. Each toggle already has its own quick-access toolbar
  * popover (`InterceptToggle`, `FocusControl`, …) — this doesn't replace
  * those, it's a single place to see and edit all of them together, backed
@@ -31,6 +35,7 @@ export function SettingsPanel() {
       <AppearanceSection />
       <InterceptSection />
       <FocusSection />
+      <AutoPassthroughSection />
       <ThrottleSection />
       <BlockHostsSection />
       <AdbReverseSection />
@@ -110,6 +115,142 @@ function FocusSection() {
       </p>
       <HostChipList hosts={focusHosts} onChange={setFocus} placeholder="api.example.com" featureLabel="Focus" />
     </section>
+  );
+}
+
+/**
+ * The current time, re-read every `intervalMs` until the last of `deadlines` has passed — a countdown that stops
+ * ticking once there is nothing left to count down. Re-read once right away when it starts, so time that passed
+ * while it was idle doesn't show for a second.
+ */
+function useCountdownNow(deadlines: readonly number[], intervalMs = 1000): number {
+  const [now, setNow] = useState(() => Date.now());
+  const active = deadlines.some((deadline) => deadline > now);
+  useEffect(() => {
+    if (!active) return undefined;
+    const first = setTimeout(() => setNow(Date.now()), 0);
+    const timer = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+    };
+  }, [active, intervalMs]);
+  return now;
+}
+
+/**
+ * Auto TLS passthrough (issue #302): whether it is on, the client/host/port targets relayed untouched right now
+ * because their client refused Detour's certificate (each with the time it has left), and a way to forget them
+ * all at once — say, right after installing the CA on that device, instead of toggling Intercept to get the same
+ * effect. Hidden until the server says it has the feature (`autoPassthrough` never arrives otherwise).
+ */
+function AutoPassthroughSection() {
+  const autoPassthrough = useAutoPassthroughStore((s) => s.autoPassthrough);
+  const forgetAll = useAutoPassthroughStore((s) => s.forgetAll);
+  const now = useCountdownNow(autoPassthrough?.entries.map((entry) => entry.expiresAt) ?? []);
+
+  if (!autoPassthrough) return null;
+  const entries = liveAutoPassthroughEntries(autoPassthrough, now);
+
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between">
+        <SectionHeading>Auto TLS passthrough</SectionHeading>
+        {/* Plain status text, not the pill the Throttle section uses for its switch: this is fixed at startup, and a
+            pill here would look clickable while doing nothing. */}
+        <span
+          role="status"
+          className={cn(
+            'text-[10px] font-medium',
+            autoPassthrough.enabled ? 'text-[var(--accent)]' : 'text-[var(--muted)]',
+          )}
+        >
+          {autoPassthrough.enabled ? 'On this session' : 'Off this session'}
+        </span>
+      </div>
+      <AutoPassthroughDescription enabled={autoPassthrough.enabled} />
+      {autoPassthrough.enabled && (
+        <AutoPassthroughRecords
+          entries={entries}
+          notShown={autoPassthrough.total - autoPassthrough.entries.length}
+          now={now}
+          onForgetAll={forgetAll}
+        />
+      )}
+    </section>
+  );
+}
+
+function AutoPassthroughDescription({ enabled }: { enabled: boolean }) {
+  return (
+    <p className="mb-2 text-xs text-[var(--muted)]">
+      {enabled ? (
+        <>
+          When a client refuses Detour&apos;s certificate for a host (an app that doesn&apos;t trust user CAs, or pins
+          its own), that client&apos;s later connections to the host are relayed untouched — undecrypted — until the
+          timer below runs out. Hosts in Focus stay decrypted. Set at startup:{' '}
+          <code className="font-mono-ui">--no-auto-passthrough</code> turns it off.
+        </>
+      ) : (
+        <>
+          Off for this session: a client that refuses Detour&apos;s certificate keeps failing for that host. Set at
+          startup with <code className="font-mono-ui">--auto-passthrough</code> (off by default with{' '}
+          <code className="font-mono-ui">--upstream-proxy</code>).
+        </>
+      )}
+    </p>
+  );
+}
+
+/** The targets relayed untouched right now, each with the time it has left, and the button that forgets them all. */
+function AutoPassthroughRecords({
+  entries,
+  notShown,
+  now,
+  onForgetAll,
+}: {
+  entries: LocalAutoPassthroughEntry[];
+  /** Records the server holds beyond the ones it sent (it sends the soonest-to-lapse 100). */
+  notShown: number;
+  now: number;
+  onForgetAll: () => void;
+}) {
+  return (
+    <>
+      {entries.length === 0 && notShown === 0 ? (
+        <p className="mb-2 text-xs text-[var(--muted)]">Nothing is being relayed untouched right now.</p>
+      ) : (
+        <ul aria-label="Targets relayed untouched" className="mb-2 space-y-1">
+          {entries.map((entry) => (
+            <li
+              key={`${entry.clientAddress ?? ''} ${entry.host}:${entry.port}`}
+              className="flex items-center justify-between gap-2 rounded-md border border-[var(--border)] px-2 py-1 text-xs"
+            >
+              <span className="min-w-0 truncate font-mono-ui">
+                <span className="text-[var(--muted)]">{entry.clientAddress ?? 'unknown client'} → </span>
+                {entry.host}:{entry.port}
+              </span>
+              <span className="shrink-0 font-mono-ui text-[var(--muted)]" title="Time until it is decrypted again">
+                {formatRemaining(entry.expiresAt, now)}
+              </span>
+            </li>
+          ))}
+          {notShown > 0 && <li className="px-2 text-xs text-[var(--muted)]">and {notShown} more not shown</li>}
+        </ul>
+      )}
+      <button
+        type="button"
+        onClick={onForgetAll}
+        disabled={entries.length === 0 && notShown === 0}
+        className="rounded-md border border-[var(--border)] px-3 py-1 text-xs text-[var(--muted)] hover:bg-[var(--row-hover)] disabled:opacity-50"
+      >
+        Forget all
+      </button>
+      <p className="mt-1.5 text-xs text-[var(--muted)]">
+        Decrypts those hosts again from the next connection — use it right after installing the CA. Toggling Intercept
+        or changing Focus does the same.
+      </p>
+    </>
   );
 }
 

@@ -762,6 +762,7 @@ async function startDashboard(ctx: SessionContext, requestedDashboardPort: numbe
         initialInterceptState: { enabled: ctx.resources.interceptEnabled },
         initialFocusState: { hosts: [...ctx.resources.focusHosts] },
         isSelfTarget: handle.isSelfTarget,
+        autoPassthroughState: handle.autoPassthroughState,
         ruleEngine,
         ruleProfileStore: fsRuleProfileStore,
         tlsKeyCert,

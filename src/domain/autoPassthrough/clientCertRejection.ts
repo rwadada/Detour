@@ -69,6 +69,15 @@ export interface AutoPassthroughHosts {
   has(target: AutoPassthroughTarget): boolean;
   /** Forgets every target at once — the way to MITM them again before they expire (say, right after installing the CA). */
   clear(): void;
+  /** The targets still recorded, oldest (soonest to expire) first, at most `limit` of them, with how long each has left (issue #302: shown in the dashboard). */
+  list(limit?: number): AutoPassthroughRecord[];
+  /** How many targets are still recorded. */
+  size(): number;
+}
+
+/** One recorded target and the time it has left. */
+export interface AutoPassthroughRecord extends AutoPassthroughTarget {
+  remainingMs: number;
 }
 
 /** How long a refusal is remembered. */
@@ -96,6 +105,35 @@ function keyOf(target: AutoPassthroughTarget): string {
   return `${target.clientAddress ?? ''} ${target.host.toLowerCase()}:${target.port}`;
 }
 
+/** The first `limit` of `entries` (oldest first) as records, without copying the rest. */
+function firstRecords(
+  entries: Iterable<{ expiry: number; target: AutoPassthroughTarget }>,
+  limit: number,
+  time: number,
+): AutoPassthroughRecord[] {
+  const records: AutoPassthroughRecord[] = [];
+  for (const { expiry, target } of entries) {
+    if (records.length >= limit) break;
+    records.push({ ...target, remainingMs: expiry - time });
+  }
+  return records;
+}
+
+/** `hosts`, calling `onAdded` after every target it newly records (issue #302: so the dashboard hears of it). */
+export function notifyingOnAdd(hosts: AutoPassthroughHosts, onAdded: () => void): AutoPassthroughHosts {
+  return {
+    add: (target) => {
+      const added = hosts.add(target);
+      if (added) onAdded();
+      return added;
+    },
+    has: (target) => hosts.has(target),
+    clear: () => hosts.clear(),
+    list: (limit) => hosts.list(limit),
+    size: () => hosts.size(),
+  };
+}
+
 export function createAutoPassthroughHosts(
   options: { limit?: number; perClientLimit?: number; ttlMs?: number; now?: () => number } = {},
 ): AutoPassthroughHosts {
@@ -107,7 +145,7 @@ export function createAutoPassthroughHosts(
     ttlMs = AUTO_PASSTHROUGH_TTL_MS,
     now = () => performance.now(),
   } = options;
-  const entries = new Map<string, { expiry: number; client: string }>();
+  const entries = new Map<string, { expiry: number; client: string; target: AutoPassthroughTarget }>();
   const perClient = new Map<string, number>();
   const remove = (key: string): void => {
     const entry = entries.get(key);
@@ -141,7 +179,8 @@ export function createAutoPassthroughHosts(
       const client = target.clientAddress ?? '';
       if (entries.size >= limit || (perClient.get(client) ?? 0) >= perClientLimit) pruneExpired();
       if (entries.size >= limit || (perClient.get(client) ?? 0) >= perClientLimit) return false;
-      entries.set(key, { expiry: now() + ttlMs, client });
+      const { clientAddress, host, port } = target;
+      entries.set(key, { expiry: now() + ttlMs, client, target: { clientAddress, host, port } });
       perClient.set(client, (perClient.get(client) ?? 0) + 1);
       return true;
     },
@@ -149,6 +188,14 @@ export function createAutoPassthroughHosts(
     clear: () => {
       entries.clear();
       perClient.clear();
+    },
+    list: (limit = Number.POSITIVE_INFINITY) => {
+      pruneExpired();
+      return firstRecords(entries.values(), limit, now());
+    },
+    size: () => {
+      pruneExpired();
+      return entries.size;
     },
   };
 }

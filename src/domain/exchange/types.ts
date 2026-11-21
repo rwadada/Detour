@@ -391,6 +391,28 @@ export interface FocusState {
 }
 
 /**
+ * Auto TLS passthrough as the dashboard shows it (issue #302): whether it is
+ * on for this session (`--no-auto-passthrough`, and off by default with
+ * `--upstream-proxy`), and the client/host/port targets currently relayed
+ * untouched because their client refused Detour's certificate.
+ */
+export interface AutoPassthroughState {
+  enabled: boolean;
+  entries: AutoPassthroughEntry[];
+  /** How many targets are recorded in all — `entries` holds at most the 100 soonest to lapse, in that order. */
+  total: number;
+}
+
+export interface AutoPassthroughEntry {
+  /** The refusing client's address; absent when the proxy couldn't tell. */
+  clientAddress?: string;
+  host: string;
+  port: number;
+  /** How long until the record lapses and the target is MITM'd again, as of when the message was sent — relative, so a client counts it down on its own clock without the two clocks having to agree. */
+  remainingMs: number;
+}
+
+/**
  * "Throttle" simulates degraded network conditions (bandwidth cap, latency,
  * packet loss) on proxied traffic, toggled at runtime from the dashboard.
  * `enabled: false` (the default) is a true no-op. `downKbps`/`upKbps` cap
@@ -460,6 +482,10 @@ export interface DetourEvents {
   setFocus: (hosts: string[]) => void;
   /** The proxy applied a focus change; broadcast to dashboards so every connected tab (and newly-connecting ones) reflect the current allowlist. */
   focusChanged: (state: FocusState) => void;
+  /** The dashboard asked to forget every auto TLS passthrough record (issue #302). */
+  forgetAutoPassthrough: () => void;
+  /** The proxy recorded or forgot auto TLS passthrough targets (issue #302); broadcast to dashboards. Expiry alone does not fire it — each entry carries its own `expiresAt`. */
+  autoPassthroughChanged: (state: AutoPassthroughState) => void;
   /** The dashboard changed the Throttle profile (see `ThrottleState`). */
   setThrottle: (state: ThrottleState) => void;
   /** The proxy applied a throttle change; broadcast to dashboards so every connected tab (and newly-connecting ones) reflect the current profile. */

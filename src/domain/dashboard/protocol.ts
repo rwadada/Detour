@@ -1,4 +1,5 @@
 import type {
+  AutoPassthroughState,
   BlockHostsState,
   BreakpointPayload,
   BreakpointResumeCommand,
@@ -309,6 +310,12 @@ export type DashboardServerMessage =
    * on or off (it runs `adb` on this machine), everyone else sees the state read-only.
    */
   | { type: 'adbReverseState'; enabled: boolean; usbDevices: number; port: number; canChange: boolean }
+  /**
+   * Auto TLS passthrough (issue #302): whether it is on, and the targets relayed untouched right now because
+   * their client refused Detour's certificate. Sent on connect and whenever a target is recorded or forgotten;
+   * an entry past its `expiresAt` has lapsed without a new message.
+   */
+  | { type: 'autoPassthrough'; state: AutoPassthroughState }
   /** Answer to `startUpdate`, sent to the requesting socket only. `started` means the detached updater was launched; this process is about to be stopped and relaunched by it. */
   | { type: 'updateStatus'; state: 'started' | 'rejected' | 'failed'; message?: string }
   /**
@@ -403,4 +410,6 @@ export type DashboardClientMessage =
   /** Re-runs the release lookup now instead of waiting out the cache; answered by a fresh `updateInfo`. No-op when update checking isn't configured. */
   | { type: 'checkUpdate' }
   /** Turns keeping `adb reverse` in place for USB Android devices on or off. Honored only for a socket that proved the password or access token; answered by an `adbReverseState` to every client. */
-  | { type: 'setAdbReverse'; enabled: boolean };
+  | { type: 'setAdbReverse'; enabled: boolean }
+  /** Forgets every auto TLS passthrough record (issue #302), so those targets are MITM'd again — say, right after installing the CA. Answered by an `autoPassthrough` to every client. */
+  | { type: 'forgetAutoPassthrough' };

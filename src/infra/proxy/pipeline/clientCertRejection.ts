@@ -34,7 +34,7 @@ const RELAY_HINT = 'to relay it untouched, turn Intercept off or set Focus to ot
 function describeOutcome(outcome: Outcome, hostPort: string): string {
   switch (outcome) {
     case 'passthrough':
-      return `for the next ${AUTO_PASSTHROUGH_TTL_MINUTES} minutes, connections from this client address to ${hostPort} are relayed untouched (auto TLS passthrough) so it keeps working, without decryption — toggle Intercept off and on to MITM it again sooner`;
+      return `for the next ${AUTO_PASSTHROUGH_TTL_MINUTES} minutes, connections from this client address to ${hostPort} are relayed untouched (auto TLS passthrough) so it keeps working, without decryption — "Forget all" in the dashboard's Settings (or toggling Intercept off and on) MITMs it again sooner`;
     case 'focused':
       return `${hostPort} is in Focus, so it stays MITM'd rather than being relayed untouched`;
     case 'full':

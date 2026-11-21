@@ -22,8 +22,8 @@ const SETTINGS_PANEL_KEYS = Object.keys(SETTINGS_PANEL_KEY_SET) as (keyof typeof
 /**
  * Keeps only the Settings panel's own keys from a `setUserConfig` patch.
  * `writeUserConfig` accepts every config key `detour config` can set; the
- * rest of them (proxy credentials, Intercept/Focus defaults, …) are changed
- * with `detour config` on this machine, not over the dashboard socket.
+ * rest of them (the proxy login, the Intercept and Focus defaults and so on) are
+ * changed with `detour config` on this machine, not over the dashboard socket.
  * The password has its own message (`setDashboardPassword`).
  */
 function settingsPanelPatch(state: MessageOf<'setUserConfig'>['state']): Parameters<typeof writeUserConfig>[0] {
@@ -111,6 +111,7 @@ export function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerT
     setFocus: (message) => void eventBus.emit('setFocus', message.hosts),
     setThrottle: (message) => void eventBus.emit('setThrottle', message.state),
     setBlockHosts: (message) => void eventBus.emit('setBlockHosts', message.state),
+    forgetAutoPassthrough: () => void eventBus.emit('forgetAutoPassthrough'),
 
     startUpdate: async (_message, socket) => {
       socket.send(JSON.stringify(await deps.startUpdate(socket)));
