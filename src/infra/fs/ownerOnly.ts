@@ -1,9 +1,15 @@
 import fs from 'node:fs';
 
 /**
- * Owner-only file helpers for files that hold decrypted traffic (issue #303:
- * the `--persist` history database and `--dump file` dumps). Every function
+ * Owner-only file helpers for files that hold decrypted traffic or secrets
+ * (issue #303: the `--persist` history database and `--dump file` dumps; the
+ * run state files, which carry `detour start`'s arguments). Every function
  * is a no-op for the permission part on Windows, which has no POSIX mode bits.
+ *
+ * The writers never let a reader see a file half-written: content goes to a
+ * temporary file first and is renamed or linked into place in one step. The
+ * run state files rely on that for correctness (a reader deletes a file it
+ * can't parse as a crashed leftover), so keep it that way.
  */
 export const OWNER_ONLY_FILE_MODE = 0o600;
 export const OWNER_ONLY_DIR_MODE = 0o700;
@@ -68,14 +74,54 @@ export function createOwnerOnlyFile(filePath: string): boolean {
  * written into.
  */
 export function writeOwnerOnlyFile(filePath: string, content: string): void {
-  const tmpPath = `${filePath}.${process.pid}.tmp`;
-  // A leftover from a crashed run may have any mode; `wx` below needs it gone.
-  fs.rmSync(tmpPath, { force: true });
+  const tmpPath = writeOwnerOnlyTemp(filePath, content);
   try {
-    fs.writeFileSync(tmpPath, content, { encoding: 'utf8', mode: OWNER_ONLY_FILE_MODE, flag: 'wx' });
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
     fs.rmSync(tmpPath, { force: true });
     throw err;
   }
+}
+
+/**
+ * Creates `filePath` holding `content`, 0600, only if nothing is there yet,
+ * and never visible half-written: the content is written to a temporary file
+ * that is then hard-linked into place, and `link` fails with `EEXIST`
+ * atomically when the name is taken. Returns whether it created the file.
+ * Where the filesystem has no hard links, falls back to an exclusive create
+ * (`wx`), which is atomic about *who* creates the file but shows it empty
+ * until written.
+ */
+export function publishOwnerOnlyFile(filePath: string, content: string): boolean {
+  const tmpPath = writeOwnerOnlyTemp(filePath, content);
+  try {
+    fs.linkSync(tmpPath, filePath);
+    return true;
+  } catch (err) {
+    if (hasCode(err, 'EEXIST')) return false;
+    if (!hasCode(err, 'EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'ENOSYS')) throw err;
+    try {
+      fs.writeFileSync(filePath, content, { encoding: 'utf8', mode: OWNER_ONLY_FILE_MODE, flag: 'wx' });
+      return true;
+    } catch (fallbackErr) {
+      if (hasCode(fallbackErr, 'EEXIST')) return false;
+      throw fallbackErr;
+    }
+  } finally {
+    fs.rmSync(tmpPath, { force: true });
+  }
+}
+
+/** Writes `content` to a fresh 0600 temporary file next to `filePath` and returns its path. */
+function writeOwnerOnlyTemp(filePath: string, content: string): string {
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
+  // A leftover from a crashed run (or a symlink planted there) may have any mode or target; `wx` needs it gone.
+  fs.rmSync(tmpPath, { force: true });
+  try {
+    fs.writeFileSync(tmpPath, content, { encoding: 'utf8', mode: OWNER_ONLY_FILE_MODE, flag: 'wx' });
+  } catch (err) {
+    fs.rmSync(tmpPath, { force: true });
+    throw err;
+  }
+  return tmpPath;
 }
