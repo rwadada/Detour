@@ -3,12 +3,15 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createUpstreamTunnelConnector } from './upstreamTunnel';
 
 const servers: net.Server[] = [];
+const connections: net.Socket[] = [];
 afterEach(async () => {
+  for (const connection of connections.splice(0)) connection.destroy();
   await Promise.all(servers.splice(0).map((server) => new Promise((resolve) => server.close(resolve))));
 });
 
 function listen(server: net.Server): Promise<number> {
   servers.push(server);
+  server.on('connection', (connection) => connections.push(connection));
   return new Promise((resolve) =>
     server.listen(0, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port)),
   );
@@ -77,10 +80,12 @@ function startSocks5(): Promise<{ port: number; destinations: string[] }> {
   return listen(server).then((port) => ({ port, destinations }));
 }
 
+/** The connector hands over a paused socket (see `UpstreamTunnelConnector`); reading resumes it, as `pipe` would. */
 function roundTrip(socket: net.Socket, data: string): Promise<string> {
   return new Promise((resolve, reject) => {
     socket.once('data', (chunk) => resolve(chunk.toString()));
     socket.once('error', reject);
+    socket.resume();
     socket.write(data);
   });
 }
@@ -105,6 +110,49 @@ describe('createUpstreamTunnelConnector', () => {
     const proxy = await startConnectProxy(407);
     const connect = createUpstreamTunnelConnector(`http://127.0.0.1:${proxy.port}`);
     await expect(connect('example.com', 443)).rejects.toThrow(/refused CONNECT to example\.com:443: HTTP\/1\.1 407/);
+  });
+
+  it('keeps destination bytes that arrive with the CONNECT answer until the caller reads', async () => {
+    // A server that speaks first (an SSH or SMTP banner), with the proxy's answer and the banner in one write.
+    const proxyPort = await listen(
+      net.createServer((client) => {
+        client.once('data', () => client.write('HTTP/1.1 200 Connection Established\r\n\r\nSSH-2.0-banner\r\n'));
+      }),
+    );
+    const socket = await createUpstreamTunnelConnector(`http://127.0.0.1:${proxyPort}`)('example.com', 22);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 100)); // e.g. throttle latency before the relay starts
+      const first = await new Promise<string>((resolve) => {
+        socket.once('data', (chunk) => resolve(String(chunk)));
+        socket.resume();
+      });
+      expect(first).toBe('SSH-2.0-banner\r\n');
+    } finally {
+      socket.destroy();
+    }
+  });
+
+  it('refuses a name the self-target guard rejects, before asking the proxy', async () => {
+    const proxy = await startConnectProxy();
+    const connect = createUpstreamTunnelConnector(`http://127.0.0.1:${proxy.port}`);
+    const lookup = (
+      _host: string,
+      _options: unknown,
+      callback: (err: NodeJS.ErrnoException | null, a: string, f: number) => void,
+    ) => callback(Object.assign(new Error('refusing to connect to Detour itself'), { code: 'ESELF' }), '', 4);
+    await expect(connect('rebind.example', 8080, { lookup })).rejects.toThrow(/Detour itself/);
+    expect(proxy.requests).toEqual([]);
+  });
+
+  it('gives up as soon as the attempt is aborted', async () => {
+    // A proxy that never answers.
+    const proxyPort = await listen(net.createServer(() => {}));
+    const abort = new AbortController();
+    const pending = createUpstreamTunnelConnector(`http://127.0.0.1:${proxyPort}`)('example.com', 443, {
+      signal: abort.signal,
+    });
+    setTimeout(() => abort.abort(), 50);
+    await expect(pending).rejects.toThrow(/aborted/);
   });
 
   it('tunnels through a SOCKS5 proxy, leaving name resolution to the proxy for socks5h', async () => {

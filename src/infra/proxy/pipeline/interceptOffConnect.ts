@@ -175,24 +175,26 @@ export function createInterceptOffConnectHandler(deps: InterceptOffConnectDeps) 
       });
     };
     if (connectUpstream) {
-      // The client may go away while the upstream proxy is still answering.
-      let clientGone = false;
-      const markGone = () => {
-        clientGone = true;
-      };
-      socket.once('close', markGone);
-      socket.on('error', markGone);
-      connectUpstream(destHost, destPort).then(
+      // The client may go away while the upstream proxy is still answering: abort the attempt then.
+      const abort = new AbortController();
+      const onClientGone = () => abort.abort();
+      socket.once('close', onClientGone);
+      socket.on('error', onClientGone);
+      const lookup = sameTarget ? guardedLookup(destPort) : undefined;
+      connectUpstream(destHost, destPort, { lookup, signal: abort.signal }).then(
         (upstream) => {
-          socket.off('close', markGone);
-          if (clientGone || socket.destroyed) {
+          socket.off('close', onClientGone);
+          socket.off('error', onClientGone);
+          if (abort.signal.aborted || socket.destroyed) {
             upstream.destroy();
             return;
           }
           relayThrough(upstream, (proceed) => proceed());
         },
         (err: Error) => {
-          if (!clientGone) reportFailure(err.message);
+          socket.off('close', onClientGone);
+          socket.off('error', onClientGone);
+          if (!abort.signal.aborted) reportFailure(err.message);
         },
       );
       return;
