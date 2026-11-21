@@ -2,7 +2,6 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ensureOwnerOnlyDir } from '../fs/ownerOnly';
 
 /** Where the detached updater's output goes — nobody is watching its terminal. */
 export function updateLogPath(): string {
@@ -18,10 +17,8 @@ export async function spawnDetachedUpdater(onExit: (exitCode: number | null) => 
   const entry = process.argv[1];
   if (!entry) throw new Error('cannot locate the detour executable to run the updater');
   const logPath = updateLogPath();
-  ensureOwnerOnlyDir(path.dirname(logPath));
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
   const logFd = fs.openSync(logPath, 'w', 0o600);
-  // `mode` applies only when the file is created; a log left by an earlier run keeps its own otherwise.
-  if (process.platform !== 'win32') fs.fchmodSync(logFd, 0o600);
   try {
     await new Promise<void>((resolve, reject) => {
       const child = spawn(process.execPath, [entry, 'update', '--yes'], {

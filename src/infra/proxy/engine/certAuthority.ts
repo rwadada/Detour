@@ -143,7 +143,7 @@ async function generateCa(paths: CaPaths): Promise<CaMaterial> {
   // itself (`~/.detour/certs`, and `~/.detour` too on a first-ever run) —
   // see certStore.ts's `resolveCertDir`. `mode` is meaningless on Windows,
   // which has no POSIX permission bits, but harmless to still pass.
-  fs.mkdirSync(paths.certsDir, { recursive: true, mode: 0o700 });
+  ensureOwnerOnlyDir(paths.certsDir);
   // Tightened too if it already existed (e.g. a corrupted/partial prior run:
   // `ca.pem` was deleted but `keys/` survived) with looser permissions,
   // before a fresh private key goes into it (issue #96 follow-up).

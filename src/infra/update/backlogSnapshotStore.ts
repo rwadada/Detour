@@ -5,8 +5,7 @@ import type { CapturedExchange } from '../../domain/exchange/types';
 import { parseBacklogSnapshot, serializeBacklogSnapshot } from '../../domain/update/backlogSnapshot';
 import { ensureOwnerOnlyDir, OWNER_ONLY_FILE_MODE } from '../fs/ownerOnly';
 
-/** The snapshot holds decrypted traffic (Authorization headers, bodies…) — owner-only, like the run-state files. */
-const FILE_MODE = OWNER_ONLY_FILE_MODE;
+// The snapshot holds decrypted traffic (Authorization headers, bodies…) — owner-only, like the run-state files.
 
 function snapshotDir(): string {
   return path.join(os.homedir(), '.detour', 'update-resume');
@@ -28,7 +27,7 @@ export function writeBacklogSnapshot(
   const tmpPath = tmpSnapshotPath(requestedPort);
   removeQuietly(tmpPath);
   try {
-    fs.writeFileSync(tmpPath, serializeBacklogSnapshot(items, now), { mode: FILE_MODE });
+    fs.writeFileSync(tmpPath, serializeBacklogSnapshot(items, now), { mode: OWNER_ONLY_FILE_MODE });
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
     removeQuietly(tmpPath);

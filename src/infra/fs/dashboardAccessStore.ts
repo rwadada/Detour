@@ -6,7 +6,7 @@ import {
   isValidDashboardToken,
   MIN_DASHBOARD_TOKEN_LENGTH,
 } from '../../domain/auth/dashboardAccess';
-import { ensureOwnerOnlyDir, writeOwnerOnlyFile } from './ownerOnly';
+import { ensureOwnerOnlyDir, publishOwnerOnlyFile, writeOwnerOnlyFile } from './ownerOnly';
 
 /** `~/.detour/dashboard-token` — the persisted dashboard access token (issue #205). */
 export function resolveDashboardTokenPath(): string {
@@ -28,22 +28,31 @@ export function resolveDashboardTokenPath(): string {
  * file 0600.
  */
 export function loadOrCreateDashboardToken(tokenPath: string = resolveDashboardTokenPath()): string {
-  try {
-    const existing = fs.readFileSync(tokenPath, 'utf8').trim();
-    if (isValidDashboardToken(existing)) {
-      // A file left readable by something else is not secret any more.
-      if (process.platform !== 'win32') fs.chmodSync(tokenPath, 0o600);
-      return existing;
-    }
-  } catch {
-    // Missing or unreadable: make a new one below.
+  const existing = readValidToken(tokenPath);
+  if (existing) {
+    // A file left readable by something else is not secret any more.
+    if (process.platform !== 'win32') fs.chmodSync(tokenPath, 0o600);
+    return existing;
   }
+  ensureOwnerOnlyDir(path.dirname(tokenPath));
   const token = generateDashboardToken();
-  const dir = path.dirname(tokenPath);
-  ensureOwnerOnlyDir(dir);
-  // Replaces an invalid/empty leftover file too.
+  // Create-if-absent: two instances starting at once on a fresh machine must end up sharing one token (cookies are
+  // per host, not per port), so the one that loses the race adopts the winner's.
+  if (publishOwnerOnlyFile(tokenPath, `${token}\n`)) return token;
+  const winner = readValidToken(tokenPath);
+  if (winner) return winner;
+  // An invalid or empty leftover: replace it.
   writeOwnerOnlyFile(tokenPath, `${token}\n`);
   return token;
+}
+
+function readValidToken(tokenPath: string): string | undefined {
+  try {
+    const value = fs.readFileSync(tokenPath, 'utf8').trim();
+    return isValidDashboardToken(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

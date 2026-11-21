@@ -93,6 +93,38 @@ describe('writeOwnerOnlyFile', () => {
   });
 });
 
+describe('writeOwnerOnlyFile through a symlink and after a crash', () => {
+  it.skipIf(process.platform === 'win32')('replaces the file a symlink points to, keeping the link', () => {
+    const dir = tmpDir();
+    const real = path.join(dir, 'real.json');
+    fs.writeFileSync(real, 'old');
+    const link = path.join(dir, 'config.json');
+    fs.symlinkSync(real, link);
+
+    writeOwnerOnlyFile(link, 'new');
+
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(real, 'utf8')).toBe('new');
+    expect(modeOf(real)).toBe(0o600);
+  });
+
+  it('removes a temporary file a crashed writer left long ago, but not a fresh one', () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'secret.json');
+    const stale = `${file}.111111.tmp`;
+    const fresh = `${file}.222222.tmp`;
+    fs.writeFileSync(stale, 'leaked');
+    fs.writeFileSync(fresh, 'in flight');
+    const longAgo = new Date(Date.now() - 10 * 60_000);
+    fs.utimesSync(stale, longAgo, longAgo);
+
+    writeOwnerOnlyFile(file, 'content');
+
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(fresh)).toBe(true);
+  });
+});
+
 describe('publishOwnerOnlyFile', () => {
   afterEach(() => {
     vi.restoreAllMocks();

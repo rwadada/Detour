@@ -69,7 +69,15 @@ export function openPrivateLogFile(logFile: string): number {
   const dir = path.dirname(logFile);
   ensureOwnerOnlyDir(dir);
   const fd = fs.openSync(logFile, 'a', 0o600);
-  if (process.platform !== 'win32') fs.chmodSync(logFile, 0o600);
+  if (process.platform !== 'win32') {
+    try {
+      // Through the descriptor: the path could be swapped for a symlink after the open.
+      fs.fchmodSync(fd, 0o600);
+    } catch (err) {
+      fs.closeSync(fd);
+      throw err;
+    }
+  }
   return fd;
 }
 
