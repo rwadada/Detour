@@ -70,38 +70,47 @@ export function reserveRunState(state: RunState): boolean {
 
 /**
  * Takes a stale reservation out of the way, returning whether the slot is
- * free now. The file is first renamed to a name only this process uses, and
- * only then judged: deciding from a read and deleting by name afterwards
- * would delete a live reservation that replaced the stale one in between
- * (another starter got there first), letting both win. One that turns out to
- * be live is put back.
+ * free now. A reservation still in use is judged by name and left untouched.
+ * One judged stale is renamed to a name only this process uses and removed
+ * only if it is still the very file judged (same inode): deleting by name
+ * after the read could otherwise delete a live reservation that replaced the
+ * stale one in between, letting both win. If it was replaced, the newcomer is
+ * put back (and stands); only a third reservation landing in that instant
+ * could still slip in — a stale leftover and three racing starts at once.
  */
 function moveAsideIfStale(filePath: string): boolean {
+  let judged: fs.Stats;
+  try {
+    judged = fs.statSync(filePath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    throw err;
+  }
+  if (isInUse(filePath)) return false;
   const parked = `${filePath}.${process.pid}.parked`;
   try {
     fs.renameSync(filePath, parked);
   } catch (err) {
-    // Already gone: whoever removed it, the slot is free to try for.
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true;
     throw err;
   }
-  const parkedState = readRunStateFile(parked);
-  const stillInUse = parkedState
-    ? isProcessAlive(parkedState.pid)
-    : // Unparseable but fresh: possibly another process still writing it (see `UNPARSEABLE_GRACE_MS`).
-      modifiedWithin(parked, UNPARSEABLE_GRACE_MS);
-  if (stillInUse) {
-    try {
-      fs.linkSync(parked, filePath);
-    } catch (err) {
-      // EEXIST: yet another reservation took the name meanwhile — it stands, and this one is still a loss.
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-    }
+  if (fs.statSync(parked).ino === judged.ino) {
     fs.rmSync(parked, { force: true });
-    return false;
+    return true;
+  }
+  try {
+    fs.linkSync(parked, filePath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
   }
   fs.rmSync(parked, { force: true });
-  return true;
+  return false;
+}
+
+/** Whether the state file at `filePath` belongs to a live process, or is unparseable but may still be being written. */
+function isInUse(filePath: string): boolean {
+  const state = readRunStateFile(filePath);
+  return state ? isProcessAlive(state.pid) : modifiedWithin(filePath, UNPARSEABLE_GRACE_MS);
 }
 
 /** Parses a state file, or `undefined` when it is missing or doesn't parse. */

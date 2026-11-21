@@ -89,6 +89,27 @@ describe('runStateStore', () => {
       expect(findLiveRunState(18080)?.pid).toBe(process.pid);
     });
 
+    it('puts back a live reservation that replaced the stale one between judging and moving it', () => {
+      fs.mkdirSync(runDir, { recursive: true });
+      const filePath = path.join(runDir, '18080.json');
+      fs.writeFileSync(filePath, JSON.stringify(state({ pid: 2 ** 30 })));
+      const live = JSON.stringify(state({ startedAt: 42 }));
+      const renameSync = fs.renameSync;
+      vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        // Another starter takes over the stale file first: a new file (new inode) under the same name.
+        if (String(from) === filePath) {
+          fs.rmSync(filePath);
+          fs.writeFileSync(filePath, live);
+        }
+        renameSync(from, to);
+      });
+
+      expect(reserveRunState(state())).toBe(false);
+
+      expect(fs.readFileSync(filePath, 'utf8')).toBe(live);
+      expect(fs.readdirSync(runDir)).toEqual(['18080.json']);
+    });
+
     it('takes over a reservation whose holder is gone', () => {
       fs.mkdirSync(runDir, { recursive: true });
       // A PID that can't belong to a live process (beyond any real pid_max).
