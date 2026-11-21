@@ -18,7 +18,7 @@ import { invalidHostPatternReason } from '../../domain/focus/focusPolicy';
 export interface UserConfig {
   /** When `true`, `detour start` runs detached (as if `--detach` were passed) unless overridden by `--detach`/`--foreground` on that invocation. Undefined (the file's absent, or the key was never set) means "off" — foreground stays the out-of-the-box default. */
   defaultDetach?: boolean;
-  /** When `true`, `detour start` binds the *dashboard* to every network interface (`0.0.0.0`) instead of just `localhost`, unless overridden by `--lan`/`--no-lan` on that invocation. Undefined means "off" — `localhost`-only stays the out-of-the-box default for the dashboard, since LAN access has no authentication of its own. Never affects the proxy, which always binds to every interface regardless — see cli.ts's `PROXY_HOST`. */
+  /** When `true`, `detour start` binds the *dashboard* to every network interface (`0.0.0.0`) instead of just `localhost`, unless overridden by `--lan`/`--no-lan` on that invocation. Undefined means "off" — `localhost`-only stays the out-of-the-box default for the dashboard, since LAN access lets anything on the network try for the dashboard's secret. Never affects the proxy, which always binds to every interface regardless — see cli.ts's `PROXY_HOST`. */
   lanAccess?: boolean;
   /**
    * A hashed password (see `domain/auth/passwordHash.ts`'s `hashPassword`)

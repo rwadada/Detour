@@ -68,7 +68,7 @@ export interface HistoryQuery extends HistoryFilters {
 export interface UserConfigState {
   /** Whether `detour start` runs detached by default (as if `--detach` were always passed) — `detour config --default-detach`. */
   defaultDetach: boolean;
-  /** Whether `detour start` binds the *dashboard* to every network interface (`0.0.0.0`) instead of just `localhost` — `detour config --lan`. Never affects the proxy, which always binds to every interface regardless (see cli.ts's `PROXY_HOST`). Security-sensitive: LAN access has no authentication of its own, so anything on the network can reach the dashboard and, from there, decrypted HTTPS traffic and rule edits. */
+  /** Whether `detour start` binds the *dashboard* to every network interface (`0.0.0.0`) instead of just `localhost` — `detour config --lan`. Never affects the proxy, which always binds to every interface regardless (see cli.ts's `PROXY_HOST`). Security-sensitive: anything on the network can then reach the dashboard, where only its secret (the access token, or the dashboard password) stands between it and decrypted HTTPS traffic and rule edits. */
   lanAccess: boolean;
   /**
    * Whether a dashboard password is currently required (issue #66's optional
