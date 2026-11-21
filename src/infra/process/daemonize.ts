@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CliExitError } from '../../domain/daemon/errors';
+import { ensureOwnerOnlyDir } from '../fs/ownerOnly';
 
 /** How long `spawnDaemonChild` waits for the child to report readiness before giving up and killing it. */
 const DEFAULT_READY_TIMEOUT_MS = 20_000;
@@ -66,8 +67,7 @@ function safeDisconnect(target: { connected: boolean; disconnect(): void }): voi
  */
 export function openPrivateLogFile(logFile: string): number {
   const dir = path.dirname(logFile);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  if (process.platform !== 'win32') fs.chmodSync(dir, 0o700);
+  ensureOwnerOnlyDir(dir);
   const fd = fs.openSync(logFile, 'a', 0o600);
   if (process.platform !== 'win32') fs.chmodSync(logFile, 0o600);
   return fd;

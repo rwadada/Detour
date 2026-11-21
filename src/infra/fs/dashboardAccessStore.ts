@@ -6,6 +6,7 @@ import {
   isValidDashboardToken,
   MIN_DASHBOARD_TOKEN_LENGTH,
 } from '../../domain/auth/dashboardAccess';
+import { ensureOwnerOnlyDir, writeOwnerOnlyFile } from './ownerOnly';
 
 /** `~/.detour/dashboard-token` — the persisted dashboard access token (issue #205). */
 export function resolveDashboardTokenPath(): string {
@@ -39,11 +40,9 @@ export function loadOrCreateDashboardToken(tokenPath: string = resolveDashboardT
   }
   const token = generateDashboardToken();
   const dir = path.dirname(tokenPath);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  if (process.platform !== 'win32') fs.chmodSync(dir, 0o700);
-  // `wx`-free on purpose: an invalid/empty leftover file has to be replaced.
-  fs.writeFileSync(tokenPath, `${token}\n`, { mode: 0o600 });
-  if (process.platform !== 'win32') fs.chmodSync(tokenPath, 0o600);
+  ensureOwnerOnlyDir(dir);
+  // Replaces an invalid/empty leftover file too.
+  writeOwnerOnlyFile(tokenPath, `${token}\n`);
   return token;
 }
 

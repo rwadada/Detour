@@ -19,6 +19,20 @@ function hasCode(err: unknown, ...codes: string[]): boolean {
 }
 
 /**
+ * Creates `dir` (and any missing parents) 0700, and tightens it to 0700 if it
+ * already existed — `mkdir`'s mode applies only to directories it creates.
+ * Meant for Detour's own directories (`~/.detour` and those under it): it
+ * follows a symlink, so a user who keeps `~/.detour` elsewhere gets the real
+ * directory protected, and it throws when it can't (a directory owned by
+ * someone else) rather than carry on with secrets in a directory others can
+ * read. No-op for the permission part on Windows.
+ */
+export function ensureOwnerOnlyDir(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true, mode: OWNER_ONLY_DIR_MODE });
+  if (process.platform !== 'win32') fs.chmodSync(dir, OWNER_ONLY_DIR_MODE);
+}
+
+/**
  * Tightens an existing regular file (`kind: 'file'`, to 0600) or directory
  * (`'directory'`, to 0700) at `target`. It is opened with `O_NOFOLLOW` and
  * chmodded through that descriptor, so a symlink is never followed — not even

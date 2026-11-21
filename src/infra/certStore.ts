@@ -1,6 +1,6 @@
-import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { ensureOwnerOnlyDir } from './fs/ownerOnly';
 
 /**
  * Directory where Detour keeps its local MITM root CA and the
@@ -19,14 +19,10 @@ export function resolveCertDir(): string {
   // mkdirSync actually creates in the chain, so a first-ever run also locks
   // down `~/.detour` itself in this one call. Meaningless on Windows (no
   // POSIX permission bits), but harmless to still pass.
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  // mkdirSync's `mode` only applies to directories it creates — an existing
+  // Both are tightened on every start, not just created 0700: a
   // `~/.detour`/`~/.detour/certs` left world-readable by a version predating
-  // this fix is untouched by the call above, so re-assert the invariant
-  // explicitly on every start to remediate it. No-op on Windows.
-  if (process.platform !== 'win32') {
-    fs.chmodSync(detourDir, 0o700);
-    fs.chmodSync(dir, 0o700);
-  }
+  // this fix is remediated too.
+  ensureOwnerOnlyDir(detourDir);
+  ensureOwnerOnlyDir(dir);
   return dir;
 }

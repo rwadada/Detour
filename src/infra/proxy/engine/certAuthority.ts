@@ -12,6 +12,7 @@ import {
   LEAF_VALIDITY_MS,
 } from '../../../domain/cert/caValidity';
 import { LruMap } from '../../../domain/shared/lruMap';
+import { ensureOwnerOnlyDir, writeOwnerOnlyFile } from '../../fs/ownerOnly';
 
 const { pki, md } = forge;
 
@@ -143,13 +144,10 @@ async function generateCa(paths: CaPaths): Promise<CaMaterial> {
   // see certStore.ts's `resolveCertDir`. `mode` is meaningless on Windows,
   // which has no POSIX permission bits, but harmless to still pass.
   fs.mkdirSync(paths.certsDir, { recursive: true, mode: 0o700 });
-  fs.mkdirSync(paths.keysDir, { recursive: true, mode: 0o700 });
-  // mkdirSync's `mode` only applies to a directory it actually creates —
-  // if `keysDir` already existed (e.g. a corrupted/partial prior run:
+  // Tightened too if it already existed (e.g. a corrupted/partial prior run:
   // `ca.pem` was deleted but `keys/` survived) with looser permissions,
-  // it's left as-is by the call above. Tighten it explicitly before
-  // generating a fresh private key into it (issue #96 follow-up).
-  if (process.platform !== 'win32') fs.chmodSync(paths.keysDir, 0o700);
+  // before a fresh private key goes into it (issue #96 follow-up).
+  ensureOwnerOnlyDir(paths.keysDir);
 
   const caKeys = await generateRsaKeyPair();
   const cert = pki.createCertificate();
@@ -177,15 +175,10 @@ async function generateCa(paths: CaPaths): Promise<CaMaterial> {
   // 0o600 (owner read/write only): this is Detour's CA private key —
   // anyone who can read it can mint a certificate trusted by every client
   // that trusts this CA, i.e. a complete MITM against them (issue #96).
-  // Meaningless on Windows (no POSIX permission bits), but harmless to
-  // still pass. `writeFileSync`'s `mode` is a no-op on an existing file
-  // (the same corrupted/partial state as above: `ca.private.key` survived
-  // even though `ca.pem` didn't) — chmod it before overwriting too, so
-  // the new key material is never left under the old, looser permissions
-  // (mirrors userConfigStore.ts's writeUserConfig chmod-before-write fix).
-  if (process.platform !== 'win32' && fs.existsSync(paths.caKeyPath)) fs.chmodSync(paths.caKeyPath, 0o600);
-  fs.writeFileSync(paths.caKeyPath, pki.privateKeyToPem(caKeys.privateKey), { mode: 0o600 });
-  if (process.platform !== 'win32') fs.chmodSync(paths.caKeyPath, 0o600);
+  // Written as a new 0600 file renamed into place, so a `ca.private.key`
+  // that survived a corrupted/partial prior run (as above) under looser
+  // permissions never holds the new key material, even for an instant.
+  writeOwnerOnlyFile(paths.caKeyPath, pki.privateKeyToPem(caKeys.privateKey));
   fs.writeFileSync(paths.caPublicKeyPath, pki.publicKeyToPem(caKeys.publicKey));
 
   return { cert, key: caKeys.privateKey };

@@ -2,7 +2,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createOwnerOnlyFile, publishOwnerOnlyFile, tightenIfOwned, writeOwnerOnlyFile } from './ownerOnly';
+import {
+  createOwnerOnlyFile,
+  ensureOwnerOnlyDir,
+  publishOwnerOnlyFile,
+  tightenIfOwned,
+  writeOwnerOnlyFile,
+} from './ownerOnly';
 
 const dirs: string[] = [];
 function tmpDir(): string {
@@ -112,5 +118,21 @@ describe('publishOwnerOnlyFile', () => {
     expect(publishOwnerOnlyFile(file, 'second')).toBe(false);
     expect(fs.readFileSync(file, 'utf8')).toBe('first');
     expect(fs.readdirSync(dir)).toEqual(['slot.json']);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('ensureOwnerOnlyDir', () => {
+  it('creates missing directories 0700 and tightens an existing one, through a symlink', () => {
+    const base = tmpDir();
+    const nested = path.join(base, 'a', 'b');
+    ensureOwnerOnlyDir(nested);
+    expect(modeOf(nested)).toBe(0o700);
+
+    const real = path.join(base, 'real');
+    fs.mkdirSync(real);
+    loosen(real, 0o755);
+    fs.symlinkSync(real, path.join(base, 'link'));
+    ensureOwnerOnlyDir(path.join(base, 'link'));
+    expect(modeOf(real)).toBe(0o700);
   });
 });

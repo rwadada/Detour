@@ -237,41 +237,36 @@ describe('userConfigStore (fs-backed)', () => {
       expect(fs.statSync(configPath).mode & 0o777).toBe(0o600);
     });
 
-    it('tightens a pre-existing world-readable config to 0600 before writing new content to it, not just after', () => {
-      // Regression for a Copilot review finding on PR #104: if the chmod
-      // only ran *after* writeFileSync, a pre-existing world-readable
-      // config.json would sit world-readable — with this call's own new
-      // content already written into it — for the window between the two
-      // calls. Asserting call order (chmod, then write, then chmod again)
-      // is what's actually checkable synchronously; the statSync assertions
-      // above cover the end state.
+    it('never writes new content into a pre-existing world-readable config: a fresh 0600 file replaces it', () => {
+      // Regression for a Copilot review finding on PR #104: writing into the
+      // existing file would leave this call's own new content (here, the very
+      // write that first sets `dashboardPasswordHash`) under its old, looser
+      // mode for a moment. The new content goes into a fresh 0600 file that is
+      // renamed into place, so the old inode never holds it.
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
       fs.writeFileSync(configPath, JSON.stringify({ defaultDetach: true }));
       // eslint-disable-next-line sonarjs/file-permissions -- test fixture simulating a pre-fix, world-readable config.
       fs.chmodSync(configPath, 0o644);
+      const oldInode = fs.statSync(configPath).ino;
 
-      const realChmodSync = fs.chmodSync.bind(fs);
       const realWriteFileSync = fs.writeFileSync.bind(fs);
-      const calls: string[] = [];
-      const chmodSpy = vi.spyOn(fs, 'chmodSync').mockImplementation((target, mode) => {
-        if (target === configPath) calls.push(`chmod:${mode}`);
-        return realChmodSync(target, mode);
-      });
+      const writtenTo: string[] = [];
       const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation((target, ...rest) => {
-        if (target === configPath) calls.push('write');
+        writtenTo.push(String(target));
         return realWriteFileSync(target, ...rest);
       });
 
       // try/finally so a throw from writeUserConfig or the assertion itself
-      // (e.g. this test failing) can't leak these spies into later tests —
-      // matches dashboardServer.dashboardPassword.test.ts's own pattern.
+      // (e.g. this test failing) can't leak the spy into later tests.
       try {
         writeUserConfig({ dashboardPasswordHash: VALID_HASH_FIXTURE }, configPath);
-        expect(calls).toEqual(['chmod:384', 'write', 'chmod:384']); // 0o600 === 384
       } finally {
-        chmodSpy.mockRestore();
         writeSpy.mockRestore();
       }
+      expect(writtenTo).not.toContain(configPath);
+      expect(fs.statSync(configPath).ino).not.toBe(oldInode);
+      expect(fs.statSync(configPath).mode & 0o777).toBe(0o600);
+      expect(loadUserConfig(configPath)).toEqual({ defaultDetach: true, dashboardPasswordHash: VALID_HASH_FIXTURE });
     });
   });
 });
