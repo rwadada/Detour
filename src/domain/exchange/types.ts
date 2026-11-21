@@ -392,8 +392,8 @@ export interface FocusState {
 
 /**
  * Auto TLS passthrough as the dashboard shows it (issue #302): whether it is
- * on for this session (`--no-auto-passthrough`, and off by default with
- * `--upstream-proxy`), and the client/host/port targets currently relayed
+ * on for this session (`--no-auto-passthrough` turns it off), and the
+ * client/host/port targets currently relayed
  * untouched because their client refused Detour's certificate.
  */
 export interface AutoPassthroughState {

@@ -194,8 +194,8 @@ function AutoPassthroughDescription({ enabled }: { enabled: boolean }) {
       ) : (
         <>
           Off for this session: a client that refuses Detour&apos;s certificate keeps failing for that host. Set at
-          startup with <code className="font-mono-ui">--auto-passthrough</code> (off by default with{' '}
-          <code className="font-mono-ui">--upstream-proxy</code>).
+          startup with <code className="font-mono-ui">--auto-passthrough</code> (or by leaving out{' '}
+          <code className="font-mono-ui">--no-auto-passthrough</code>).
         </>
       )}
     </p>
