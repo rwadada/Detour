@@ -2245,6 +2245,43 @@ describe('detour start (CLI, end-to-end)', () => {
       }
     });
 
+    it('sends a tunnel relayed untouched through --upstream-proxy, not straight to its destination', async () => {
+      const upstream = await startMarkerEchoServer('upstream');
+      // A minimal HTTP proxy that records each CONNECT and relays it.
+      const connectsSeen: string[] = [];
+      const fakeProxy = net.createServer((client) => {
+        let head = '';
+        const onData = (chunk: Buffer) => {
+          head += chunk.toString('latin1');
+          if (!head.includes('\r\n\r\n')) return;
+          client.off('data', onData);
+          const authority = head.split(' ')[1]!;
+          connectsSeen.push(authority);
+          const [host, port] = authority.split(':');
+          const relay = net.connect(Number(port), host, () => {
+            client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+            relay.pipe(client);
+            client.pipe(relay);
+          });
+        };
+        client.on('data', onData);
+      });
+      await new Promise<void>((resolve) => fakeProxy.listen(0, '127.0.0.1', resolve));
+      const proxyPort = (fakeProxy.address() as net.AddressInfo).port;
+      cli = await startDetourCli(['--no-intercept', '--upstream-proxy', `http://127.0.0.1:${proxyPort}`]);
+
+      let socket: net.Socket | undefined;
+      try {
+        socket = await connectTunnel(cli.port, '127.0.0.1', upstream.port);
+        expect(await writeAndRead(socket, 'ping')).toBe('upstream:ping');
+        expect(connectsSeen).toEqual([`127.0.0.1:${upstream.port}`]);
+      } finally {
+        socket?.destroy();
+        await upstream.close();
+        await new Promise((resolve) => fakeProxy.close(resolve));
+      }
+    });
+
     it('blind-tunnels a CONNECT while intercept is off instead of MITM-decrypting it', async () => {
       const upstream = await startMarkerEchoServer('upstream');
       cli = await startDetourCli();
@@ -4568,12 +4605,11 @@ describe('detour daemon mode / headless / idle / fail-on-running / cert export (
         expect(await readDashboardState(cli.dashboardPort, 'focus')).toEqual({ hosts: [] });
         await cli.kill();
 
-        // With --upstream-proxy the saved defaults are ignored: a tunnel with Intercept off (or outside Focus)
-        // would connect straight to its destination, around that proxy. Never contacted at startup.
+        // With --upstream-proxy the saved defaults apply too: tunnels left undecrypted go through that proxy as
+        // well. Never contacted at startup.
         cli = await startDetourCli(['--upstream-proxy', 'http://127.0.0.1:9'], env);
-        expect(cli.stdout()).toContain('Intercept: on (--no-intercept)');
-        expect(cli.stdout()).toContain('not applied with --upstream-proxy');
-        expect(await readDashboardState(cli.dashboardPort, 'focus')).toEqual({ hosts: [] });
+        expect(cli.stdout()).toContain('Intercept: off — every HTTPS connection is relayed untouched');
+        expect(await readDashboardState(cli.dashboardPort, 'focus')).toEqual({ hosts: ['127.0.0.1:9'] });
       } finally {
         await cli?.kill();
         fs.rmSync(home, { recursive: true, force: true });

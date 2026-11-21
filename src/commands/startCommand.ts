@@ -266,38 +266,20 @@ function resolveDashboardHost(options: StartOptions): string {
  * `autoPassthrough`, then on.
  */
 function resolveAutoPassthrough(options: StartOptions, config: UserConfig): boolean {
-  // A passthrough tunnel connects straight to its destination
-  // (`interceptOffConnect.ts`), not through `--upstream-proxy`; on by default
-  // it would quietly route refusing hosts around a proxy the user configured
-  // on purpose, so with one set it is only on when asked for explicitly.
-  // Not even a saved `autoPassthrough: true` turns it on then: only the flag
-  // on this very command line does.
-  if (options.upstreamProxy !== undefined) return options.autoPassthrough ?? false;
+  // A passthrough tunnel goes through `--upstream-proxy` like everything else
+  // (`interceptOffConnect.ts`'s `connectUpstream`), so one being set changes nothing here.
   return options.autoPassthrough ?? config.autoPassthrough ?? true;
 }
 
-/**
- * Intercept's state at startup (issue #301): `--intercept`/`--no-intercept`,
- * then `~/.detour/config.json`'s `intercept`, then on. With `--upstream-proxy`
- * the saved value is ignored, for the same reason as `resolveAutoPassthrough`:
- * with Intercept off every tunnel connects straight to its destination, around
- * that proxy, so only the flag on this very command line may ask for that.
- */
+/** Intercept's state at startup (issue #301): `--intercept`/`--no-intercept`, then `~/.detour/config.json`'s `intercept`, then on. */
 function resolveInterceptEnabled(options: StartOptions, config: UserConfig): boolean {
-  if (options.upstreamProxy !== undefined) return options.intercept ?? true;
   return options.intercept ?? config.intercept ?? true;
 }
 
-/**
- * Focus's host patterns at startup (issue #301): `--focus`/`--no-focus`, then
- * `~/.detour/config.json`'s `focusHosts`, then none (Focus off). With
- * `--upstream-proxy` the saved list is ignored like `intercept` above: a host
- * outside Focus is tunneled straight to its destination, around that proxy.
- */
+/** Focus's host patterns at startup (issue #301): `--focus`/`--no-focus`, then `~/.detour/config.json`'s `focusHosts`, then none (Focus off). */
 function resolveFocusHosts(options: StartOptions, config: UserConfig): string[] {
   if (options.focus === false) return [];
-  const saved = options.upstreamProxy !== undefined ? undefined : config.focusHosts;
-  return normalizeFocusHosts(options.focus ?? saved ?? []);
+  return normalizeFocusHosts(options.focus ?? config.focusHosts ?? []);
 }
 
 /**
@@ -462,8 +444,6 @@ interface StartResources {
   /** Intercept and Focus at startup (issue #301), resolved once so the proxy, the dashboard and the banner agree. */
   interceptEnabled: boolean;
   focusHosts: string[];
-  /** Whether a saved `intercept: false` / `focusHosts` was left out because of `--upstream-proxy` (see `resolveInterceptEnabled`). */
-  savedInterceptFocusIgnored: boolean;
 }
 
 /** What every step after the proxy is up needs to know — assembled once by `runStartBody`. */
@@ -534,11 +514,6 @@ async function prepareStartResources(
   const autoPassthrough = resolveAutoPassthrough(options, userConfig);
   const interceptEnabled = resolveInterceptEnabled(options, userConfig);
   const focusHosts = resolveFocusHosts(options, userConfig);
-  // Said in the banner, so a saved "use Detour only as a route" setup doesn't silently start decrypting.
-  const savedInterceptFocusIgnored =
-    options.upstreamProxy !== undefined &&
-    ((options.intercept === undefined && userConfig.intercept === false) ||
-      (options.focus === undefined && (userConfig.focusHosts?.length ?? 0) > 0));
 
   // A bad `--persist` path (unwritable directory, an unsupported Node runtime) fails startup rather than every
   // exchange thereafter silently going unpersisted.
@@ -565,7 +540,6 @@ async function prepareStartResources(
     autoPassthrough,
     interceptEnabled,
     focusHosts,
-    savedInterceptFocusIgnored,
   };
 }
 
@@ -852,7 +826,6 @@ function printBanner(ctx: SessionContext, dashboardHandle: DashboardHandle | und
     autoPassthrough: resources.autoPassthrough,
     interceptEnabled: resources.interceptEnabled,
     focusHosts: resources.focusHosts,
-    savedInterceptFocusIgnored: resources.savedInterceptFocusIgnored,
     caExpiryWarning: caExpiryWarningLine(handle.caCertPath),
   });
 }

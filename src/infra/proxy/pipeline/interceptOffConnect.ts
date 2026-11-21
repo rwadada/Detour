@@ -10,6 +10,7 @@ import type { DetourEventBus } from '../../eventBus';
 import { ProxyEngine } from '../engine/proxyEngine';
 import { type GuardedLookup, sameHost } from '../engine/selfTarget';
 import { createThrottleTransform } from '../throttleTransform';
+import type { UpstreamTunnelConnector } from '../upstreamTunnel';
 
 export interface InterceptOffConnectDeps {
   eventBus: DetourEventBus;
@@ -22,6 +23,14 @@ export interface InterceptOffConnectDeps {
    * forgets it is a type error rather than a silently unguarded tunnel.
    */
   guardedLookup: (port: number) => GuardedLookup;
+  /**
+   * Opens the tunnel through `--upstream-proxy` instead of connecting to the
+   * destination directly, when one is configured — a tunnel relayed untouched
+   * must leave through the same proxy as the traffic Detour decrypts. Its own
+   * listeners are already refused up front (`proxyServer.ts`'s self-target
+   * check), so `guardedLookup` isn't needed for a connection to the proxy.
+   */
+  connectUpstream?: UpstreamTunnelConnector;
 }
 
 /**
@@ -43,7 +52,7 @@ function isTlsHandshakeStart(chunk: Buffer): boolean {
 
 // eslint-disable-next-line max-lines-per-function -- CONNECT passthrough handler factory; tracked under issue #208 (issue #207)
 export function createInterceptOffConnectHandler(deps: InterceptOffConnectDeps) {
-  const { eventBus, runtimeState, guardedLookup } = deps;
+  const { eventBus, runtimeState, guardedLookup, connectUpstream } = deps;
 
   // eslint-disable-next-line max-lines-per-function -- CONNECT passthrough lifecycle; tracked under issue #208 (issue #207)
   return function handleInterceptOffConnect(
@@ -82,84 +91,114 @@ export function createInterceptOffConnectHandler(deps: InterceptOffConnectDeps) 
     // pointing at a Detour port), so only the CONNECT's own target — which a
     // rule leaving host and port unchanged still is — is held to the guard.
     const sameTarget = sameHost(destHost, target.host) && destPort === originalPort;
-    const lookup = sameTarget ? guardedLookup(destPort) : undefined;
-    const upstream = net.connect({ host: destHost, port: destPort, ...(lookup ? { lookup } : {}) }, () => {
-      const finishConnect = () => {
-        if (socket.destroyed || upstream.destroyed) return;
-        established = true;
-        socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-        tunnelExchange = {
-          id: crypto.randomUUID(),
-          method: 'CONNECT',
-          url: connectMatchUrl(destHost, destPort),
-          host: formatHostPort(destHost, destPort, 443),
-          isSSL: true,
-          protocol: 'HTTP/1.1',
-          requestHeaders: {},
-          requestBodySize: 0,
-          responseBodySize: 0,
-          startedAt: Date.now(),
-          passthrough: true,
-        };
-        eventBus.emit('request', tunnelExchange);
-        const relay = (first: Buffer) => {
-          if (first.length > 0) upstream.write(first);
-          const throttleState = runtimeState.getSnapshot().throttleState;
-          if (throttleState.enabled && (throttleState.upKbps > 0 || throttleState.packetLossPct > 0)) {
-            socket.pipe(createThrottleTransform(throttleState.upKbps, throttleState.packetLossPct)).pipe(upstream);
-          } else {
-            socket.pipe(upstream);
-          }
-          if (throttleState.enabled && (throttleState.downKbps > 0 || throttleState.packetLossPct > 0)) {
-            upstream.pipe(createThrottleTransform(throttleState.downKbps, throttleState.packetLossPct)).pipe(socket);
-          } else {
-            upstream.pipe(socket);
-          }
-        };
-        if (!options.requireTlsClientHello) {
-          relay(head);
-          return;
-        }
-        // Auto TLS passthrough only ever stands in for a TLS connection the
-        // client refused to let Detour MITM: relay it only if it opens with a
-        // TLS handshake record, so it can't be turned into a raw TCP tunnel
-        // (to a local Redis, say) by a client that faked a refusal.
-        const check = (first: Buffer) => {
-          if (isTlsHandshakeStart(first)) {
-            relay(first);
-            return;
-          }
-          closeTunnelExchange('not a TLS connection — auto TLS passthrough only relays TLS');
-          socket.destroy();
-          upstream.destroy();
-        };
-        if (head.length > 0) check(head);
-        else
-          socket.once('data', (chunk: Buffer) => {
-            socket.pause();
-            check(chunk);
-          });
-      };
-      const throttleState = runtimeState.getSnapshot().throttleState;
-      const latency = throttleState.enabled ? throttleState.latencyMs : 0;
-      if (latency > 0) setTimeout(finishConnect, latency);
-      else finishConnect();
-    });
-    const teardown = () => {
-      closeTunnelExchange();
-      socket.destroy();
-      upstream.destroy();
-    };
-    upstream.on('error', (err) => {
+    const reportFailure = (message: string) => {
       eventBus.emit('error', {
         errorKind: 'INTERCEPT_OFF_TUNNEL_ERROR',
-        message: `passthrough tunnel to ${destHost}:${destPort} failed: ${err.message}`,
+        message: `passthrough tunnel to ${destHost}:${destPort} failed: ${message}`,
       });
       if (!established && !socket.destroyed) socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
-      closeTunnelExchange(err.message);
-    });
-    socket.on('error', teardown);
-    socket.once('close', teardown);
-    upstream.once('close', teardown);
+      closeTunnelExchange(message);
+    };
+    /** Wires `upstream` to the client; `whenConnected` runs the relay once it is connected to the destination. */
+    // eslint-disable-next-line max-lines-per-function -- CONNECT passthrough lifecycle, moved here unchanged; tracked under issue #208 (issue #207)
+    const relayThrough = (upstream: net.Socket, whenConnected: (proceed: () => void) => void) => {
+      const teardown = () => {
+        closeTunnelExchange();
+        socket.destroy();
+        upstream.destroy();
+      };
+      upstream.on('error', (err) => reportFailure(err.message));
+      socket.on('error', teardown);
+      socket.once('close', teardown);
+      upstream.once('close', teardown);
+      whenConnected(() => {
+        const finishConnect = () => {
+          if (socket.destroyed || upstream.destroyed) return;
+          established = true;
+          socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+          tunnelExchange = {
+            id: crypto.randomUUID(),
+            method: 'CONNECT',
+            url: connectMatchUrl(destHost, destPort),
+            host: formatHostPort(destHost, destPort, 443),
+            isSSL: true,
+            protocol: 'HTTP/1.1',
+            requestHeaders: {},
+            requestBodySize: 0,
+            responseBodySize: 0,
+            startedAt: Date.now(),
+            passthrough: true,
+          };
+          eventBus.emit('request', tunnelExchange);
+          const relay = (first: Buffer) => {
+            if (first.length > 0) upstream.write(first);
+            const throttleState = runtimeState.getSnapshot().throttleState;
+            if (throttleState.enabled && (throttleState.upKbps > 0 || throttleState.packetLossPct > 0)) {
+              socket.pipe(createThrottleTransform(throttleState.upKbps, throttleState.packetLossPct)).pipe(upstream);
+            } else {
+              socket.pipe(upstream);
+            }
+            if (throttleState.enabled && (throttleState.downKbps > 0 || throttleState.packetLossPct > 0)) {
+              upstream.pipe(createThrottleTransform(throttleState.downKbps, throttleState.packetLossPct)).pipe(socket);
+            } else {
+              upstream.pipe(socket);
+            }
+          };
+          if (!options.requireTlsClientHello) {
+            relay(head);
+            return;
+          }
+          // Auto TLS passthrough only ever stands in for a TLS connection the
+          // client refused to let Detour MITM: relay it only if it opens with a
+          // TLS handshake record, so it can't be turned into a raw TCP tunnel
+          // (to a local Redis, say) by a client that faked a refusal.
+          const check = (first: Buffer) => {
+            if (isTlsHandshakeStart(first)) {
+              relay(first);
+              return;
+            }
+            closeTunnelExchange('not a TLS connection — auto TLS passthrough only relays TLS');
+            socket.destroy();
+            upstream.destroy();
+          };
+          if (head.length > 0) check(head);
+          else
+            socket.once('data', (chunk: Buffer) => {
+              socket.pause();
+              check(chunk);
+            });
+        };
+        const throttleState = runtimeState.getSnapshot().throttleState;
+        const latency = throttleState.enabled ? throttleState.latencyMs : 0;
+        if (latency > 0) setTimeout(finishConnect, latency);
+        else finishConnect();
+      });
+    };
+    if (connectUpstream) {
+      // The client may go away while the upstream proxy is still answering.
+      let clientGone = false;
+      const markGone = () => {
+        clientGone = true;
+      };
+      socket.once('close', markGone);
+      socket.on('error', markGone);
+      connectUpstream(destHost, destPort).then(
+        (upstream) => {
+          socket.off('close', markGone);
+          if (clientGone || socket.destroyed) {
+            upstream.destroy();
+            return;
+          }
+          relayThrough(upstream, (proceed) => proceed());
+        },
+        (err: Error) => {
+          if (!clientGone) reportFailure(err.message);
+        },
+      );
+      return;
+    }
+    const lookup = sameTarget ? guardedLookup(destPort) : undefined;
+    const upstream = net.connect({ host: destHost, port: destPort, ...(lookup ? { lookup } : {}) });
+    relayThrough(upstream, (proceed) => upstream.once('connect', proceed));
   };
 }

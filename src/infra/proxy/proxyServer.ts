@@ -23,6 +23,7 @@ import { ProxyEngine } from './engine/proxyEngine';
 import { createClientCertRejectionHandler } from './pipeline/clientCertRejection';
 import { createConnectHandler } from './pipeline/connectHandler';
 import { createInterceptOffConnectHandler } from './pipeline/interceptOffConnect';
+import { createUpstreamTunnelConnector } from './upstreamTunnel';
 import { createProxyErrorHandler } from './pipeline/proxyErrorHandler';
 import { createRequestBreakpointHandler } from './pipeline/requestBreakpoint';
 import { createRequestHandler } from './pipeline/requestHandler';
@@ -293,6 +294,7 @@ export async function startProxyServer(
     eventBus,
     runtimeState,
     guardedLookup: (port) => proxy.guardedLookup(port),
+    connectUpstream: options.upstreamProxyUrl ? createUpstreamTunnelConnector(options.upstreamProxyUrl) : undefined,
   });
 
   proxy.onTlsClientError(
