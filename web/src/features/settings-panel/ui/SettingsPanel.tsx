@@ -11,10 +11,11 @@ import {
   useFocusStore,
   useInterceptStore,
   useThrottleStore,
+  type LocalAutoPassthroughEntry,
   type PresetKey,
 } from '@/entities/proxy-config';
 import { useUserConfigStore } from '@/entities/user-config';
-import type { AutoPassthroughEntry, ThrottleState, UserConfigState } from '@/shared/api';
+import type { ThrottleState, UserConfigState } from '@/shared/api';
 import { setTheme, useTheme } from '@/shared/lib/theme';
 import { cn } from '@/shared/lib/utils';
 import { HostChipList, Select } from '@/shared/ui';
@@ -117,13 +118,22 @@ function FocusSection() {
   );
 }
 
-/** The current time, re-read every `intervalMs` while `active` — for countdowns that only need to tick while shown. */
-function useNow(active: boolean, intervalMs = 1000): number {
+/**
+ * The current time, re-read every `intervalMs` until the last of `deadlines` has passed — a countdown that stops
+ * ticking once there is nothing left to count down. Re-read once right away when it starts, so time that passed
+ * while it was idle doesn't show for a second.
+ */
+function useCountdownNow(deadlines: readonly number[], intervalMs = 1000): number {
   const [now, setNow] = useState(() => Date.now());
+  const active = deadlines.some((deadline) => deadline > now);
   useEffect(() => {
     if (!active) return undefined;
+    const first = setTimeout(() => setNow(Date.now()), 0);
     const timer = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(timer);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+    };
   }, [active, intervalMs]);
   return now;
 }
@@ -137,8 +147,7 @@ function useNow(active: boolean, intervalMs = 1000): number {
 function AutoPassthroughSection() {
   const autoPassthrough = useAutoPassthroughStore((s) => s.autoPassthrough);
   const forgetAll = useAutoPassthroughStore((s) => s.forgetAll);
-  const hasEntries = (autoPassthrough?.entries.length ?? 0) > 0;
-  const now = useNow(hasEntries);
+  const now = useCountdownNow(autoPassthrough?.entries.map((entry) => entry.expiresAt) ?? []);
 
   if (!autoPassthrough) return null;
   const entries = liveAutoPassthroughEntries(autoPassthrough, now);
@@ -200,7 +209,7 @@ function AutoPassthroughRecords({
   now,
   onForgetAll,
 }: {
-  entries: AutoPassthroughEntry[];
+  entries: LocalAutoPassthroughEntry[];
   /** Records the server holds beyond the ones it sent (it sends the soonest-to-lapse 100). */
   notShown: number;
   now: number;

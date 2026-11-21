@@ -160,7 +160,7 @@ export interface FocusState {
 export interface AutoPassthroughState {
   enabled: boolean;
   entries: AutoPassthroughEntry[];
-  /** How many targets are recorded in all — `entries` holds at most the first 100 of them, soonest to lapse first. */
+  /** How many targets are recorded in all — `entries` holds at most the 100 soonest to lapse, in that order. */
   total: number;
 }
 
@@ -169,8 +169,8 @@ export interface AutoPassthroughEntry {
   clientAddress?: string;
   host: string;
   port: number;
-  /** When the record lapses and the target is MITM'd again (epoch milliseconds). */
-  expiresAt: number;
+  /** How long until the record lapses and the target is MITM'd again, as of when the message was sent — relative, so a client counts it down on its own clock without the two clocks having to agree. */
+  remainingMs: number;
 }
 
 /** The current "Throttle" network-simulation profile — see `src/types.ts`'s `ThrottleState`. */

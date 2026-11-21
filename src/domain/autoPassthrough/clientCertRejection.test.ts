@@ -96,6 +96,19 @@ describe('createAutoPassthroughHosts', () => {
     expect(hosts.list()).toEqual([]);
   });
 
+  it('list(limit) stops at the oldest `limit` targets, and size() counts only live ones', () => {
+    let time = 0;
+    const hosts = createAutoPassthroughHosts({ ttlMs: 100, now: () => time });
+    hosts.add(phone('a.example'));
+    time = 10;
+    hosts.add(phone('b.example'));
+    hosts.add(phone('c.example'));
+    expect(hosts.list(2).map((r) => r.host)).toEqual(['a.example', 'b.example']);
+    expect(hosts.size()).toBe(3);
+    time = 100;
+    expect(hosts.size()).toBe(2);
+  });
+
   it('notifyingOnAdd calls back only for a target it newly records (issue #302)', () => {
     let calls = 0;
     const hosts = notifyingOnAdd(createAutoPassthroughHosts(), () => calls++);

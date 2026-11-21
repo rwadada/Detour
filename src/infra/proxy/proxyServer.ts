@@ -170,33 +170,46 @@ export async function startProxyServer(
   // natural moment to MITM those hosts again, e.g. right after installing
   // the CA on a device that had refused it.
   const recordedRefusals = (options.autoPassthrough ?? true) ? createAutoPassthroughHosts() : undefined;
-  // What the dashboard shows (issue #302). Each entry's expiry goes out as a
-  // wall-clock time, so a client counts it down itself and no message is
-  // needed when one lapses. Without `--proxy-auth` anything on the network can
-  // make refusals, so the list sent is capped and announcements are coalesced:
-  // otherwise a flood of refusals would send every dashboard the whole
-  // (up to 10,000-entry) record once per new entry.
-  const autoPassthroughState = (): AutoPassthroughState => {
-    const now = Date.now();
-    const records = recordedRefusals?.list() ?? [];
-    return {
-      enabled: recordedRefusals !== undefined,
-      entries: records.slice(0, AUTO_PASSTHROUGH_ENTRIES_SHOWN).map(({ clientAddress, host, port, remainingMs }) => ({
+  // What the dashboard shows (issue #302). Each entry goes out with the time
+  // it has left, which a client counts down from when it got it — no message
+  // is needed when one lapses, and the two machines' clocks needn't agree.
+  // Without `--proxy-auth` anything on the network can make refusals, so the
+  // list sent is capped and additions are coalesced: otherwise a flood of
+  // refusals would send every dashboard the whole (up to 10,000-entry) record
+  // once per new entry.
+  const autoPassthroughState = (): AutoPassthroughState => ({
+    enabled: recordedRefusals !== undefined,
+    entries: (recordedRefusals?.list(AUTO_PASSTHROUGH_ENTRIES_SHOWN) ?? []).map(
+      ({ clientAddress, host, port, remainingMs }) => ({
         ...(clientAddress !== undefined ? { clientAddress } : {}),
         host,
         port,
-        expiresAt: Math.round(now + remainingMs),
-      })),
-      total: records.length,
-    };
-  };
+        remainingMs: Math.round(remainingMs),
+      }),
+    ),
+    total: recordedRefusals?.size() ?? 0,
+  });
   let announceTimer: ReturnType<typeof setTimeout> | undefined;
+  const announceAutoPassthroughNow = (): void => {
+    clearTimeout(announceTimer);
+    announceTimer = undefined;
+    const state = autoPassthroughState();
+    eventBus.emit('autoPassthroughChanged', state);
+    // Records past the ones sent never lapse before them (oldest first), so
+    // once the first sent one lapses, send again to bring the next ones in.
+    const firstToLapse = state.entries[0];
+    if (state.total > state.entries.length && firstToLapse) {
+      announceTimer = setTimeout(
+        announceAutoPassthroughNow,
+        Math.max(firstToLapse.remainingMs, AUTO_PASSTHROUGH_ANNOUNCE_DELAY_MS),
+      );
+      announceTimer.unref();
+    }
+  };
+  /** Coalesces additions: one announcement per `AUTO_PASSTHROUGH_ANNOUNCE_DELAY_MS` at most. */
   const announceAutoPassthrough = (): void => {
     if (announceTimer !== undefined) return;
-    announceTimer = setTimeout(() => {
-      announceTimer = undefined;
-      eventBus.emit('autoPassthroughChanged', autoPassthroughState());
-    }, AUTO_PASSTHROUGH_ANNOUNCE_DELAY_MS);
+    announceTimer = setTimeout(announceAutoPassthroughNow, AUTO_PASSTHROUGH_ANNOUNCE_DELAY_MS);
     announceTimer.unref();
   };
   // The same record, telling the dashboard about every target it newly takes in.
@@ -205,12 +218,12 @@ export async function startProxyServer(
   // so a retry after the user acted (installed the CA, toggled Intercept)
   // shows up again instead of staying silent for the rest of the TTL.
   const loggedRefusals = createAutoPassthroughHosts();
-  /** `announce: 'always'` answers an explicit request even when there was nothing to forget. */
+  /** Announced at once, not coalesced: the user is looking at the list they just cleared. `'always'` answers an explicit request even when there was nothing to forget. */
   const forgetRefusals = (announce: 'if-changed' | 'always' = 'if-changed'): void => {
-    const hadRecords = (recordedRefusals?.list().length ?? 0) > 0;
+    const hadRecords = (recordedRefusals?.size() ?? 0) > 0;
     recordedRefusals?.clear();
     loggedRefusals.clear();
-    if (hadRecords || announce === 'always') announceAutoPassthrough();
+    if (hadRecords || announce === 'always') announceAutoPassthroughNow();
   };
   const handleForgetAutoPassthrough = (): void => forgetRefusals('always');
   eventBus.on('forgetAutoPassthrough', handleForgetAutoPassthrough);

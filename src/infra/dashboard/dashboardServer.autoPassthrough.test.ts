@@ -52,7 +52,7 @@ describe('startDashboardServer — auto TLS passthrough (issue #302)', () => {
 
   const recorded: AutoPassthroughState = {
     enabled: true,
-    entries: [{ clientAddress: '127.0.0.1', host: 'api.example.com', port: 443, expiresAt: 1_900_000_000_000 }],
+    entries: [{ clientAddress: '127.0.0.1', host: 'api.example.com', port: 443, remainingMs: 540_000 }],
     total: 1,
   };
 

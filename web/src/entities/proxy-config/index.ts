@@ -18,6 +18,7 @@ export {
   formatRemaining,
   liveAutoPassthroughEntries,
   type AutoPassthroughStoreState,
+  type LocalAutoPassthroughEntry,
 } from './model/createAutoPassthroughStore';
 export {
   createBlockHostsStore,

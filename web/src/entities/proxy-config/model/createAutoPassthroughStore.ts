@@ -1,26 +1,48 @@
 import { create } from 'zustand';
-import type { AutoPassthroughState, DashboardConnection } from '@/shared/api';
+import type { AutoPassthroughEntry, DashboardConnection } from '@/shared/api';
+
+/** A record as this page keeps it: the server's `remainingMs` turned into a time on this page's own clock. */
+export interface LocalAutoPassthroughEntry extends Omit<AutoPassthroughEntry, 'remainingMs'> {
+  /** `Date.now()` (this page's clock) at which the record lapses. */
+  expiresAt: number;
+}
+
+export interface LocalAutoPassthroughState {
+  enabled: boolean;
+  entries: LocalAutoPassthroughEntry[];
+  /** Records the server holds in all; it sends at most the 100 soonest to lapse. */
+  total: number;
+}
 
 export interface AutoPassthroughStoreState {
   /** Mirrors the server's `autoPassthrough` message — `null` until one arrives (never, from a server without it). */
-  autoPassthrough: AutoPassthroughState | null;
+  autoPassthrough: LocalAutoPassthroughState | null;
   /** Asks the server to forget every record; the answer is the next `autoPassthrough` message. */
   forgetAll: () => void;
 }
 
 /**
  * Auto TLS passthrough (issue #302): whether it is on, and which client/host/port targets are being relayed
- * untouched because their client refused Detour's certificate. Entries carry their own `expiresAt` and lapse
- * without a message, so a view filters them against the clock itself (`liveAutoPassthroughEntries`).
+ * untouched because their client refused Detour's certificate. The server sends how long each record has left;
+ * it is anchored to this page's clock when the message arrives (so the two machines' clocks needn't agree), and
+ * entries lapse without a message, so a view filters them against the clock itself (`liveAutoPassthroughEntries`).
  *
  * `connection` is required (no default) so importing this module never opens a real WebSocket — see
- * `createInterceptStore`.
+ * `createInterceptStore`. `now` is injectable for tests.
  */
-export function createAutoPassthroughStore(connection: DashboardConnection) {
+export function createAutoPassthroughStore(connection: DashboardConnection, now: () => number = Date.now) {
   return create<AutoPassthroughStoreState>((set) => {
     connection.onMessage((message) => {
       if (message.type !== 'autoPassthrough') return;
-      set({ autoPassthrough: message.state });
+      const receivedAt = now();
+      const { enabled, entries, total } = message.state;
+      set({
+        autoPassthrough: {
+          enabled,
+          total,
+          entries: entries.map(({ remainingMs, ...entry }) => ({ ...entry, expiresAt: receivedAt + remainingMs })),
+        },
+      });
     });
 
     return {
@@ -31,7 +53,7 @@ export function createAutoPassthroughStore(connection: DashboardConnection) {
 }
 
 /** The entries not yet past their `expiresAt` at `now`, soonest to lapse first. */
-export function liveAutoPassthroughEntries(state: AutoPassthroughState, now: number) {
+export function liveAutoPassthroughEntries(state: LocalAutoPassthroughState, now: number): LocalAutoPassthroughEntry[] {
   return state.entries.filter((entry) => entry.expiresAt > now).sort((a, b) => a.expiresAt - b.expiresAt);
 }
 

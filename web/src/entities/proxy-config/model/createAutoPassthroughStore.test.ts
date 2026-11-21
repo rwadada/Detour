@@ -8,16 +8,22 @@ describe('createAutoPassthroughStore (issue #302)', () => {
     expect(createAutoPassthroughStore(fake.connection).getState().autoPassthrough).toBeNull();
   });
 
-  it('mirrors the server-pushed state', () => {
+  it("anchors each record to this page's clock when the message arrives", () => {
     const fake = fakeDashboardConnection();
-    const store = createAutoPassthroughStore(fake.connection);
-    const state = {
+    const store = createAutoPassthroughStore(fake.connection, () => 1_000);
+    fake.emit({
+      type: 'autoPassthrough',
+      state: {
+        enabled: true,
+        entries: [{ clientAddress: '127.0.0.1', host: 'a.example', port: 443, remainingMs: 5_000 }],
+        total: 1,
+      },
+    });
+    expect(store.getState().autoPassthrough).toEqual({
       enabled: true,
-      entries: [{ clientAddress: '127.0.0.1', host: 'a.example', port: 443, expiresAt: 5 }],
+      entries: [{ clientAddress: '127.0.0.1', host: 'a.example', port: 443, expiresAt: 6_000 }],
       total: 1,
-    };
-    fake.emit({ type: 'autoPassthrough', state });
-    expect(store.getState().autoPassthrough).toEqual(state);
+    });
   });
 
   it('forgetAll sends a forgetAutoPassthrough command', () => {
