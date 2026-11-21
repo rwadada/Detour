@@ -1,5 +1,40 @@
 # Changelog
 
+## [2.6.0](https://github.com/rwadada/Detour/compare/v2.5.1...v2.6.0) (2026-11-21)
+
+
+### Features
+
+* **cli:** add --no-intercept / --focus start options and config defaults ([fd4b49c](https://github.com/rwadada/Detour/commit/fd4b49c6366f6150a67bede37b6f54376e992c7a))
+* **cli:** add --no-intercept / --focus start options and config defaults ([afc8dab](https://github.com/rwadada/Detour/commit/afc8daba886845ec8661a687ddec52a75eada6c4)), closes [#301](https://github.com/rwadada/Detour/issues/301)
+* **dashboard:** show auto TLS passthrough state and records, with Forget all ([ed7d413](https://github.com/rwadada/Detour/commit/ed7d413d5958e2bd194e3dc39751a77acf824553))
+* **dashboard:** show auto TLS passthrough state and records, with Forget all ([8e7041f](https://github.com/rwadada/Detour/commit/8e7041f77e66e3922890ad09d9bbfb2b29a0fd38)), closes [#302](https://github.com/rwadada/Detour/issues/302)
+* **proxy:** send tunnels relayed untouched through --upstream-proxy ([acf04de](https://github.com/rwadada/Detour/commit/acf04de787b81afb38289e71bb752bcb105629e7))
+* **proxy:** send tunnels relayed untouched through --upstream-proxy ([328fbc2](https://github.com/rwadada/Detour/commit/328fbc29218d3b27b0e2ee40e097c50c6dc97ce9))
+
+
+### Bug Fixes
+
+* **cli:** keep saved intercept/focus defaults from bypassing --upstream-proxy ([1970316](https://github.com/rwadada/Detour/commit/1970316e131fb65ed2043ec08040ae81ef9cf8e3))
+* **cli:** reject Focus patterns that can never match, warn on ignored defaults ([14fcea8](https://github.com/rwadada/Detour/commit/14fcea8fdb64f3118c82a37e7467855a62d38fe3))
+* **daemon:** judge a reservation in place before moving it aside ([d13db3c](https://github.com/rwadada/Detour/commit/d13db3c5be10a7e06970b9766d56e4a547bcfb7b))
+* **daemon:** never expose a half-written run state file ([87e82eb](https://github.com/rwadada/Detour/commit/87e82ebfc2e6528210d6ed4c2e82c07397943b9b))
+* **daemon:** never expose a half-written run state file ([3ce2fa0](https://github.com/rwadada/Detour/commit/3ce2fa03ceb2a5e94d7fe1b1000db224a433aab8))
+* **daemon:** re-judge a parked reservation instead of comparing inodes ([fff23f6](https://github.com/rwadada/Detour/commit/fff23f691486bfb75799a475114dbaf2783d2990))
+* **daemon:** share the atomic publish, take over stale reservations safely ([85455e3](https://github.com/rwadada/Detour/commit/85455e3507d2773253eb4f11409ded38e1953636))
+* **dashboard:** cap and coalesce auto TLS passthrough updates ([abd9f03](https://github.com/rwadada/Detour/commit/abd9f0306e75f5bca5e081b01dfca90a788c91e3))
+* **dashboard:** send remaining time, refresh hidden records, forget at once ([806441a](https://github.com/rwadada/Detour/commit/806441a074e70dcf8c36e66f30b0545810154ad1))
+* **dashboard:** stop calling LAN access unauthenticated ([fec241c](https://github.com/rwadada/Detour/commit/fec241c65dbca6770105e58dddbd55cde76cd308))
+* **dashboard:** stop calling LAN access unauthenticated ([f01e8db](https://github.com/rwadada/Detour/commit/f01e8db39386005ef6500779499c9622622ae616))
+* **fs:** keep symlinked secrets linked, share one token, sweep leaked temps ([61e5918](https://github.com/rwadada/Detour/commit/61e5918439629041005094721d75000f4fbac89f))
+* **persistence:** create the --persist history DB and dump files owner-only ([a020746](https://github.com/rwadada/Detour/commit/a020746936c5c0ff486d601908fffcefed70bb55))
+* **persistence:** create the --persist history DB and dump files owner-only ([613805b](https://github.com/rwadada/Detour/commit/613805bacac5e0d9409c7d6c26b9759891c79420)), closes [#303](https://github.com/rwadada/Detour/issues/303)
+* **persistence:** open the history DB under a 0077 umask instead of pre-creating it ([a44852b](https://github.com/rwadada/Detour/commit/a44852b7298294b039d6dae67fc47476685e6299))
+* **persistence:** tighten before opening, tolerate foreign-owned files ([21201c5](https://github.com/rwadada/Detour/commit/21201c5f0144fdff7fe2fc2a364baf4e3d80bd1a))
+* **proxy:** catch socket errors while handing over a SOCKS tunnel ([8c18426](https://github.com/rwadada/Detour/commit/8c18426f7f1f984059dd436d1af5f37a90edc328))
+* **proxy:** keep early bytes, guard self-targets and abort upstream tunnels ([98d16c3](https://github.com/rwadada/Detour/commit/98d16c303deb577283e7177f8f4cd8dc2bc5ac8c))
+* **proxy:** keep the lapse refresh from holding back new auto passthrough records ([3ab3f42](https://github.com/rwadada/Detour/commit/3ab3f423f658715611c2682f423fb3b3e9bb33c3))
+
 ## [2.5.1](https://github.com/rwadada/Detour/compare/v2.5.0...v2.5.1) (2026-11-19)
 
 
