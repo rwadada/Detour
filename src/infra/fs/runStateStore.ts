@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { RunState } from '../../domain/daemon/types';
+import { writeOwnerOnlyFile } from './ownerOnly';
 
 /** Directory holding one JSON state file per tracked `detour start` process, keyed by its requested `--port` (~/.detour/run) — mirroring `certStore.ts`'s `resolveCertDir`/`dumpFileWriter.ts`'s `resolveDumpDir`. */
 export function resolveRunDir(): string {
@@ -17,12 +18,15 @@ function runStateFilePath(requestedPort: number): string {
   return path.join(resolveRunDir(), `${requestedPort}.json`);
 }
 
-/** Persists `state`, overwriting whatever (if anything) was tracked for `state.requestedPort` before. */
+/**
+ * Persists `state`, overwriting whatever (if anything) was tracked for
+ * `state.requestedPort` before. Replaced in one step (a temporary file
+ * renamed over it), never truncated in place: a reader in between — `detour
+ * status`, another `--fail-on-running` start — would otherwise see an empty
+ * file, take it for a corrupt leftover and delete a live process's entry.
+ */
 export function writeRunState(state: RunState): void {
-  const filePath = runStateFilePath(state.requestedPort);
-  fs.writeFileSync(filePath, JSON.stringify(state, null, 2), { mode: STATE_FILE_MODE });
-  // `mode` only applies when the file is created; tighten a pre-existing one too.
-  fs.chmodSync(filePath, STATE_FILE_MODE);
+  writeOwnerOnlyFile(runStateFilePath(state.requestedPort), JSON.stringify(state, null, 2));
 }
 
 /**
@@ -32,11 +36,13 @@ export function writeRunState(state: RunState): void {
  * the check and the eventual write (proto/rules loading, the real port
  * bind, the dashboard bind) during which two concurrent `detour start
  * --fail-on-running` processes could both see nothing tracked yet and both
- * proceed. `fs.writeFileSync` with the `wx` flag (`O_EXCL`) is a single
- * atomic filesystem operation — whichever process's write actually creates
- * the file wins the reservation; the loser reliably sees `EEXIST` and
- * reports "already running" (exit 3) instead of losing a race it never
- * knew it was in (previously: a generic port-in-use error, exit 1).
+ * proceed. The state is written to a temporary file first and then
+ * hard-linked into place: `link` fails with `EEXIST` when the name is taken,
+ * atomically, so whichever process links first wins, and the file is never
+ * visible half-written. (A plain `writeFileSync` with `wx` creates the file
+ * empty and fills it afterwards; a loser reading it in that gap took it for
+ * a corrupt leftover, deleted it and won too — both then started, and one
+ * failed on the port with exit 1 instead of reporting exit 3.)
  *
  * Self-heals a stale reservation the same way `findLiveRunState` does: an
  * `EEXIST` whose PID is no longer alive is removed and the reservation
@@ -48,12 +54,16 @@ export function writeRunState(state: RunState): void {
 export function reserveRunState(state: RunState): boolean {
   const filePath = runStateFilePath(state.requestedPort);
   const tryCreate = (): boolean => {
+    const tmpPath = `${filePath}.${process.pid}.reserving`;
+    fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), { mode: STATE_FILE_MODE });
     try {
-      fs.writeFileSync(filePath, JSON.stringify(state, null, 2), { flag: 'wx', mode: STATE_FILE_MODE });
+      fs.linkSync(tmpPath, filePath);
       return true;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
       throw err;
+    } finally {
+      fs.rmSync(tmpPath, { force: true });
     }
   };
 
