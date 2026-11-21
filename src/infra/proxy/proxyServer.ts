@@ -189,28 +189,37 @@ export async function startProxyServer(
     ),
     total: recordedRefusals?.size() ?? 0,
   });
-  let announceTimer: ReturnType<typeof setTimeout> | undefined;
+  // Two timers: one batching additions, one waiting for the first sent record
+  // to lapse (see below). Kept apart so a pending lapse never holds back a
+  // new addition.
+  let batchTimer: ReturnType<typeof setTimeout> | undefined;
+  let lapseTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearAnnounceTimers = (): void => {
+    clearTimeout(batchTimer);
+    clearTimeout(lapseTimer);
+    batchTimer = undefined;
+    lapseTimer = undefined;
+  };
   const announceAutoPassthroughNow = (): void => {
-    clearTimeout(announceTimer);
-    announceTimer = undefined;
+    clearAnnounceTimers();
     const state = autoPassthroughState();
     eventBus.emit('autoPassthroughChanged', state);
     // Records past the ones sent never lapse before them (oldest first), so
     // once the first sent one lapses, send again to bring the next ones in.
     const firstToLapse = state.entries[0];
     if (state.total > state.entries.length && firstToLapse) {
-      announceTimer = setTimeout(
+      lapseTimer = setTimeout(
         announceAutoPassthroughNow,
         Math.max(firstToLapse.remainingMs, AUTO_PASSTHROUGH_ANNOUNCE_DELAY_MS),
       );
-      announceTimer.unref();
+      lapseTimer.unref();
     }
   };
   /** Coalesces additions: one announcement per `AUTO_PASSTHROUGH_ANNOUNCE_DELAY_MS` at most. */
   const announceAutoPassthrough = (): void => {
-    if (announceTimer !== undefined) return;
-    announceTimer = setTimeout(announceAutoPassthroughNow, AUTO_PASSTHROUGH_ANNOUNCE_DELAY_MS);
-    announceTimer.unref();
+    if (batchTimer !== undefined) return;
+    batchTimer = setTimeout(announceAutoPassthroughNow, AUTO_PASSTHROUGH_ANNOUNCE_DELAY_MS);
+    batchTimer.unref();
   };
   // The same record, telling the dashboard about every target it newly takes in.
   const autoPassthroughHosts = recordedRefusals && notifyingOnAdd(recordedRefusals, announceAutoPassthrough);
@@ -376,7 +385,7 @@ export async function startProxyServer(
             stop: () =>
               new Promise<void>((res) => {
                 eventBus.off('forgetAutoPassthrough', handleForgetAutoPassthrough);
-                clearTimeout(announceTimer);
+                clearAnnounceTimers();
                 eventBus.off('breakpointResume', handleBreakpointResume);
                 eventBus.off('setIntercept', handleSetIntercept);
                 eventBus.off('setFocus', handleSetFocus);
