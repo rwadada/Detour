@@ -248,10 +248,10 @@ const SHUTDOWN_TIMEOUT_MS = 6000;
  * `--foreground`: an explicit `--lan`/`--no-lan` on the command line, then
  * `~/.detour/config.json`'s `lanAccess`, then `localhost`-only.
  *
- * Security-sensitive: LAN access has no authentication of its own, so
- * `0.0.0.0` means anything on the network can reach the dashboard and,
- * from there, decrypted HTTPS traffic and rule edits — see
- * `LAN_ACCESS_WARNING`. The proxy itself doesn't share this gate at all;
+ * Security-sensitive: `0.0.0.0` means anything on the network can reach the
+ * dashboard, where only its secret (the access token, or the dashboard
+ * password) stands between it and decrypted HTTPS traffic and rule edits —
+ * see `LAN_ACCESS_WARNING`. The proxy itself doesn't share this gate at all;
  * see `PROXY_HOST`'s doc comment for why.
  */
 function resolveDashboardHost(options: StartOptions): string {

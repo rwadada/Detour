@@ -12,8 +12,9 @@ import { logScriptGateWarnings, logUnreachableRuleWarnings } from './logger';
  *
  * Hedged with "unless a dashboard password is set" deliberately. Help text
  * is rendered while building the CLI, long before any config is read, so it
- * can only describe the default posture honestly — flatly asserting "no
- * authentication" would be wrong for anyone who has set one (issue #66).
+ * describes what holds either way: the dashboard always demands a secret —
+ * the access token, or the dashboard password once one is set (issues #66,
+ * #205) — so `--lan` widens who can *try*, not who gets in.
  * The banner, which runs when the answer is known, says which case actually
  * applies instead of reusing this (see `printStartupBanner`).
  *
@@ -32,7 +33,7 @@ import { logScriptGateWarnings, logUnreachableRuleWarnings } from './logger';
  * to match by hand instead. Update both together.
  */
 export const LAN_ACCESS_WARNING =
-  'unless a dashboard password is set (`detour config --dashboard-password`), there is no authentication at all — anyone on your network can reach the dashboard, view decrypted HTTPS traffic through it, or edit rules, and the proxy itself serves anyone who asks unless you set --proxy-auth';
+  'anyone on your network can then reach the dashboard; it still demands the access token (or the dashboard password, when one is set) and is served over HTTPS by default, so the Dashboard URL carrying that token is the key to decrypted HTTPS traffic and rule edits — share it with no one. The proxy itself serves anyone who asks unless you set --proxy-auth';
 
 /**
  * The startup banner's callout (issue #158) shown whenever `--proxy-auth`/
